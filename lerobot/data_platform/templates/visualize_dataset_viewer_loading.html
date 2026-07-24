@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Opening viewer</title>
+</head>
+<body class="min-h-screen bg-slate-950 font-mono text-sm text-slate-200">
+    <main class="mx-auto flex min-h-screen max-w-3xl items-center px-6 py-10">
+        <section class="w-full rounded-xl border border-slate-800 bg-slate-900 p-6 shadow-2xl shadow-black/30">
+            <div class="flex items-start justify-between gap-4">
+                <div>
+                    <p class="text-xs uppercase tracking-wide text-slate-500">Episode Viewer</p>
+                    <h1 class="mt-1 text-xl font-semibold text-slate-100">Opening {{ dataset_key }} / episode {{ episode_id }}</h1>
+                    <p class="mt-2 text-xs text-slate-400">
+                        Loading dataset metadata, checking cache, and warming the episode index before rendering the viewer.
+                    </p>
+                </div>
+                <a class="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:border-sky-600 hover:text-sky-200"
+                   href="{{ home_url }}">Home</a>
+            </div>
+
+            <div class="mt-6 rounded border border-slate-800 bg-slate-950 p-4">
+                <div class="mb-3 flex items-center justify-between text-xs text-slate-400">
+                    <span id="message">Queued</span>
+                    <span id="elapsed">elapsed -</span>
+                </div>
+                <div class="h-2 overflow-hidden rounded bg-slate-800">
+                    <div class="h-full w-1/3 rounded bg-sky-500"
+                         style="animation: viewer-loading 1.2s ease-in-out infinite"></div>
+                </div>
+                <pre id="error" class="mt-4 hidden whitespace-pre-wrap rounded border border-red-900 bg-red-950/40 p-3 text-xs text-red-200"></pre>
+            </div>
+
+            <p class="mt-4 text-xs text-slate-500">
+                If this stays slow, the bottleneck is usually first-time metadata load from NFS or a very large cache directory.
+            </p>
+        </section>
+    </main>
+
+    <style>
+        @keyframes viewer-loading {
+            0% { transform: translateX(-110%); }
+            50% { transform: translateX(110%); }
+            100% { transform: translateX(330%); }
+        }
+    </style>
+
+    <script>
+        const datasetKey = {{ dataset_key|tojson }};
+        const episodeId = {{ episode_id|tojson }};
+        const dataVersion = {{ data_version|tojson }};
+        const fallbackTarget = {{ target_url|tojson }};
+
+        function fmt(seconds) {
+            if (seconds === null || seconds === undefined) return '-';
+            seconds = Math.max(0, Math.floor(seconds));
+            const minutes = Math.floor(seconds / 60);
+            const remain = seconds % 60;
+            return minutes ? `${minutes}m ${remain}s` : `${remain}s`;
+        }
+
+        function render(job) {
+            document.getElementById('message').textContent = job.message || 'Loading';
+            document.getElementById('elapsed').textContent = `elapsed ${fmt(job.elapsed_seconds)}`;
+            const errorEl = document.getElementById('error');
+            if (job.error) {
+                errorEl.textContent = job.error;
+                errorEl.classList.remove('hidden');
+            }
+        }
+
+        async function requestJson(url, payload = null) {
+            const response = await fetch(url, {
+                method: payload ? 'POST' : 'GET',
+                headers: payload ? {'Content-Type': 'application/json'} : {},
+                body: payload ? JSON.stringify(payload) : null,
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || `request failed: ${response.status}`);
+            return data;
+        }
+
+        async function main() {
+            try {
+                const started = await requestJson('/api/viewer/preload', {
+                    dataset_key: datasetKey,
+                    episode_id: episodeId,
+                    data_version: dataVersion,
+                });
+                render(started.job);
+                const timer = window.setInterval(async () => {
+                    try {
+                        const data = await requestJson(`/api/jobs/${started.job.id}`);
+                        render(data.job);
+                        if (data.job.status === 'done') {
+                            window.clearInterval(timer);
+                            window.location.replace(fallbackTarget || data.job.viewer_url);
+                        } else if (data.job.status === 'error') {
+                            window.clearInterval(timer);
+                        }
+                    } catch (err) {
+                        window.clearInterval(timer);
+                        const errorEl = document.getElementById('error');
+                        errorEl.textContent = err.message;
+                        errorEl.classList.remove('hidden');
+                    }
+                }, 500);
+            } catch (err) {
+                const errorEl = document.getElementById('error');
+                errorEl.textContent = err.message;
+                errorEl.classList.remove('hidden');
+            }
+        }
+
+        main();
+    </script>
+</body>
+</html>

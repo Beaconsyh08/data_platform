@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Compare - {{ dataset_a }} vs {{ dataset_b }}</title>
+<style>
+  body { margin:0; background:#020617; color:#cbd5e1; font:13px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+  a { color:#7dd3fc; text-decoration:none; }
+  main { padding:16px; display:grid; gap:14px; }
+  section { border:1px solid #1e293b; border-radius:8px; background:#0f172a; overflow:hidden; }
+  h2 { margin:0; padding:10px 12px; border-bottom:1px solid #1e293b; font-size:14px; color:#f8fafc; }
+  .body { padding:12px; }
+  pre { white-space:pre-wrap; margin:0; color:#cbd5e1; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
+  .card { border:1px solid #334155; border-radius:6px; padding:10px; background:#020617; }
+  img { max-width:150px; border:1px solid #334155; margin:4px; }
+</style>
+</head>
+<body>
+{% set page_kind = "Compare" %}
+{% set page_title = dataset_a %}
+{% set page_subtitle = "vs " ~ dataset_b %}
+{% include "visualize_dataset_topbar.html" %}
+<main>
+  <section><h2>Summary</h2><div class="body" id="summary"></div></section>
+  <section><h2>Metadata / Action</h2><div class="body"><pre id="stats"></pre></div></section>
+  <section><h2>Vocab / Scenario / Tags</h2><div class="body"><pre id="overlap"></pre></div></section>
+  <section><h2>Visual Samples</h2><div class="body grid" id="visual"></div></section>
+</main>
+<script>
+const BASE = "/api/compare/{{ dataset_a }}/{{ dataset_b }}";
+function escapeHTML(value){ return String(value ?? "").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+async function fetchJson(url){ const r=await fetch(url); const d=await r.json(); if(!r.ok) throw new Error(d.error || r.status); return d; }
+function renderVisual(data){
+  const el=document.getElementById("visual");
+  const renderSide=(label, rows)=>`<div class="card"><b>${label}</b><br>${(rows||[]).map(r=>`<a href="/${label}/episode_${r.episode_index}"><img src="${r.image_url}" title="${escapeHTML(r.task)}"></a>`).join("")}</div>`;
+  el.innerHTML=renderSide("{{ dataset_a }}", data.a || []) + renderSide("{{ dataset_b }}", data.b || []);
+}
+async function load(){
+  const [summary, stats, overlap, visual] = await Promise.all([
+    fetchJson(`${BASE}/summary`), fetchJson(`${BASE}/stats`), fetchJson(`${BASE}/overlap`), fetchJson(`${BASE}/visual`)
+  ]);
+  document.getElementById("summary").innerHTML = summary.ready === false ? "No compare cache. Build it from Home first." : Object.entries(summary.panels || {}).map(([k,v])=>`<span class="card" style="display:inline-block;margin:4px">${escapeHTML(k)}: ${v.available ? "ready" : "missing"}</span>`).join("");
+  document.getElementById("stats").textContent = JSON.stringify(stats, null, 2);
+  document.getElementById("overlap").textContent = JSON.stringify(overlap, null, 2);
+  renderVisual(visual);
+}
+load().catch(err=>{document.getElementById("summary").textContent=err.message;});
+</script>
+</body>
+</html>

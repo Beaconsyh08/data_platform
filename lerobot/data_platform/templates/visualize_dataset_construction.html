@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Data Construction - {{ dataset_key }}</title>
+<style>
+  * { box-sizing: border-box; }
+	  body {
+	    margin: 0;
+	    display: flex;
+	    flex-direction: column;
+	    height: 100vh;
+	    overflow: hidden;
+	    background: #020617;
+    color: #cbd5e1;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+	    font-size: 13px;
+	  }
+	  #constructionLayout {
+	    min-height: 0;
+	    flex: 1;
+	    display: grid;
+	    grid-template-columns: 330px 1fr 320px;
+	    overflow: hidden;
+	  }
+  a { color: #7dd3fc; text-decoration: none; }
+  a:hover { color: #bae6fd; }
+  #sidebar, #info { background: #0f172a; overflow-y: auto; }
+  #sidebar { border-right: 1px solid #1e293b; }
+  #info { border-left: 1px solid #1e293b; }
+  .header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #0f172a;
+    padding: 10px 12px;
+    border-bottom: 1px solid #1e293b;
+  }
+  .filters { display: grid; gap: 6px; padding: 10px 12px; border-bottom: 1px solid #1e293b; background: #111827; }
+  select, input, textarea {
+    width: 100%;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    background: #020617;
+    color: #e2e8f0;
+    padding: 7px 8px;
+    font: inherit;
+  }
+  #recordList { list-style: none; margin: 0; padding: 0; }
+  #recordList li { padding: 8px 12px; border-bottom: 1px solid #1e293b; cursor: pointer; }
+  #recordList li:hover { background: #172554; }
+  #recordList li.active { background: #1e3a8a; }
+  #recordList li.accept { border-left: 3px solid #34d399; }
+  #recordList li.reject { opacity: 0.55; border-left: 3px solid #64748b; }
+  .tag { display: inline-block; border-radius: 4px; padding: 1px 5px; font-size: 10px; margin-right: 4px; }
+  .tag.scene { background: #0c4a6e; color: #bae6fd; }
+  .tag.miss { background: #7f1d1d; color: #fecaca; }
+  .tag.ok { background: #052e16; color: #86efac; }
+  .tag.no { background: #334155; color: #cbd5e1; }
+  #main { min-width: 0; overflow: auto; background: #020617; }
+  #prompt { padding: 10px 12px; border-bottom: 1px solid #1e293b; background: #111827; }
+  .old { color: #94a3b8; margin-bottom: 5px; }
+  .new { color: #fecaca; font-size: 18px; font-weight: 800; }
+  #stageWrap { display: flex; justify-content: center; padding: 16px; }
+  #stage { position: relative; display: inline-block; }
+  #img { display: block; max-width: 100%; image-rendering: pixelated; }
+  #overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+  .panel { padding: 12px; border-bottom: 1px solid #1e293b; }
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px; margin: 5px 0; }
+  .kv span:first-child { color: #94a3b8; }
+  button {
+    width: 100%;
+    padding: 8px 10px;
+    background: #0c4a6e;
+    color: #e0f2fe;
+    border: 1px solid #0369a1;
+    border-radius: 6px;
+    cursor: pointer;
+    font: inherit;
+  }
+  button:hover { background: #075985; }
+  button.good { background: #064e3b; border-color: #047857; color: #d1fae5; }
+  button.warn { background: #7f1d1d; border-color: #991b1b; color: #fee2e2; }
+  button.gray { background: #334155; border-color: #475569; color: #e2e8f0; }
+  .btnrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .shortcuts { color: #94a3b8; font-size: 11px; line-height: 1.6; margin-top: 14px; }
+	  @media (max-width: 980px) {
+	    #constructionLayout { grid-template-columns: 260px 1fr; }
+	    #info { display: none; }
+	  }
+</style>
+	</head>
+	<body>
+	  {% set page_kind = "Data Construction" %}
+	  {% set page_title = dataset_key %}
+	  {% set page_subtitle = "Review constructed negative episodes before finalizing the dataset." %}
+	  {% include "visualize_dataset_topbar.html" %}
+	  <div id="constructionLayout">
+	  <aside id="sidebar">
+	    <div class="header">
+	      <div id="counts" style="margin-top:4px;color:#94a3b8"></div>
+	    </div>
+    <div class="filters">
+      <select id="scenarioFilter"></select>
+      <select id="missingFilter"></select>
+      <select id="decisionFilter">
+        <option value="">all decisions</option>
+        <option value="pending">pending</option>
+        <option value="accept">accepted</option>
+        <option value="reject">rejected</option>
+      </select>
+    </div>
+    <ul id="recordList"></ul>
+  </aside>
+
+  <main id="main">
+    <div id="prompt">
+      <div class="old">Original: <span id="srcTask"></span></div>
+      <div class="new">Relabeled task: <span id="newTask"></span></div>
+    </div>
+    <div id="stageWrap">
+      <div id="stage">
+        <img id="img" alt="">
+        <canvas id="overlay"></canvas>
+      </div>
+    </div>
+  </main>
+
+  <aside id="info">
+    <div class="panel">
+      <h3 style="margin:0 0 8px;color:#f8fafc">Record</h3>
+      <div id="details"></div>
+    </div>
+    <div class="panel">
+      <label style="display:block;margin-bottom:6px;color:#94a3b8">Reject reason</label>
+      <textarea id="reason" rows="4" placeholder="optional"></textarea>
+      <div class="btnrow">
+        <button class="good" onclick="saveDecision('accept')">Accept (a)</button>
+        <button class="warn" onclick="saveDecision('reject')">Reject (r)</button>
+      </div>
+      <button class="gray" style="margin-top:8px" onclick="finalizeRejected()">Finalize rejected (f)</button>
+      <div class="shortcuts">Shortcuts: j/k next/prev, a accept, r reject, f finalize.</div>
+	    </div>
+	  </aside>
+	  </div>
+
+	<script>
+const API_BASE = "/api/construction/{{ dataset_namespace }}/{{ dataset_name }}";
+let records = [];
+let filtered = [];
+let currentIndex = 0;
+let current = null;
+
+const img = document.getElementById("img");
+const canvas = document.getElementById("overlay");
+const ctx = canvas.getContext("2d");
+
+function escapeHTML(value) {
+  return String(value ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+}
+
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `request failed: ${response.status}`);
+  return data;
+}
+
+function decision(record) {
+  if (record.decision === "accept") return "accept";
+  if (record.rejected || record.decision === "reject") return "reject";
+  return "pending";
+}
+
+function fillFilters() {
+  const scenarios = [...new Set(records.map(r => r.scenario))].sort();
+  const missing = [...new Set(records.map(r => r.missing_object))].sort();
+  document.getElementById("scenarioFilter").innerHTML =
+    `<option value="">all scenarios</option>` + scenarios.map(v => `<option>${escapeHTML(v)}</option>`).join("");
+  document.getElementById("missingFilter").innerHTML =
+    `<option value="">all missing</option>` + missing.map(v => `<option>${escapeHTML(v)}</option>`).join("");
+}
+
+function applyFilters() {
+  const scenario = document.getElementById("scenarioFilter").value;
+  const missing = document.getElementById("missingFilter").value;
+  const dec = document.getElementById("decisionFilter").value;
+  filtered = records.filter(record => {
+    if (scenario && record.scenario !== scenario) return false;
+    if (missing && record.missing_object !== missing) return false;
+    if (dec && decision(record) !== dec) return false;
+    return true;
+  });
+  if (current && !filtered.some(record => record.new_episode_index === current.new_episode_index)) {
+    currentIndex = 0;
+  }
+  renderList();
+  if (filtered.length) selectRecord(Math.min(currentIndex, filtered.length - 1));
+}
+
+function renderList() {
+  const list = document.getElementById("recordList");
+  list.innerHTML = "";
+  let accepted = 0, rejected = 0, pending = 0;
+  for (const record of records) {
+    if (decision(record) === "accept") accepted += 1;
+    else if (decision(record) === "reject") rejected += 1;
+    else pending += 1;
+  }
+  document.getElementById("counts").textContent = `pending ${pending} / accept ${accepted} / reject ${rejected}`;
+  for (const [idx, record] of filtered.entries()) {
+    const li = document.createElement("li");
+    li.className = decision(record);
+    if (current && record.new_episode_index === current.new_episode_index) li.classList.add("active");
+    li.innerHTML =
+      `<span class="tag scene">${escapeHTML(record.scenario)}</span>` +
+      `<span class="tag miss">${escapeHTML(record.missing_object)}</span>` +
+      `<span class="tag ok">${escapeHTML(record.source_visual_object || "")}</span>` +
+      `<b>new${String(record.new_episode_index).padStart(4, "0")}</b> ` +
+      `<span style="color:#94a3b8">src${record.src_episode_index}</span><br>` +
+      `<span style="font-size:11px">${escapeHTML(record.new_task)}</span>`;
+    li.onclick = () => selectRecord(idx);
+    list.appendChild(li);
+  }
+}
+
+function drawBoxes() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!current || !current.bboxes || !img.naturalWidth) return;
+  const sx = canvas.width / img.naturalWidth;
+  const sy = canvas.height / img.naturalHeight;
+  ctx.lineWidth = 2;
+  ctx.font = "12px monospace";
+  for (const box of current.bboxes) {
+    const b = box.bbox || {};
+    const left = Number(b.left || 0) * sx;
+    const top = Number(b.top || 0) * sy;
+    const width = (Number(b.right || 0) - Number(b.left || 0)) * sx;
+    const height = (Number(b.bottom || 0) - Number(b.top || 0)) * sy;
+    ctx.strokeStyle = "#34d399";
+    ctx.fillStyle = "#052e16";
+    ctx.strokeRect(left, top, width, height);
+    const label = `${box.label || box.kind || "object"} ${box.confidence ? Number(box.confidence).toFixed(2) : ""}`;
+    ctx.fillRect(left, Math.max(0, top - 18), Math.max(70, label.length * 7), 18);
+    ctx.fillStyle = "#bbf7d0";
+    ctx.fillText(label, left + 4, Math.max(12, top - 5));
+  }
+}
+
+function resizeCanvas() {
+  canvas.width = img.clientWidth;
+  canvas.height = img.clientHeight;
+  drawBoxes();
+}
+
+function selectRecord(idx) {
+  if (!filtered.length) return;
+  currentIndex = Math.max(0, Math.min(idx, filtered.length - 1));
+  current = filtered[currentIndex];
+  document.getElementById("srcTask").textContent = current.src_task || "";
+  document.getElementById("newTask").textContent = current.new_task || "";
+  document.getElementById("reason").value = current.reject_reason || "";
+  document.getElementById("details").innerHTML = [
+    ["new idx", current.new_episode_index],
+    ["source", `${current.source_repo_id || "unknown"} / ${current.src_episode_index}`],
+    ["scenario", current.scenario],
+    ["missing", current.missing_object],
+    ["source object", current.source_visual_object || ""],
+    ["reference", current.source_reference_object || ""],
+    ["direction", current.direction || ""],
+    ["background", current.background || ""],
+    ["object count", current.object_count_bucket || current.object_count || ""],
+    ["uncertainty", current.src_uncertainty],
+    ["existing", (current.detected_existing || []).join(", ")],
+    ["missing pool", (current.detected_missing || []).join(", ")],
+    ["decision", decision(current)],
+  ].map(([k, v]) => `<div class="kv"><span>${escapeHTML(k)}</span><span>${escapeHTML(v)}</span></div>`).join("");
+  img.onload = resizeCanvas;
+  img.src = current.image_url || "";
+  renderList();
+}
+
+async function saveDecision(value) {
+  if (!current) return;
+  const data = await fetchJson(`${API_BASE}/decision/${current.new_episode_index}`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({decision: value, reason: document.getElementById("reason").value})
+  });
+  Object.assign(current, data.record);
+  const original = records.find(r => r.new_episode_index === current.new_episode_index);
+  if (original) Object.assign(original, data.record);
+  applyFilters();
+}
+
+async function finalizeRejected() {
+  const rejected = records.filter(r => decision(r) === "reject").length;
+  if (!rejected) return alert("No rejected records.");
+  if (!confirm(`Physically delete ${rejected} rejected constructed episodes? This cannot be undone.`)) return;
+  await fetchJson(`${API_BASE}/finalize`, {method: "POST"});
+  await loadRecords();
+}
+
+async function loadRecords() {
+  const data = await fetchJson(`${API_BASE}/records`);
+  records = data.records || [];
+  fillFilters();
+  applyFilters();
+}
+
+document.getElementById("scenarioFilter").onchange = applyFilters;
+document.getElementById("missingFilter").onchange = applyFilters;
+document.getElementById("decisionFilter").onchange = applyFilters;
+window.addEventListener("resize", resizeCanvas);
+document.addEventListener("keydown", event => {
+  if (event.target && ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
+  if (event.key === "j") selectRecord(currentIndex + 1);
+  if (event.key === "k") selectRecord(currentIndex - 1);
+  if (event.key === "a") saveDecision("accept");
+  if (event.key === "r") saveDecision("reject");
+  if (event.key === "f") finalizeRejected();
+});
+
+loadRecords().catch(err => {
+  document.getElementById("recordList").innerHTML = `<li>${escapeHTML(err.message)}</li>`;
+});
+</script>
+</body>
+</html>

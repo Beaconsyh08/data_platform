@@ -1,0 +1,16 @@
+<nav style="display:flex;flex-wrap:wrap;gap:6px;margin:{{ '0' if nav_compact|default(false) else '0 0 10px' }};font-size:12px;line-height:1.2;align-items:center">
+  <a href="{{ home_url or '/' }}"
+     style="display:inline-block;min-width:86px;text-align:center;border:1px solid #334155;background:#0f172a;color:#e2e8f0;border-radius:6px;padding:6px 8px;text-decoration:none">Home</a>
+  {% for item in nav_links or [] %}
+  {% set is_active = nav_active == item.key %}
+  {% set is_enabled = item.enabled or is_active %}
+  {% if is_enabled %}
+  <a href="{{ item.href }}"
+     title="{{ item.hint or item.label }}"
+     style="display:inline-block;min-width:86px;text-align:center;border:1px solid {{ '#0ea5e9' if is_active else '#334155' }};background:{{ '#082f49' if is_active else '#020617' }};color:{{ '#bae6fd' if is_active else '#cbd5e1' }};border-radius:6px;padding:6px 8px;text-decoration:none">{{ item.label }}</a>
+  {% else %}
+  <span title="{{ item.hint or 'Not available yet' }}"
+        style="display:inline-block;min-width:86px;text-align:center;border:1px solid #1e293b;background:#020617;color:#64748b;border-radius:6px;padding:6px 8px;cursor:not-allowed;opacity:.72">{{ item.label }}</span>
+  {% endif %}
+  {% endfor %}
+</nav>

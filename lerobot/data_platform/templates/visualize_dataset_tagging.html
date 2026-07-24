@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auto-tagging - {{ dataset_key }}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; display:flex; flex-direction:column; height:100vh; overflow:hidden; background:#020617; color:#cbd5e1; font:13px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+  #taggingLayout { min-height:0; flex:1; display:grid; grid-template-columns:320px 1fr 330px; overflow:hidden; }
+  a { color:#7dd3fc; text-decoration:none; }
+  aside { background:#0f172a; overflow:auto; }
+  #left { border-right:1px solid #1e293b; }
+  #right { border-left:1px solid #1e293b; }
+  .header,.panel { padding:12px; border-bottom:1px solid #1e293b; }
+  .filters { padding:10px 12px; border-bottom:1px solid #1e293b; background:#111827; }
+  input,select,textarea { width:100%; border:1px solid #334155; border-radius:6px; background:#020617; color:#e2e8f0; padding:7px 8px; font:inherit; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { padding:8px 12px; border-bottom:1px solid #1e293b; cursor:pointer; }
+  li:hover { background:#172554; }
+  li.active { background:#1e3a8a; }
+  .tag { display:inline-block; border-radius:4px; padding:1px 5px; font-size:10px; margin:0 4px 4px 0; background:#0c4a6e; color:#bae6fd; }
+  button.tag { width:auto; border:0; cursor:pointer; font:inherit; }
+  .tag.match { background:#075985; color:#e0f2fe; outline:1px solid #38bdf8; }
+  .chip { display:inline-flex; align-items:center; gap:6px; border:1px solid #0369a1; border-radius:999px; background:#082f49; color:#e0f2fe; padding:4px 8px; font-size:11px; }
+  .chip button { width:auto; padding:0; border:0; background:transparent; color:#bae6fd; }
+  main { overflow:auto; background:#020617; }
+  #prompt { padding:10px 12px; border-bottom:1px solid #1e293b; background:#111827; }
+  #imgWrap { display:flex; justify-content:center; align-items:flex-start; padding:12px; }
+  #imgStage { position:relative; display:inline-block; width:min(100%, 1280px); line-height:0; }
+  #img { display:block; width:100%; max-width:100%; image-rendering:pixelated; border:1px solid #1e293b; }
+  #imageTrajectory { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  #trajectory { width:100%; height:220px; border:1px solid #334155; border-radius:6px; background:#020617; }
+  .row { display:grid; grid-template-columns:110px 1fr; gap:8px; margin:7px 0; }
+  .row span:first-child { color:#94a3b8; }
+  button { width:100%; padding:8px 10px; border-radius:6px; border:1px solid #0369a1; background:#0c4a6e; color:#e0f2fe; cursor:pointer; font:inherit; }
+  button.good { background:#064e3b; border-color:#047857; color:#d1fae5; }
+  button.gray { background:#334155; border-color:#475569; color:#e2e8f0; }
+  .btnrow { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+</style>
+</head>
+<body>
+  {% set page_kind = "Auto-tagging" %}
+  {% set page_title = dataset_key %}
+  {% set page_subtitle = "Review episode tags, trajectory projection, and merge tags to metadata." %}
+  {% include "visualize_dataset_topbar.html" %}
+  <div id="taggingLayout">
+  <aside id="left">
+    <div class="header">
+      <div id="counts" style="margin-top:4px;color:#94a3b8"></div>
+    </div>
+    <div class="filters">
+      <div id="activeFilters" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
+      <input id="filter" placeholder="search within current filter">
+    </div>
+    <ul id="list"></ul>
+  </aside>
+  <main>
+    <div id="prompt"><b id="task"></b></div>
+    <div id="imgWrap">
+      <div id="imgStage">
+        <img id="img" alt="">
+        <svg id="imageTrajectory"></svg>
+      </div>
+    </div>
+  </main>
+  <aside id="right">
+    <div class="panel">
+      <h3 style="margin:0 0 8px;color:#f8fafc">Tags</h3>
+      <div id="form"></div>
+      <div class="btnrow">
+        <button class="good" onclick="saveCurrent()">Save</button>
+        <button class="gray" onclick="resetCurrent()">Reset</button>
+      </div>
+      {% if cache_only %}
+        <div class="hint" style="margin-top:8px">cache-only: review/save changes stay in local_vis; merge needs the original dataset.</div>
+      {% else %}
+        <button style="margin-top:8px" onclick="mergeTags()">Merge to metadata</button>
+      {% endif %}
+    </div>
+    <div class="panel">
+      <h3 style="margin:0 0 8px;color:#f8fafc">Episode XY trajectory</h3>
+      <div id="trajectoryMeta" style="margin-bottom:8px;color:#94a3b8;font-size:11px">H10W state/action is projected through a planar arm model when calibrated image XY is unavailable. Yellow=start, red=end, green=gripper event.</div>
+      <svg id="trajectory"></svg>
+    </div>
+    <div class="panel">
+      <h3 style="margin:0 0 8px;color:#f8fafc">Dataset grasp-point overview</h3>
+      <div style="margin-bottom:8px;color:#94a3b8;font-size:11px">Aggregate of each episode's estimated grasp_xy point, used as a coarse distribution overview.</div>
+      <img src="/api/tagging/{{ dataset_namespace }}/{{ dataset_name }}/heatmap" style="width:100%" onerror="this.style.display='none'">
+    </div>
+  </aside>
+  </div>
+<script>
+const API = "/api/tagging/{{ dataset_namespace }}/{{ dataset_name }}";
+const IMAGE_BASE = "/{{ dataset_key }}/image";
+const PAGE_PARAMS = new URLSearchParams(window.location.search);
+const VARIANT = PAGE_PARAMS.get("variant") || "";
+const variantQuery = () => VARIANT ? `?variant=${encodeURIComponent(VARIANT)}` : "";
+let schema = [];
+let records = [];
+let filtered = [];
+let current = null;
+let currentIndex = 0;
+let activeTagFilters = [];
+
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `request failed: ${response.status}`);
+  return data;
+}
+function escapeHTML(value) {
+  return String(value ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+}
+function escapeAttr(value) {
+  return escapeHTML(value).replace(/"/g, "&quot;");
+}
+function tagValueKey(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return String(value);
+}
+function normalizedTagKey(name, value) {
+  if (name === "object_count") {
+    if (value === null || value === undefined || value === "") return "missing";
+    const parsed = Number.parseInt(String(value), 10);
+    if (Number.isNaN(parsed)) return String(value);
+    if (parsed <= 0) return "0";
+    if (parsed === 1) return "1";
+    if (parsed === 2) return "2";
+    if (parsed === 3) return "3";
+    return "4_plus";
+  }
+  return tagValueKey(value);
+}
+function normalizedTagLabel(name, value) {
+  const key = normalizedTagKey(name, value);
+  if (name === "object_count" && key === "4_plus") return "4+";
+  if (key === "missing" || key === "") return "missing";
+  return key;
+}
+function tagFilterLabel(filter) {
+  if (!filter || !filter.name) return "";
+  return filter.value ? `${filter.name} = ${normalizedTagLabel(filter.name, filter.value)}` : `${filter.name} exists`;
+}
+function rowMatchesTagFilter(row, filter) {
+  const tags = row.tags || {};
+  if (!filter || !filter.name || !Object.prototype.hasOwnProperty.call(tags, filter.name)) return false;
+  if (!filter.value) return tags[filter.name] !== null && tags[filter.name] !== undefined && tags[filter.name] !== "";
+  return normalizedTagKey(filter.name, tags[filter.name]) === filter.value;
+}
+function rowMatchesAllTagFilters(row) {
+  return activeTagFilters.every(filter => rowMatchesTagFilter(row, filter));
+}
+function isTagFilterActive(name, value = "") {
+  return activeTagFilters.some(filter => filter.name === name && (filter.value || "") === (value || ""));
+}
+function setTagFilter(name, value = "") {
+  if (!name) return;
+  activeTagFilters = activeTagFilters.filter(filter => filter.name !== name);
+  activeTagFilters.push({name, value: value || ""});
+  applyFilter();
+}
+function removeTagFilter(name) {
+  activeTagFilters = activeTagFilters.filter(filter => filter.name !== name);
+  applyFilter();
+}
+function clearTagFilters() {
+  activeTagFilters = [];
+  applyFilter();
+}
+function renderActiveFilters() {
+  const wrap = document.getElementById("activeFilters");
+  if (!activeTagFilters.length) {
+    wrap.innerHTML = `<span style="color:#64748b;font-size:11px">No tag filter. Click a tag chip to filter.</span>`;
+    return;
+  }
+  wrap.innerHTML = activeTagFilters.map(filter =>
+    `<span class="chip">${escapeHTML(tagFilterLabel(filter))}<button type="button" data-clear-tag="${escapeAttr(filter.name)}">x</button></span>`
+  ).join("") + `<button type="button" class="chip" data-clear-all="1">clear all</button>`;
+  wrap.querySelectorAll("[data-clear-tag]").forEach(btn => {
+    btn.onclick = () => removeTagFilter(btn.getAttribute("data-clear-tag"));
+  });
+  const clearAll = wrap.querySelector("[data-clear-all]");
+  if (clearAll) clearAll.onclick = clearTagFilters;
+}
+function initTagFiltersFromQuery() {
+  const encodedFilters = PAGE_PARAMS.get("filters");
+  if (encodedFilters) {
+    try {
+      const parsed = JSON.parse(encodedFilters);
+      if (Array.isArray(parsed)) {
+        activeTagFilters = parsed
+          .filter(item => item && item.name)
+          .map(item => ({name: String(item.name), value: String(item.value || "")}));
+      }
+    } catch {
+      activeTagFilters = [];
+    }
+  }
+  const tag = PAGE_PARAMS.get("tag");
+  if (tag && !activeTagFilters.some(filter => filter.name === tag)) {
+    activeTagFilters.push({
+      name: tag,
+      value: PAGE_PARAMS.get("bucket") || PAGE_PARAMS.get("value") || "",
+    });
+  }
+}
+function renderList() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  const reviewed = records.filter(r => r.reviewed).length;
+  const pct = records.length ? (filtered.length / records.length * 100).toFixed(1) : "0.0";
+  document.getElementById("counts").textContent = `${filtered.length}/${records.length} episodes (${pct}%) / ${reviewed} reviewed`;
+  renderActiveFilters();
+  if (!filtered.length) {
+    list.innerHTML = `<li style="cursor:default;color:#94a3b8">No matching episodes.</li>`;
+    return;
+  }
+  filtered.forEach((record, idx) => {
+    const li = document.createElement("li");
+    if (current && current.episode_index === record.episode_index) li.classList.add("active");
+    const tags = Object.entries(record.tags || {}).map(([k,v]) => {
+      if (v === null || v === undefined || v === "") return "";
+      const key = normalizedTagKey(k, v);
+      const label = normalizedTagLabel(k, v);
+      const cls = isTagFilterActive(k, key) ? "tag match" : "tag";
+      return `<button type="button" class="${cls}" data-tag-name="${escapeAttr(k)}" data-tag-value="${escapeAttr(key)}">${escapeHTML(k)}=${escapeHTML(label)}</button>`;
+    }).join("");
+    li.innerHTML = `<b>ep${record.episode_index}</b> ${record.reviewed ? '<span class="tag">reviewed</span>' : ''}<br><span style="font-size:11px;color:#94a3b8">${escapeHTML(record.task || "")}</span><br>${tags}`;
+    li.querySelectorAll("[data-tag-name]").forEach(btn => {
+      btn.onclick = event => {
+        event.stopPropagation();
+        setTagFilter(btn.getAttribute("data-tag-name"), btn.getAttribute("data-tag-value"));
+      };
+    });
+    li.onclick = () => selectRecord(idx);
+    list.appendChild(li);
+  });
+}
+function applyFilter() {
+  const preserveEpisode = current ? current.episode_index : null;
+  const q = document.getElementById("filter").value.toLowerCase();
+  filtered = records.filter(r => rowMatchesAllTagFilters(r))
+    .filter(r => !q || JSON.stringify(r).toLowerCase().includes(q));
+  if (filtered.length) {
+    const preservedIndex = preserveEpisode === null ? -1 : filtered.findIndex(r => r.episode_index === preserveEpisode);
+    selectRecord(preservedIndex >= 0 ? preservedIndex : 0);
+  } else {
+    renderList();
+  }
+}
+function observedTagOptions(name, value) {
+  const values = new Set();
+  for (const record of records) {
+    const tagValue = record && record.tags ? record.tags[name] : null;
+    if (tagValue !== null && tagValue !== undefined && tagValue !== "") values.add(String(tagValue));
+  }
+  if (value !== null && value !== undefined && value !== "") values.add(String(value));
+  return Array.from(values).sort((a, b) => a.localeCompare(b));
+}
+function optionsForTag(tag, value) {
+  if (tag.name === "background") {
+    return observedTagOptions(tag.name, value);
+  }
+  return tag.options || [];
+}
+function inputFor(tag, value) {
+  const name = tag.name;
+  if (tag.dtype === "enum") {
+    const options = optionsForTag(tag, value);
+    const emptyOption = tag.allow_empty ? `<option value="" ${value === null || value === undefined || value === "" ? "selected" : ""}>-</option>` : "";
+    return `<select data-tag="${escapeHTML(name)}">${emptyOption}${options.map(opt => `<option value="${escapeHTML(opt)}" ${value === opt ? 'selected' : ''}>${escapeHTML(opt)}</option>`).join("")}</select>`;
+  }
+  return `<input data-tag="${escapeHTML(name)}" value="${escapeHTML(Array.isArray(value) ? value.join(', ') : value ?? '')}">`;
+}
+function renderForm() {
+  const tags = current ? current.tags || {} : {};
+  document.getElementById("form").innerHTML = schema.map(tag =>
+    `<div class="row"><span>${escapeHTML(tag.name)}<br><small>${escapeHTML(tag.backend)}</small></span><span>${inputFor(tag, tags[tag.name])}</span></div>`
+  ).join("");
+}
+function drawPath(svg, points, width, height, sx, sy, emptyText, graspPoint = null) {
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.innerHTML = "";
+  if (!points || points.length < 2) {
+    if (emptyText) svg.innerHTML = `<text x="12" y="24" fill="#94a3b8">${escapeHTML(emptyText)}</text>`;
+    return;
+  }
+  const path = points.map((p, i) => `${i === 0 ? "M" : "L"} ${sx(Number(p[0])).toFixed(2)} ${sy(Number(p[1])).toFixed(2)}`).join(" ");
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  line.setAttribute("d", path);
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "#38bdf8");
+  line.setAttribute("stroke-width", "2");
+  svg.appendChild(line);
+  for (const [idx, point] of [points[0], points[points.length - 1]].entries()) {
+    const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    c.setAttribute("cx", sx(Number(point[0])));
+    c.setAttribute("cy", sy(Number(point[1])));
+    c.setAttribute("r", "5");
+    c.setAttribute("fill", idx === 0 ? "#fbbf24" : "#fb7185");
+    svg.appendChild(c);
+  }
+  if (graspPoint && graspPoint.length >= 2) {
+    const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    c.setAttribute("cx", sx(Number(graspPoint[0])));
+    c.setAttribute("cy", sy(Number(graspPoint[1])));
+    c.setAttribute("r", "6");
+    c.setAttribute("fill", "#22c55e");
+    c.setAttribute("stroke", "#dcfce7");
+    c.setAttribute("stroke-width", "1.5");
+    svg.appendChild(c);
+  }
+}
+function drawTrajectory(points, meta = {}) {
+  const svg = document.getElementById("trajectory");
+  const width = svg.clientWidth || 280;
+  const height = svg.clientHeight || 220;
+  const source = meta.trajectory_source || "";
+  const projection = meta.trajectory_projection || "unavailable";
+  const reason = meta.trajectory_reason || "No explicit x/y coordinate available.";
+  const grasp = meta.trajectory_grasp_point || null;
+  const bounds = meta.trajectory_bounds || null;
+  const arm = meta.trajectory_active_arm ? ` | arm: ${meta.trajectory_active_arm}` : "";
+  const gripper = meta.trajectory_gripper_source ? ` | gripper: ${meta.trajectory_gripper_source}` : "";
+  document.getElementById("trajectoryMeta").textContent = source
+    ? `source: ${source} | projection: ${projection}${arm}${gripper}. Yellow=start, red=end, green=gripper event.`
+    : reason;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.innerHTML = "";
+  if (!points || points.length < 2) {
+    svg.innerHTML = `<text x="12" y="24" fill="#94a3b8">${escapeHTML(reason)}</text>`;
+    return;
+  }
+  const xs = points.map(p => Number(p[0]));
+  const ys = points.map(p => Number(p[1]));
+  const minX = bounds ? Number(bounds[0]) : Math.min(...xs);
+  const maxX = bounds ? Number(bounds[1]) : Math.max(...xs);
+  const minY = bounds ? Number(bounds[2]) : Math.min(...ys);
+  const maxY = bounds ? Number(bounds[3]) : Math.max(...ys);
+  const sx = x => 16 + ((x - minX) / (maxX - minX || 1)) * (width - 32);
+  const sy = y => height - 16 - ((y - minY) / (maxY - minY || 1)) * (height - 32);
+  drawPath(svg, points, width, height, sx, sy, reason, grasp);
+}
+function drawImageTrajectory(points, meta = {}) {
+  const svg = document.getElementById("imageTrajectory");
+  const img = document.getElementById("img");
+  const width = img.clientWidth || 0;
+  const height = img.clientHeight || 0;
+  svg.setAttribute("viewBox", `0 0 ${width || 1} ${height || 1}`);
+  svg.innerHTML = "";
+  const projection = meta.trajectory_projection || "";
+  if (!["image", "workspace"].includes(projection) || !points || points.length < 2 || !width || !height) return;
+  const normalized = points.every(p => Number(p[0]) >= 0 && Number(p[0]) <= 1 && Number(p[1]) >= 0 && Number(p[1]) <= 1);
+  const naturalWidth = img.naturalWidth || width;
+  const naturalHeight = img.naturalHeight || height;
+  let sx = x => normalized ? x * width : (x / naturalWidth) * width;
+  let sy = y => normalized ? y * height : (y / naturalHeight) * height;
+  if (projection === "workspace") {
+    const bounds = meta.trajectory_bounds || null;
+    const xs = points.map(p => Number(p[0]));
+    const ys = points.map(p => Number(p[1]));
+    const minX = bounds ? Number(bounds[0]) : Math.min(...xs);
+    const maxX = bounds ? Number(bounds[1]) : Math.max(...xs);
+    const minY = bounds ? Number(bounds[2]) : Math.min(...ys);
+    const maxY = bounds ? Number(bounds[3]) : Math.max(...ys);
+    sx = x => width * 0.15 + ((x - minX) / (maxX - minX || 1)) * width * 0.70;
+    sy = y => height * 0.85 - ((y - minY) / (maxY - minY || 1)) * height * 0.70;
+  }
+  drawPath(svg, points, width, height, sx, sy, "", meta.trajectory_grasp_point || null);
+}
+async function selectRecord(idx) {
+  if (!filtered.length) return;
+  currentIndex = Math.max(0, Math.min(idx, filtered.length - 1));
+  current = filtered[currentIndex];
+  const requestedEpisode = current.episode_index;
+  document.getElementById("task").textContent = current.task || "";
+  document.getElementById("img").src = `${IMAGE_BASE}?key={{ image_key | default('') }}&episode=${requestedEpisode}&frame=0`;
+  renderForm();
+  drawTrajectory(current.trajectory_xy || [], current);
+  drawImageTrajectory(current.trajectory_xy || [], current);
+  renderList();
+  try {
+    const detail = await fetchJson(`${API}/episode/${requestedEpisode}${variantQuery()}`);
+    const detailCurrent = detail.current || {};
+    if (!current || detailCurrent.episode_index !== current.episode_index) return;
+    current.trajectory_xy = detail.trajectory_xy || [];
+    current.trajectory_source = detail.trajectory_source || "";
+    current.trajectory_projection = detail.trajectory_projection || "unavailable";
+    current.trajectory_reason = detail.trajectory_reason || "";
+    current.trajectory_active_arm = detail.trajectory_active_arm || null;
+    current.trajectory_gripper_source = detail.trajectory_gripper_source || null;
+    current.trajectory_grasp_index = detail.trajectory_grasp_index ?? null;
+    current.trajectory_grasp_point = detail.trajectory_grasp_point || null;
+    current.trajectory_bounds = detail.trajectory_bounds || null;
+    current.tags = detailCurrent.tags || current.tags || {};
+    renderForm();
+    drawTrajectory(current.trajectory_xy, current);
+    drawImageTrajectory(current.trajectory_xy, current);
+  } catch (err) {
+    current.trajectory_xy = [];
+    current.trajectory_source = "";
+    current.trajectory_projection = "unavailable";
+    current.trajectory_reason = "Failed to load trajectory.";
+    current.trajectory_grasp_point = null;
+    drawTrajectory([], current);
+    drawImageTrajectory([], current);
+  }
+}
+function readFormTags() {
+  const tags = {};
+  document.querySelectorAll("[data-tag]").forEach(input => {
+    const name = input.getAttribute("data-tag");
+    const def = schema.find(tag => tag.name === name) || {};
+    if (def.dtype === "int") tags[name] = input.value === "" ? null : Number.parseInt(input.value, 10);
+    else if (def.dtype === "float[2]") tags[name] = input.value.split(",").map(v => Number.parseFloat(v.trim())).filter(v => !Number.isNaN(v));
+    else tags[name] = input.value === "" ? null : input.value;
+  });
+  return tags;
+}
+async function saveCurrent() {
+  if (!current) return;
+  const data = await fetchJson(`${API}/save/${current.episode_index}${variantQuery()}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({tags: readFormTags(), variant: VARIANT})});
+  Object.assign(current, {tags:data.record.tags, reviewed:true});
+  const original = records.find(r => r.episode_index === current.episode_index);
+  if (original) Object.assign(original, current);
+  renderList();
+}
+async function resetCurrent() {
+  if (!current) return;
+  await fetchJson(`${API}/reset/${current.episode_index}${variantQuery()}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({variant: VARIANT})});
+  await load();
+}
+async function mergeTags() {
+  if (!confirm("Merge current tags into meta/episodes.jsonl?")) return;
+  await fetchJson(`${API}/merge${variantQuery()}`, {method:"POST"});
+  alert("merged");
+}
+async function load() {
+  schema = (await fetchJson("/api/tagging/schema")).tags || [];
+  records = await fetchJson(`${API}/episodes${variantQuery()}`);
+  initTagFiltersFromQuery();
+  filtered = records.filter(r => rowMatchesAllTagFilters(r));
+  renderList();
+  if (filtered.length) selectRecord(0);
+}
+document.getElementById("filter").oninput = applyFilter;
+document.getElementById("img").onload = () => {
+  if (current) drawImageTrajectory(current.trajectory_xy || [], current);
+};
+load().catch(err => { document.getElementById("list").innerHTML = `<li>${escapeHTML(err.message)}</li>`; });
+</script>
+</body>
+</html>

@@ -1,0 +1,2038 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Object Labeling - {{ dataset_key }}</title>
+<style>
+  * { box-sizing: border-box; }
+	  body {
+	    margin: 0;
+	    display: flex;
+	    flex-direction: column;
+	    height: 100vh;
+	    overflow: hidden;
+	    background: #020617;
+    color: #cbd5e1;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+	    font-size: 13px;
+	  }
+	  #labelingLayout {
+	    min-height: 0;
+	    flex: 1;
+	    display: grid;
+	    grid-template-columns: 320px 1fr 300px;
+	    overflow: hidden;
+	  }
+  a { color: #7dd3fc; text-decoration: none; }
+  a:hover { color: #bae6fd; }
+  #sidebar { border-right: 1px solid #1e293b; overflow-y: auto; background: #0f172a; }
+  #sidebar h3 {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: #0f172a;
+    padding: 10px 12px;
+    margin: 0;
+    border-bottom: 1px solid #1e293b;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  #filters {
+    position: sticky;
+    top: 36px;
+    z-index: 2;
+    display: grid;
+    gap: 6px;
+    padding: 8px 10px;
+    background: #0f172a;
+    border-bottom: 1px solid #1e293b;
+  }
+  #filters label {
+    display: grid;
+    gap: 3px;
+    color: #94a3b8;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  #filters select {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    background: #020617;
+    color: #e2e8f0;
+    padding: 5px 7px;
+    font-size: 11px;
+  }
+  #filters .filterRow {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  #epList { list-style: none; padding: 0; margin: 0; font-size: 12px; }
+  #epList li { padding: 8px 12px; border-bottom: 1px solid #1e293b; cursor: pointer; }
+  #epList li:hover { background: #172554; }
+  #epList li.active { background: #1e3a8a; }
+  #epList li.reviewed { opacity: 0.55; }
+  #epList li.reviewed::before { content: "ok "; color: #34d399; }
+  #epList li .tag {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    margin-right: 4px;
+    color: #020617;
+  }
+  .tag.hi { background: #ef4444; color: #fff; }
+  .tag.md { background: #f59e0b; }
+  .tag.lo { background: #64748b; color: #fff; }
+  .tag.manual { background: #34d399; }
+  .tag.flag { background: #dc2626; color: #fee2e2; }
+  #flagDialog {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.72);
+  }
+  #flagDialog.open { display: flex; }
+  #flagDialog .dialog {
+    width: min(520px, 100%);
+    border: 1px solid #334155;
+    border-radius: 12px;
+    background: #0f172a;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+    padding: 16px;
+  }
+  #flagDialog .dialogTop {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  #flagDialog h2 { margin: 0; color: #f8fafc; font-size: 15px; }
+  #flagDialog .dialogClose {
+    flex: 0;
+    border: 0;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 18px;
+    padding: 2px 6px;
+  }
+  #flagDialog .dialogClose:hover { color: #f8fafc; background: transparent; }
+  #backgroundTagDialog {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.72);
+  }
+  #backgroundTagDialog.open { display: flex; }
+  #backgroundTagDialog .dialog {
+    width: min(440px, 100%);
+    border: 1px solid #334155;
+    border-radius: 12px;
+    background: #0f172a;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+    padding: 16px;
+  }
+  #backgroundTagDialog .dialogTop {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  #backgroundTagDialog h2 { margin: 0; color: #f8fafc; font-size: 15px; }
+  #backgroundTagDialog .dialogClose {
+    flex: 0;
+    border: 0;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 18px;
+    padding: 2px 6px;
+  }
+  #backgroundTagDialog .dialogClose:hover { color: #f8fafc; background: transparent; }
+  #backgroundTagDialog label {
+    display: grid;
+    gap: 5px;
+    margin-top: 10px;
+    color: #94a3b8;
+    font-size: 12px;
+  }
+  #backgroundTagDialog input,
+  #backgroundTagDialog select,
+  .promptRepair input,
+  .promptRepair select {
+    width: 100%;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    background: #020617;
+    color: #f8fafc;
+    padding: 8px 10px;
+    font: inherit;
+  }
+  .presetRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-top: 8px;
+  }
+  .presetRow button {
+    flex: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    background: #020617;
+    border-color: #334155;
+    color: #cbd5e1;
+  }
+  .presetRow button.active {
+    border-color: #38bdf8;
+    background: #082f49;
+    color: #bae6fd;
+  }
+  .presetSwatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    border: 1px solid #64748b;
+  }
+  .dialogStatus {
+    min-height: 16px;
+    margin-top: 8px;
+    color: #fca5a5;
+    font-size: 12px;
+  }
+  #flagModeRow {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  #flagModeRow button {
+    flex: 1;
+    border-color: #334155;
+    background: #020617;
+    color: #cbd5e1;
+  }
+  #flagModeRow button.active {
+    border-color: #38bdf8;
+    background: #082f49;
+    color: #bae6fd;
+  }
+  #flagReasonGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+  }
+  #flagReasonGrid label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    background: #020617;
+    color: #cbd5e1;
+    padding: 8px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  #flagReasonGrid label.active {
+    border-color: #ef4444;
+    background: rgba(127, 29, 29, 0.48);
+    color: #fee2e2;
+  }
+  #customFlagReason {
+    width: 100%;
+    margin-top: 8px;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    background: #020617;
+    color: #f8fafc;
+    padding: 8px 10px;
+    font: inherit;
+  }
+  .flagStatus {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    background: #020617;
+    color: #94a3b8;
+  }
+  .flagStatus.flagged {
+    border-color: #dc2626;
+    background: rgba(127, 29, 29, 0.32);
+    color: #fecaca;
+  }
+  .flagStatus button { flex: 0; white-space: nowrap; padding: 5px 8px; }
+  .promptRepair {
+    display: grid;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 10px;
+    border: 1px solid #075985;
+    border-radius: 8px;
+    background: rgba(8, 47, 73, 0.42);
+  }
+  .promptRepair .title {
+    color: #bae6fd;
+    font-weight: 800;
+  }
+  .promptRepair .hint,
+  .promptRepair .status {
+    color: #94a3b8;
+    font-size: 11px;
+  }
+  .promptRepair .status.error { color: #fca5a5; }
+  .promptRepair button { flex: 0; white-space: nowrap; }
+  #canvasWrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    background: #020617;
+  }
+  #stage { position: relative; image-rendering: pixelated; }
+  #vid, #img, #overlay { display: block; }
+  #vid, #img { background: #020617; }
+  #img { display: none; }
+  #overlay { position: absolute; left: 0; top: 0; cursor: crosshair; }
+  #playbackControls {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    z-index: 4;
+    display: grid;
+    grid-template-columns: auto auto 1fr auto auto auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    border: 1px solid rgba(51, 65, 85, 0.9);
+    border-radius: 10px;
+    background: rgba(2, 6, 23, 0.84);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+    color: #e2e8f0;
+    font-size: 12px;
+  }
+  #playbackControls button {
+    border: 1px solid #334155;
+    border-radius: 7px;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 5px 9px;
+    font-size: 12px;
+  }
+  #playbackControls button:hover { background: #172554; }
+  #videoSlider { width: 100%; accent-color: #38bdf8; }
+  #speedSelect {
+    border: 1px solid #334155;
+    border-radius: 7px;
+    background: #020617;
+    color: #e2e8f0;
+    padding: 5px 7px;
+    font-size: 12px;
+  }
+  #timeHint { color: #94a3b8; white-space: nowrap; }
+  #videoStatus { color: #fbbf24; white-space: nowrap; }
+  #boxLegend {
+    position: absolute;
+    left: 12px;
+    top: 12px;
+    z-index: 3;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    max-width: calc(100% - 24px);
+    padding: 6px 8px;
+    border: 1px solid rgba(15, 23, 42, 0.75);
+    border-radius: 10px;
+    background: rgba(2, 6, 23, 0.72);
+    color: #e2e8f0;
+    font-size: 11px;
+    line-height: 1.2;
+    pointer-events: none;
+  }
+  #boxLegend .item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  #boxLegend .swatch { width: 10px; height: 10px; border-radius: 2px; box-shadow: 0 0 0 1px #020617; }
+  #info {
+    border-left: 1px solid #1e293b;
+    overflow-y: auto;
+    background: #0f172a;
+    font-size: 13px;
+  }
+  #infoInner { padding-bottom: 16px; }
+  #info h3 { margin: 0 0 8px; font-size: 13px; color: #e2e8f0; }
+  .header {
+    padding: 10px 12px;
+    background: #111827;
+    border-bottom: 1px solid #1e293b;
+    font-size: 12px;
+  }
+  .header b { color: #f8fafc; }
+  .parsed {
+    background: #020617;
+    padding: 8px;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    font-size: 12px;
+    margin-bottom: 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .tagContext {
+    display: grid;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .armBadge {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid #334155;
+    background: #020617;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  .armBadge .label {
+    font-size: 10px;
+    color: #94a3b8;
+    font-weight: 700;
+  }
+  .armBadge .value { font-size: 18px; }
+  .arm-left { border-color: #2563eb; box-shadow: inset 4px 0 0 #3b82f6; }
+  .arm-left .value { color: #93c5fd; }
+  .arm-right { border-color: #dc2626; box-shadow: inset 4px 0 0 #ef4444; }
+  .arm-right .value { color: #fca5a5; }
+  .arm-both { border-color: #a855f7; box-shadow: inset 4px 0 0 #c084fc; }
+  .arm-both .value { color: #d8b4fe; }
+  .arm-unknown { border-color: #475569; box-shadow: inset 4px 0 0 #64748b; }
+  .arm-unknown .value { color: #cbd5e1; }
+  .taskline {
+    font-size: 17px;
+    line-height: 1.35;
+    margin: 4px 0 12px;
+    padding: 10px 12px;
+    background: #020617;
+    border-radius: 6px;
+    border: 1px solid #1e293b;
+    color: #f8fafc;
+  }
+  .taskline .objectText { font-weight: 900; text-decoration: underline; text-decoration-color: currentColor; text-underline-offset: 3px; }
+  .taskline .targetText { color: #fb923c; }
+  .taskline .dir { color: #f87171; font-weight: 900; text-decoration: underline; text-underline-offset: 3px; }
+  .taskline .refText { color: #38bdf8; }
+  .taskline .col { font-weight: 800; }
+  .promptLegend {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: -6px 0 10px;
+    color: #94a3b8;
+    font-size: 11px;
+  }
+  .promptLegend .targetText { color: #fb923c; font-weight: 800; }
+  .promptLegend .refText { color: #38bdf8; font-weight: 800; }
+  .promptLegend .selectedText { color: #22c55e; font-weight: 800; }
+  .candidate {
+    padding: 6px 8px;
+    margin: 4px 0;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 11px;
+  }
+  .candidate:hover { background: #172554; }
+  .candidate.selected { background: #052e16; border-color: #34d399; }
+  .candidate .conf { color: #fbbf24; font-weight: bold; }
+  .candidate.targetCandidate { border-color: #fb923c; box-shadow: inset 3px 0 0 #fb923c; }
+  .candidate.refCandidate { border-color: #38bdf8; box-shadow: inset 3px 0 0 #38bdf8; }
+  .candidate .targetName { color: #fb923c; font-weight: 800; }
+  .candidate .refName { color: #38bdf8; font-weight: 800; }
+  .candidate.selected .targetName { color: #86efac; }
+  .draftBox {
+    background: #1c1917;
+    border: 1px solid #facc15;
+    border-radius: 6px;
+    padding: 8px;
+    margin: 8px 0 10px;
+  }
+  .candidateTop { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .deleteBoxBtn {
+    flex: 0 0 auto;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid #7f1d1d;
+    background: #450a0a;
+    color: #fecaca;
+    font-size: 10px;
+  }
+  .deleteBoxBtn:hover { background: #7f1d1d; }
+  .btnrow { display: flex; gap: 6px; margin-top: 10px; }
+  #variantBar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    background: #020617;
+    border-bottom: 1px solid #1e293b;
+    color: #cbd5e1;
+    font-size: 12px;
+  }
+  #variantBar select {
+    min-width: 190px;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 5px 8px;
+  }
+  #variantBar label { display: inline-flex; align-items: center; gap: 6px; }
+  #variantSummary { color: #94a3b8; }
+  .compareItem {
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin: 4px 0;
+    font-size: 11px;
+    background: #020617;
+  }
+  .compareItem.active { border-color: #34d399; }
+  .compareSwatch {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    margin-right: 5px;
+  }
+  button {
+    flex: 1;
+    padding: 7px 10px;
+    background: #0c4a6e;
+    color: #e0f2fe;
+    border: 1px solid #0369a1;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  button:hover { background: #075985; }
+  button.warn { background: #7f1d1d; border-color: #991b1b; color: #fee2e2; }
+  .shortcuts { font-size: 11px; color: #94a3b8; margin-top: 18px; line-height: 1.6; }
+  .panel { padding: 10px 12px; }
+  .debugPanel {
+    margin: 10px 12px;
+    padding: 10px;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    background: #020617;
+    color: #94a3b8;
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+  .debugPanel summary { cursor: pointer; color: #cbd5e1; font-weight: 700; }
+  .debugPanel code { color: #e2e8f0; }
+	  @media (max-width: 960px) {
+	    #labelingLayout { grid-template-columns: 240px 1fr; }
+	    #info { display: none; }
+	  }
+</style>
+	</head>
+	<body>
+	  {% set page_kind = "Object Labeling" %}
+	  {% set page_title = dataset_key %}
+	  {% set page_subtitle = "Review frame-0 object boxes." if cache_only else "Review and merge frame-0 object boxes." %}
+	  {% include "visualize_dataset_topbar.html" %}
+    <div id="flagDialog">
+      <div class="dialog">
+        <div class="dialogTop">
+          <h2 id="flagDialogTitle">Flag episode</h2>
+          <button id="flagCloseBtn" class="dialogClose" type="button">×</button>
+        </div>
+        <p style="margin:8px 0 0;color:#94a3b8;font-size:12px">Choose the same flag type used by the viewer. It will be saved as a manual flag reason.</p>
+        <div id="flagModeRow"></div>
+        <div id="flagReasonGrid"></div>
+        <label id="customFlagWrap" style="display:none;margin-top:10px;color:#94a3b8;font-size:12px">
+          Custom reason
+          <input id="customFlagReason" placeholder="e.g. wrong prompt / bad camera / corrupted data">
+        </label>
+        <div class="btnrow" style="justify-content:flex-end;margin-top:14px">
+          <button id="flagCancelBtn" type="button">Cancel</button>
+          <button id="flagRemoveBtn" class="warn" type="button" style="display:none">Remove flag</button>
+          <button id="flagSaveBtn" class="warn" type="button">Save flag</button>
+        </div>
+      </div>
+    </div>
+    <div id="backgroundTagDialog">
+      <div class="dialog">
+        <div class="dialogTop">
+          <h2 id="backgroundTagTitle">Tag episode</h2>
+          <button id="backgroundTagCloseBtn" class="dialogClose" type="button">×</button>
+        </div>
+        <label>
+          Background
+          <select id="backgroundTagSelect">
+            <option value="">-</option>
+            <option value="round_table">round_table</option>
+            <option value="square_table">square_table</option>
+            <option value="tv_cabinet">tv_cabinet</option>
+            <option value="sofa">sofa</option>
+          </select>
+        </label>
+        <label>
+          Background color
+          <input id="backgroundColorInput" placeholder="e.g. black / white / brown">
+        </label>
+        <div id="backgroundColorPresets" class="presetRow"></div>
+        <label>
+          Object count
+          <input id="backgroundObjectCountInput" type="number" min="0" step="1" placeholder="e.g. 3">
+        </label>
+        <div id="backgroundTagStatus" class="dialogStatus"></div>
+        <div class="btnrow" style="justify-content:flex-end;margin-top:14px">
+          <button id="backgroundTagCancelBtn" type="button">Cancel</button>
+          <button id="backgroundTagSaveBtn" type="button">Save</button>
+        </div>
+      </div>
+    </div>
+    <div id="variantBar">
+      <span>Result</span>
+      <select id="variantSelect">
+        {% if labeling_variants %}
+          {% for variant in labeling_variants %}
+            <option value="{{ variant.id }}" {% if variant.id == labeling_active_variant %}selected{% endif %}>{{ variant.label }}{% if variant.is_latest %} (latest){% endif %}</option>
+          {% endfor %}
+        {% else %}
+          <option value="">No labeling results</option>
+        {% endif %}
+      </select>
+      <label title="Overlay selected boxes from other labeling backends">
+        <input type="checkbox" id="compareToggle" {% if labeling_variants|length <= 1 %}disabled{% endif %}>
+        Compare overlays
+      </label>
+      <span id="variantSummary">{% if labeling_variants|length > 1 %}{{ labeling_variants|length }} result sets{% elif labeling_variants %}single result set{% else %}no result set{% endif %}</span>
+    </div>
+	  <div id="labelingLayout">
+	  <aside id="sidebar">
+	    <h3>
+	      <span id="counts" style="font-weight:normal;color:#94a3b8">
+          ({{ labeling_counts.hi }} hi / {{ labeling_counts.md }} md / {{ labeling_counts.lo }} lo, reviewed {{ labeling_counts.reviewed }}/{{ labeling_counts.total }}{% if labeling_counts.skipped %}, skipped {{ labeling_counts.skipped }}{% endif %})
+        </span>
+	    </h3>
+      <div id="filters">
+        <label>
+          Prompt
+          <select id="promptFilter">
+            <option value="all">All prompts</option>
+            {% for task in labeling_prompt_options %}
+              <option value="{{ task }}" title="{{ task }}">{{ task[:39] ~ "..." if task|length > 42 else (task or "(no task)") }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="filterRow">
+          <label>
+            Level
+            <select id="levelFilter">
+              <option value="all">All</option>
+              <option value="hi">hi</option>
+              <option value="md">md</option>
+              <option value="lo">lo</option>
+            </select>
+          </label>
+          <label>
+            Review
+            <select id="reviewFilter">
+              <option value="all">All</option>
+              <option value="unreviewed">Unreviewed</option>
+              <option value="reviewed">Reviewed</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    <ul id="epList">
+      {% if labeling_initial_episodes %}
+        {% for episode in labeling_initial_episodes %}
+          <li class="{{ 'reviewed' if episode.reviewed else '' }}" data-idx="{{ episode.episode_index }}">
+            {% if episode.level == "hi" %}<span class="tag hi">!</span>{% elif episode.level == "md" %}<span class="tag md">?</span>{% else %}<span class="tag lo">.</span>{% endif %}
+            {% if episode.manual %}<span class="tag manual">M</span>{% endif %}
+            <b>ep{{ "%04d"|format(episode.episode_index) }}</b>
+            <span style="color:#94a3b8">{{ episode.reason }}</span><br>
+            <span style="color:#cbd5e1;font-size:11px">{{ episode.task }}</span>
+          </li>
+        {% endfor %}
+      {% elif labeling_variants %}
+        <li>No reviewable labeling records. Loaded {{ labeling_debug.labels_count }} labels, skipped {{ labeling_counts.skipped }}.</li>
+      {% else %}
+        <li>No labeling results found. Run Object Labeling first.</li>
+      {% endif %}
+    </ul>
+    <details class="debugPanel" {% if not labeling_initial_episodes %}open{% endif %}>
+      <summary>Labeling data status</summary>
+      <div>active result: <code>{{ labeling_debug.active_variant }}</code></div>
+      <div>labels: <code>{{ labeling_debug.labels_path }}</code></div>
+      <div>labels loaded: {{ labeling_debug.labels_count }} · exists: {{ labeling_debug.labels_exists }}</div>
+      <div>reviewed: <code>{{ labeling_debug.reviewed_path }}</code></div>
+      <div>reviewed loaded: {{ labeling_debug.reviewed_count }} · exists: {{ labeling_debug.reviewed_exists }}</div>
+      <div>variants: {{ labeling_debug.variants|length }}</div>
+      {% for variant in labeling_debug.variants %}
+        <div>- {{ variant.label }}: labels {{ variant.labels_count }}, reviewed {{ variant.reviewed_count }}</div>
+      {% endfor %}
+    </details>
+  </aside>
+
+  <main id="canvasWrap">
+    <div id="stage">
+      <video id="vid" muted playsinline preload="metadata"></video>
+      <img id="img" style="image-rendering:pixelated" alt="">
+      <canvas id="overlay"></canvas>
+      <div id="boxLegend">
+        <span class="item"><span class="swatch" style="background:#fb923c"></span>all toys</span>
+        <span class="item"><span class="swatch" style="background:#22c55e"></span>target toy</span>
+        <span class="item"><span class="swatch" style="background:#38bdf8"></span>reference</span>
+        <span class="item"><span class="swatch" style="background:#facc15"></span>manual/draft</span>
+      </div>
+    </div>
+    <div id="playbackControls">
+      <button id="playBtn" type="button">▶</button>
+      <button id="restartBtn" type="button">↩</button>
+      <input id="videoSlider" type="range" min="0" max="1000" step="1" value="0">
+      <span id="timeHint">00:00 / 00:00</span>
+      <span id="videoStatus"></span>
+      <select id="speedSelect">
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="1.5">1.5x</option>
+        <option value="2">2x</option>
+        <option value="3">3x</option>
+        <option value="5">5x</option>
+      </select>
+    </div>
+  </main>
+
+	  <aside id="info">
+	    <div id="infoInner" class="panel">
+        {% if labeling_initial_episodes %}
+          Select an episode from the left list.
+        {% elif labeling_variants %}
+          No reviewable labeling records. Check the left "Labeling data status" panel for whether labels were empty or skipped.
+        {% else %}
+          No labeling records available for this dataset. Run Object Labeling or check the left "Labeling data status" panel.
+        {% endif %}
+      </div>
+	  </aside>
+	  </div>
+
+	<script>
+(function () {
+  var API_BASE = "/api/labeling/{{ dataset_namespace }}/{{ dataset_name }}";
+  var FLAG_URL = {{ flagged_url|tojson }};
+  var TASK_ASSIGNMENT_URL = {{ task_assignment_save_url|tojson }};
+  var TAGGING_API_BASE = {{ tagging_api_base_url|tojson }};
+  var SCALE = 3;
+  var HANDLE_TOLERANCE = 6;
+  var MIN_BOX_SIZE = 4;
+  var BOX_COLORS = {
+    toy: "#fb923c",
+    target: "#22c55e",
+    reference: "#38bdf8",
+    manual: "#facc15",
+    shadow: "#020617",
+  };
+  var vid = document.getElementById("vid");
+  var img = document.getElementById("img");
+  var canvas = document.getElementById("overlay");
+  var ctx = canvas.getContext("2d");
+  var playBtn = document.getElementById("playBtn");
+  var restartBtn = document.getElementById("restartBtn");
+  var videoSlider = document.getElementById("videoSlider");
+  var timeHint = document.getElementById("timeHint");
+  var videoStatus = document.getElementById("videoStatus");
+  var speedSelect = document.getElementById("speedSelect");
+  var baseW = 256, baseH = 256, displayW = 768, displayH = 768;
+  var INITIAL_VARIANTS = {{ labeling_variants|tojson }};
+  var INITIAL_EPISODES = {{ labeling_initial_episodes|tojson }};
+  var variants = INITIAL_VARIANTS && INITIAL_VARIANTS.length ? INITIAL_VARIANTS : [];
+  var activeVariant = {{ labeling_active_variant|tojson }};
+  var allEpisodes = INITIAL_EPISODES && INITIAL_EPISODES.length ? INITIAL_EPISODES.slice(0) : [];
+  var episodes = [];
+  var currentIdx = null, currentRec = null, selected = null, manual = false, draftBox = null, dragState = null;
+  var currentTaggingRecord = null;
+  var episodeLength = 1, episodeFps = 30, videoFallbackMode = false, isSeekingSlider = false;
+  var backgroundTagDialogOpen = false, backgroundTagSaving = false;
+  var backgroundTagChoices = ["round_table", "square_table", "tv_cabinet", "sofa"];
+  var backgroundColorChoices = [
+    {value: "black", label: "black", swatch: "#020617"},
+    {value: "white", label: "white", swatch: "#f8fafc"},
+    {value: "brown", label: "brown", swatch: "#92400e"},
+  ];
+  var customTaskAssignment = "", taskAssignmentStatus = "", taskAssignmentError = false, taskAssignmentSaving = false;
+  var flaggedEpisodes = new Set();
+  var flagReasons = {};
+  var flagDialogOpen = false;
+  var selectedFlagMode = "manual";
+  var selectedFlagReason = "wrong_prompt";
+  var customFlagReason = "";
+  var flagSaving = false;
+  var flagReasonModes = [
+    { value: "manual", label: "Manual" },
+    { value: "auto", label: "Automatic" },
+  ];
+  var flagReasonGroups = {
+    manual: [
+      { value: "wrong_prompt", label: "Prompt error" },
+      { value: "arm_shaking", label: "Arm shaking" },
+      { value: "unstable_placement", label: "Unstable placement" },
+      { value: "camera_issue", label: "Camera issue" },
+      { value: "custom", label: "Custom" },
+    ],
+    auto: [
+      { value: "early_gripper_transition", label: "Early gripper transition" },
+      { value: "stuck_closed_gripper_no_action", label: "Stuck closed gripper" },
+      { value: "state_gripper_transition_without_action", label: "State gripper changed without action" },
+      { value: "joint_zero_reset_spike", label: "Joint zero reset spike" },
+      { value: "missing_subtask_state", label: "Missing subtask_state" },
+      { value: "unsegmented_subtask_state", label: "Unsegmented subtask_state" },
+      { value: "multi_sentence_prompt", label: "Multi-sentence prompt" },
+      { value: "multiple_task_assignments", label: "Multiple task assignments" },
+      { value: "prompt_action_mismatch", label: "Prompt/action mismatch" },
+      { value: "missing_parquet", label: "Missing parquet" },
+      { value: "missing_target_detection", label: "Missing target detection" },
+    ],
+  };
+  var flagReasonLabels = {
+    manual_flag: "Manual flag",
+    unknown_flag_reason: "Unknown flag reason",
+    bad_stage: "Bad stage/subtask",
+    early_joint_spike: "Joint spike",
+    missing_stage: "Missing stage",
+    bad_image_or_video: "Bad image/video",
+  };
+
+  function esc(value) {
+    return String(value === null || value === undefined ? "" : value).replace(/[&<>]/g, function (c) {
+      return {"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c];
+    });
+  }
+  function attr(value) {
+    return esc(value).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function pad4(value) {
+    value = String(value);
+    while (value.length < 4) value = "0" + value;
+    return value;
+  }
+  function cloneBox(box) {
+    if (!box) return null;
+    return {left: Number(box.left), top: Number(box.top), right: Number(box.right), bottom: Number(box.bottom)};
+  }
+  function showError(message, replaceList) {
+    if (replaceList) document.getElementById("epList").innerHTML = "<li>" + esc(message) + "</li>";
+    document.getElementById("infoInner").innerHTML = '<div class="panel">' + esc(message) + "</div>";
+    document.getElementById("variantSummary").textContent = "error";
+  }
+  function requestJson(method, url, body, callback) {
+    var xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    xhr.setRequestHeader("Accept", "application/json");
+    if (body !== null && body !== undefined) xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      var data = null;
+      try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null; }
+      catch (err) { callback(new Error("invalid JSON from " + url), null); return; }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        callback(new Error((data && data.error) || ("request failed " + xhr.status + ": " + url)), data);
+        return;
+      }
+      callback(null, data);
+    };
+    xhr.send(body !== null && body !== undefined ? JSON.stringify(body) : null);
+  }
+  function query(extra) {
+    extra = extra || {};
+    var parts = [];
+    if (activeVariant) parts.push("variant=" + encodeURIComponent(activeVariant));
+    for (var key in extra) {
+      if (!Object.prototype.hasOwnProperty.call(extra, key)) continue;
+      if (extra[key] !== null && extra[key] !== undefined && extra[key] !== "") {
+        parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(extra[key]));
+      }
+    }
+    return parts.length ? "?" + parts.join("&") : "";
+  }
+  function addUnique(out, seen, value, prepend) {
+    var text = String(value || "").trim();
+    if (!text || seen[text]) return;
+    seen[text] = true;
+    if (prepend) out.unshift(text);
+    else out.push(text);
+  }
+  function currentTaggingTags() {
+    var orig = currentRec && currentRec.original ? currentRec.original : {};
+    var fallback = {};
+    var source = orig.tag_context || orig.tags || {};
+    var record = currentTaggingRecord && currentTaggingRecord.current ? currentTaggingRecord.current : currentTaggingRecord;
+    var tags = record && record.tags ? record.tags : {};
+    var key;
+    for (key in source) {
+      if (Object.prototype.hasOwnProperty.call(source, key)) fallback[key] = source[key];
+    }
+    for (key in tags) {
+      if (Object.prototype.hasOwnProperty.call(tags, key)) fallback[key] = tags[key];
+    }
+    return fallback;
+  }
+  function loadCurrentTaggingRecord(next) {
+    if (currentIdx === null) {
+      currentTaggingRecord = null;
+      if (next) next();
+      return;
+    }
+    requestJson("GET", TAGGING_API_BASE + "/episode/" + currentIdx, null, function (err, data) {
+      currentTaggingRecord = err ? null : data;
+      if (currentRec) renderInfo();
+      if (next) next();
+    });
+  }
+  function renderBackgroundColorPresets() {
+    var wrap = document.getElementById("backgroundColorPresets");
+    var current = String(document.getElementById("backgroundColorInput").value || "");
+    var html = [];
+    for (var i = 0; i < backgroundColorChoices.length; i++) {
+      var option = backgroundColorChoices[i];
+      html.push('<button type="button" data-color="' + attr(option.value) + '" class="' + (current === option.value ? "active" : "") + '">' +
+        '<span class="presetSwatch" style="background:' + esc(option.swatch) + '"></span>' + esc(option.label) + "</button>");
+    }
+    wrap.innerHTML = html.join("");
+    var buttons = wrap.querySelectorAll("button[data-color]");
+    for (i = 0; i < buttons.length; i++) {
+      buttons[i].onclick = function () {
+        document.getElementById("backgroundColorInput").value = this.getAttribute("data-color") || "";
+        renderBackgroundColorPresets();
+      };
+    }
+  }
+  function syncBackgroundOptions(value) {
+    var select = document.getElementById("backgroundTagSelect");
+    var seen = {};
+    var values = [""].concat(backgroundTagChoices);
+    var i, option;
+    if (value && backgroundTagChoices.indexOf(value) < 0) values.push(value);
+    select.innerHTML = "";
+    for (i = 0; i < values.length; i++) {
+      if (seen[values[i]]) continue;
+      seen[values[i]] = true;
+      option = document.createElement("option");
+      option.value = values[i];
+      option.textContent = values[i] || "-";
+      select.appendChild(option);
+    }
+    select.value = value || "";
+  }
+  function openBackgroundTagDialog() {
+    if (currentIdx === null) return;
+    var tags = currentTaggingTags();
+    syncBackgroundOptions(String(tags.background || ""));
+    document.getElementById("backgroundColorInput").value = tags.background_color || "";
+    document.getElementById("backgroundObjectCountInput").value = tags.object_count === null || tags.object_count === undefined ? "" : String(tags.object_count);
+    document.getElementById("backgroundTagStatus").textContent = "";
+    document.getElementById("backgroundTagTitle").textContent = "Tag episode " + currentIdx;
+    backgroundTagDialogOpen = true;
+    document.getElementById("backgroundTagDialog").classList.add("open");
+    renderBackgroundColorPresets();
+    document.getElementById("backgroundColorInput").focus();
+  }
+  function closeBackgroundTagDialog() {
+    if (backgroundTagSaving) return;
+    backgroundTagDialogOpen = false;
+    document.getElementById("backgroundTagDialog").classList.remove("open");
+  }
+  function readBackgroundObjectCount() {
+    var raw = String(document.getElementById("backgroundObjectCountInput").value || "").trim();
+    var value;
+    if (!raw) return null;
+    value = Number(raw);
+    if (!Number.isInteger(value) || value < 0) {
+      document.getElementById("backgroundTagStatus").textContent = "Object count must be a non-negative integer.";
+      return undefined;
+    }
+    return value;
+  }
+  function saveBackgroundTag() {
+    var objectCount;
+    if (currentIdx === null || backgroundTagSaving) return;
+    objectCount = readBackgroundObjectCount();
+    if (objectCount === undefined) return;
+    backgroundTagSaving = true;
+    document.getElementById("backgroundTagStatus").textContent = "";
+    document.getElementById("backgroundTagSaveBtn").textContent = "Saving...";
+    requestJson("POST", TAGGING_API_BASE + "/save/" + currentIdx, {
+      tags: {
+        background: document.getElementById("backgroundTagSelect").value || null,
+        background_color: String(document.getElementById("backgroundColorInput").value || "").trim() || null,
+        object_count: objectCount,
+      },
+    }, function (err, data) {
+      backgroundTagSaving = false;
+      document.getElementById("backgroundTagSaveBtn").textContent = "Save";
+      if (err) {
+        document.getElementById("backgroundTagStatus").textContent = "Failed to save: " + err.message;
+        return;
+      }
+      currentTaggingRecord = data && data.record ? {current: data.record} : null;
+      closeBackgroundTagDialog();
+      renderInfo();
+    });
+  }
+  function resizeStage() {
+    displayW = baseW * SCALE;
+    displayH = baseH * SCALE;
+    vid.width = displayW;
+    vid.height = displayH;
+    img.width = displayW;
+    img.height = displayH;
+    canvas.width = displayW;
+    canvas.height = displayH;
+  }
+  function fmtTime(value) {
+    value = Math.max(0, Number(value) || 0);
+    var minutes = Math.floor(value / 60);
+    var seconds = Math.floor(value % 60);
+    return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
+  }
+  function updatePlaybackUi() {
+    var duration = Number(vid.duration) || 0;
+    var current = Number(vid.currentTime) || 0;
+    if (!isSeekingSlider) videoSlider.value = duration > 0 ? String(Math.round((current / duration) * 1000)) : "0";
+    timeHint.textContent = fmtTime(current) + " / " + fmtTime(duration);
+    playBtn.textContent = !videoFallbackMode && !vid.paused ? "⏸" : "▶";
+    if (videoFallbackMode) videoStatus.textContent = "static frame";
+    else if (vid.getAttribute("src") && !duration) videoStatus.textContent = "loading video";
+    else videoStatus.textContent = "";
+    playBtn.disabled = videoFallbackMode;
+    restartBtn.disabled = videoFallbackMode;
+    videoSlider.disabled = videoFallbackMode;
+    speedSelect.disabled = videoFallbackMode;
+    canvas.style.pointerEvents = "auto";
+    canvas.style.opacity = "1";
+  }
+  function stopPlayback() {
+    if (!vid.paused) vid.pause();
+    updatePlaybackUi();
+  }
+  function playbackRates() {
+    var rates = [];
+    for (var i = 0; i < speedSelect.options.length; i++) {
+      var value = Number(speedSelect.options[i].value);
+      if (Number.isFinite(value) && value > 0) rates.push(value);
+    }
+    return rates;
+  }
+  function applyPlaybackRate() {
+    var rate = Number(speedSelect.value) || 1;
+    vid.playbackRate = rate;
+    try { sessionStorage.setItem("lerobot_labeling_playback_rate", String(rate)); } catch (e) {}
+  }
+  function stepPlaybackRate(step) {
+    var rates = playbackRates();
+    if (!rates.length) return;
+    var current = Number(speedSelect.value) || 1;
+    var currentIdx = rates.indexOf(current);
+    var defaultIdx = rates.indexOf(1);
+    var baseIdx = currentIdx === -1 ? (defaultIdx === -1 ? 0 : defaultIdx) : currentIdx;
+    var nextIdx = Math.max(0, Math.min(rates.length - 1, baseIdx + step));
+    speedSelect.value = String(rates[nextIdx]);
+    applyPlaybackRate();
+    updatePlaybackUi();
+  }
+  function startPlayback() {
+    if (currentIdx === null || videoFallbackMode) return;
+    applyPlaybackRate();
+    var maybePlay = vid.play();
+    if (maybePlay && maybePlay.catch) maybePlay.catch(function () {});
+    updatePlaybackUi();
+  }
+  function togglePlayback() {
+    if (!vid.paused) stopPlayback();
+    else startPlayback();
+  }
+  function reviewLevel(ep) {
+    if (ep.level === "hi" || ep.level === "md" || ep.level === "lo" || ep.level === "skip") return ep.level;
+    var u = Number(ep.uncertainty);
+    if (u >= 90) return "hi";
+    if (u >= 50) return "md";
+    if (u >= 0) return "lo";
+    return "skip";
+  }
+  function readFilters() {
+    return {
+      prompt: document.getElementById("promptFilter").value || "all",
+      level: document.getElementById("levelFilter").value || "all",
+      review: document.getElementById("reviewFilter").value || "all",
+    };
+  }
+  function matchesFilters(ep, filters) {
+    var level = reviewLevel(ep);
+    if (level === "skip") return false;
+    if (filters.prompt !== "all" && String(ep.task || "") !== filters.prompt) return false;
+    if (filters.level !== "all" && level !== filters.level) return false;
+    if (filters.review === "reviewed" && !ep.reviewed) return false;
+    if (filters.review === "unreviewed" && ep.reviewed) return false;
+    return true;
+  }
+  function updatePromptFilter() {
+    var select = document.getElementById("promptFilter");
+    var previous = select.value || "all";
+    var seen = {}, tasks = [], i, task, option, label;
+    for (i = 0; i < allEpisodes.length; i++) {
+      if (reviewLevel(allEpisodes[i]) === "skip") continue;
+      task = String(allEpisodes[i].task || "");
+      if (!seen[task]) { seen[task] = true; tasks.push(task); }
+    }
+    tasks.sort();
+    select.innerHTML = '<option value="all">All prompts</option>';
+    for (i = 0; i < tasks.length; i++) {
+      task = tasks[i];
+      label = task || "(no task)";
+      option = document.createElement("option");
+      option.value = task;
+      option.textContent = label.length > 42 ? label.slice(0, 39) + "..." : label;
+      option.title = task;
+      select.appendChild(option);
+    }
+    select.value = seen[previous] ? previous : "all";
+  }
+  function renderVariantBar() {
+    var select = document.getElementById("variantSelect");
+    var i, v, option;
+    select.innerHTML = "";
+    if (!variants.length) {
+      option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No labeling results";
+      select.appendChild(option);
+      select.disabled = true;
+      document.getElementById("compareToggle").checked = false;
+      document.getElementById("compareToggle").disabled = true;
+      document.getElementById("variantSummary").textContent = "no result set";
+      return;
+    }
+    for (i = 0; i < variants.length; i++) {
+      v = variants[i];
+      option = document.createElement("option");
+      option.value = v.id || "";
+      option.textContent = (v.label || "latest") + (v.is_latest ? " (latest)" : "");
+      select.appendChild(option);
+    }
+    select.value = activeVariant;
+    select.disabled = false;
+    document.getElementById("compareToggle").checked = variants.length > 1;
+    document.getElementById("compareToggle").disabled = variants.length <= 1;
+    document.getElementById("variantSummary").textContent = variants.length > 1 ? variants.length + " result sets" : "single result set";
+  }
+  function loadVariants(next) {
+    requestJson("GET", API_BASE + "/variants", null, function (err, data) {
+      if (!err && data && data.variants) {
+        if (data.variants.length || !variants.length) variants = data.variants;
+        activeVariant = (data.default_variant || data.default_variant === "") ? (data.default_variant || "") : (activeVariant || (variants[0] && variants[0].id) || "");
+        renderVariantBar();
+        if (!variants.length && !allEpisodes.length) {
+          showError("No labeling results found. Run Object Labeling first.", false);
+          return;
+        }
+      } else if (!variants.length) {
+        showError(err ? err.message : "No labeling variants found.", true);
+        if (next) next();
+        return;
+      }
+      renderVariantBar();
+      if (next) next();
+    });
+  }
+  function renderEpisodeList(scrollActive) {
+    var filters = readFilters();
+    var list = document.getElementById("epList");
+    var hi = 0, md = 0, lo = 0, reviewed = 0, skipped = 0;
+    var i, ep, level, li, tag, manualTag, flagTag;
+    episodes = [];
+    updatePromptFilter();
+    filters.prompt = document.getElementById("promptFilter").value || "all";
+    list.innerHTML = "";
+    for (i = 0; i < allEpisodes.length; i++) {
+      ep = allEpisodes[i];
+      level = reviewLevel(ep);
+      if (level === "skip") { skipped += 1; continue; }
+      if (!matchesFilters(ep, filters)) continue;
+      episodes.push(ep);
+      li = document.createElement("li");
+      if (ep.reviewed) { li.className = "reviewed"; reviewed += 1; }
+      tag = "";
+      if (level === "hi") { tag = '<span class="tag hi">!</span>'; hi += 1; }
+      else if (level === "md") { tag = '<span class="tag md">?</span>'; md += 1; }
+      else { tag = '<span class="tag lo">.</span>'; lo += 1; }
+      manualTag = ep.manual ? '<span class="tag manual">M</span>' : "";
+      flagTag = flaggedEpisodes.has(Number(ep.episode_index)) ? '<span class="tag flag">F</span>' : "";
+      li.innerHTML = tag + manualTag + flagTag + "<b>ep" + pad4(ep.episode_index) + "</b> " +
+        '<span style="color:#94a3b8">' + esc(ep.reason || "") + '</span><br>' +
+        '<span style="color:#cbd5e1;font-size:11px">' + esc(ep.task || "") + "</span>";
+      li.setAttribute("data-idx", ep.episode_index);
+      li.onclick = (function (idx) { return function () { selectEpisode(idx, true); }; })(ep.episode_index);
+      list.appendChild(li);
+    }
+    if (!episodes.length) list.innerHTML = "<li>No episodes match current filters.</li>";
+    document.getElementById("counts").textContent = " (" + hi + " hi / " + md + " md / " + lo + " lo, reviewed " + reviewed + "/" + episodes.length + (skipped ? ", skipped " + skipped : "") + ")";
+    highlightSidebar(scrollActive);
+  }
+  function loadList(next) {
+    requestJson("GET", API_BASE + "/episodes" + query(), null, function (err, data) {
+      if (err) {
+        if (allEpisodes.length) {
+          renderEpisodeList(false);
+          showError("Could not refresh labeling records: " + err.message, false);
+          if (next) next();
+          return;
+        }
+        showError(err.message, true);
+        return;
+      }
+      allEpisodes = data || [];
+      renderEpisodeList(true);
+      if (next) next();
+    });
+  }
+  function bindRenderedList() {
+    var rows = document.querySelectorAll("#epList li[data-idx]");
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].onclick = (function (idx) { return function () { selectEpisode(idx, true); }; })(Number(rows[i].getAttribute("data-idx")));
+    }
+  }
+  function highlightSidebar(scrollActive) {
+    var items = document.querySelectorAll("#epList li");
+    var i, li, active = null;
+    for (i = 0; i < items.length; i++) {
+      li = items[i];
+      if (Number(li.getAttribute("data-idx")) === currentIdx) { li.className = (li.className + " active").replace(/\s+/g, " "); active = li; }
+      else li.className = li.className.replace(/\bactive\b/g, "").replace(/\s+/g, " ");
+    }
+    if (scrollActive && active) active.scrollIntoView(false);
+  }
+  function targetDetections() {
+    var cur = currentRec && currentRec.current ? currentRec.current : {};
+    var orig = currentRec && currentRec.original ? currentRec.original : {};
+    return cur.detections_all_target || cur.detections_target || orig.detections_all_target || orig.detections_target || [];
+  }
+  function referenceDetections() {
+    var cur = currentRec && currentRec.current ? currentRec.current : {};
+    var orig = currentRec && currentRec.original ? currentRec.original : {};
+    return cur.detections_ref || orig.detections_ref || [];
+  }
+  function setTargetDetections(rows) {
+    currentRec.current = currentRec.current || {};
+    currentRec.current.detections_all_target = rows;
+    currentRec.current.detections_target = rows;
+  }
+  function setReferenceDetections(rows) {
+    currentRec.current = currentRec.current || {};
+    currentRec.current.detections_ref = rows;
+  }
+  function selectEpisode(idx, scrollActive) {
+    stopPlayback();
+    currentIdx = Number(idx);
+    currentTaggingRecord = null;
+    customTaskAssignment = "";
+    taskAssignmentStatus = "";
+    taskAssignmentError = false;
+    episodeLength = 1;
+    episodeFps = 30;
+    videoFallbackMode = false;
+    vid.style.display = "block";
+    img.style.display = "none";
+    vid.removeAttribute("src");
+    vid.load();
+    img.src = API_BASE + "/image/" + currentIdx + query({t: Date.now()});
+    updatePlaybackUi();
+    requestJson("GET", API_BASE + "/episode/" + currentIdx + query({compare: document.getElementById("compareToggle").checked ? 1 : 0}), null, function (err, data) {
+      if (err) { showError(err.message, false); return; }
+      currentRec = data;
+      episodeLength = Math.max(1, Number(currentRec.episode_length) || 1);
+      episodeFps = Math.max(1, Number(currentRec.fps) || 30);
+      if (currentRec.video_url) {
+        vid.src = currentRec.video_url;
+        applyPlaybackRate();
+        vid.load();
+      } else {
+        videoFallbackMode = true;
+        vid.style.display = "none";
+        img.style.display = "block";
+      }
+      selected = currentRec.current && currentRec.current.selected ? cloneBox(currentRec.current.selected.bbox) : null;
+      manual = !!(currentRec.current && currentRec.current.manual);
+      draftBox = null;
+      updatePlaybackUi();
+      loadCurrentFlagReason();
+      loadCurrentTaggingRecord();
+      renderInfo();
+      redraw();
+      highlightSidebar(scrollActive);
+    });
+  }
+  function armBadge(value) {
+    value = String(value || "").toLowerCase();
+    var cls = value === "left" ? "arm-left" : value === "right" ? "arm-right" : value === "both" ? "arm-both" : "arm-unknown";
+    return '<div class="armBadge ' + cls + '"><span class="label">tagging arm</span><span class="value">' + esc(value || "missing") + "</span></div>";
+  }
+  function objectTextColor(value, fallback) {
+    var text = String(value || "").toLowerCase();
+    var colors = [
+      ["yellow", "#fde047"],
+      ["brown", "#b45309"],
+      ["grey", "#94a3b8"],
+      ["gray", "#94a3b8"],
+      ["red", "#f87171"],
+      ["blue", "#60a5fa"],
+      ["green", "#4ade80"],
+      ["orange", "#fb923c"],
+      ["purple", "#c084fc"],
+      ["pink", "#f472b6"],
+      ["black", "#111827"],
+      ["white", "#f8fafc"],
+    ];
+    for (var i = 0; i < colors.length; i++) {
+      if (text.indexOf(colors[i][0]) >= 0) return colors[i][1];
+    }
+    return fallback;
+  }
+  function styleAttr(color) {
+    return color ? ' style="color:' + color + '"' : "";
+  }
+  function markFirstHtml(html, originalText, needle, cls, fallbackColor) {
+    var lowerText, lowerNeedle, pos, displayNeedle, color;
+    originalText = String(originalText || "");
+    needle = String(needle || "").trim();
+    if (!needle) return html;
+    lowerText = originalText.toLowerCase();
+    lowerNeedle = needle.toLowerCase();
+    pos = lowerText.indexOf(lowerNeedle);
+    displayNeedle = needle;
+    if (pos < 0 && lowerNeedle.indexOf("the ") !== 0) {
+      lowerNeedle = "the " + lowerNeedle;
+      pos = lowerText.indexOf(lowerNeedle);
+      if (pos >= 0) displayNeedle = originalText.slice(pos, pos + lowerNeedle.length);
+    }
+    if (pos < 0) return html;
+    color = objectTextColor(displayNeedle, fallbackColor);
+    return html.replace(esc(displayNeedle), '<span class="objectText ' + cls + '"' + styleAttr(color) + ">" + esc(displayNeedle) + "</span>");
+  }
+  function highlightedTask(task, parsed) {
+    var raw = String(task || "");
+    var html = esc(raw);
+    if (parsed && parsed.reference) html = markFirstHtml(html, raw, parsed.reference, "refText", "#38bdf8");
+    if (parsed && parsed.target) html = markFirstHtml(html, raw, parsed.target, "targetText", "#fb923c");
+    if (parsed && parsed.direction) {
+      html = html.replace(new RegExp("\\b" + parsed.direction + "\\b", "i"), function (match) {
+        return '<span class="dir">' + esc(match) + "</span>";
+      });
+    }
+    return html;
+  }
+  function currentTaskAssignmentIssue() {
+    var items = flagReasonItems(currentIdx);
+    for (var i = 0; i < items.length; i++) {
+      if (!items[i]) continue;
+      if (
+        items[i].reason === "multiple_task_assignments"
+        || items[i].reason === "prompt_action_mismatch"
+        || items[i].reason === "wrong_prompt"
+      ) return items[i];
+    }
+    return null;
+  }
+  function taskAssignmentTitle(issue) {
+    if (!issue) return "Prompt repair";
+    if (issue.reason === "prompt_action_mismatch") return "Prompt/action mismatch";
+    if (issue.reason === "wrong_prompt") return "Prompt error";
+    if (issue.reason === "multiple_task_assignments") return "Multiple task assignments";
+    return "Prompt repair";
+  }
+  function currentTaskAssignmentCandidates(issue) {
+    var metrics = issue && issue.metrics ? issue.metrics : {};
+    var raw = metrics.candidates || metrics.tasks || metrics.prompts || [];
+    var seen = {}, out = [], i;
+    if (issue && issue.task) addUnique(out, seen, issue.task, false);
+    if (currentRec && currentRec.original) addUnique(out, seen, currentRec.original.task, false);
+    for (i = 0; i < raw.length; i++) addUnique(out, seen, raw[i], false);
+    for (i = 0; i < allEpisodes.length && out.length < 80; i++) addUnique(out, seen, allEpisodes[i].task, false);
+    return out;
+  }
+  function taskAssignmentSelectedValue() {
+    return String(customTaskAssignment || "").trim();
+  }
+  function renderPromptRepair(issue) {
+    if (!issue) return "";
+    var candidates = currentTaskAssignmentCandidates(issue);
+    var html = [];
+    html.push('<div class="promptRepair">');
+    html.push('<div><div class="title">' + esc(taskAssignmentTitle(issue)) + '</div><div class="hint">Type the true prompt for this episode.</div></div>');
+    html.push('<input id="customTaskAssignment" value="' + attr(customTaskAssignment) + '" placeholder="' + attr(candidates.length ? "e.g. " + candidates[0] : "Type prompt here") + '">');
+    html.push('<div class="btnrow" style="justify-content:flex-end;margin-top:0"><button id="savePromptAssignmentBtn" type="button"' + (taskAssignmentSaving ? " disabled" : "") + ">" + (taskAssignmentSaving ? "Saving..." : "Save prompt") + "</button></div>");
+    if (taskAssignmentStatus) {
+      html.push('<div class="status' + (taskAssignmentError ? " error" : "") + '">' + esc(taskAssignmentStatus) + "</div>");
+    }
+    html.push("</div>");
+    return html.join("");
+  }
+  function objectNameSpan(label, cls, fallbackColor) {
+    var text = label || "-";
+    return '<span class="' + cls + '"' + styleAttr(objectTextColor(text, fallbackColor)) + ">" + esc(text) + "</span>";
+  }
+  function renderInfo() {
+    var orig = currentRec.original || {};
+    var parsed = orig.parsed || {};
+    var tags = currentTaggingTags();
+    var targets = targetDetections();
+    var refs = referenceDetections();
+    var promptIssue = currentTaskAssignmentIssue();
+    var html = [], i, d, selectedClass, objectCount;
+    html.push('<div class="header"><b>ep' + pad4(currentIdx) + "</b> - " + esc(currentRec.reason || "") + "</div><div class=\"panel\">");
+    html.push('<div class="flagStatus' + (isCurrentFlagged() ? " flagged" : "") + '"><span>' +
+      (isCurrentFlagged() ? "FLAGGED: " + esc(currentFlagReasonText() || "manual_flag") : "OK") +
+      '</span><button id="openFlagBtn" class="' + (isCurrentFlagged() ? "warn" : "") + '" type="button">' +
+      (isCurrentFlagged() ? "Edit flag (F)" : "Flag (F)") + "</button></div>");
+    html.push(renderPromptRepair(promptIssue));
+    html.push('<div class="parsed">result: ' + esc(activeVariantLabel()) + "</div>");
+    html.push('<div class="taskline">' + highlightedTask(orig.task || "", parsed) + "</div>");
+    html.push('<div class="promptLegend"><span class="targetText">target-class toys</span><span class="selectedText">selected target</span><span class="refText">reference</span></div>');
+    html.push('<div class="parsed">target: ' + esc(parsed.target || "-") + "\ndirection: " + esc(parsed.direction || "-") + "\nreference: " + esc(parsed.reference || "-") + "</div>");
+    objectCount = tags.object_count === null || tags.object_count === undefined ? "-" : tags.object_count;
+    html.push('<div class="tagContext">' + armBadge(orig.active_arm || tags.arm) + '<div class="parsed">background: ' + esc(tags.background || "-") + "\nbackground_color: " + esc(tags.background_color || "-") + "\nobject_count: " + esc(objectCount) + "\nprompt_action: " + esc(tags.prompt_action_match || "-") + "\nselection: " + esc(orig.target_selection_method || "-") + "</div></div>");
+    if ((orig.context_warnings || []).length) {
+      html.push('<div class="parsed" style="color:#fbbf24">context warnings: ' + esc((orig.context_warnings || []).join(", ")) + "</div>");
+    }
+    html.push("<h3>All target-class objects (" + targets.length + ")</h3>");
+    for (i = 0; i < targets.length; i++) {
+      d = targets[i];
+      selectedClass = selected && !manual && sameBox(d.bbox, selected) ? " selected" : "";
+      html.push('<div class="candidate targetCandidate' + selectedClass + '" data-kind="t" data-i="' + i + '"><div class="candidateTop"><span><span class="conf">' +
+        Number(d.confidence || 0).toFixed(2) + "</span> " + objectNameSpan(d.label || parsed.target || "target", "targetName", "#fb923c") + '</span><button class="deleteBoxBtn" data-delete-kind="t" data-i="' + i + '">delete</button></div>' +
+        "[" + d.bbox.left + "," + d.bbox.top + "," + d.bbox.right + "," + d.bbox.bottom + "]</div>");
+    }
+    if (refs.length) html.push('<h3 style="margin-top:12px">Reference candidates (' + refs.length + ")</h3>");
+    for (i = 0; i < refs.length; i++) {
+      d = refs[i];
+      html.push('<div class="candidate refCandidate" data-kind="r" data-i="' + i + '"><div class="candidateTop"><span><span class="conf">' +
+        Number(d.confidence || 0).toFixed(2) + "</span> " + objectNameSpan(d.label || parsed.reference || "reference", "refName", "#38bdf8") + '</span><button class="deleteBoxBtn" data-delete-kind="r" data-i="' + i + '">delete</button></div>' +
+        "[" + d.bbox.left + "," + d.bbox.top + "," + d.bbox.right + "," + d.bbox.bottom + "]</div>");
+    }
+    html.push('<h3 style="margin-top:12px">Target object ' + (manual ? "(manual)" : "") + "</h3>");
+    html.push(selected ? '<div class="parsed">[' + selected.left + "," + selected.top + "," + selected.right + "," + selected.bottom + "]</div>" : '<div class="parsed" style="color:#f87171">null (no detection)</div>');
+    if (draftBox) {
+      html.push('<h3 style="margin-top:12px">Draft box</h3><div class="draftBox"><div class="parsed">[' + draftBox.left + "," + draftBox.top + "," + draftBox.right + "," + draftBox.bottom + ']</div><div class="btnrow"><button id="useDraftBtn">Use as target</button><button id="addTargetBtn">Add target candidate</button></div><div class="btnrow"><button id="addRefBtn">Add reference</button><button id="clearDraftBtn" class="warn">Clear draft</button></div></div>');
+    }
+    html.push('<div class="btnrow"><button id="clearBtn">Clear</button><button id="resetBtn" class="warn">Reset</button><button id="saveBtn">Save (Enter)</button></div>');
+    html.push('<div class="shortcuts"><b>Shortcuts</b><br>j / k : next / prev<br>Enter : save current<br>Backspace : clear selection<br>r : reset to original<br>f : flag reason<br>b : background tag<br>Drag on image : draw / move / resize box</div></div>');
+    document.getElementById("infoInner").innerHTML = html.join("");
+    bindInfoHandlers();
+  }
+  function bindInfoHandlers() {
+    var items = document.querySelectorAll(".candidate[data-kind=t]");
+    var buttons = document.querySelectorAll(".deleteBoxBtn");
+    var i;
+    for (i = 0; i < items.length; i++) {
+      items[i].onclick = function () {
+        var idx = Number(this.getAttribute("data-i"));
+        selected = cloneBox(targetDetections()[idx].bbox);
+        manual = false;
+        draftBox = null;
+        renderInfo();
+        redraw();
+      };
+    }
+    for (i = 0; i < buttons.length; i++) {
+      buttons[i].onclick = function (event) {
+        if (event && event.stopPropagation) event.stopPropagation();
+        deleteCandidate(this.getAttribute("data-delete-kind"), Number(this.getAttribute("data-i")));
+      };
+    }
+    document.getElementById("clearBtn").onclick = function () { selected = null; manual = false; draftBox = null; renderInfo(); redraw(); };
+    document.getElementById("resetBtn").onclick = resetEpisode;
+    document.getElementById("saveBtn").onclick = saveEpisode;
+    document.getElementById("openFlagBtn").onclick = openFlagDialog;
+    if (document.getElementById("customTaskAssignment")) {
+      document.getElementById("customTaskAssignment").oninput = function () {
+        customTaskAssignment = this.value || "";
+        taskAssignmentStatus = "";
+        taskAssignmentError = false;
+      };
+      document.getElementById("savePromptAssignmentBtn").onclick = savePromptAssignmentChoice;
+    }
+    if (draftBox) {
+      document.getElementById("useDraftBtn").onclick = useDraftAsSelected;
+      document.getElementById("addTargetBtn").onclick = function () { addDraftCandidate("target"); };
+      document.getElementById("addRefBtn").onclick = function () { addDraftCandidate("reference"); };
+      document.getElementById("clearDraftBtn").onclick = function () { draftBox = null; renderInfo(); redraw(); };
+    }
+  }
+  function activeVariantLabel() {
+    for (var i = 0; i < variants.length; i++) {
+      if ((variants[i].id || "") === activeVariant) return (variants[i].label || "latest") + (variants[i].is_latest ? " (latest)" : "");
+    }
+    return activeVariant || "latest";
+  }
+  function sameBox(a, b) {
+    return !!a && !!b && Number(a.left) === Number(b.left) && Number(a.top) === Number(b.top) && Number(a.right) === Number(b.right) && Number(a.bottom) === Number(b.bottom);
+  }
+  function area(box) { return Math.max(0, box.right - box.left) * Math.max(0, box.bottom - box.top); }
+  function pointInBox(x, y, box) { return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom; }
+  function handleAt(x, y, box) {
+    var l = Math.abs(x - box.left) <= HANDLE_TOLERANCE, r = Math.abs(x - box.right) <= HANDLE_TOLERANCE;
+    var t = Math.abs(y - box.top) <= HANDLE_TOLERANCE, b = Math.abs(y - box.bottom) <= HANDLE_TOLERANCE;
+    if (l && t) return "nw"; if (r && t) return "ne"; if (r && b) return "se"; if (l && b) return "sw";
+    if (t) return "n"; if (r) return "e"; if (b) return "s"; if (l) return "w";
+    return null;
+  }
+  function normalizeBox(box) {
+    var left = Math.max(0, Math.min(baseW - MIN_BOX_SIZE, Math.round(Math.min(box.left, box.right))));
+    var top = Math.max(0, Math.min(baseH - MIN_BOX_SIZE, Math.round(Math.min(box.top, box.bottom))));
+    var right = Math.min(baseW, Math.max(left + MIN_BOX_SIZE, Math.round(Math.max(box.left, box.right))));
+    var bottom = Math.min(baseH, Math.max(top + MIN_BOX_SIZE, Math.round(Math.max(box.top, box.bottom))));
+    return {left: left, top: top, right: right, bottom: bottom};
+  }
+  function hitAt(x, y) {
+    var hits = [], i, d, h;
+    function add(kind, index, box, priority) {
+      h = handleAt(x, y, box);
+      if (h || pointInBox(x, y, box)) hits.push({kind: kind, index: index, box: cloneBox(box), handle: h, priority: priority, area: area(box)});
+    }
+    if (draftBox) add("draft", -1, draftBox, 0);
+    if (selected) add("selected", -1, selected, 1);
+    for (i = 0; i < targetDetections().length; i++) add("target", i, targetDetections()[i].bbox, 2);
+    for (i = 0; i < referenceDetections().length; i++) add("reference", i, referenceDetections()[i].bbox, 3);
+    hits.sort(function (a, b) { return (a.handle ? -1 : 0) - (b.handle ? -1 : 0) || a.priority - b.priority || a.area - b.area; });
+    return hits[0] || null;
+  }
+  function applyBox(hit, box) {
+    var rows, old;
+    box = normalizeBox(box);
+    if (hit.kind === "draft") draftBox = box;
+    else if (hit.kind === "selected") selected = box;
+    else if (hit.kind === "target") {
+      rows = targetDetections().slice();
+      old = rows[hit.index] ? rows[hit.index].bbox : null;
+      if (rows[hit.index]) rows[hit.index].bbox = box;
+      setTargetDetections(rows);
+      if (selected && old && sameBox(selected, old)) selected = box;
+    } else if (hit.kind === "reference") {
+      rows = referenceDetections().slice();
+      if (rows[hit.index]) rows[hit.index].bbox = box;
+      setReferenceDetections(rows);
+    }
+  }
+  function deleteCandidate(kind, idx) {
+    var rows, removed;
+    if (kind === "t") {
+      rows = targetDetections().slice();
+      removed = rows.splice(idx, 1)[0];
+      setTargetDetections(rows);
+      if (removed && sameBox(removed.bbox, selected)) selected = null;
+    } else {
+      rows = referenceDetections().slice();
+      rows.splice(idx, 1);
+      setReferenceDetections(rows);
+    }
+    renderInfo();
+    redraw();
+  }
+  function ensureTarget(box) {
+    var rows = targetDetections().slice();
+    for (var i = 0; i < rows.length; i++) if (sameBox(rows[i].bbox, box)) return;
+    rows.push({bbox: cloneBox(box), confidence: 1.0, label: "manual_target"});
+    setTargetDetections(rows);
+  }
+  function useDraftAsSelected() {
+    if (!draftBox) return;
+    ensureTarget(draftBox);
+    selected = cloneBox(draftBox);
+    manual = true;
+    draftBox = null;
+    renderInfo();
+    redraw();
+  }
+  function addDraftCandidate(kind) {
+    var rows;
+    if (!draftBox) return;
+    if (kind === "reference") {
+      rows = referenceDetections().slice();
+      rows.push({bbox: cloneBox(draftBox), confidence: 1.0, label: "manual_reference"});
+      setReferenceDetections(rows);
+    } else {
+      ensureTarget(draftBox);
+    }
+    draftBox = null;
+    renderInfo();
+    redraw();
+  }
+  function redraw() {
+    var i;
+    ctx.clearRect(0, 0, displayW, displayH);
+    if (!currentRec) return;
+    for (i = 0; i < targetDetections().length; i++) drawBox(targetDetections()[i].bbox, BOX_COLORS.toy, 2, "toy " + Number(targetDetections()[i].confidence || 0).toFixed(2), true, "rgba(251,146,60,0.10)");
+    for (i = 0; i < referenceDetections().length; i++) drawBox(referenceDetections()[i].bbox, BOX_COLORS.reference, 2, "ref " + Number(referenceDetections()[i].confidence || 0).toFixed(2), true, "rgba(56,189,248,0.10)");
+    if (selected) drawBox(selected, manual ? BOX_COLORS.manual : BOX_COLORS.target, 5, manual ? "manual target" : "TARGET", true, manual ? "rgba(250,204,21,0.16)" : "rgba(34,197,94,0.18)");
+    if (draftBox) drawBox(draftBox, BOX_COLORS.manual, 3, "draft", true, "rgba(250,204,21,0.12)");
+  }
+  function drawBox(box, color, width, label, handles, fillColor) {
+    var x = box.left * SCALE, y = box.top * SCALE, w = (box.right - box.left) * SCALE, h = (box.bottom - box.top) * SCALE;
+    if (fillColor) {
+      ctx.fillStyle = fillColor;
+      ctx.fillRect(x, y, w, h);
+    }
+    ctx.strokeStyle = BOX_COLORS.shadow;
+    ctx.lineWidth = width + 2;
+    ctx.strokeRect(x, y, w, h);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.strokeRect(x, y, w, h);
+    if (label) drawLabel(x, Math.max(10, y - 16), label, color);
+    if (handles) drawHandles(box, color);
+  }
+  function drawLabel(x, y, label, color) {
+    var text = String(label || "");
+    ctx.font = "bold 12px monospace";
+    var labelWidth = ctx.measureText(text).width + 8;
+    ctx.fillStyle = "rgba(2,6,23,0.82)";
+    ctx.fillRect(x, y - 10, labelWidth, 14);
+    ctx.fillStyle = color;
+    ctx.fillText(text, x + 4, y);
+  }
+  function drawHandles(box, color) {
+    var pts = [[box.left, box.top], [box.right, box.top], [box.right, box.bottom], [box.left, box.bottom]];
+    ctx.fillStyle = color; ctx.strokeStyle = "#020617"; ctx.lineWidth = 1;
+    for (var i = 0; i < pts.length; i++) {
+      ctx.fillRect(pts[i][0] * SCALE - 3, pts[i][1] * SCALE - 3, 6, 6);
+      ctx.strokeRect(pts[i][0] * SCALE - 3, pts[i][1] * SCALE - 3, 6, 6);
+    }
+  }
+  function canvasPoint(event) {
+    var rect = canvas.getBoundingClientRect();
+    return {x: (event.clientX - rect.left) / SCALE, y: (event.clientY - rect.top) / SCALE};
+  }
+  canvas.onmousedown = function (event) {
+    var pt = canvasPoint(event), hit = hitAt(pt.x, pt.y);
+    dragState = {mode: hit ? (hit.handle ? "resize" : "move") : "draw", hit: hit, x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y, original: hit ? cloneBox(hit.box) : null};
+  };
+  canvas.onmousemove = function (event) {
+    var pt, box, dx, dy;
+    if (!dragState) return;
+    pt = canvasPoint(event); dragState.x1 = pt.x; dragState.y1 = pt.y;
+    if (dragState.mode === "move") {
+      dx = Math.round(pt.x - dragState.x0); dy = Math.round(pt.y - dragState.y0);
+      box = {left: dragState.original.left + dx, top: dragState.original.top + dy, right: dragState.original.right + dx, bottom: dragState.original.bottom + dy};
+      applyBox(dragState.hit, box); redraw(); return;
+    }
+    if (dragState.mode === "resize") {
+      box = cloneBox(dragState.original);
+      if (dragState.hit.handle.indexOf("n") >= 0) box.top = pt.y;
+      if (dragState.hit.handle.indexOf("s") >= 0) box.bottom = pt.y;
+      if (dragState.hit.handle.indexOf("w") >= 0) box.left = pt.x;
+      if (dragState.hit.handle.indexOf("e") >= 0) box.right = pt.x;
+      applyBox(dragState.hit, box); redraw(); return;
+    }
+    redraw();
+    drawBox(normalizeBox({left: dragState.x0, top: dragState.y0, right: pt.x, bottom: pt.y}), "#facc15", 2, "draft", false);
+  };
+  canvas.onmouseup = function () {
+    var dx, dy;
+    if (!dragState) return;
+    dx = Math.abs(dragState.x1 - dragState.x0); dy = Math.abs(dragState.y1 - dragState.y0);
+    if (dragState.mode === "draw" && dx > 4 && dy > 4) {
+      draftBox = normalizeBox({left: dragState.x0, top: dragState.y0, right: dragState.x1, bottom: dragState.y1});
+      renderInfo();
+    }
+    dragState = null;
+    redraw();
+  };
+  vid.onloadedmetadata = function () {
+    baseW = vid.videoWidth || 256;
+    baseH = vid.videoHeight || 256;
+    applyPlaybackRate();
+    resizeStage();
+    updatePlaybackUi();
+    redraw();
+  };
+  vid.ontimeupdate = function () { updatePlaybackUi(); redraw(); };
+  vid.onpause = function () { updatePlaybackUi(); redraw(); };
+  vid.onplay = function () { updatePlaybackUi(); redraw(); };
+  vid.onerror = function () {
+    videoFallbackMode = true;
+    vid.style.display = "none";
+    img.style.display = "block";
+    updatePlaybackUi();
+    redraw();
+  };
+  img.onload = function () {
+    if (!videoFallbackMode && vid.style.display !== "none") return;
+    baseW = img.naturalWidth || 256;
+    baseH = img.naturalHeight || 256;
+    resizeStage();
+    updatePlaybackUi();
+    redraw();
+  };
+  function confidenceForSelected() {
+    for (var i = 0; selected && i < targetDetections().length; i++) if (sameBox(targetDetections()[i].bbox, selected)) return targetDetections()[i].confidence || 1.0;
+    return 1.0;
+  }
+  function labelForSelected() {
+    for (var i = 0; selected && i < targetDetections().length; i++) if (sameBox(targetDetections()[i].bbox, selected)) return targetDetections()[i].label || "picked";
+    return "picked";
+  }
+  function savePromptAssignmentChoice() {
+    var issue = currentTaskAssignmentIssue();
+    var selectedTask = taskAssignmentSelectedValue();
+    if (!TASK_ASSIGNMENT_URL || !issue || !selectedTask || currentIdx === null || taskAssignmentSaving) return;
+    taskAssignmentSaving = true;
+    taskAssignmentStatus = "Saving prompt...";
+    taskAssignmentError = false;
+    renderInfo();
+    requestJson("POST", TASK_ASSIGNMENT_URL, {
+      episode_id: currentIdx,
+      selected_task: selectedTask,
+      reason: issue.reason || "",
+    }, function (err, data) {
+      taskAssignmentSaving = false;
+      if (err) {
+        taskAssignmentStatus = err.message;
+        taskAssignmentError = true;
+        renderInfo();
+        return;
+      }
+      if (currentRec && currentRec.original) currentRec.original.task = selectedTask;
+      if (currentRec && currentRec.current) currentRec.current.task = selectedTask;
+      for (var i = 0; i < allEpisodes.length; i++) {
+        if (Number(allEpisodes[i].episode_index) === Number(currentIdx)) {
+          allEpisodes[i].task = selectedTask;
+          break;
+        }
+      }
+      customTaskAssignment = "";
+      taskAssignmentStatus = data && data.result && data.result.message ? data.result.message : "Saved prompt.";
+      taskAssignmentError = false;
+      if (data && data.flag_reasons && !data.flag_reasons[String(currentIdx)]) flagReasons[String(currentIdx)] = [];
+      if (data) setFlagState(data);
+      loadCurrentFlagReason(function () {
+        renderEpisodeList(false);
+        renderInfo();
+      });
+    });
+  }
+  function saveEpisode() {
+    var body;
+    if (currentIdx === null) return;
+    if (selected && manual) ensureTarget(selected);
+    body = {
+      selected: selected ? {bbox: cloneBox(selected), confidence: manual ? 1.0 : confidenceForSelected(), label: manual ? "manual" : labelForSelected()} : null,
+      manual: manual,
+      detections_all_target: targetDetections(),
+      detections_target: targetDetections(),
+      detections_ref: referenceDetections(),
+    };
+    requestJson("POST", API_BASE + "/save/" + currentIdx + query(), body, function (err) {
+      if (err) { showError(err.message, false); return; }
+      loadList(function () { goNext(); });
+    });
+  }
+  function resetEpisode() {
+    if (currentIdx === null) return;
+    requestJson("POST", API_BASE + "/reset/" + currentIdx + query(), {}, function (err) {
+      if (err) { showError(err.message, false); return; }
+      loadList(function () { selectEpisode(currentIdx, false); });
+    });
+  }
+  function goNext() {
+    var pos = -1, i;
+    for (i = 0; i < episodes.length; i++) if (episodes[i].episode_index === currentIdx) pos = i;
+    for (i = pos + 1; i < episodes.length; i++) if (!episodes[i].reviewed) { selectEpisode(episodes[i].episode_index, true); return; }
+    if (episodes.length) selectEpisode(episodes[(pos + 1 + episodes.length) % episodes.length].episode_index, true);
+  }
+  function goPrev() {
+    var pos = -1;
+    for (var i = 0; i < episodes.length; i++) if (episodes[i].episode_index === currentIdx) pos = i;
+    if (pos > 0) selectEpisode(episodes[pos - 1].episode_index, true);
+  }
+  function flagReasonItems(episode) {
+    return (flagReasons || {})[String(episode)] || [];
+  }
+  function isCurrentFlagged() {
+    return currentIdx !== null && flaggedEpisodes.has(Number(currentIdx));
+  }
+  function allFlagReasonOptions() {
+    return (flagReasonGroups.manual || []).concat(flagReasonGroups.auto || []);
+  }
+  function activeFlagReasonOptions() {
+    return flagReasonGroups[selectedFlagMode] || flagReasonGroups.manual || [];
+  }
+  function flagReasonModeFor(reason) {
+    for (var mode in flagReasonGroups) {
+      if (!Object.prototype.hasOwnProperty.call(flagReasonGroups, mode)) continue;
+      var options = flagReasonGroups[mode] || [];
+      for (var i = 0; i < options.length; i++) {
+        if (options[i].value === reason) return mode;
+      }
+    }
+    return null;
+  }
+  function flagReasonLabel(reason) {
+    var value = String(reason || "");
+    var options = allFlagReasonOptions();
+    for (var i = 0; i < options.length; i++) {
+      if (options[i].value === value) return options[i].label;
+    }
+    return flagReasonLabels[value] || value;
+  }
+  function currentFlagReasonText() {
+    var items = flagReasonItems(currentIdx);
+    if (!items.length) return isCurrentFlagged() ? flagReasonLabel("manual_flag") : "";
+    var seen = {};
+    var reasons = [];
+    for (var i = 0; i < items.length; i++) {
+      var reason = items[i] && items[i].reason ? String(items[i].reason) : "unknown";
+      if (!seen[reason]) { seen[reason] = true; reasons.push(flagReasonLabel(reason)); }
+    }
+    return reasons.join(", ");
+  }
+  function setFlagState(data) {
+    flaggedEpisodes = new Set((data && data.flagged_episodes || []).map(Number));
+    if (data && data.flag_reasons) {
+      for (var key in data.flag_reasons) {
+        if (Object.prototype.hasOwnProperty.call(data.flag_reasons, key)) {
+          flagReasons[String(key)] = data.flag_reasons[key] || [];
+        }
+      }
+    }
+    renderEpisodeList(false);
+    if (currentRec) renderInfo();
+  }
+  function flagUrl(extra) {
+    var sep = FLAG_URL.indexOf("?") >= 0 ? "&" : "?";
+    return FLAG_URL + (extra ? sep + extra : "");
+  }
+  function loadFlaggedEpisodes(next) {
+    requestJson("GET", flagUrl("reasons=0"), null, function (err, data) {
+      if (!err && data) setFlagState(data);
+      if (next) next();
+    });
+  }
+  function loadCurrentFlagReason(next) {
+    if (currentIdx === null || !isCurrentFlagged()) {
+      if (next) next();
+      return;
+    }
+    requestJson("GET", flagUrl("reasons=1&episode=" + encodeURIComponent(currentIdx)), null, function (err, data) {
+      if (!err && data && data.flag_reasons) {
+        for (var key in data.flag_reasons) {
+          if (Object.prototype.hasOwnProperty.call(data.flag_reasons, key)) {
+            flagReasons[String(key)] = data.flag_reasons[key] || [];
+          }
+        }
+        if (currentRec) renderInfo();
+      }
+      if (next) next();
+    });
+  }
+  function renderFlagDialog() {
+    var modes = document.getElementById("flagModeRow");
+    var modeHtml = [];
+    for (var modeIdx = 0; modeIdx < flagReasonModes.length; modeIdx++) {
+      var mode = flagReasonModes[modeIdx];
+      modeHtml.push('<button type="button" data-mode="' + esc(mode.value) + '" class="' + (selectedFlagMode === mode.value ? "active" : "") + '">' + esc(mode.label) + "</button>");
+    }
+    modes.innerHTML = modeHtml.join("");
+    var modeButtons = modes.querySelectorAll("button[data-mode]");
+    for (var m = 0; m < modeButtons.length; m++) {
+      modeButtons[m].onclick = function () {
+        selectedFlagMode = this.getAttribute("data-mode") === "auto" ? "auto" : "manual";
+        var active = activeFlagReasonOptions();
+        var found = false;
+        for (var j = 0; j < active.length; j++) {
+          if (active[j].value === selectedFlagReason) found = true;
+        }
+        if (!found) {
+          selectedFlagReason = active.length ? active[0].value : "wrong_prompt";
+          customFlagReason = "";
+        }
+        renderFlagDialog();
+      };
+    }
+    var grid = document.getElementById("flagReasonGrid");
+    var html = [];
+    var options = activeFlagReasonOptions();
+    for (var i = 0; i < options.length; i++) {
+      var opt = options[i];
+      html.push('<label class="' + (selectedFlagReason === opt.value ? "active" : "") + '">' +
+        '<input type="radio" name="flagReason" value="' + esc(opt.value) + '"' + (selectedFlagReason === opt.value ? " checked" : "") + '> ' +
+        esc(opt.label) + "</label>");
+    }
+    grid.innerHTML = html.join("");
+    var radios = grid.querySelectorAll("input[name=flagReason]");
+    for (i = 0; i < radios.length; i++) {
+      radios[i].onchange = function () {
+        selectedFlagReason = this.value;
+        renderFlagDialog();
+      };
+    }
+    document.getElementById("customFlagWrap").style.display = selectedFlagReason === "custom" ? "block" : "none";
+    document.getElementById("customFlagReason").value = customFlagReason;
+    document.getElementById("flagRemoveBtn").style.display = isCurrentFlagged() ? "inline-block" : "none";
+    document.getElementById("flagSaveBtn").textContent = flagSaving ? "Saving..." : "Save flag";
+    document.getElementById("flagDialogTitle").textContent = "Flag episode " + currentIdx;
+  }
+  function openFlagDialog() {
+    if (currentIdx === null) return;
+    var items = flagReasonItems(currentIdx);
+    var currentManual = null;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i] && items[i].source === "viewer_manual") {
+        currentManual = items[i];
+        break;
+      }
+    }
+    var reason = currentManual && currentManual.reason ? String(currentManual.reason) : "wrong_prompt";
+    var mode = flagReasonModeFor(reason);
+    selectedFlagMode = mode || "manual";
+    selectedFlagReason = mode ? reason : "custom";
+    customFlagReason = mode ? "" : reason;
+    flagDialogOpen = true;
+    document.getElementById("flagDialog").classList.add("open");
+    renderFlagDialog();
+  }
+  function closeFlagDialog() {
+    if (flagSaving) return;
+    flagDialogOpen = false;
+    document.getElementById("flagDialog").classList.remove("open");
+  }
+  function resolvedFlagReason() {
+    if (selectedFlagReason === "custom") return String(document.getElementById("customFlagReason").value || "").trim();
+    return selectedFlagReason || "wrong_prompt";
+  }
+  function saveFlagReason() {
+    var reason = resolvedFlagReason();
+    if (!reason || currentIdx === null || flagSaving) return;
+    flagSaving = true;
+    renderFlagDialog();
+    requestJson("POST", FLAG_URL, {episode_id: currentIdx, flagged: true, reason: reason, issue_type: "manual"}, function (err, data) {
+      flagSaving = false;
+      if (err) { showError(err.message, false); renderFlagDialog(); return; }
+      if (data) setFlagState(data);
+      closeFlagDialog();
+    });
+  }
+  function removeFlag() {
+    if (currentIdx === null || flagSaving) return;
+    flagSaving = true;
+    renderFlagDialog();
+    requestJson("POST", FLAG_URL, {episode_id: currentIdx, flagged: false}, function (err, data) {
+      flagSaving = false;
+      if (err) { showError(err.message, false); renderFlagDialog(); return; }
+      if (data) setFlagState(data);
+      closeFlagDialog();
+    });
+  }
+  document.getElementById("variantSelect").onchange = function () { activeVariant = this.value || ""; loadList(function () { if (episodes.length) selectEpisode(episodes[0].episode_index, true); }); };
+  document.getElementById("compareToggle").onchange = function () { if (currentIdx !== null) selectEpisode(currentIdx, false); };
+  document.getElementById("promptFilter").onchange = function () { renderEpisodeList(true); if (episodes.length) selectEpisode(episodes[0].episode_index, true); };
+  document.getElementById("levelFilter").onchange = function () { renderEpisodeList(true); if (episodes.length) selectEpisode(episodes[0].episode_index, true); };
+  document.getElementById("reviewFilter").onchange = function () { renderEpisodeList(true); if (episodes.length) selectEpisode(episodes[0].episode_index, true); };
+  playBtn.onclick = togglePlayback;
+  restartBtn.onclick = function () { if (!videoFallbackMode) { vid.pause(); vid.currentTime = 0; updatePlaybackUi(); redraw(); } };
+  videoSlider.oninput = function () {
+    if (videoFallbackMode) return;
+    isSeekingSlider = true;
+    var duration = Number(vid.duration) || 0;
+    if (duration > 0) vid.currentTime = (Number(this.value) / 1000) * duration;
+    updatePlaybackUi();
+    redraw();
+  };
+  videoSlider.onchange = function () { isSeekingSlider = false; updatePlaybackUi(); redraw(); };
+  speedSelect.onchange = function () { applyPlaybackRate(); };
+  document.getElementById("flagCloseBtn").onclick = closeFlagDialog;
+  document.getElementById("flagCancelBtn").onclick = closeFlagDialog;
+  document.getElementById("flagSaveBtn").onclick = saveFlagReason;
+  document.getElementById("flagRemoveBtn").onclick = removeFlag;
+  document.getElementById("customFlagReason").oninput = function () { customFlagReason = this.value; };
+  document.getElementById("flagDialog").onclick = function (event) {
+    if (event.target === this) closeFlagDialog();
+  };
+  document.getElementById("backgroundTagCloseBtn").onclick = closeBackgroundTagDialog;
+  document.getElementById("backgroundTagCancelBtn").onclick = closeBackgroundTagDialog;
+  document.getElementById("backgroundTagSaveBtn").onclick = saveBackgroundTag;
+  document.getElementById("backgroundColorInput").oninput = renderBackgroundColorPresets;
+  document.getElementById("backgroundTagDialog").onclick = function (event) {
+    if (event.target === this) closeBackgroundTagDialog();
+  };
+  document.onkeydown = function (event) {
+    event = event || window.event;
+    if (flagDialogOpen && event.key === "Escape") { closeFlagDialog(); event.preventDefault(); return; }
+    if (backgroundTagDialogOpen && event.key === "Escape") { closeBackgroundTagDialog(); event.preventDefault(); return; }
+    if (event.target && (
+      event.target.tagName === "INPUT"
+      || event.target.tagName === "TEXTAREA"
+      || event.target.tagName === "SELECT"
+      || event.target.tagName === "BUTTON"
+      || event.target.isContentEditable
+    )) return;
+    if (event.key === "j") { goNext(); event.preventDefault(); }
+    else if (event.key === "k") { goPrev(); event.preventDefault(); }
+    else if (event.key === "ArrowDown") { goNext(); event.preventDefault(); }
+    else if (event.key === "ArrowUp") { goPrev(); event.preventDefault(); }
+    else if (event.key === "ArrowRight") { stepPlaybackRate(1); event.preventDefault(); }
+    else if (event.key === "ArrowLeft") { stepPlaybackRate(-1); event.preventDefault(); }
+    else if (event.key === " ") { togglePlayback(); event.preventDefault(); }
+    else if (event.key === "Enter") { saveEpisode(); event.preventDefault(); }
+    else if (event.key === "Backspace") { draftBox = null; selected = null; manual = false; renderInfo(); redraw(); event.preventDefault(); }
+    else if (event.key === "r") { resetEpisode(); event.preventDefault(); }
+    else if (event.key === "f" || event.key === "F") { openFlagDialog(); event.preventDefault(); }
+    else if (event.key === "b" || event.key === "B") { openBackgroundTagDialog(); event.preventDefault(); }
+  };
+  window.onerror = function (message) { showError("Labeling page error: " + message, false); };
+  resizeStage();
+  try {
+    var savedRate = Number(sessionStorage.getItem("lerobot_labeling_playback_rate"));
+    if (playbackRates().indexOf(savedRate) >= 0) speedSelect.value = String(savedRate);
+  } catch (e) {}
+  applyPlaybackRate();
+  renderVariantBar();
+  renderEpisodeList(false);
+  bindRenderedList();
+  loadFlaggedEpisodes(function () {
+    if (episodes.length) selectEpisode(episodes[0].episode_index, true);
+    loadVariants(function () {
+      loadList(function () {
+        if (currentIdx === null) {
+          if (episodes.length) selectEpisode(episodes[0].episode_index, true);
+          else document.getElementById("infoInner").innerHTML = '<div class="panel">No reviewable labeling records.</div>';
+        }
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ dataset_key }} analysis</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>[x-cloak] { display: none !important; }</style>
+</head>
+<body class="flex h-screen max-h-screen flex-col overflow-hidden bg-slate-950 text-slate-200 font-mono text-sm"
+      x-data="analysisPage()"
+      x-init="init()">
+    {% set page_kind = "Dataset Analysis" %}
+    {% set page_title = dataset_key %}
+    {% set page_subtitle = "Scene, task, cache, stage, exist_label, tag, and duration summaries." %}
+    {% include "visualize_dataset_topbar.html" %}
+
+    <main class="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <header class="mb-4 flex flex-col gap-3 border-b border-slate-800 pb-4 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+                <h1 class="text-lg font-semibold text-slate-100">Dataset Analysis</h1>
+                <p class="mt-1 text-xs text-slate-400">{{ dataset_key }}</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+                <span class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-300"
+                      x-text="busy ? loadingMessage : loaded ? 'ready' : 'not loaded'"></span>
+                <button class="rounded border border-emerald-700 bg-emerald-950 px-3 py-1.5 text-emerald-200 hover:bg-emerald-900 disabled:opacity-50"
+                        @click="refreshAnalysis()"
+                        :disabled="busy">
+                    Refresh analysis
+                </button>
+            </div>
+        </header>
+
+        <template x-if="error">
+            <div class="mb-4 rounded border border-red-800 bg-red-950/50 px-3 py-2 text-red-200" x-text="error"></div>
+        </template>
+
+        <template x-if="busy" x-cloak>
+            <div class="mb-4 rounded border border-sky-900 bg-sky-950/40 px-3 py-3 text-xs text-sky-100">
+                <div class="flex items-center gap-2">
+                    <span class="h-2 w-2 animate-pulse rounded-full bg-sky-300"></span>
+                    <span class="font-semibold">Loading Dataset Analysis</span>
+                </div>
+                <p class="mt-1 text-sky-200/70" x-text="loadingMessage"></p>
+            </div>
+        </template>
+
+        <template x-if="loaded && !busy && episodes.length === 0 && !error" x-cloak>
+            <div class="mb-4 rounded border border-amber-900 bg-amber-950/40 px-3 py-3 text-xs text-amber-100">
+                Analysis loaded, but no episode rows were found. Check whether CSV cache exists for this dataset.
+            </div>
+        </template>
+
+        <section class="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-7">
+            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-3">
+                <div class="text-xs text-slate-500">episodes</div>
+                <div class="mt-1 text-xl font-semibold text-slate-100" x-text="formatInt(baseSummary().total_episodes)"></div>
+            </div>
+            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-3">
+                <div class="text-xs text-slate-500">canonical matched</div>
+                <div class="mt-1 text-xl font-semibold text-emerald-300" x-text="`${canonicalCount()}/${episodes.length}`"></div>
+            </div>
+            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-3">
+                <div class="text-xs text-slate-500">needs review</div>
+                <div class="mt-1 text-xl font-semibold"
+                     :class="reviewRows().length ? 'text-amber-300' : 'text-emerald-300'"
+                     x-text="reviewRows().length"></div>
+            </div>
+            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-3">
+                <div class="text-xs text-slate-500">cached CSV</div>
+                <div class="mt-1 text-xl font-semibold text-slate-100" x-text="`${baseSummary().cached_episodes}/${baseSummary().total_episodes}`"></div>
+            </div>
+            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-3">
+                <div class="text-xs text-slate-500">frames analyzed</div>
+                <div class="mt-1 text-xl font-semibold text-slate-100" x-text="formatInt(baseSummary().total_frames)"></div>
+            </div>
+            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-3">
+                <div class="text-xs text-slate-500">duration</div>
+                <div class="mt-1 text-xl font-semibold text-slate-100" x-text="formatDuration(baseSummary().total_duration_seconds)"></div>
+            </div>
+            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-3">
+                <div class="text-xs text-slate-500">tagged</div>
+                <div class="mt-1 text-xl font-semibold"
+                     :class="taggingMeta().status === 'ready' ? 'text-sky-300' : 'text-slate-500'"
+                     x-text="`${baseSummary().tagged_episodes}/${episodes.length}`"></div>
+            </div>
+        </section>
+
+        <section class="mb-4 rounded-lg border border-slate-800 bg-slate-900">
+            <div class="flex flex-col gap-3 px-4 py-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                    <h2 class="text-sm font-semibold text-slate-100">Cache Status</h2>
+                    <p class="mt-1 text-xs text-slate-500">CSV cache status is shown directly here and on each episode row.</p>
+                </div>
+                <div class="flex flex-wrap gap-2 text-xs">
+                    <template x-for="row in baseSummary().cache_status_distribution || []" :key="row.key">
+                        <button class="rounded border px-2 py-1"
+                                :class="detailFilters.cache === row.key ? 'border-sky-600 bg-sky-950 text-sky-200' : cacheStatusClass(row.key)"
+                                @click="detailFilters.cache = detailFilters.cache === row.key ? '' : row.key">
+                            <span x-text="cacheStatusLabel(row.key)"></span>
+                            <span class="ml-1 text-slate-400" x-text="row.count"></span>
+                        </button>
+                    </template>
+                    <button class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-slate-200 hover:bg-slate-700"
+                            x-show="detailFilters.cache"
+                            @click="detailFilters.cache = ''">
+                        clear cache filter
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <section class="mb-4 rounded-lg border border-slate-800 bg-slate-900">
+            <div class="flex flex-col gap-3 border-b border-slate-800 px-4 py-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                    <h2 class="font-semibold text-slate-100">Tag Analytics</h2>
+                    <p class="mt-1 text-xs text-slate-500">Distribution and filters from the current auto-tagging output.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 text-xs">
+                    <template x-if="activeTagFilters().length">
+                        <button class="rounded border border-sky-700 bg-sky-950 px-2 py-1 text-sky-100 hover:bg-sky-900"
+                                @click="clearTagFilters()">
+                            clear tag filters
+                        </button>
+                    </template>
+                    <span class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-300"
+                          x-text="taggingMeta().status === 'ready' ? `variant: ${taggingMeta().active_variant || 'latest'}` : 'tags missing'"></span>
+                    <span class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-300"
+                          x-text="`${formatInt(baseSummary().tagged_episodes)} tagged / ${formatInt(episodes.length)} total`"></span>
+                    <a class="rounded border border-sky-800 bg-sky-950 px-2 py-1 text-sky-200 hover:bg-sky-900"
+                       :class="taggingMeta().status === 'ready' ? '' : 'pointer-events-none opacity-50'"
+                       :href="taggingMeta().review_url || '#'"
+                       x-text="taggingMeta().status === 'ready' ? 'Open tag review' : 'Run auto-tagging first'"></a>
+                </div>
+            </div>
+            <div class="border-b border-slate-800 px-4 py-3" x-show="activeTagFilters().length">
+                <div class="mb-2 flex flex-wrap items-center gap-2 text-xs">
+                    <span class="text-slate-500">active cohort</span>
+                    <template x-for="filter in activeTagFilters()" :key="`${filter.name}:${filter.value || '*'}`">
+                        <button class="rounded-full border border-sky-700 bg-sky-950 px-2 py-1 text-sky-100 hover:bg-sky-900"
+                                @click="removeTagFilter(filter.name)">
+                            <span x-text="tagFilterLabel(filter)"></span>
+                            <span class="ml-1 text-sky-300">x</span>
+                        </button>
+                    </template>
+                    <span class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-300"
+                          x-text="`${formatInt(detailsRows().length)} episodes · ${fmt(detailsRows().length / Math.max(1, episodes.length) * 100)}`"></span>
+                </div>
+                <div class="text-[11px] text-slate-500">Click another tag value below to build a combined filter.</div>
+            </div>
+            <template x-if="taggingMeta().status !== 'ready'">
+                <div class="px-4 py-4 text-xs text-slate-500">
+                    No tagging output found. Run Auto-tagging first, then refresh Analysis.
+                </div>
+            </template>
+            <div class="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3" x-show="taggingMeta().status === 'ready'">
+                <template x-for="tag in tagSummaryRows(baseSummary())" :key="tag.name">
+                    <div class="rounded border border-slate-800 bg-slate-950 p-3">
+                        <div class="mb-3 flex items-center justify-between gap-3">
+                            <div>
+                                <div class="font-semibold text-slate-100" x-text="tag.name"></div>
+                                <div class="mt-1 text-xs text-slate-500" x-text="`${formatInt(tag.tagged_episodes)} tagged episodes`"></div>
+                            </div>
+                            <button class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 hover:border-sky-700"
+                                    @click="setGlobalTagName(tag.name)">
+                                view episodes
+                            </button>
+                        </div>
+                        <div class="max-h-48 space-y-2 overflow-y-auto pr-1">
+                            <template x-for="value in tag.values" :key="`${tag.name}:${value.key}`">
+                                <button class="w-full rounded border border-slate-800 bg-slate-900 px-3 py-2 text-left hover:border-sky-700"
+                                        :class="isTagFilterActive(tag.name, value.key) ? 'border-sky-600 bg-sky-950 text-sky-100' : ''"
+                                        @click="setGlobalTagFilter(tag.name, value.key)">
+                                    <div class="mb-1 flex justify-between gap-3 text-xs">
+                                        <span class="truncate text-slate-200" x-text="value.label"></span>
+                                        <span class="text-slate-500" x-text="`${formatInt(value.count)} · ${fmt(value.percent)}`"></span>
+                                    </div>
+                                    <div class="h-1.5 overflow-hidden rounded bg-slate-800">
+                                        <div class="h-full bg-sky-500" :style="`width: ${Math.min(value.percent || 0, 100)}%`"></div>
+                                    </div>
+                                    <div class="mt-1 text-[11px] text-slate-500" x-text="`${fmt(value.total_percent)} of all episodes`"></div>
+                                </button>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+                <template x-if="tagSummaryRows(baseSummary()).length === 0">
+                    <div class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs text-slate-500">
+                        Tag files exist, but no scalar tag values are available for distribution.
+                    </div>
+                </template>
+            </div>
+            <div class="border-t border-slate-800 p-4" x-show="activeTagFilters().length">
+                <div class="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                        <h3 class="text-sm font-semibold text-slate-100">Selected Tag Cohort</h3>
+                        <p class="mt-1 text-xs text-slate-500">Other dimensions inside the current filtered subset.</p>
+                    </div>
+                    <a class="rounded border border-sky-800 bg-sky-950 px-2 py-1 text-xs text-sky-200 hover:bg-sky-900"
+                       :href="taggingReviewFilterUrl()">
+                        open filtered review
+                    </a>
+                </div>
+                <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <template x-for="group in cohortDistributionGroups()" :key="group.name">
+                        <div class="rounded border border-slate-800 bg-slate-950 p-3">
+                            <div class="mb-2 flex items-center justify-between gap-2">
+                                <div class="truncate text-xs font-semibold text-slate-300" x-text="group.label"></div>
+                                <span class="text-[11px] text-slate-500" x-text="`${formatInt(group.total)} eps`"></span>
+                            </div>
+                            <div class="space-y-2">
+                                <template x-for="value in group.values.slice(0, 8)" :key="`${group.name}:${value.key}`">
+                                    <button class="w-full rounded border px-2 py-1.5 text-left text-xs"
+                                            :class="value.filter ? (isTagFilterActive(value.filter.name, value.filter.value) ? 'border-sky-600 bg-sky-950 text-sky-100' : 'border-slate-800 bg-slate-900 text-slate-300 hover:border-sky-700') : 'cursor-default border-slate-800 bg-slate-900 text-slate-300'"
+                                            @click="value.filter && setGlobalTagFilter(value.filter.name, value.filter.value)">
+                                        <div class="mb-1 flex items-center justify-between gap-2">
+                                            <span class="truncate" x-text="value.label"></span>
+                                            <span class="shrink-0 text-slate-500" x-text="`${formatInt(value.count)} · ${fmt(value.percent)}`"></span>
+                                        </div>
+                                        <div class="h-1.5 overflow-hidden rounded bg-slate-800">
+                                            <div class="h-full bg-sky-500" :style="`width:${Math.min(value.percent || 0, 100)}%`"></div>
+                                        </div>
+                                    </button>
+                                </template>
+                                <template x-if="group.values.length === 0">
+                                    <p class="rounded border border-slate-800 bg-slate-900 px-2 py-2 text-xs text-slate-500">No values.</p>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </section>
+
+        <section class="mb-4 rounded-lg border border-slate-800 bg-slate-900">
+            <div class="border-b border-slate-800 px-4 py-3">
+                <h2 class="font-semibold text-slate-100">Scene Tabs</h2>
+            </div>
+            <div class="flex flex-wrap gap-2 px-4 py-4">
+                <template x-for="tab in sceneTabs" :key="tab.key">
+                    <button class="rounded border px-3 py-2 text-left text-xs hover:border-sky-700"
+                            :class="activeScene === tab.key ? 'border-sky-600 bg-sky-950 text-sky-200' : tab.key === 'review' && tabCount(tab.key) ? 'border-amber-800 bg-amber-950/40 text-amber-200' : 'border-slate-800 bg-slate-950 text-slate-300'"
+                            @click="setScene(tab.key)">
+                        <div class="font-semibold" x-text="tab.label"></div>
+                        <div class="mt-1 text-[11px] text-slate-500">
+                            <span x-text="`${tabCount(tab.key)} eps · ${fmt(overviewPercent(tab.key))}`"></span>
+                            <span x-show="tab.expected" x-text="` · ${tab.expected}`"></span>
+                        </div>
+                    </button>
+                </template>
+            </div>
+        </section>
+
+        <div class="grid gap-4 xl:grid-cols-[1.35fr_0.9fr]">
+            <section class="rounded-lg border border-slate-800 bg-slate-900">
+                <div class="flex flex-col gap-2 border-b border-slate-800 px-4 py-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                        <h2 class="font-semibold text-slate-100" x-text="matrixTitle()"></h2>
+                        <p class="mt-1 text-xs text-slate-500" x-text="matrixHint()"></p>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2 text-xs" x-show="activeScene === 'pick_group'">
+                        <span class="text-slate-500">pick type</span>
+                        <template x-for="tab in pickSubtypeTabs" :key="tab.key">
+                            <button class="rounded border px-2 py-1"
+                                    :class="activePickScene === tab.key ? 'border-sky-700 bg-sky-950 text-sky-200' : 'border-slate-700 bg-slate-950 text-slate-300'"
+                                    @click="setPickSubtype(tab.key)">
+                                <span x-text="tab.label"></span>
+                                <span class="text-slate-500" x-text="` ${tabCount(tab.key)} · ${fmt(pickSubtypePercent(tab.key))}`"></span>
+                            </button>
+                        </template>
+                    </div>
+                    <div class="flex items-center gap-2 text-xs" x-show="matrixScene() === 'relational_pick'">
+                        <span class="text-slate-500">side</span>
+                        <button class="rounded border px-2 py-1"
+                                :class="relationalSide === 'left' ? 'border-sky-700 bg-sky-950 text-sky-200' : 'border-slate-700 bg-slate-950 text-slate-300'"
+                                @click="relationalSide = 'left'; selectedCell = null">left</button>
+                        <button class="rounded border px-2 py-1"
+                                :class="relationalSide === 'right' ? 'border-sky-700 bg-sky-950 text-sky-200' : 'border-slate-700 bg-slate-950 text-slate-300'"
+                                @click="relationalSide = 'right'; selectedCell = null">right</button>
+                    </div>
+                </div>
+
+                <div class="p-4">
+                    <div x-show="activeScene === 'overview'" class="space-y-4">
+                        <div class="grid gap-3 xl:grid-cols-[0.9fr_1.1fr]">
+                            <div class="rounded border border-slate-800 bg-slate-950 p-4">
+                                <div class="mb-3 flex items-center justify-between">
+                                    <div>
+                                        <div class="font-semibold text-slate-100">Scene Share</div>
+                                        <div class="mt-1 text-xs text-slate-500">Episode distribution by high-level scene.</div>
+                                    </div>
+                                    <span class="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs text-slate-300" x-text="`${formatInt(episodes.length)} eps`"></span>
+                                </div>
+                                <div class="grid gap-4 md:grid-cols-[220px_1fr] md:items-center">
+                                    <div class="relative mx-auto flex h-56 w-56 items-center justify-center rounded-full border border-slate-800"
+                                         :style="donutStyle()">
+                                        <div class="flex h-32 w-32 flex-col items-center justify-center rounded-full border border-slate-800 bg-slate-950">
+                                            <div class="text-2xl font-semibold text-slate-100" x-text="formatInt(episodes.length)"></div>
+                                            <div class="text-xs text-slate-500">episodes</div>
+                                        </div>
+                                    </div>
+                                    <div class="space-y-2">
+                                        <template x-for="segment in sceneDonutSegments()" :key="segment.key">
+                                            <button class="w-full rounded border border-slate-800 bg-slate-900 px-3 py-2 text-left hover:border-sky-700"
+                                                    :class="segment.key === 'other' ? 'cursor-default hover:border-slate-800' : ''"
+                                                    @click="segment.key !== 'other' && setScene(segment.key)">
+                                                <div class="flex items-center justify-between gap-3 text-xs">
+                                                    <div class="flex min-w-0 items-center gap-2">
+                                                        <span class="h-2.5 w-2.5 rounded-full" :style="`background:${segment.color}`"></span>
+                                                        <span class="truncate text-slate-200" x-text="segment.label"></span>
+                                                    </div>
+                                                    <span class="text-slate-400" x-text="`${segment.count} · ${fmt(segment.percent)}`"></span>
+                                                </div>
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="rounded border border-slate-800 bg-slate-950 p-4">
+                                <div class="mb-3 flex items-center justify-between">
+                                    <div>
+                                        <div class="font-semibold text-slate-100">Pick Breakdown</div>
+                                        <div class="mt-1 text-xs text-slate-500">Normal, directional, and relational pick within all Pick episodes.</div>
+                                    </div>
+                                    <span class="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs text-slate-300" x-text="`${tabCount('pick_group')} pick eps`"></span>
+                                </div>
+                                <div class="flex h-8 overflow-hidden rounded border border-slate-800 bg-slate-900">
+                                    <template x-for="segment in pickBarSegments()" :key="segment.key">
+                                        <button class="h-full opacity-90 hover:opacity-100"
+                                                :style="`width:${segment.percent}%; background:${segment.color}`"
+                                                :title="`${segment.label}: ${segment.count} (${fmt(segment.percent)})`"
+                                                @click="setScene('pick_group'); setPickSubtype(segment.key)"></button>
+                                    </template>
+                                </div>
+                                <div class="mt-4 grid gap-2 md:grid-cols-3">
+                                    <template x-for="segment in pickBarSegments()" :key="segment.key">
+                                        <button class="rounded border border-slate-800 bg-slate-900 px-3 py-2 text-left hover:border-sky-700"
+                                                @click="setScene('pick_group'); setPickSubtype(segment.key)">
+                                            <div class="mb-2 flex items-center gap-2 text-xs">
+                                                <span class="h-2.5 w-2.5 rounded-full" :style="`background:${segment.color}`"></span>
+                                                <span class="truncate text-slate-200" x-text="segment.label"></span>
+                                            </div>
+                                            <div class="flex items-end justify-between gap-2">
+                                                <span class="text-xl font-semibold text-slate-100" x-text="segment.count"></span>
+                                                <span class="text-sm font-semibold text-sky-200" x-text="fmt(segment.percent)"></span>
+                                            </div>
+                                        </button>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                            <template x-for="tab in sceneTabs.filter(item => !['overview', 'review'].includes(item.key))" :key="tab.key">
+                            <button class="rounded border border-slate-800 bg-slate-950 p-4 text-left hover:border-sky-700"
+                                    @click="setScene(tab.key)">
+                                <div class="flex items-center justify-between gap-3">
+                                    <span class="font-semibold text-slate-100" x-text="tab.label"></span>
+                                    <span class="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs text-slate-300" x-text="tab.expected"></span>
+                                </div>
+                                <div class="mt-3 flex items-end justify-between gap-3">
+                                    <div>
+                                        <div class="text-2xl font-semibold text-slate-100" x-text="tabCount(tab.key)"></div>
+                                        <div class="text-[11px] uppercase tracking-wide text-slate-500">episodes</div>
+                                    </div>
+                                    <div class="text-right">
+                                        <div class="text-lg font-semibold text-sky-200" x-text="fmt(overviewPercent(tab.key))"></div>
+                                        <div class="text-[11px] uppercase tracking-wide text-slate-500">of dataset</div>
+                                    </div>
+                                </div>
+                                <div class="mt-3 flex justify-between text-[11px] text-slate-500">
+                                    <span>review</span>
+                                    <span x-text="`${sceneReviewCount(tab.key)} · ${fmt(sceneReviewPercent(tab.key))}`"></span>
+                                </div>
+                                <div class="mt-2 h-1.5 overflow-hidden rounded bg-slate-800">
+                                    <div class="h-full bg-sky-500" :style="`width: ${overviewPercent(tab.key)}%`"></div>
+                                </div>
+                                <div x-show="tab.key === 'pick_group'" class="mt-3 space-y-1 border-t border-slate-800 pt-3">
+                                    <template x-for="subtype in pickSubtypeTabs" :key="subtype.key">
+                                        <div class="flex items-center justify-between gap-2 text-[11px]">
+                                            <span class="truncate text-slate-400" x-text="subtype.label"></span>
+                                            <span class="text-slate-300" x-text="`${tabCount(subtype.key)} · ${fmt(pickSubtypePercent(subtype.key))}`"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </button>
+                            </template>
+                        </div>
+                    </div>
+
+                    <div x-show="['give', 'pick', 'place'].includes(matrixScene())" class="grid gap-3 md:grid-cols-4">
+                        <template x-for="object in canonicalObjects()" :key="object">
+                            <button class="rounded border p-4 text-left"
+                                    :class="cellClass({type: 'object', target: object})"
+                                    @click="selectCell({type: 'object', target: object, label: object})">
+                                <div class="text-xs text-slate-500">object</div>
+                                <div class="mt-1 font-semibold" x-text="object"></div>
+                                <div class="mt-3 text-2xl font-semibold" x-text="cellCount({type: 'object', target: object})"></div>
+                                <div class="mt-1 text-[11px]" x-text="`${cellReviewCount({type: 'object', target: object})} review`"></div>
+                            </button>
+                        </template>
+                    </div>
+
+                    <div x-show="matrixScene() === 'directional_pick'" class="overflow-x-auto">
+                        <table class="min-w-full border-separate border-spacing-2 text-left text-xs">
+                            <thead class="text-slate-500">
+                                <tr>
+                                    <th class="px-2 py-1">target</th>
+                                    <template x-for="side in directions()" :key="side">
+                                        <th class="px-2 py-1" x-text="side"></th>
+                                    </template>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="object in canonicalObjects()" :key="object">
+                                    <tr>
+                                        <th class="w-44 px-2 py-2 font-semibold text-slate-300" x-text="object"></th>
+                                        <template x-for="side in directions()" :key="`${object}-${side}`">
+                                            <td>
+                                                <button class="w-full rounded border p-3 text-left"
+                                                        :class="cellClass({type: 'directional', target: object, side})"
+                                                        @click="selectCell({type: 'directional', target: object, side, label: `${object} · ${side}`})">
+                                                    <div class="text-lg font-semibold" x-text="cellCount({type: 'directional', target: object, side})"></div>
+                                                    <div class="text-[11px]" x-text="`${cellReviewCount({type: 'directional', target: object, side})} review`"></div>
+                                                </button>
+                                            </td>
+                                        </template>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div x-show="matrixScene() === 'relational_pick'" class="overflow-x-auto">
+                        <table class="min-w-full border-separate border-spacing-2 text-left text-xs">
+                            <thead class="text-slate-500">
+                                <tr>
+                                    <th class="px-2 py-1">target \\ reference</th>
+                                    <template x-for="reference in canonicalObjects()" :key="reference">
+                                        <th class="px-2 py-1" x-text="reference"></th>
+                                    </template>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="target in canonicalObjects()" :key="target">
+                                    <tr>
+                                        <th class="w-44 px-2 py-2 font-semibold text-slate-300" x-text="target"></th>
+                                        <template x-for="reference in canonicalObjects()" :key="`${target}-${reference}`">
+                                            <td>
+                                                <button class="w-full rounded border p-3 text-left"
+                                                        :disabled="target === reference"
+                                                        :class="cellClass({type: 'relational', target, reference, side: relationalSide}, target === reference)"
+                                                        @click="target !== reference && selectCell({type: 'relational', target, reference, side: relationalSide, label: `${target} ${relationalSide} of ${reference}`})">
+                                                    <div class="text-lg font-semibold" x-text="target === reference ? 'N/A' : cellCount({type: 'relational', target, reference, side: relationalSide})"></div>
+                                                    <div class="text-[11px]" x-text="target === reference ? 'illegal' : `${cellReviewCount({type: 'relational', target, reference, side: relationalSide})} review`"></div>
+                                                </button>
+                                            </td>
+                                        </template>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div x-show="activeScene === 'review'" class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        <template x-for="row in activeSummary().review_reason_distribution || []" :key="row.key">
+                            <button class="rounded border border-amber-900 bg-amber-950/30 p-4 text-left hover:border-amber-600"
+                                    @click="detailFilters.reason = row.key">
+                                <div class="font-semibold text-amber-200" x-text="row.key"></div>
+                                <div class="mt-3 text-2xl font-semibold text-amber-100" x-text="row.count"></div>
+                                <div class="mt-1 text-xs text-amber-300/70" x-text="fmt(row.percent)"></div>
+                            </button>
+                        </template>
+                    </div>
+                </div>
+            </section>
+
+            <aside class="flex flex-col rounded-lg border border-slate-800 bg-slate-900 xl:sticky xl:top-4 xl:max-h-[calc(100vh-7rem)] xl:overflow-hidden">
+                <div class="border-b border-slate-800 px-4 py-3">
+                    <div class="flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                            <h2 class="font-semibold text-slate-100">Details</h2>
+                            <p class="mt-1 truncate text-xs text-slate-500" x-text="detailsTitle()"></p>
+                        </div>
+                        <span class="shrink-0 rounded border border-slate-700 bg-slate-950 px-2 py-0.5 text-xs text-slate-300"
+                              x-text="`${detailsRows().length} eps`"></span>
+                    </div>
+                </div>
+
+                <div class="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+                    <div class="grid grid-cols-4 gap-2 text-xs">
+                        <div class="rounded border border-slate-800 bg-slate-950 px-2 py-2">
+                            <div class="text-[11px] text-slate-500">episodes</div>
+                            <div class="mt-1 font-semibold text-slate-100" x-text="detailsRows().length"></div>
+                        </div>
+                        <div class="rounded border border-slate-800 bg-slate-950 px-2 py-2">
+                            <div class="text-[11px] text-slate-500">frames</div>
+                            <div class="mt-1 font-semibold text-slate-100" x-text="formatInt(detailsSummary().total_frames)"></div>
+                        </div>
+                        <div class="rounded border border-slate-800 bg-slate-950 px-2 py-2">
+                            <div class="text-[11px] text-slate-500">review</div>
+                            <div class="mt-1 font-semibold" :class="reviewCount(detailsRows()) ? 'text-amber-300' : 'text-emerald-300'" x-text="reviewCount(detailsRows())"></div>
+                        </div>
+                        <div class="rounded border border-slate-800 bg-slate-950 px-2 py-2">
+                            <div class="text-[11px] text-slate-500">duration</div>
+                            <div class="mt-1 font-semibold text-slate-100" x-text="formatDuration(detailsSummary().total_duration_seconds)"></div>
+                        </div>
+                    </div>
+
+                    <section class="rounded border border-slate-800 bg-slate-950">
+                        <div class="border-b border-slate-800 px-3 py-2">
+                            <div class="flex items-center justify-between gap-3">
+                                <div>
+                                    <div class="text-xs font-semibold uppercase tracking-wide text-slate-400">Breakdown</div>
+                                    <div class="mt-1 text-[11px] text-slate-500" x-text="detailChartTitle()"></div>
+                                </div>
+                                <button class="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 hover:bg-slate-700"
+                                        x-show="hasDetailFilters()"
+                                        @click="clearDetailFilters()">
+                                    clear filter
+                                </button>
+                            </div>
+                        </div>
+                        <div class="space-y-3 p-3 text-xs">
+                            <div class="flex flex-wrap gap-1">
+                                <template x-for="dim in detailChartDimensions()" :key="dim.key">
+                                    <button class="rounded border px-2 py-1"
+                                            :class="detailChartDimension === dim.key ? 'border-sky-700 bg-sky-950 text-sky-200' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-sky-800'"
+                                            @click="selectDetailChart(dim.key)"
+                                            x-text="dim.label"></button>
+                                </template>
+                            </div>
+
+                            <template x-if="detailChartRows().length === 0">
+                                <p class="rounded border border-slate-800 bg-slate-900 px-3 py-3 text-xs text-slate-500">No values for this dimension.</p>
+                            </template>
+                            <div class="space-y-2">
+                                <template x-for="row in detailChartRows().slice(0, 14)" :key="`${detailChartDimension}:${row.key}`">
+                                    <button class="w-full rounded border px-3 py-2 text-left hover:border-sky-700"
+                                            :class="detailChartRowSelected(row) ? 'border-sky-600 bg-sky-950/70 text-sky-100' : 'border-slate-800 bg-slate-900 text-slate-300'"
+                                            @click="applyDetailChartFilter(row)">
+                                        <div class="mb-1 flex items-center justify-between gap-3">
+                                            <span class="truncate" x-text="row.label"></span>
+                                            <span class="shrink-0 text-slate-500" x-text="`${formatInt(row.count)} · ${fmt(row.percent)}`"></span>
+                                        </div>
+                                        <div class="h-2 overflow-hidden rounded bg-slate-800">
+                                            <div class="h-full rounded"
+                                                 :class="detailChartRowSelected(row) ? 'bg-sky-300' : 'bg-sky-600'"
+                                                 :style="`width: ${Math.min(row.percent || 0, 100)}%`"></div>
+                                        </div>
+                                    </button>
+                                </template>
+                            </div>
+                        </div>
+                    </section>
+
+                    <div class="min-h-0">
+                        <div class="mb-2 flex items-center justify-between">
+                            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500">Episodes</div>
+                            <span class="text-xs text-slate-500" x-text="detailsRows().length > 120 ? `first 120 / ${detailsRows().length}` : `${detailsRows().length} shown`"></span>
+                        </div>
+                        <div class="max-h-[420px] overflow-auto rounded border border-slate-800 bg-slate-950">
+                            <table class="min-w-full table-fixed text-left text-xs">
+                                <thead class="sticky top-0 bg-slate-950 text-slate-500">
+                                    <tr>
+                                        <th class="w-16 px-2 py-2">ep</th>
+                                        <th class="w-20 px-2 py-2">cache</th>
+                                        <th class="w-16 px-2 py-2">review</th>
+                                        <th class="px-2 py-2">task</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-if="detailsRows().length === 0">
+                                        <tr>
+                                            <td colspan="4" class="px-3 py-3 text-xs text-slate-500" x-text="busy && !loaded ? 'Loading episode rows...' : 'No matching episodes.'"></td>
+                                        </tr>
+                                    </template>
+                                    <template x-for="row in detailsRows().slice(0, 120)" :key="row.episode_id">
+                                        <tr class="border-t border-slate-800 hover:bg-slate-800/60">
+                                            <td class="px-2 py-2">
+                                                <a class="font-semibold text-sky-300 hover:text-sky-200 hover:underline"
+                                                   :href="`/{{ dataset_key }}/episode_${row.episode_id}`"
+                                                   x-text="row.episode_id"></a>
+                                            </td>
+                                            <td class="px-2 py-2">
+                                                <span class="rounded border px-1.5 py-0.5 text-[10px]"
+                                                      :class="cacheStatusClass(row.cache_status)"
+                                                      x-text="cacheStatusLabel(row.cache_status)"></span>
+                                            </td>
+                                            <td class="px-2 py-2">
+                                                <span class="rounded border px-1.5 py-0.5 text-[10px]"
+                                                      :class="(row.review_reasons || []).length ? 'border-amber-800 bg-amber-950 text-amber-300' : 'border-emerald-800 bg-emerald-950 text-emerald-300'"
+                                                      x-text="(row.review_reasons || []).length ? 'yes' : 'ok'"></span>
+                                            </td>
+                                            <td class="truncate px-2 py-2 text-slate-400" :title="row.task" x-text="row.task"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </div>
+
+        <section class="mt-4 rounded-lg border border-slate-800 bg-slate-900">
+            <div class="flex flex-col gap-2 border-b border-slate-800 px-4 py-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                    <h2 class="font-semibold text-slate-100">Needs Review</h2>
+                    <p class="mt-1 text-xs text-slate-500">Unknown and anomalous rows are kept separate from normal task categories.</p>
+                </div>
+                <span class="text-xs text-slate-400" x-text="`${reviewRows().length} episodes`"></span>
+            </div>
+            <div class="max-h-[420px] overflow-auto">
+                <table class="min-w-full text-left text-xs">
+                    <thead class="sticky top-0 bg-slate-900 text-slate-400">
+                        <tr>
+                            <th class="px-3 py-2">episode</th>
+                            <th class="px-3 py-2">reasons</th>
+                            <th class="px-3 py-2">scene</th>
+                            <th class="px-3 py-2">target</th>
+                            <th class="px-3 py-2">cache</th>
+                            <th class="px-3 py-2">task</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="row in reviewRows().slice(0, 500)" :key="row.episode_id">
+                            <tr class="border-t border-slate-800 hover:bg-slate-800/50">
+                                <td class="px-3 py-2">
+                                    <a class="text-sky-300 hover:text-sky-200 hover:underline"
+                                       :href="`/{{ dataset_key }}/episode_${row.episode_id}`"
+                                       x-text="row.episode_id"></a>
+                                </td>
+                                <td class="max-w-[320px] px-3 py-2">
+                                    <div class="flex flex-wrap gap-1">
+                                        <template x-for="reason in row.review_reasons || []" :key="reason">
+                                            <button class="rounded border border-amber-800 bg-amber-950 px-2 py-0.5 text-amber-300"
+                                                    @click="activeScene = 'review'; detailFilters.reason = reason; selectedCell = null"
+                                                    x-text="reason"></button>
+                                        </template>
+                                    </div>
+                                </td>
+                                <td class="px-3 py-2" x-text="row.scene_label || row.scene"></td>
+                                <td class="px-3 py-2" x-text="row.target"></td>
+                                <td class="px-3 py-2">
+                                    <span class="rounded border px-2 py-0.5 text-[11px]"
+                                          :class="cacheStatusClass(row.cache_status)"
+                                          x-text="cacheStatusLabel(row.cache_status)"></span>
+                                </td>
+                                <td class="max-w-[520px] truncate px-3 py-2 text-slate-400" x-text="row.task"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+                <template x-if="reviewRows().length === 0">
+                    <p class="px-4 py-4 text-xs text-emerald-300">No review episodes.</p>
+                </template>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        function analysisPage() {
+            return {
+                summary: {},
+                episodes: [],
+                busy: false,
+                loaded: false,
+                loadingMessage: 'loading',
+                error: '',
+                activeScene: 'overview',
+                activePickScene: 'pick',
+                relationalSide: 'left',
+                selectedCell: null,
+                detailFilters: {
+                    stage: '',
+                    exist: '',
+                    existValue: '',
+                    duration: '',
+                    cache: '',
+                    missingCsv: false,
+                    reason: '',
+                    tagName: '',
+                    tagValue: '',
+                    tagFilters: []
+                },
+                detailChartDimension: 'duration',
+                sceneTabs: [
+                    {key: 'overview', label: 'Overview', expected: ''},
+                    {key: 'give', label: 'Give', expected: '4 tasks', color: '#38bdf8'},
+                    {key: 'pick_group', label: 'Pick', expected: '36 tasks', color: '#22c55e'},
+                    {key: 'place', label: 'Place', expected: '1 task', color: '#f59e0b'},
+                    {key: 'review', label: 'Needs Review', expected: ''}
+                ],
+                pickSubtypeTabs: [
+                    {key: 'pick', label: 'Normal Pick', expected: '4 tasks', color: '#84cc16'},
+                    {key: 'directional_pick', label: 'Directional Pick', expected: '8 tasks', color: '#06b6d4'},
+                    {key: 'relational_pick', label: 'Relational Pick', expected: '24 tasks', color: '#8b5cf6'}
+                ],
+                async init() {
+                    await this.loadAnalysis();
+                },
+                async requestJson(url, payload = null) {
+                    const response = await fetch(url, {
+                        method: payload ? 'POST' : 'GET',
+                        headers: payload ? {'Content-Type': 'application/json'} : {},
+                        body: payload ? JSON.stringify(payload) : null
+                    });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || `request failed: ${response.status}`);
+                    return data;
+                },
+                async loadAnalysis() {
+                    this.busy = true;
+                    this.loaded = false;
+                    this.loadingMessage = 'Reading analysis summary...';
+                    this.error = '';
+                    try {
+                        const summaryData = await this.requestJson('/api/analysis/{{ dataset_namespace }}/{{ dataset_name }}/summary');
+                        this.summary = summaryData.summary || {};
+                        this.loadingMessage = 'Reading episode analysis rows...';
+                        const episodeData = await this.requestJson('/api/analysis/{{ dataset_namespace }}/{{ dataset_name }}/episodes');
+                        this.episodes = episodeData.episodes || [];
+                        this.loaded = true;
+                    } catch (err) {
+                        this.error = err.message;
+                    } finally {
+                        this.loadingMessage = 'ready';
+                        this.busy = false;
+                    }
+                },
+                async refreshAnalysis() {
+                    this.busy = true;
+                    this.loadingMessage = 'Rebuilding analysis cache...';
+                    this.error = '';
+                    try {
+                        const data = await this.requestJson('/api/analysis/{{ dataset_namespace }}/{{ dataset_name }}/refresh', {});
+                        this.summary = data.summary || {};
+                        this.episodes = data.episodes || [];
+                        this.loaded = true;
+                        this.selectedCell = null;
+                    } catch (err) {
+                        this.error = err.message;
+                    } finally {
+                        this.loadingMessage = 'ready';
+                        this.busy = false;
+                    }
+                },
+                canonicalObjects() {
+                    return this.summary.canonical_objects || ['yellow duck', 'brown dog', 'orange lion', 'green dinosaur'];
+                },
+                directions() {
+                    return this.summary.canonical_directions || ['left', 'right'];
+                },
+                setScene(scene) {
+                    this.activeScene = scene;
+                    if (scene === 'pick_group') this.activePickScene = 'pick';
+                    this.selectedCell = null;
+                    this.clearDetailFilters();
+                },
+                setPickSubtype(scene) {
+                    this.activePickScene = scene;
+                    this.selectedCell = null;
+                    this.clearDetailFilters();
+                },
+                selectCell(cell) {
+                    this.selectedCell = cell;
+                    this.clearDetailFilters();
+                },
+                clearDetailFilters() {
+                    this.detailFilters = {
+                        stage: '',
+                        exist: '',
+                        existValue: '',
+                        duration: '',
+                        cache: '',
+                        missingCsv: false,
+                        reason: '',
+                        tagName: '',
+                        tagValue: '',
+                        tagFilters: []
+                    };
+                },
+                reviewRows() {
+                    return this.episodes.filter(row => (row.review_reasons || []).length > 0);
+                },
+                canonicalCount() {
+                    return this.episodes.filter(row => row.is_canonical).length;
+                },
+                rowsForScene(scene = this.activeScene) {
+                    if (scene === 'overview') return this.episodes;
+                    if (scene === 'review') return this.reviewRows();
+                    if (scene === 'pick_group') {
+                        const pickScenes = ['pick', 'directional_pick', 'relational_pick'];
+                        return this.episodes.filter(row => pickScenes.includes(row.scene) || pickScenes.includes(row.task_type));
+                    }
+                    return this.episodes.filter(row => row.scene === scene || row.task_type === scene);
+                },
+                matrixScene() {
+                    return this.activeScene === 'pick_group' ? this.activePickScene : this.activeScene;
+                },
+                tabCount(scene) {
+                    return this.rowsForScene(scene).length;
+                },
+                overviewPercent(scene) {
+                    const total = Math.max(1, this.episodes.length);
+                    return Math.min(this.tabCount(scene) / total * 100, 100);
+                },
+                pickSubtypePercent(scene) {
+                    const total = Math.max(1, this.tabCount('pick_group'));
+                    return Math.min(this.tabCount(scene) / total * 100, 100);
+                },
+                sceneReviewCount(scene) {
+                    return this.reviewCount(this.rowsForScene(scene));
+                },
+                sceneReviewPercent(scene) {
+                    const total = Math.max(1, this.tabCount(scene));
+                    return Math.min(this.sceneReviewCount(scene) / total * 100, 100);
+                },
+                overviewSceneTabs() {
+                    return this.sceneTabs.filter(item => !['overview', 'review'].includes(item.key));
+                },
+                sceneDonutSegments() {
+                    const total = Math.max(1, this.episodes.length);
+                    const sceneTabs = this.overviewSceneTabs();
+                    const knownCount = sceneTabs.reduce((acc, tab) => acc + this.tabCount(tab.key), 0);
+                    const tabs = [...sceneTabs];
+                    const otherCount = Math.max(0, this.episodes.length - knownCount);
+                    if (otherCount > 0) {
+                        tabs.push({key: 'other', label: 'Other / Unknown', color: '#64748b', count: otherCount});
+                    }
+                    return tabs.map(tab => {
+                        const count = tab.count === undefined ? this.tabCount(tab.key) : tab.count;
+                        const percent = count / total * 100;
+                        const segment = {
+                            key: tab.key,
+                            label: tab.label,
+                            count,
+                            percent,
+                            color: tab.color || '#38bdf8',
+                        };
+                        return segment;
+                    });
+                },
+                donutStyle() {
+                    const total = Math.max(1, this.episodes.length);
+                    let start = 0;
+                    const stops = this.sceneDonutSegments()
+                        .filter(segment => segment.count > 0)
+                        .map(segment => {
+                            const end = start + (segment.count / total * 360);
+                            const stop = `${segment.color} ${start.toFixed(2)}deg ${end.toFixed(2)}deg`;
+                            start = end;
+                            return stop;
+                        });
+                    return `background: conic-gradient(${stops.length ? stops.join(', ') : '#1e293b 0deg 360deg'})`;
+                },
+                pickBarSegments() {
+                    const total = Math.max(1, this.tabCount('pick_group'));
+                    return this.pickSubtypeTabs.map(tab => {
+                        const count = this.tabCount(tab.key);
+                        return {
+                            key: tab.key,
+                            label: tab.label,
+                            count,
+                            percent: Math.min(count / total * 100, 100),
+                            color: tab.color || '#38bdf8',
+                        };
+                    });
+                },
+                matrixTitle() {
+                    const tab = this.sceneTabs.find(item => item.key === this.activeScene);
+                    if (this.activeScene === 'overview') return 'Canonical Overview';
+                    if (this.activeScene === 'review') return 'Review Reasons';
+                    if (this.activeScene === 'pick_group') {
+                        const subtype = this.pickSubtypeTabs.find(item => item.key === this.activePickScene);
+                        return `${subtype ? subtype.label : 'Pick'} Coverage Matrix`;
+                    }
+                    return `${tab ? tab.label : this.activeScene} Coverage Matrix`;
+                },
+                matrixHint() {
+                    if (this.activeScene === 'overview') return 'Use scene tabs to inspect the canonical task space.';
+                    if (this.activeScene === 'review') return 'Click a reason to inspect affected episodes in the details panel.';
+                    if (this.matrixScene() === 'relational_pick') return 'Target equals reference is illegal and shown as N/A.';
+                    return 'Click a cell to drill down into episodes, duration, stage, and exist_label distributions.';
+                },
+                rowMatchesCell(row, cell) {
+                    if (!cell) return true;
+                    if (cell.target && row.target !== cell.target) return false;
+                    if (cell.side && row.side !== cell.side) return false;
+                    if (cell.reference && row.reference !== cell.reference) return false;
+                    return true;
+                },
+                cellRows(cell) {
+                    return this.rowsForScene(this.matrixScene()).filter(row => this.rowMatchesCell(row, cell));
+                },
+                cellCount(cell) {
+                    return this.cellRows(cell).length;
+                },
+                cellReviewCount(cell) {
+                    return this.reviewCount(this.cellRows(cell));
+                },
+                isSelectedCell(cell) {
+                    return JSON.stringify(cell || null) === JSON.stringify(this.selectedCell || null);
+                },
+                cellClass(cell, illegal = false) {
+                    if (illegal) return 'border-slate-800 bg-slate-950/40 text-slate-600 cursor-not-allowed';
+                    const count = this.cellCount(cell);
+                    const reviews = this.cellReviewCount(cell);
+                    if (this.isSelectedCell(cell)) return 'border-sky-500 bg-sky-950 text-sky-100';
+                    if (count === 0) return 'border-slate-800 bg-slate-950 text-slate-500 hover:border-slate-600';
+                    if (reviews > 0) return 'border-amber-800 bg-amber-950/40 text-amber-200 hover:border-amber-600';
+                    return 'border-emerald-800 bg-emerald-950/40 text-emerald-200 hover:border-emerald-600';
+                },
+                activeRows() {
+                    return this.rowsForScene(this.matrixScene()).filter(row => this.rowMatchesCell(row, this.selectedCell));
+                },
+                detailsRows() {
+                    return this.activeRows().filter(row => {
+                        if (this.detailFilters.stage && !(row.stage_counts || {}).hasOwnProperty(this.detailFilters.stage)) return false;
+                        if (this.detailFilters.exist) {
+                            const counts = this.existCountsForRow(row, this.detailFilters.exist);
+                            if (this.detailFilters.existValue) {
+                                if (Number((counts || {})[this.detailFilters.existValue] || 0) <= 0) return false;
+                            } else if (Number((counts || {}).true || 0) <= 0) {
+                                return false;
+                            }
+                        }
+                        if (this.detailFilters.duration) {
+                            if (['missing_csv', 'csv_read_error'].includes(row.cache_status)) return false;
+                            const bucket = row.duration_bucket || this.durationBucket(Number(row.duration_seconds || 0));
+                            if (bucket !== this.detailFilters.duration) return false;
+                        }
+                        if (this.detailFilters.cache && row.cache_status !== this.detailFilters.cache) return false;
+                        if (this.detailFilters.missingCsv && row.cache_status !== 'missing_csv') return false;
+                        if (this.detailFilters.reason && !(row.review_reasons || []).includes(this.detailFilters.reason)) return false;
+                        for (const filter of this.activeTagFilters()) {
+                            if (!this.rowMatchesTagFilter(row, filter)) return false;
+                        }
+                        if (this.detailFilters.tagName) {
+                            const tags = row.tags || {};
+                            if (!Object.prototype.hasOwnProperty.call(tags, this.detailFilters.tagName)) return false;
+                            if (this.detailFilters.tagValue && this.normalizedTagKey(this.detailFilters.tagName, tags[this.detailFilters.tagName]) !== this.detailFilters.tagValue) return false;
+                        }
+                        return true;
+                    });
+                },
+                detailsTitle() {
+                    const tab = this.sceneTabs.find(item => item.key === this.activeScene);
+                    const pickSubtype = this.pickSubtypeTabs.find(item => item.key === this.activePickScene);
+                    const scene = this.activeScene === 'pick_group'
+                        ? `Pick · ${pickSubtype ? pickSubtype.label : this.activePickScene}`
+                        : (tab ? tab.label : this.activeScene);
+                    const base = this.selectedCell ? `${scene} · ${this.selectedCell.label}` : scene;
+                    const tagText = this.activeTagFilters().map(filter => this.tagFilterLabel(filter)).join(' + ');
+                    return tagText ? `${base} · ${tagText}` : base;
+                },
+                activeSummary() {
+                    return this.summaryFor(this.activeRows());
+                },
+                baseSummary() {
+                    return this.summaryFor(this.episodes);
+                },
+                detailsSummary() {
+                    return this.summaryFor(this.detailsRows());
+                },
+                hasDetailFilters() {
+                    return Boolean(
+                        this.detailFilters.stage ||
+                        this.detailFilters.exist ||
+                        this.detailFilters.existValue ||
+                        this.detailFilters.duration ||
+                        this.detailFilters.cache ||
+                        this.detailFilters.missingCsv ||
+                        this.detailFilters.reason ||
+                        this.detailFilters.tagName ||
+                        this.detailFilters.tagValue ||
+                        this.activeTagFilters().length
+                    );
+                },
+                detailChartDimensions() {
+                    const summary = this.activeSummary();
+                    const dims = [
+                        {key: 'duration', label: 'Duration'},
+                        {key: 'cache', label: 'Cache'},
+                        {key: 'stage', label: 'Stage'},
+                        {key: 'exist', label: 'exist_label'},
+                    ];
+                    if ((summary.review_reason_distribution || []).length > 0) {
+                        dims.push({key: 'review', label: 'Review'});
+                    }
+                    for (const tag of this.tagSummaryRows(summary)) {
+                        dims.push({key: `tag:${tag.name}`, label: tag.name});
+                    }
+                    return dims;
+                },
+                selectDetailChart(key) {
+                    this.detailChartDimension = key;
+                },
+                detailChartTitle() {
+                    if (this.detailChartDimension.startsWith('tag:')) {
+                        return `Tag distribution: ${this.detailChartDimension.slice(4)}`;
+                    }
+                    const labels = {
+                        duration: 'Episode duration histogram',
+                        cache: 'CSV cache status',
+                        stage: 'Frame distribution by stage',
+                        exist: this.scalarExistKey(this.activeSummary()) ? 'Episodes by exist_label value' : 'Episodes containing each exist_label',
+                        review: 'Episodes by review reason',
+                    };
+                    return labels[this.detailChartDimension] || 'Distribution';
+                },
+                isScalarExistKey(key) {
+                    return key === 'exist_label' || key === 'exist_label_0';
+                },
+                scalarExistKey(summary) {
+                    const rows = summary && summary.exist_distribution ? summary.exist_distribution : [];
+                    return rows.length === 1 && this.isScalarExistKey(rows[0].key) ? rows[0].key : '';
+                },
+                existCountsForRow(row, key) {
+                    const counts = row.exist_counts || {};
+                    if (counts[key]) return counts[key];
+                    if (key === 'exist_label' && counts.exist_label_0) return counts.exist_label_0;
+                    if (key === 'exist_label_0' && counts.exist_label) return counts.exist_label;
+                    return null;
+                },
+                scalarExistRows(summary) {
+                    const key = this.scalarExistKey(summary);
+                    if (!key) return null;
+                    const counts = {true: 0, false: 0, missing: 0};
+                    for (const row of this.activeRows()) {
+                        const rowCounts = this.existCountsForRow(row, key);
+                        if (!rowCounts) {
+                            counts.missing += 1;
+                        } else if (Number(rowCounts.true || 0) > 0) {
+                            counts.true += 1;
+                        } else if (Number(rowCounts.false || 0) > 0) {
+                            counts.false += 1;
+                        } else {
+                            counts.missing += 1;
+                        }
+                    }
+                    const total = Math.max(1, this.activeRows().length);
+                    return [
+                        {key: `${key}:true`, label: 'exist_label=1', count: counts.true, percent: counts.true / total * 100, filter: {exist: key, existValue: 'true'}},
+                        {key: `${key}:false`, label: 'exist_label=0', count: counts.false, percent: counts.false / total * 100, filter: {exist: key, existValue: 'false'}},
+                        {key: `${key}:missing`, label: 'exist_label missing', count: counts.missing, percent: counts.missing / total * 100, filter: {exist: key, existValue: 'missing'}},
+                    ].filter(row => row.count > 0);
+                },
+                detailChartRows() {
+                    const summary = this.activeSummary();
+                    if (this.detailChartDimension === 'cache') {
+                        return (summary.cache_status_distribution || []).map(row => ({
+                            key: row.key,
+                            label: this.cacheStatusLabel(row.key),
+                            count: row.count,
+                            percent: row.percent,
+                            filter: {cache: row.key},
+                        }));
+                    }
+                    if (this.detailChartDimension === 'stage') {
+                        return (summary.stage_distribution || []).map(row => ({
+                            key: row.key,
+                            label: `stage ${row.key}`,
+                            count: row.count,
+                            percent: row.percent,
+                            filter: {stage: row.key},
+                        }));
+                    }
+                    if (this.detailChartDimension === 'exist') {
+                        const scalarRows = this.scalarExistRows(summary);
+                        if (scalarRows) return scalarRows;
+                        return (summary.exist_distribution || []).map(row => ({
+                            key: row.key,
+                            label: row.key,
+                            count: row.episode_true,
+                            percent: row.episode_true_percent,
+                            filter: {exist: row.key},
+                        })).filter(row => row.count > 0);
+                    }
+                    if (this.detailChartDimension === 'review') {
+                        return (summary.review_reason_distribution || []).map(row => ({
+                            key: row.key,
+                            label: row.key,
+                            count: row.count,
+                            percent: row.percent,
+                            filter: {reason: row.key},
+                        }));
+                    }
+                    if (this.detailChartDimension.startsWith('tag:')) {
+                        const tagName = this.detailChartDimension.slice(4);
+                        const tag = this.tagSummaryRows(summary).find(item => item.name === tagName);
+                        return tag ? tag.values.map(row => ({
+                            key: row.key,
+                            label: row.label,
+                            count: row.count,
+                            percent: row.percent,
+                            filter: {tagName, tagValue: row.key},
+                        })) : [];
+                    }
+                    return (summary.duration_distribution || []).filter(row => row.count > 0).map(row => ({
+                        key: row.key,
+                        label: row.key,
+                        count: row.count,
+                        percent: row.percent,
+                        filter: {duration: row.key},
+                    }));
+                },
+                detailChartRowSelected(row) {
+                    const filter = row.filter || {};
+                    if (filter.tagName) return this.isTagFilterActive(filter.tagName, filter.tagValue);
+                    return Object.entries(filter).every(([key, value]) => this.detailFilters[key] === value);
+                },
+                applyDetailChartFilter(row) {
+                    const filter = row.filter || {};
+                    if (filter.tagName) {
+                        this.toggleTagFilter(filter.tagName, filter.tagValue);
+                        return;
+                    }
+                    if (this.detailChartRowSelected(row)) {
+                        for (const key of Object.keys(filter)) {
+                            this.detailFilters[key] = '';
+                        }
+                        if ('tagName' in filter) this.detailFilters.tagValue = '';
+                        if ('exist' in filter) this.detailFilters.existValue = '';
+                        return;
+                    }
+                    for (const key of ['stage', 'exist', 'existValue', 'duration', 'cache', 'reason', 'tagName', 'tagValue']) {
+                        this.detailFilters[key] = '';
+                    }
+                    this.detailFilters.missingCsv = false;
+                    Object.assign(this.detailFilters, filter);
+                },
+                reviewCount(rows) {
+                    return rows.filter(row => (row.review_reasons || []).length > 0).length;
+                },
+                taggingMeta() {
+                    return this.summary.tagging || {status: 'missing', active_variant: null, review_url: ''};
+                },
+                summaryFor(rows) {
+                    const sceneCounts = {};
+                    const targetCounts = {};
+                    const canonicalTaskCounts = {};
+                    const taskTypeCounts = {};
+                    const sideCounts = {};
+                    const referenceCounts = {};
+                    const reviewReasonCounts = {};
+                    const cacheStatusCounts = {};
+                    const stageCounts = {};
+                    const stageSeconds = {};
+                    const existCounts = {};
+                    const existEpisodeTrue = {};
+                    const tagCounts = {};
+                    const tagEpisodeCounts = {};
+                    const durationCounts = {};
+                    let totalFrames = 0;
+                    let totalDuration = 0;
+                    let durationRows = 0;
+                    let taggedEpisodes = 0;
+                    const missingCsv = [];
+                    const sampledCsv = [];
+
+                    for (const row of rows) {
+                        const sceneKey = row.scene_label || row.scene || 'unknown';
+                        const targetKey = row.target || 'unknown';
+                        const canonicalTask = row.canonical_task || row.task || 'unknown';
+                        const taskType = row.task_type || row.scene || 'unknown';
+                        sceneCounts[sceneKey] = (sceneCounts[sceneKey] || 0) + 1;
+                        targetCounts[targetKey] = (targetCounts[targetKey] || 0) + 1;
+                        canonicalTaskCounts[canonicalTask] = (canonicalTaskCounts[canonicalTask] || 0) + 1;
+                        taskTypeCounts[taskType] = (taskTypeCounts[taskType] || 0) + 1;
+                        if (row.side) sideCounts[row.side] = (sideCounts[row.side] || 0) + 1;
+                        if (row.reference) referenceCounts[row.reference] = (referenceCounts[row.reference] || 0) + 1;
+                        const cacheStatus = row.cache_status || 'unknown';
+                        cacheStatusCounts[cacheStatus] = (cacheStatusCounts[cacheStatus] || 0) + 1;
+                        for (const reason of row.review_reasons || []) {
+                            reviewReasonCounts[reason] = (reviewReasonCounts[reason] || 0) + 1;
+                        }
+                        totalFrames += Number(row.frames || 0);
+                        totalDuration += Number(row.duration_seconds || 0);
+                        if (['missing_csv', 'csv_read_error'].includes(row.cache_status)) missingCsv.push(row.episode_id);
+                        if (row.cache_status === 'sampled') sampledCsv.push(row.episode_id);
+                        if (!['missing_csv', 'csv_read_error'].includes(row.cache_status)) {
+                            const bucket = row.duration_bucket || this.durationBucket(Number(row.duration_seconds || 0));
+                            durationCounts[bucket] = (durationCounts[bucket] || 0) + 1;
+                            durationRows += 1;
+                        }
+                        let hasAnyTag = false;
+                        for (const [name, value] of Object.entries(row.tags || {})) {
+                            if (value === null || value === undefined || value === '') {
+                                if (name !== 'object_count') continue;
+                            }
+                            hasAnyTag = true;
+                            if (!this.isDiscreteTagValue(value)) continue;
+                            const key = this.normalizedTagKey(name, value);
+                            if (!tagCounts[name]) tagCounts[name] = {};
+                            tagCounts[name][key] = (tagCounts[name][key] || 0) + 1;
+                            tagEpisodeCounts[name] = (tagEpisodeCounts[name] || 0) + 1;
+                        }
+                        if (hasAnyTag) taggedEpisodes += 1;
+
+                        const secondsPerFrame = row.frames ? Number(row.duration_seconds || 0) / Number(row.frames) : 0;
+                        for (const [stage, countValue] of Object.entries(row.stage_counts || {})) {
+                            const count = Number(countValue || 0);
+                            stageCounts[stage] = (stageCounts[stage] || 0) + count;
+                            stageSeconds[stage] = (stageSeconds[stage] || 0) + count * secondsPerFrame;
+                        }
+
+                        for (const [label, counts] of Object.entries(row.exist_counts || {})) {
+                            if (!existCounts[label]) existCounts[label] = {true: 0, false: 0, missing: 0};
+                            existCounts[label].true += Number(counts.true || 0);
+                            existCounts[label].false += Number(counts.false || 0);
+                            existCounts[label].missing += Number(counts.missing || 0);
+                            if (Number(counts.true || 0) > 0) {
+                                existEpisodeTrue[label] = (existEpisodeTrue[label] || 0) + 1;
+                            }
+                        }
+                    }
+
+                    const stageFrameTotal = Object.values(stageCounts).reduce((acc, value) => acc + Number(value || 0), 0);
+                    return {
+                        total_episodes: rows.length,
+                        cached_episodes: rows.length - missingCsv.length,
+                        missing_csv_episodes: missingCsv,
+                        sampled_csv_episodes: sampledCsv,
+                        total_frames: totalFrames,
+                        total_duration_seconds: totalDuration,
+                        scene_distribution: this.counterItems(sceneCounts, rows.length),
+                        target_distribution: this.counterItems(targetCounts, rows.length),
+                        canonical_task_distribution: this.counterItems(canonicalTaskCounts, rows.length),
+                        task_type_distribution: this.counterItems(taskTypeCounts, rows.length),
+                        side_distribution: this.counterItems(sideCounts),
+                        reference_distribution: this.counterItems(referenceCounts),
+                        review_reason_distribution: this.counterItems(reviewReasonCounts),
+                        cache_status_distribution: this.cacheStatusItems(cacheStatusCounts),
+                        stage_distribution: this.stageItems(stageCounts, stageFrameTotal),
+                        duration_distribution: this.durationBuckets().map(key => {
+                            const count = Number(durationCounts[key] || 0);
+                            return {
+                                key,
+                                count,
+                                percent: durationRows ? count / durationRows * 100 : 0
+                            };
+                        }),
+                        stage_seconds: Object.entries(stageSeconds)
+                            .sort((a, b) => Number(a[0]) - Number(b[0]))
+                            .map(([key, seconds]) => ({
+                                key,
+                                seconds,
+                                percent: totalDuration ? Number(seconds || 0) / totalDuration * 100 : 0
+                            })),
+                        exist_distribution: Object.entries(existCounts)
+                            .sort((a, b) => a[0].localeCompare(b[0]))
+                            .map(([key, counts]) => {
+                                const total = counts.true + counts.false + counts.missing;
+                                return {
+                                    key,
+                                    true: counts.true,
+                                    false: counts.false,
+                                    missing: counts.missing,
+                                    true_percent: total ? counts.true / total * 100 : 0,
+                                    episode_true: existEpisodeTrue[key] || 0,
+                                    episode_true_percent: rows.length ? (existEpisodeTrue[key] || 0) / rows.length * 100 : 0
+                                };
+                            }),
+                        tagged_episodes: taggedEpisodes,
+                        tag_distribution: Object.entries(tagCounts)
+                            .sort((a, b) => a[0].localeCompare(b[0]))
+                            .map(([name, counts]) => {
+                                const taggedForName = Number(tagEpisodeCounts[name] || 0);
+                                return {
+                                    name,
+                                    tagged_episodes: taggedForName,
+                                    values: Object.entries(counts)
+                                        .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0) || String(a[0]).localeCompare(String(b[0])))
+                                        .map(([key, count]) => ({
+                                            key,
+                                            label: this.normalizedTagLabel(name, key),
+                                            count: Number(count || 0),
+                                            percent: taggedForName ? Number(count || 0) / taggedForName * 100 : 0,
+                                            total_percent: rows.length ? Number(count || 0) / rows.length * 100 : 0
+                                        }))
+                                };
+                            })
+                    };
+                },
+                tagSummaryRows(summary) {
+                    return (summary && summary.tag_distribution ? summary.tag_distribution : [])
+                        .filter(tag => (tag.values || []).length > 0);
+                },
+                tagValueOptions(name, summary) {
+                    if (!name) return [];
+                    const tag = this.tagSummaryRows(summary || this.activeSummary()).find(item => item.name === name);
+                    return tag ? tag.values : [];
+                },
+                setTagName(name) {
+                    this.detailFilters.tagName = name || '';
+                    this.detailFilters.tagValue = '';
+                    this.detailFilters.tagFilters = name ? [{name, value: ''}] : [];
+                },
+                setTagFilter(name, value) {
+                    this.detailFilters.tagName = name || '';
+                    this.detailFilters.tagValue = value || '';
+                    this.upsertTagFilter(name, value || '');
+                },
+                setGlobalTagName(name) {
+                    this.activeScene = 'overview';
+                    this.selectedCell = null;
+                    this.setTagName(name);
+                },
+                setGlobalTagFilter(name, value) {
+                    this.activeScene = 'overview';
+                    this.selectedCell = null;
+                    this.setTagFilter(name, value);
+                },
+                isDiscreteTagValue(value) {
+                    return value === null || value === undefined || ['string', 'number', 'boolean'].includes(typeof value);
+                },
+                tagValueKey(value) {
+                    if (value === null || value === undefined) return '';
+                    if (typeof value === 'boolean') return value ? 'true' : 'false';
+                    return String(value);
+                },
+                tagValueLabel(value) {
+                    const text = this.tagValueKey(value);
+                    return text === '' ? '-' : text;
+                },
+                normalizedTagKey(name, value) {
+                    if (name === 'object_count') {
+                        if (value === null || value === undefined || value === '') return 'missing';
+                        const parsed = Number.parseInt(String(value), 10);
+                        if (Number.isNaN(parsed)) return String(value);
+                        if (parsed <= 0) return '0';
+                        if (parsed === 1) return '1';
+                        if (parsed === 2) return '2';
+                        if (parsed === 3) return '3';
+                        return '4_plus';
+                    }
+                    return this.tagValueKey(value);
+                },
+                normalizedTagLabel(name, value) {
+                    const key = this.normalizedTagKey(name, value);
+                    if (name === 'object_count' && key === '4_plus') return '4+';
+                    if (key === 'missing' || key === '') return 'missing';
+                    return key;
+                },
+                activeTagFilters() {
+                    return (this.detailFilters.tagFilters || []).filter(filter => filter && filter.name);
+                },
+                rowMatchesTagFilter(row, filter) {
+                    const tags = row.tags || {};
+                    if (!filter || !filter.name || !Object.prototype.hasOwnProperty.call(tags, filter.name)) return false;
+                    if (!filter.value) return tags[filter.name] !== null && tags[filter.name] !== undefined && tags[filter.name] !== '';
+                    return this.normalizedTagKey(filter.name, tags[filter.name]) === filter.value;
+                },
+                isTagFilterActive(name, value = '') {
+                    return this.activeTagFilters().some(filter => filter.name === name && (filter.value || '') === (value || ''));
+                },
+                upsertTagFilter(name, value = '') {
+                    if (!name) return;
+                    const next = this.activeTagFilters().filter(filter => filter.name !== name);
+                    next.push({name, value: value || ''});
+                    this.detailFilters.tagFilters = next;
+                    this.detailFilters.tagName = next.length === 1 ? next[0].name : '';
+                    this.detailFilters.tagValue = next.length === 1 ? next[0].value || '' : '';
+                },
+                toggleTagFilter(name, value = '') {
+                    if (this.isTagFilterActive(name, value)) {
+                        this.removeTagFilter(name);
+                    } else {
+                        this.upsertTagFilter(name, value);
+                    }
+                },
+                removeTagFilter(name) {
+                    this.detailFilters.tagFilters = this.activeTagFilters().filter(filter => filter.name !== name);
+                    this.detailFilters.tagName = this.detailFilters.tagFilters.length === 1 ? this.detailFilters.tagFilters[0].name : '';
+                    this.detailFilters.tagValue = this.detailFilters.tagFilters.length === 1 ? this.detailFilters.tagFilters[0].value || '' : '';
+                },
+                clearTagFilters() {
+                    this.detailFilters.tagName = '';
+                    this.detailFilters.tagValue = '';
+                    this.detailFilters.tagFilters = [];
+                },
+                tagFilterLabel(filter) {
+                    if (!filter || !filter.name) return '';
+                    if (!filter.value) return `${filter.name} exists`;
+                    return `${filter.name} = ${this.normalizedTagLabel(filter.name, filter.value)}`;
+                },
+                taggingReviewFilterUrl() {
+                    const base = this.taggingMeta().review_url || '#';
+                    const filters = this.activeTagFilters();
+                    if (!filters.length || base === '#') return base;
+                    const params = new URLSearchParams();
+                    if (this.taggingMeta().active_variant) params.set('variant', this.taggingMeta().active_variant);
+                    const first = filters[0];
+                    params.set('tag', first.name);
+                    if (first.name === 'object_count' && first.value === '4_plus') params.set('bucket', first.value);
+                    else if (first.value) params.set('value', first.value);
+                    if (filters.length > 1) params.set('filters', JSON.stringify(filters));
+                    return `${base.split('?')[0]}?${params.toString()}`;
+                },
+                cohortDistributionGroups() {
+                    const summary = this.detailsSummary();
+                    const activeNames = new Set(this.activeTagFilters().map(filter => filter.name));
+                    const groups = [];
+                    for (const tag of this.tagSummaryRows(summary)) {
+                        if (activeNames.has(tag.name)) continue;
+                        groups.push({
+                            name: `tag:${tag.name}`,
+                            label: tag.name,
+                            total: tag.tagged_episodes,
+                            values: tag.values.map(value => ({
+                                ...value,
+                                filter: {name: tag.name, value: value.key}
+                            }))
+                        });
+                    }
+                    groups.push({
+                        name: 'task_type',
+                        label: 'task type',
+                        total: summary.total_episodes || 0,
+                        values: (summary.task_type_distribution || []).map(row => ({
+                            key: row.key,
+                            label: row.key,
+                            count: row.count,
+                            percent: row.percent
+                        }))
+                    });
+                    groups.push({
+                        name: 'duration',
+                        label: 'duration',
+                        total: summary.total_episodes || 0,
+                        values: (summary.duration_distribution || []).filter(row => row.count > 0).map(row => ({
+                            key: row.key,
+                            label: row.key,
+                            count: row.count,
+                            percent: row.percent
+                        }))
+                    });
+                    return groups.filter(group => (group.values || []).length > 0).slice(0, 6);
+                },
+                tagChips(row) {
+                    return Object.entries(row.tags || {})
+                        .filter(([, value]) => value !== null && value !== undefined && value !== '' && this.isDiscreteTagValue(value))
+                        .sort((a, b) => a[0].localeCompare(b[0]))
+                        .map(([name, value]) => ({
+                            name,
+                            key: this.normalizedTagKey(name, value),
+                            label: this.normalizedTagLabel(name, value)
+                        }));
+                },
+                counterItems(counter, total = null) {
+                    const denominator = total === null
+                        ? Object.values(counter).reduce((acc, value) => acc + Number(value || 0), 0)
+                        : Number(total || 0);
+                    return Object.entries(counter)
+                        .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0) || String(a[0]).localeCompare(String(b[0])))
+                        .map(([key, count]) => ({
+                            key,
+                            count: Number(count || 0),
+                            percent: denominator ? Number(count || 0) / denominator * 100 : 0
+                        }));
+                },
+                stageItems(counter, total = null) {
+                    const denominator = total === null
+                        ? Object.values(counter).reduce((acc, value) => acc + Number(value || 0), 0)
+                        : Number(total || 0);
+                    return Object.entries(counter)
+                        .sort((a, b) => Number(a[0]) - Number(b[0]))
+                        .map(([key, count]) => ({
+                            key,
+                            count: Number(count || 0),
+                            percent: denominator ? Number(count || 0) / denominator * 100 : 0
+                        }));
+                },
+                cacheStatusItems(counter) {
+                    const order = ['cached', 'sampled', 'missing_csv', 'csv_read_error', 'unknown'];
+                    const total = Object.values(counter).reduce((acc, value) => acc + Number(value || 0), 0);
+                    return Object.entries(counter)
+                        .sort((a, b) => {
+                            const left = order.includes(a[0]) ? order.indexOf(a[0]) : order.length;
+                            const right = order.includes(b[0]) ? order.indexOf(b[0]) : order.length;
+                            return left - right || String(a[0]).localeCompare(String(b[0]));
+                        })
+                        .map(([key, count]) => ({
+                            key,
+                            count: Number(count || 0),
+                            percent: total ? Number(count || 0) / total * 100 : 0
+                        }));
+                },
+                cacheStatusLabel(status) {
+                    const labels = {
+                        cached: 'cached',
+                        sampled: 'sampled',
+                        missing_csv: 'missing CSV',
+                        csv_read_error: 'CSV error',
+                        unknown: 'unknown'
+                    };
+                    return labels[status] || String(status || 'unknown');
+                },
+                cacheStatusClass(status) {
+                    if (status === 'cached') return 'border-emerald-800 bg-emerald-950 text-emerald-300';
+                    if (status === 'sampled') return 'border-cyan-800 bg-cyan-950 text-cyan-300';
+                    if (status === 'missing_csv') return 'border-red-800 bg-red-950 text-red-300';
+                    if (status === 'csv_read_error') return 'border-amber-800 bg-amber-950 text-amber-300';
+                    return 'border-slate-700 bg-slate-950 text-slate-400';
+                },
+                fmt(value) {
+                    return `${Number(value || 0).toFixed(1)}%`;
+                },
+                formatInt(value) {
+                    return Number(value || 0).toLocaleString();
+                },
+                formatDuration(seconds) {
+                    const total = Math.max(0, Math.round(Number(seconds || 0)));
+                    const hours = Math.floor(total / 3600);
+                    const minutes = Math.floor((total % 3600) / 60);
+                    const secs = total % 60;
+                    if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+                    if (minutes > 0) return `${minutes}m ${String(secs).padStart(2, '0')}s`;
+                    return `${secs}s`;
+                },
+                durationBuckets() {
+                    return this.summary.duration_buckets || ['0-5s', '5-10s', '10-15s', '15-20s', '20-30s', '30-45s', '45-60s', '60s+'];
+                },
+                durationBucket(seconds) {
+                    const value = Number(seconds || 0);
+                    if (value < 5) return '0-5s';
+                    if (value < 10) return '5-10s';
+                    if (value < 15) return '10-15s';
+                    if (value < 20) return '15-20s';
+                    if (value < 30) return '20-30s';
+                    if (value < 45) return '30-45s';
+                    if (value < 60) return '45-60s';
+                    return '60s+';
+                }
+            };
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Embedding - {{ dataset_key }}</title>
+<style>
+  body { margin:0; height:100vh; display:flex; flex-direction:column; overflow:hidden; background:#020617; color:#cbd5e1; font:13px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+  a { color:#7dd3fc; text-decoration:none; }
+  #embeddingLayout { min-height:0; flex:1; display:grid; grid-template-columns:1fr 330px; overflow:hidden; }
+  main { min-width:0; display:grid; grid-template-rows:auto 1fr; }
+  .top { padding:10px 12px; border-bottom:1px solid #1e293b; background:#0f172a; }
+  #plotWrap { position:relative; min-height:0; }
+  #plot, #atlasPlot { position:absolute; inset:0; width:100%; height:100%; }
+  #atlasPlot { display:none; }
+  aside { background:#0f172a; border-left:1px solid #1e293b; overflow:auto; padding:12px; }
+  select, input, button { border:1px solid #334155; border-radius:6px; background:#020617; color:#e2e8f0; padding:6px 8px; font:inherit; }
+  button { cursor:pointer; background:#1e293b; }
+  button:hover { border-color:#38bdf8; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .controls { display:flex; flex-wrap:wrap; align-items:end; gap:8px; }
+  .control { display:flex; flex-direction:column; gap:3px; color:#94a3b8; font-size:11px; }
+  .control input { width:88px; }
+  .status { color:#94a3b8; font-size:11px; }
+  .point { opacity:.78; cursor:pointer; stroke:transparent; stroke-width:2; }
+  .point:hover { opacity:1; stroke:#fbbf24; }
+  .kv { display:grid; grid-template-columns:110px 1fr; gap:8px; margin:7px 0; }
+  .kv span:first-child { color:#94a3b8; }
+  .legend { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .legend-item { display:inline-flex; align-items:center; gap:5px; max-width:220px; border:1px solid #1e293b; border-radius:999px; padding:3px 7px; color:#cbd5e1; background:#020617; }
+  .legend-dot { width:8px; height:8px; border-radius:999px; flex:none; }
+  #hoverPreview { position:fixed; z-index:50; display:none; width:220px; border:1px solid #334155; border-radius:8px; overflow:hidden; background:#020617; box-shadow:0 18px 45px rgba(0,0,0,.45); pointer-events:none; }
+  #hoverPreview img { display:block; width:100%; max-height:165px; object-fit:contain; background:#0f172a; }
+  #hoverPreview .caption { padding:7px 8px; color:#cbd5e1; border-top:1px solid #1e293b; }
+</style>
+</head>
+<body>
+{% set page_kind = "Embedding" %}
+{% set page_title = dataset_key %}
+{% set page_subtitle = "Per-episode embedding scatter with stable coordinates." %}
+{% include "visualize_dataset_topbar.html" %}
+<div id="embeddingLayout">
+<main>
+  <div class="top">
+    <div class="controls">
+      <label class="control"><span>Color by</span><select id="colorBy"><option value="task">task</option></select></label>
+      <label class="control"><span>Renderer</span><select id="renderer"><option value="atlas">atlas</option><option value="svg">svg fallback</option></select></label>
+      <label class="control"><span>Method</span><select id="projectionMethod"><option value="auto">auto</option><option value="umap">umap</option><option value="pca">pca</option></select></label>
+      <label class="control"><span>Metric</span><select id="projectionMetric"><option value="cosine">cosine</option><option value="euclidean">euclidean</option><option value="manhattan">manhattan</option></select></label>
+      <label class="control"><span>neighbors</span><input id="projectionNeighbors" type="number" min="2" max="200" value="15"></label>
+      <label class="control"><span>min_dist</span><input id="projectionMinDist" type="number" min="0" max="1" step="0.01" value="0.1"></label>
+      <label class="control"><span>seed</span><input id="projectionSeed" type="number" value="42"></label>
+      <button id="applyProjection">Apply projection</button>
+      <span id="projectionStatus" class="status"></span>
+    </div>
+    <div id="legend" class="legend"></div>
+  </div>
+  <div id="plotWrap">
+    <div id="atlasPlot"></div>
+    <svg id="plot"></svg>
+  </div>
+</main>
+<aside>
+  <h3 style="margin-top:0;color:#f8fafc">Point</h3>
+  <div id="details" style="color:#94a3b8">Select a point.</div>
+  <h3 style="color:#f8fafc">Source</h3>
+  <pre id="source" style="white-space:pre-wrap;color:#94a3b8"></pre>
+</aside>
+</div>
+<div id="hoverPreview">
+  <img id="hoverPreviewImage" alt="">
+  <div id="hoverPreviewCaption" class="caption"></div>
+</div>
+<script>
+const API = "/api/embedding/{{ dataset_namespace }}/{{ dataset_name }}";
+const DATASET_KEY = {{ dataset_key|tojson }};
+const IMAGE_KEY = {{ image_key|tojson }};
+let points = [];
+let source = {};
+let atlasModulePromise = null;
+let atlasComponent = null;
+const colors = ["#38bdf8","#fb7185","#34d399","#fbbf24","#a78bfa","#f97316","#22d3ee","#e879f9"];
+function escapeHTML(value){ return String(value ?? "").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+async function fetchJson(url, init){ const r=await fetch(url, init); const d=await r.json(); if(!r.ok) throw new Error(d.error || r.status); return d; }
+function valueFor(point, key){
+  if(key==="task") return point.scene_label || point.scene || "unknown";
+  if(Object.prototype.hasOwnProperty.call(point, key)) return point[key] ?? "unknown";
+  return (point.tags || {})[key] ?? "unknown";
+}
+function pointImageUrl(point){
+  if(!IMAGE_KEY) return "";
+  return `/${DATASET_KEY}/image?key=${encodeURIComponent(IMAGE_KEY)}&episode=${encodeURIComponent(point.episode_index)}&frame=0`;
+}
+function populateColorFields(){
+  const select = document.getElementById("colorBy");
+  const selected = select.value || "task";
+  const fields = new Set(["task"]);
+  for(const p of points){
+    for(const key of Object.keys(p.tags || {})) fields.add(key);
+    for(const key of ["exist_label","scenario"]) if(Object.prototype.hasOwnProperty.call(p, key)) fields.add(key);
+  }
+  select.innerHTML = [...fields].map(key => `<option value="${escapeHTML(key)}">${escapeHTML(key)}</option>`).join("");
+  select.value = fields.has(selected) ? selected : "task";
+}
+function renderLegend(valuesByColor){
+  const legend = document.getElementById("legend");
+  legend.innerHTML = valuesByColor.map(item => (
+    `<span class="legend-item"><span class="legend-dot" style="background:${item.color}"></span><span title="${escapeHTML(item.value)}">${escapeHTML(item.value)}</span><span style="color:#64748b">${item.count}</span></span>`
+  )).join("");
+}
+function movePreview(event){
+  const box = document.getElementById("hoverPreview");
+  const margin = 14;
+  const width = box.offsetWidth || 220;
+  const height = box.offsetHeight || 210;
+  let left = event.clientX + margin;
+  let top = event.clientY + margin;
+  if(left + width > window.innerWidth) left = event.clientX - width - margin;
+  if(top + height > window.innerHeight) top = event.clientY - height - margin;
+  box.style.left = `${Math.max(8, left)}px`;
+  box.style.top = `${Math.max(8, top)}px`;
+}
+function showPreview(point, event){
+  const url = pointImageUrl(point);
+  if(!url) return;
+  document.getElementById("hoverPreviewImage").src = url;
+  document.getElementById("hoverPreviewCaption").innerHTML = `ep ${escapeHTML(point.episode_index)} · ${escapeHTML(point.task || "unknown")}`;
+  const box = document.getElementById("hoverPreview");
+  box.style.display = "block";
+  movePreview(event);
+}
+function hidePreview(){
+  document.getElementById("hoverPreview").style.display = "none";
+}
+function render(){
+  if(document.getElementById("renderer").value === "atlas" && renderAtlas()) return;
+  renderSvg();
+}
+function renderSvg(){
+  const svg = document.getElementById("plot");
+  document.getElementById("atlasPlot").style.display = "none";
+  svg.style.display = "block";
+  const rect = svg.getBoundingClientRect();
+  svg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
+  svg.innerHTML = "";
+  if(!points.length){ svg.innerHTML = `<text x="24" y="32" fill="#94a3b8">No embedding points. Run Embedding first.</text>`; return; }
+  const xs = points.map(p=>p.x), ys = points.map(p=>p.y);
+  const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+  const sx=x=>40 + ((x-minX)/(maxX-minX || 1))*(rect.width-80);
+  const sy=y=>rect.height-40 - ((y-minY)/(maxY-minY || 1))*(rect.height-80);
+  const by=document.getElementById("colorBy").value;
+  const vals=[...new Set(points.map(p=>valueFor(p,by)))].sort((a,b)=>String(a).localeCompare(String(b)));
+  const counts = new Map(vals.map(value => [value, 0]));
+  for(const p of points) counts.set(valueFor(p,by), (counts.get(valueFor(p,by)) || 0) + 1);
+  const colorFor = value => colors[Math.max(0, vals.indexOf(value)) % colors.length];
+  renderLegend(vals.map(value => ({value, color: colorFor(value), count: counts.get(value) || 0})));
+  for(const p of points){
+    const c=document.createElementNS("http://www.w3.org/2000/svg","circle");
+    c.setAttribute("class","point"); c.setAttribute("r","4.5"); c.setAttribute("cx",sx(p.x)); c.setAttribute("cy",sy(p.y));
+    c.style.fill = colorFor(valueFor(p,by));
+    c.onmouseenter=(event)=>showPreview(p,event);
+    c.onmousemove=movePreview;
+    c.onmouseleave=hidePreview;
+    c.onclick=()=>selectPoint(p);
+    svg.appendChild(c);
+  }
+}
+function atlasData(){
+  const by=document.getElementById("colorBy").value;
+  const vals=[...new Set(points.map(p=>valueFor(p,by)))].sort((a,b)=>String(a).localeCompare(String(b)));
+  const categoryFor = value => Math.max(0, vals.indexOf(value));
+  return {
+    x: new Float32Array(points.map(p=>p.x)),
+    y: new Float32Array(points.map(p=>p.y)),
+    category: new Uint8Array(points.map(p=>categoryFor(valueFor(p,by)))),
+    values: vals
+  };
+}
+function loadAtlasModule(){
+  if(atlasModulePromise) return atlasModulePromise;
+  atlasModulePromise = import("https://esm.sh/embedding-atlas").catch(err => {
+    document.getElementById("projectionStatus").textContent = `Atlas unavailable, using SVG: ${err.message}`;
+    return null;
+  });
+  return atlasModulePromise;
+}
+function renderAtlas(){
+  const target = document.getElementById("atlasPlot");
+  const svg = document.getElementById("plot");
+  if(!points.length) return false;
+  loadAtlasModule().then(mod => {
+    if(!mod || !mod.EmbeddingView || document.getElementById("renderer").value !== "atlas") {
+      renderSvg();
+      return;
+    }
+    const data = atlasData();
+    const props = {
+      data: {x: data.x, y: data.y, category: data.category},
+      categoryColors: colors,
+      config: {colorScheme: "dark", pointSize: 4, mode: "points"},
+      onTooltip: item => {
+        if(!item || item.identifier == null) return hidePreview();
+        const point = points[Number(item.identifier)];
+        if(point) showPreview(point, {clientX: window.innerWidth - 280, clientY: 90});
+      },
+      onSelection: selection => {
+        const item = Array.isArray(selection) ? selection[0] : null;
+        if(item && item.identifier != null && points[Number(item.identifier)]) selectPoint(points[Number(item.identifier)]);
+      },
+    };
+    try {
+      target.style.display = "block";
+      svg.style.display = "none";
+      if(atlasComponent) atlasComponent.update(props);
+      else atlasComponent = new mod.EmbeddingView(target, props);
+      renderLegend(data.values.map(value => ({
+        value,
+        color: colors[Math.max(0, data.values.indexOf(value)) % colors.length],
+        count: points.filter(p => valueFor(p, document.getElementById("colorBy").value) === value).length
+      })));
+      document.getElementById("projectionStatus").textContent = "Renderer: Embedding Atlas";
+    } catch(err) {
+      document.getElementById("projectionStatus").textContent = `Atlas render failed, using SVG: ${err.message}`;
+      renderSvg();
+    }
+  });
+  return true;
+}
+function selectPoint(point){
+  document.getElementById("details").innerHTML = [
+    ["episode", point.episode_index],
+    ["task type", point.scene_label || point.scene || "unknown"],
+    ["task", point.task],
+    ["x", point.x.toFixed(4)],
+    ["y", point.y.toFixed(4)],
+    ["tags", JSON.stringify(point.tags || {})],
+    ["viewer", `<a href="/{{ dataset_key }}/episode_${point.episode_index}">open</a>`],
+  ].map(([k,v])=>`<div class="kv"><span>${escapeHTML(k)}</span><span>${k==="viewer"?v:escapeHTML(v)}</span></div>`).join("");
+}
+async function load(){
+  const data=await fetchJson(`${API}/points`);
+  points=data.points || []; source=data.source || {};
+  applyProjectionDefaults(source.projection || {});
+  populateColorFields();
+  document.getElementById("source").textContent=JSON.stringify(source,null,2);
+  render();
+}
+function applyProjectionDefaults(projection){
+  if(projection.method) document.getElementById("projectionMethod").value = projection.method;
+  if(projection.metric) document.getElementById("projectionMetric").value = projection.metric;
+  if(projection.n_neighbors) document.getElementById("projectionNeighbors").value = projection.n_neighbors;
+  if(projection.min_dist !== undefined) document.getElementById("projectionMinDist").value = projection.min_dist;
+  if(projection.seed !== undefined) document.getElementById("projectionSeed").value = projection.seed;
+  if(projection.actual_method) {
+    document.getElementById("projectionStatus").textContent = `Projection: ${projection.actual_method}`;
+  }
+}
+async function applyProjection(){
+  const button = document.getElementById("applyProjection");
+  const status = document.getElementById("projectionStatus");
+  button.disabled = true;
+  status.textContent = "Projecting existing embeddings...";
+  try {
+    const body = {
+      method: document.getElementById("projectionMethod").value,
+      metric: document.getElementById("projectionMetric").value,
+      n_neighbors: Number(document.getElementById("projectionNeighbors").value || 15),
+      min_dist: Number(document.getElementById("projectionMinDist").value || 0.1),
+      seed: Number(document.getElementById("projectionSeed").value || 42),
+    };
+    const data = await fetchJson(`${API}/project`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    points = data.points || [];
+    source = data.source || {};
+    document.getElementById("source").textContent = JSON.stringify(source, null, 2);
+    status.textContent = `Projection: ${data.projection.actual_method} · ${data.projection.points} points`;
+    render();
+  } catch(err) {
+    status.textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+document.getElementById("colorBy").onchange=render;
+document.getElementById("renderer").onchange=render;
+document.getElementById("applyProjection").onclick=applyProjection;
+window.onresize=render;
+load().catch(err=>{document.getElementById("details").textContent=err.message;});
+</script>
+</body>
+</html>

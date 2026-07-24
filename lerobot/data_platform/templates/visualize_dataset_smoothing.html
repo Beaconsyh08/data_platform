@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smoothing - {{ dataset_key }}</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; height:100vh; display:flex; flex-direction:column; overflow:hidden; background:#020617; color:#cbd5e1; font:13px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+  a { color:#7dd3fc; text-decoration:none; }
+  #layout { min-height:0; flex:1; display:grid; grid-template-columns:280px minmax(0,1fr) 360px; overflow:hidden; }
+  aside { background:#0f172a; overflow:auto; }
+  #left { border-right:1px solid #1e293b; }
+  #right { border-left:1px solid #1e293b; }
+  .panel { padding:12px; border-bottom:1px solid #1e293b; }
+  label { display:block; margin:0 0 10px; color:#94a3b8; }
+  select,input { width:100%; margin-top:5px; border:1px solid #334155; border-radius:6px; background:#020617; color:#e2e8f0; padding:7px 8px; font:inherit; }
+  button { width:100%; border:1px solid #0369a1; border-radius:6px; background:#0c4a6e; color:#e0f2fe; padding:8px 10px; cursor:pointer; font:inherit; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .btnrow { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  main { min-width:0; display:grid; grid-template-rows:auto 1fr; overflow:hidden; }
+  #chartHeader { padding:10px 12px; border-bottom:1px solid #1e293b; background:#111827; color:#94a3b8; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  #chartWrap { min-height:0; padding:12px; }
+  #chart { width:100%; height:100%; min-height:360px; border:1px solid #1e293b; border-radius:8px; background:#020617; }
+  .kv { display:grid; grid-template-columns:120px 1fr; gap:8px; margin:7px 0; }
+  .kv span:first-child { color:#94a3b8; }
+  .tag { display:inline-block; border:1px solid #334155; border-radius:999px; padding:2px 7px; margin:2px 4px 2px 0; color:#cbd5e1; background:#020617; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th,td { border-bottom:1px solid #1e293b; padding:5px 4px; text-align:right; }
+  th:first-child,td:first-child { text-align:left; color:#94a3b8; }
+  .legend { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .swatch { display:inline-block; width:10px; height:10px; border-radius:999px; margin-right:4px; }
+  .metricGrid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .metric { border:1px solid #1e293b; border-radius:8px; background:#020617; padding:9px; }
+  .metric b { display:block; color:#f8fafc; font-size:16px; margin-top:3px; }
+  tr.clickable { cursor:pointer; }
+  tr.clickable:hover { background:#172554; }
+  tr.active { background:#082f49; color:#bae6fd; }
+  @media (max-width: 1180px) {
+    body { overflow:auto; height:auto; }
+    #layout { display:block; overflow:visible; }
+    aside, main { border:0 !important; }
+    #chart { height:520px; }
+  }
+</style>
+</head>
+<body>
+{% set page_kind = "Smoothing" %}
+{% set page_title = dataset_key %}
+{% set page_subtitle = "Before/after action/state trajectory comparison. Window=" ~ window ~ ", source=" ~ source_root %}
+{% include "visualize_dataset_topbar.html" %}
+<div id="layout">
+  <aside id="left">
+    <div class="panel">
+      <label>Episode
+        <select id="episodeSelect"></select>
+      </label>
+      <label>Field
+        <select id="fieldSelect"></select>
+      </label>
+      <label>Dimension
+        <select id="dimSelect"></select>
+      </label>
+      <div class="btnrow">
+        <button id="prevBtn">Prev</button>
+        <button id="nextBtn">Next</button>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="legend">
+        <span><i class="swatch" style="background:#38bdf8"></i>before</span>
+        <span><i class="swatch" style="background:#f97316"></i>after</span>
+      </div>
+      <p style="color:#64748b;line-height:1.5">Use Field to switch between smoothed action/state. The chart is downsampled only for display; RMS/max are computed on full-resolution data.</p>
+    </div>
+  </aside>
+  <main>
+    <div id="chartHeader">
+      <span id="chartTitle">Loading smoothing report...</span>
+      <span id="chartHint" style="font-size:11px;color:#64748b"></span>
+    </div>
+    <div id="chartWrap"><svg id="chart"></svg></div>
+  </main>
+  <aside id="right">
+    <div class="panel">
+      <h3 style="margin:0 0 8px;color:#f8fafc">Current dim</h3>
+      <div id="dimStats"></div>
+      <p style="margin-top:10px"><a id="viewerLink" href="#">Open smoothed viewer</a></p>
+    </div>
+    <div class="panel">
+      <h3 style="margin:0 0 8px;color:#f8fafc">Dataset</h3>
+      <div id="meta"></div>
+    </div>
+    <div class="panel">
+      <h3 style="margin:0 0 8px;color:#f8fafc">All dims</h3>
+      <div id="dimTable"></div>
+    </div>
+  </aside>
+</div>
+<script>
+const API = "/api/preprocess/smooth_action/{{ dataset_namespace }}/{{ dataset_name }}";
+const DATASET = "{{ dataset_key }}";
+let episodes = [];
+let fields = ["action"];
+let current = null;
+let selectedDim = 0;
+let selectedField = "action";
+
+function escapeHTML(value) {
+  return String(value ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+}
+async function fetchJson(url) {
+  const response = await fetch(url);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `request failed: ${response.status}`);
+  return data;
+}
+function selectedEpisodeIndex() {
+  return Number(document.getElementById("episodeSelect").value || 0);
+}
+function selectedEpisodePosition() {
+  const ep = selectedEpisodeIndex();
+  return Math.max(0, episodes.findIndex(row => Number(row.episode_index) === ep));
+}
+function populateEpisodes() {
+  const select = document.getElementById("episodeSelect");
+  select.innerHTML = episodes.map(row => {
+    const task = (row.tasks || []).join(" | ");
+    return `<option value="${row.episode_index}">ep${row.episode_index} · ${row.length || 0}f · ${escapeHTML(task)}</option>`;
+  }).join("");
+}
+function populateFields(nextFields) {
+  fields = nextFields && nextFields.length ? nextFields : ["action"];
+  const select = document.getElementById("fieldSelect");
+  const old = select.value || selectedField || fields[0];
+  select.innerHTML = fields.map(field => `<option value="${escapeHTML(field)}">${escapeHTML(field)}</option>`).join("");
+  selectedField = fields.includes(old) ? old : fields[0];
+  select.value = selectedField;
+}
+function populateDims(dims) {
+  const select = document.getElementById("dimSelect");
+  const old = Number(select.value || selectedDim || 0);
+  select.innerHTML = Array.from({length: dims}, (_, idx) => `<option value="${idx}">${selectedField}_${idx}</option>`).join("");
+  selectedDim = Math.min(Math.max(0, old), Math.max(0, dims - 1));
+  select.value = selectedDim;
+}
+function linePath(xs, ys, sx, sy) {
+  if (!xs.length) return "";
+  return xs.map((x, idx) => `${idx === 0 ? "M" : "L"}${sx(x).toFixed(2)},${sy(ys[idx]).toFixed(2)}`).join(" ");
+}
+function drawChart() {
+  const svg = document.getElementById("chart");
+  const rect = svg.getBoundingClientRect();
+  const width = Math.max(320, rect.width || 900);
+  const height = Math.max(260, rect.height || 520);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.innerHTML = "";
+  if (!current || !current.before || !current.before.length) {
+    svg.innerHTML = `<text x="18" y="30" fill="#94a3b8">No action data.</text>`;
+    return;
+  }
+  const dim = Number(document.getElementById("dimSelect").value || 0);
+  selectedField = document.getElementById("fieldSelect").value || selectedField;
+  selectedDim = dim;
+  const xs = current.frame_index || [];
+  const before = current.before.map(row => Number(row[dim] || 0));
+  const after = current.after.map(row => Number(row[dim] || 0));
+  const allY = before.concat(after);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  let minY = Math.min(...allY), maxY = Math.max(...allY);
+  if (minY === maxY) { minY -= 1; maxY += 1; }
+  const pad = {l:50, r:18, t:22, b:36};
+  const sx = x => pad.l + ((x - minX) / (maxX - minX || 1)) * (width - pad.l - pad.r);
+  const sy = y => height - pad.b - ((y - minY) / (maxY - minY || 1)) * (height - pad.t - pad.b);
+  const axis = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  axis.setAttribute("d", `M${pad.l},${pad.t} L${pad.l},${height-pad.b} L${width-pad.r},${height-pad.b}`);
+  axis.setAttribute("stroke", "#334155");
+  axis.setAttribute("fill", "none");
+  svg.appendChild(axis);
+  for (const [values, color] of [[before, "#38bdf8"], [after, "#f97316"]]) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", linePath(xs, values, sx, sy));
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", color);
+    path.setAttribute("stroke-width", "2");
+    path.setAttribute("stroke-linejoin", "round");
+    path.setAttribute("stroke-linecap", "round");
+    svg.appendChild(path);
+  }
+  const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  label.setAttribute("x", pad.l);
+  label.setAttribute("y", height - 10);
+  label.setAttribute("fill", "#64748b");
+  label.textContent = `frame ${minX}..${maxX}, value ${minY.toFixed(4)}..${maxY.toFixed(4)}`;
+  svg.appendChild(label);
+  renderStats();
+}
+function renderStats() {
+  if (!current) return;
+  const dim = Number(document.getElementById("dimSelect").value || 0);
+  const rms = current.rms_by_dim?.[dim] ?? 0;
+  const maxAbs = current.max_abs_by_dim?.[dim] ?? 0;
+  document.getElementById("chartTitle").textContent = `episode ${current.episode_index} · ${current.field}_${dim} · ${current.frames} frames`;
+  document.getElementById("chartHint").textContent = `display stride ${current.stride}`;
+  document.getElementById("dimStats").innerHTML = `<div class="metricGrid">
+    <div class="metric"><span>RMS delta</span><b>${Number(rms).toFixed(6)}</b></div>
+    <div class="metric"><span>Max abs delta</span><b>${Number(maxAbs).toFixed(6)}</b></div>
+  </div>` + [
+    ["Field", current.field],
+    ["Window", current.meta?.window],
+    ["Workers", current.meta?.workers],
+  ].map(([k,v]) => `<div class="kv"><span>${escapeHTML(k)}</span><span>${escapeHTML(v)}</span></div>`).join("");
+  document.getElementById("dimTable").innerHTML = `<table><thead><tr><th>dim</th><th>RMS</th><th>max abs</th></tr></thead><tbody>${
+    (current.rms_by_dim || []).map((value, idx) => `<tr class="clickable ${idx === dim ? 'active' : ''}" onclick="selectDim(${idx})"><td>${escapeHTML(current.field)}_${idx}</td><td>${Number(value).toFixed(5)}</td><td>${Number(current.max_abs_by_dim[idx] || 0).toFixed(5)}</td></tr>`).join("")
+  }</tbody></table>`;
+  document.getElementById("viewerLink").href = `/${DATASET}/episode_${current.episode_index}`;
+}
+function renderMeta(meta) {
+  document.getElementById("meta").innerHTML = [
+    ["source", meta.source_root],
+    ["output", meta.output_root],
+    ["fields", (meta.fields || [meta.field || "action"]).join(", ")],
+    ["window", meta.window],
+    ["workers", meta.workers],
+    ["created", meta.created_at],
+  ].map(([k,v]) => `<div class="kv"><span>${escapeHTML(k)}</span><span style="word-break:break-all">${escapeHTML(v)}</span></div>`).join("");
+}
+async function loadEpisode(episodeIndex) {
+  selectedField = document.getElementById("fieldSelect").value || selectedField;
+  const data = await fetchJson(`${API}/episode/${episodeIndex}?field=${encodeURIComponent(selectedField)}`);
+  current = data;
+  populateDims(data.dims || 0);
+  renderMeta(data.meta || {});
+  drawChart();
+}
+async function load() {
+  const data = await fetchJson(`${API}/episodes`);
+  episodes = data.episodes || [];
+  populateFields(data.fields || ["action"]);
+  if (!episodes.length) throw new Error("No episodes found.");
+  populateEpisodes();
+  renderMeta(data.meta || {});
+  await loadEpisode(episodes[0].episode_index);
+}
+document.getElementById("episodeSelect").onchange = event => loadEpisode(Number(event.target.value)).catch(showError);
+document.getElementById("fieldSelect").onchange = () => { selectedDim = 0; loadEpisode(selectedEpisodeIndex()).catch(showError); };
+document.getElementById("dimSelect").onchange = drawChart;
+function selectDim(idx) {
+  document.getElementById("dimSelect").value = idx;
+  drawChart();
+}
+document.getElementById("prevBtn").onclick = () => {
+  const idx = Math.max(0, selectedEpisodePosition() - 1);
+  document.getElementById("episodeSelect").value = episodes[idx].episode_index;
+  loadEpisode(episodes[idx].episode_index).catch(showError);
+};
+document.getElementById("nextBtn").onclick = () => {
+  const idx = Math.min(episodes.length - 1, selectedEpisodePosition() + 1);
+  document.getElementById("episodeSelect").value = episodes[idx].episode_index;
+  loadEpisode(episodes[idx].episode_index).catch(showError);
+};
+function showError(err) {
+  document.getElementById("chartHeader").textContent = err.message;
+}
+window.onresize = drawChart;
+load().catch(showError);
+</script>
+</body>
+</html>
