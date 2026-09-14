@@ -65,6 +65,18 @@ def fake_agent(tmp_path, client):
     )
 
 
+def test_spooling_client_provides_only_inherited_identity(tmp_path):
+    from lerobot.data_platform.execution import SpoolingClient
+
+    identity = {"environment": "dev", "instance_id": "development-instance"}
+    client = SpoolingClient("https://unreachable.invalid", tmp_path, server_identity=identity)
+    assert client._request("GET", "/healthz") == identity
+    with pytest.raises(RuntimeError, match="verified server identity"):
+        client._request("POST", "/api/agents/jobs/claim")
+    with pytest.raises(RuntimeError, match="verified server identity"):
+        SpoolingClient("https://unreachable.invalid", tmp_path)._request("GET", "/healthz")
+
+
 def test_force_stop_waits_for_child_processes(tmp_path):
     client = Client(mode="force")
     supervisor = ExecutionSupervisor(fake_agent(tmp_path, client))
@@ -98,8 +110,37 @@ def test_force_stop_waits_for_child_processes(tmp_path):
             process.wait()
 
 
+def test_first_viewer_job_creates_missing_cache_parent(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_PLATFORM_REQUIRE_CGROUP", "0")
+    source = tmp_path / "dataset"
+    _make_dataset(source)
+    supervisor = ExecutionSupervisor(fake_agent(tmp_path, Client()))
+    cache = tmp_path / "vis" / "dataset"
+    job = {
+        "job_id": "first-viewer",
+        "operation": "viewer.prepare",
+        "location": {"root": str(source), "output_dir": str(cache)},
+        "options": {},
+        "execution": {"attempt_id": "attempt", "final_output": None},
+    }
+    from lerobot.data_platform import execution
+
+    monkeypatch.setattr(execution.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(pid=123))
+    monkeypatch.setattr(execution, "process_identity", lambda pid: "test-process")
+    markers = []
+    monkeypatch.setattr(supervisor, "monitor", lambda marker, process: markers.append(marker))
+    assert not cache.parent.exists()
+    supervisor.start(job)
+    assert Path(markers[0]["staging"]).is_dir()
+    assert Path(markers[0]["staging"]).parent == cache.parent
+    assert not cache.exists()  # Only staging is created before the worker publishes its result.
+
+
 @pytest.mark.parametrize("version", ["v2.1", "v3.0"])
-def test_real_worker_preserves_source_and_publishes_drop_field(tmp_path, monkeypatch, version):
+@pytest.mark.parametrize("named_environment", [False, True])
+def test_real_worker_preserves_source_and_publishes_drop_field(
+    tmp_path, monkeypatch, version, named_environment
+):
     monkeypatch.setenv("DATA_PLATFORM_REQUIRE_CGROUP", "0")
     source = tmp_path / "source"
     _make_dataset(source)
@@ -115,8 +156,19 @@ def test_real_worker_preserves_source_and_publishes_drop_field(tmp_path, monkeyp
     }
     client = Client()
     agent = fake_agent(tmp_path, client)
+    if named_environment:
+        from lerobot.data_platform.environment import EnvironmentIdentity, verify_directory
+
+        monkeypatch.setenv("DATA_PLATFORM_ENV", "dev")
+        monkeypatch.setenv("DATA_PLATFORM_INSTANCE_ID", "11111111-1111-4111-8111-111111111111")
+        monkeypatch.setenv("DATA_PLATFORM_STATE_ROOT", str(tmp_path))
+        agent.environment_identity = EnvironmentIdentity.from_env()
+        verify_directory(agent.state_path.parent, "agent", initialize=True)
+        state = json.loads(agent.state_path.read_text())
+        state.update(environment="dev", instance_id=agent.environment_identity.instance_id)
+        atomic_json(agent.state_path, state)
     supervisor = ExecutionSupervisor(agent)
-    final = tmp_path / "final-output"
+    final = tmp_path / "new-output-parent" / "final-output"
     job = {
         "job_id": "job",
         "operation": "preprocess.drop_field",
@@ -274,3 +326,12 @@ def test_local_validated_request_is_queued_and_replayed(tmp_path, monkeypatch):
     assert result["local_job"]["status"] == "done"
     assert "old_field" not in json.loads((output / "meta" / "info.json").read_text())["features"]
     assert "old_field" in json.loads((source / "meta" / "info.json").read_text())["features"]
+
+
+def test_agent_ca_bundle_keeps_explicit_tls_options(monkeypatch):
+    from lerobot.data_platform.agent import AgentClient
+
+    monkeypatch.setenv("DATA_PLATFORM_AGENT_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt")
+    assert AgentClient("https://example.invalid").verify == "/etc/ssl/certs/ca-certificates.crt"
+    assert AgentClient("https://example.invalid", verify=False).verify is False
+    assert AgentClient("https://example.invalid", verify="/custom/ca.pem").verify == "/custom/ca.pem"

@@ -164,9 +164,16 @@ def replace_paths(value, replacements):
 class SpoolingClient:
     """Compute never makes network requests; telemetry and artifact references are durable."""
 
-    def __init__(self, server_url, work):
+    def __init__(self, server_url, work, *, server_identity=None):
         self.server_url, self.work = server_url, Path(work)
         self.sequence = 0
+        self.server_identity = server_identity
+
+    def _request(self, method, path):
+        # The parent has verified the server; workers inherit that identity without network access.
+        if method != "GET" or path != "/healthz" or not self.server_identity:
+            raise RuntimeError("Offline worker requires the supervisor's verified server identity")
+        return dict(self.server_identity)
 
     def check_stop(self):
         if (self.work / "stop.json").exists():
@@ -214,7 +221,7 @@ def run_worker(config_path):
         (Path(config["cgroup"]) / "cgroup.procs").write_text(str(os.getpid()))
     from lerobot.data_platform.agent import DataPlatformAgent, _json_value
 
-    client = SpoolingClient(config["server_url"], work)
+    client = SpoolingClient(config["server_url"], work, server_identity=config.get("server_identity"))
     agent = DataPlatformAgent(
         client=client,
         state_path=Path(config["state_path"]),
@@ -305,7 +312,7 @@ class ExecutionSupervisor:
             staging = output.parent / f".dp-{job['job_id']}-{execution['attempt_id']}"
         if staging.exists():
             raise FileExistsError("Execution staging already exists")
-        staging.mkdir(mode=0o700)
+        staging.mkdir(mode=0o700, parents=True)
         if final:
             job_copy["options"]["out_root"] = str(staging / final.name)
             # Never let a retry overwrite output, including legacy overwrite options.
@@ -341,6 +348,11 @@ class ExecutionSupervisor:
             "state_path": str(agent.state_path),
             "name": agent.name,
             "server_url": agent.client.server_url,
+            "server_identity": (
+                agent.environment_identity.record("agent")
+                if getattr(agent, "environment_identity", None)
+                else None
+            ),
             "allowed_roots": [str(path) for path in agent.allowed_roots],
             "writable_roots": [str(path) for path in agent.writable_roots],
             "allow_source_mutations": agent.allow_source_mutations,

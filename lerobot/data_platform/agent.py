@@ -349,6 +349,8 @@ class AgentClient:
     def __init__(self, server_url: str, *, verify: bool | str = True):
         self.server_url = str(server_url).rstrip("/")
         self.verify = verify
+        if verify is True:
+            self.verify = os.environ.get("DATA_PLATFORM_AGENT_CA_BUNDLE") or True
         self.session = requests.Session()
         self.worker_instance_id = str(uuid.uuid4())
         self.executions = {}

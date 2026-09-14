@@ -113,6 +113,10 @@ MySQL、磁盘及主机故障仍然共享；这是同机逻辑隔离，不是独
 需要先读取 `/api/auth/status` 的 `csrf_token`，再发送 `X-Data-Platform-CSRF` 和对应 Origin。
 Agent 使用自己的 bearer token，不使用浏览器 Cookie。不同端口仍不是互不信任服务的完整浏览器隔离边界。
 
+Agent 使用内部 CA 或平台自签证书时，在对应的 `/etc/data-platform/ENV/agent.env` 中设置
+`DATA_PLATFORM_AGENT_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt`（前提是系统证书库已信任平台证书）。
+安装检查和 Agent 运行均使用该证书库，并保持 TLS 校验。更新现有 Agent 配置不需要重新注册节点。
+
 ## 首次建立开发环境
 
 先保留当前工作区修改，将准备发布的代码整理为明确的 Git 提交。候选构建拒绝未提交或未跟踪的工作，
