@@ -99,6 +99,11 @@ def build_release(source: Path, version: str) -> Path:
         snapshot = root / "source"
         snapshot.mkdir()
         extract_archive(source_tar, snapshot)
+        if not (snapshot / "uv.lock").is_file():
+            raise RuntimeError(
+                "The committed source archive is missing uv.lock. Track and commit uv.lock with pyproject.toml; "
+                "ensure it is not excluded by .gitignore or .gitattributes, then rebuild the release."
+            )
         python = source / ".venv/bin/python"
         env = {
             key: value

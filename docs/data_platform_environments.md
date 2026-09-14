@@ -123,6 +123,9 @@ Agent 使用自己的 bearer token，不使用浏览器 Cookie。不同端口仍
 ```bash
 cd /home/yuhao.song/Codes/data_platform
 git status --short
+# uv.lock 固定 Server/Agent 的依赖版本，必须和 pyproject.toml 一起纳入 Git。
+git ls-files uv.lock
+# 上一条若无输出，但本地已有 uv.lock，检查后用 git add uv.lock 将它加入暂存。
 # 在编辑器的 Git/源代码管理面板逐个检查并暂存本次需要发布的源码和文档。
 # 也可以用 git add 后跟明确的文件路径来暂存。不要将配置密码或运行产物加入暂存。
 git diff --cached --stat
@@ -216,10 +219,15 @@ DATA_PLATFORM_DEPLOY_AGENT_NAMES=dev-node
 3. 构建第一份候选，并先安装开发 Server：
 
    ```bash
-   bash deploy/data-platform/release.sh build --env dev --release R0 --source "$PWD"
-   bash deploy/data-platform/update-server.sh --env dev --release R0
+   bash deploy/data-platform/release.sh build --env dev --release R0 --source "$PWD" &&
+   bash deploy/data-platform/update-server.sh --env dev --release R0 &&
    sudo bash deploy/data-platform/install-commands.sh
    ```
+
+   `&&` 表示前一步成功才执行下一步。若构建报缺少 `uv.lock`，不要继续安装：本地存在锁文件不等于
+   Git 提交里有它。确认 `git ls-files uv.lock` 有输出且提交后的工作区干净，再重新构建。
+   保持 `--frozen`，不要通过删除该参数绕过依赖锁定。若本地也没有锁文件，先执行 `uv lock` 生成、
+   检查并提交；已有锁文件可用 `uv lock --check --offline` 检查是否与项目配置一致。
 
    Server-only 安装完成后保持维护状态；`/healthz` 和 Agent 接口仍可访问。
    发行库保存在 `/var/lib/data-platform-releases/R0/`；Agent 压缩包及校验文件同时保留在源码的 `dist/agent/`。

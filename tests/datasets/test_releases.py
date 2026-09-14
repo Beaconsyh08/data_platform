@@ -13,6 +13,58 @@ from lerobot.data_platform.deployment import Deployment, read_environment_file, 
 from lerobot.data_platform.deployment_network import nginx_config
 
 
+@pytest.mark.parametrize("lock_in_archive", [False, True])
+def test_build_checks_archived_lock_before_tests_and_preserves_it(tmp_path, monkeypatch, lock_in_archive):
+    source = tmp_path / "source"
+    source.mkdir()
+    # An ignored local lock file must not hide a missing lock in the Git archive.
+    lock = b"version = 1\nrevision = 3\n"
+    (source / "uv.lock").write_bytes(lock)
+    monkeypatch.setattr(releases, "RELEASE_ROOT", tmp_path / "releases")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if "status" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="")
+        if "rev-parse" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="commit\n")
+        if "archive" in argv:
+            with tarfile.open(fileobj=kwargs["stdout"], mode="w:gz") as stream:
+                if lock_in_archive:
+                    entry = tarfile.TarInfo("uv.lock")
+                    entry.size = len(lock)
+                    stream.addfile(entry, io.BytesIO(lock))
+            return
+        if "pytest" in argv:
+            assert (kwargs["cwd"] / "uv.lock").read_bytes() == lock
+            kwargs["stdout"].write("passed")
+            return
+        if "--output-dir" in argv:
+            output = Path(argv[argv.index("--output-dir") + 1])
+            output.mkdir()
+            agent = output / "agent.tar.gz"
+            with tarfile.open(agent, "w:gz") as stream:
+                entry = tarfile.TarInfo("agent/manifest.sha256")
+                entry.size = 0
+                stream.addfile(entry, io.BytesIO())
+            Path(str(agent) + ".sha256").write_text("test checksum")
+            return
+        pytest.fail("Unexpected subprocess")
+
+    monkeypatch.setattr(releases, "run", run)
+    if not lock_in_archive:
+        with pytest.raises(RuntimeError, match="committed source archive is missing uv.lock"):
+            releases.build_release(source, "candidate")
+        assert not any("pytest" in call or "--output-dir" in call for call in calls)
+        assert not (releases.RELEASE_ROOT / "candidate").exists()
+    else:
+        root = releases.build_release(source, "candidate")
+        releases.verify_release("candidate")
+        with tarfile.open(root / "server.tar.gz") as stream:
+            assert stream.extractfile("uv.lock").read() == lock
+
+
 @pytest.fixture
 def release(tmp_path, monkeypatch):
     monkeypatch.setattr(releases, "RELEASE_ROOT", tmp_path / "artifacts")
