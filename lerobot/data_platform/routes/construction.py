@@ -8,6 +8,7 @@ from pathlib import Path
 from flask import jsonify, render_template, request
 
 from lerobot.data_platform.cli import get_default_output_dir
+from lerobot.data_platform.local_execution import launch_background
 from lerobot.data_platform.precompute.construction import (
     default_synthetic_path,
     preview_construction,
@@ -30,6 +31,11 @@ from lerobot.data_platform.routes.context import RouteContext
 
 
 def register_construction_routes(app, ctx: RouteContext) -> None:
+    def task_config(dataset_key):
+        provider = getattr(ctx, "lifecycle_store", None)
+        store = provider() if callable(provider) else provider
+        return store.tasks.snapshot(ctx.repo_id_from_key(dataset_key)).to_dict() if store else None
+
     @app.route("/api/construction/preview", methods=["POST"])
     def api_construction_preview():
         body = request.get_json(silent=True) or {}
@@ -44,6 +50,7 @@ def register_construction_routes(app, ctx: RouteContext) -> None:
                 ds_static / "labeling",
                 threshold,
                 allow_pick_to_give=allow_pick_to_give,
+                task_config=task_config(dataset_key),
             )
         except KeyError:
             return jsonify({"error": "dataset is not registered"}), 404
@@ -88,6 +95,7 @@ def register_construction_routes(app, ctx: RouteContext) -> None:
             "include_positives": include_positives,
             "oversample_factor": oversample_factor,
             "allow_pick_to_give": allow_pick_to_give,
+            "task_config": task_config(dataset_key),
         }
 
         total = max(1, sum(math.ceil(count * oversample_factor) for count in per_scenario_counts.values()))
@@ -154,7 +162,9 @@ def register_construction_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Data construction job failed")
                 ctx.fail_job(job, "Data construction failed", exc)
 
-        threading.Thread(target=_run_job, name=f"construction-{job_id}", daemon=True).start()
+        launch_background(
+            target=_run_job, name=f"construction-{job_id}", daemon=True, thread_factory=threading.Thread
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/<string:dataset_namespace>/<string:dataset_name>/construction")

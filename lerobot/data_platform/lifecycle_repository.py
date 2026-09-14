@@ -11,7 +11,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Protocol
 
-
 _INITIALIZE_LOCK = threading.Lock()
 
 
@@ -88,6 +87,10 @@ class SQLiteLifecycleRepository:
             connection.execute("PRAGMA synchronous = FULL")
             connection.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS lifecycle_audit_outbox (
+                    event_id TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS lifecycle_records (
                     kind TEXT NOT NULL,
                     record_id TEXT NOT NULL,
@@ -132,6 +135,7 @@ class SQLiteLifecycleRepository:
                 "SELECT payload_json FROM lifecycle_records WHERE kind = ? AND record_id = ?",
                 (str(kind), str(record_id)),
             ).fetchone()
+
         if connection is not None:
             row = _read(connection)
         else:
@@ -150,6 +154,7 @@ class SQLiteLifecycleRepository:
                 "SELECT payload_json FROM lifecycle_records WHERE kind = ? ORDER BY created_at",
                 (str(kind),),
             ).fetchall()
+
         if connection is not None:
             rows = _read(connection)
         else:
@@ -178,6 +183,22 @@ class SQLiteLifecycleRepository:
                 if existing["payload_json"] != encoded:
                     raise ValueError(f"immutable lifecycle record already exists: {kind}/{record_id}")
                 return
+            if os.environ.get("DATA_PLATFORM_LOG_DATABASE_URL"):
+                from lerobot.data_platform.operation_log import build_operation_event
+
+                maximum = int(os.environ.get("DATA_PLATFORM_OUTBOX_MAX_EVENTS", "100000"))
+                count = active.execute("SELECT count(*) FROM lifecycle_audit_outbox").fetchone()[0]
+                if count >= maximum:
+                    raise RuntimeError("Lifecycle audit outbox is full; restore log delivery")
+                event = build_operation_event(
+                    "lifecycle.record_written",
+                    status="success",
+                    source="lifecycle",
+                    details={"kind": kind, "record_id": record_id},
+                )
+                active.execute(
+                    "INSERT INTO lifecycle_audit_outbox VALUES (?, ?)", (event["event_id"], json.dumps(event))
+                )
             active.execute(
                 """
                 INSERT INTO lifecycle_records(kind, record_id, payload_json, created_at, updated_at)
@@ -194,6 +215,40 @@ class SQLiteLifecycleRepository:
             return
         with self.transaction() as active:
             _write(active)
+
+    def pending_events(self, limit: int = 200) -> list[dict]:
+        with self.connect() as connection:
+            return [
+                json.loads(row[0])
+                for row in connection.execute(
+                    "SELECT payload_json FROM lifecycle_audit_outbox ORDER BY rowid LIMIT ?", (limit,)
+                )
+            ]
+
+    def ack_event(self, event_id: str) -> None:
+        with self.transaction() as connection:
+            connection.execute("DELETE FROM lifecycle_audit_outbox WHERE event_id = ?", (event_id,))
+
+    def browse_records(self, *, limit=50, offset=0, field=None, value=None):
+        from lerobot.data_platform.operation_log import sanitize_for_log
+
+        if field and field not in {"kind", "record_id"}:
+            raise ValueError("Lifecycle filtering supports kind and record_id")
+        statement = "SELECT kind, record_id, payload_json, created_at, updated_at FROM lifecycle_records"
+        parameters = []
+        if field:
+            statement += " WHERE " + field + " = ?"
+            parameters.append(value)
+        statement += " ORDER BY kind, record_id LIMIT ? OFFSET ?"
+        parameters.extend((limit + 1, offset))
+        with self.connect() as connection:
+            connection.execute("PRAGMA query_only=ON")
+            deadline = time.monotonic() + 2
+            connection.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+            rows = [dict(row) for row in connection.execute(statement, parameters)]
+        for row in rows:
+            row["payload_json"] = sanitize_for_log(json.loads(row["payload_json"]))
+        return {"rows": rows[:limit], "has_more": len(rows) > limit}
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[sqlite3.Connection]:

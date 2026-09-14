@@ -63,6 +63,7 @@ import gc
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -75,7 +76,6 @@ from contextlib import suppress
 from dataclasses import dataclass
 from io import BytesIO, StringIO
 from pathlib import Path
-from types import SimpleNamespace
 from urllib.parse import quote, urlencode
 
 import numpy as np
@@ -112,6 +112,7 @@ from lerobot.data_platform.data_protection import (
     normalized_path,
 )
 from lerobot.data_platform.lifecycle import LifecycleStore
+from lerobot.data_platform.local_execution import launch_background
 from lerobot.data_platform.operation_log import (
     append_operation_event,
     local_actor,
@@ -126,9 +127,14 @@ from lerobot.data_platform.precompute.analysis import (
 from lerobot.data_platform.precompute.annotation import DEFAULT_FALLBACK_STAGE_COUNT
 from lerobot.data_platform.precompute.construction.review import load_construction_records
 from lerobot.data_platform.precompute.data_profile import (
+    STAGE_PROFILE_EQUAL_TIME,
+    dataset_semantics,
     has_body_joint_dimensions,
     has_legacy_flag_dimension,
+    require_dataset_operation,
+    require_operation,
     resolve_data_profile,
+    resolve_processing_profile,
 )
 from lerobot.data_platform.precompute.dataset_io import (
     V3DatasetMetadata,
@@ -196,6 +202,7 @@ from lerobot.data_platform.precompute.preprocess.quality_flags import (
     apply_task_assignment_choice,
     list_task_assignment_choices,
 )
+from lerobot.data_platform.precompute.signal_columns import signal_columns
 from lerobot.data_platform.precompute.tagging import (
     available_tag_variants,
     current_tags,
@@ -217,6 +224,7 @@ from lerobot.data_platform.precompute.timeseries import (
     DATA_VERSION_DVT1,
     DATA_VERSION_DVT2,
     GRIPPER_NORMALIZE_COLUMNS,
+    UMI_GRIPPER_NORMALIZE_COLUMNS,
     normalize_gripper_columns,
     normalize_gripper_csv_value,
 )
@@ -236,9 +244,12 @@ from lerobot.data_platform.routes import (
     register_embedding_routes,
     register_lifecycle_routes,
     register_preprocess_routes,
+    register_remote_analysis_routes,
     register_tagging_routes,
+    register_task_routes,
 )
-from lerobot.data_platform.task_text import generate_subtask_text
+from lerobot.data_platform.task_catalog import TaskConfigSnapshot
+from lerobot.data_platform.task_text import cached_subtask_names, generate_subtask_text
 
 
 class MetaOnlyDataset:
@@ -406,11 +417,11 @@ def _columns_from_csv_header(csv_path: Path) -> list[dict]:
 
 
 def _normalize_data_version(value: str | None) -> str:
-    normalized = str(value or DATA_VERSION_DVT1).upper()
-    return normalized if normalized in {DATA_VERSION_DVT1, DATA_VERSION_DVT2} else DATA_VERSION_DVT1
+    normalized = str(value or "").upper()
+    return normalized if normalized in {DATA_VERSION_DVT1, DATA_VERSION_DVT2} else None
 
 
-def _serve_csv_stripped(csv_path: Path, data_version: str = DATA_VERSION_DVT1):
+def _serve_csv_stripped(csv_path: Path, data_version: str | None = None):
     """Serve a CSV file, stripping subtask_state* and normalizing legacy gripper values."""
     text = csv_path.read_text()
     if not text:
@@ -423,7 +434,12 @@ def _serve_csv_stripped(csv_path: Path, data_version: str = DATA_VERSION_DVT1):
 
     header_fields = rows[0]
     drop_idx = {i for i, field in enumerate(header_fields) if field.strip().startswith("subtask_state")}
-    normalize_idx = {i for i, field in enumerate(header_fields) if field.strip() in GRIPPER_NORMALIZE_COLUMNS}
+    normalize_headers = (
+        GRIPPER_NORMALIZE_COLUMNS
+        if str(data_version or "").upper() == DATA_VERSION_DVT2
+        else UMI_GRIPPER_NORMALIZE_COLUMNS
+    )
+    normalize_idx = {i for i, field in enumerate(header_fields) if field.strip() in normalize_headers}
     generated_exist_labels = [
         field.strip() for field in header_fields if re.fullmatch(r"exist_label_\d+", field.strip())
     ]
@@ -557,7 +573,7 @@ _CONSOLE_GROUP_DEFS = [
 
 _LEGACY_CONSOLE_GROUP = {
     "key": "legacy_admin",
-    "label": "Admin Mode",
+    "label": "Admin",
     "pages": [
         {
             "key": "admin_operations",
@@ -614,6 +630,13 @@ def _normalize_console_mode(mode: str | None) -> str:
     return value
 
 
+def _is_dataset_root(path: Path) -> bool:
+    try:
+        return path.is_dir() and (path / "meta" / "info.json").is_file()
+    except OSError:
+        return False
+
+
 def _console_groups_for_tabs(
     allowed_tabs: set[str],
     *,
@@ -662,10 +685,19 @@ def run_server(
     console_mode: str = CONSOLE_MODE_FULL,
     legacy_mutations_enabled: bool = False,
     protected_source_roots: list[Path] | None = None,
-):
+    database_url: str | None = None,
+    allow_registration: bool = False,
+    remote_cache_root: Path | None = None,
+    start_server: bool = True,
+) -> Flask:
     console_mode = _normalize_console_mode(console_mode)
     allowed_tabs = set(_CONSOLE_MODE_ALLOWED_TABS[console_mode])
     allowed_open_links = set(_CONSOLE_MODE_ALLOWED_OPEN_LINKS[console_mode])
+    control_plane_store = None
+    if database_url:
+        from lerobot.data_platform.control_plane import ControlPlaneStore
+
+        control_plane_store = ControlPlaneStore(database_url)
 
     def _tab_enabled(tab: str) -> bool:
         return tab in allowed_tabs
@@ -705,15 +737,13 @@ def run_server(
     _flag_sidecar_json_cache: dict[Path, tuple[tuple[str, int, int], dict]] = {}
     _columns_info_cache: dict[tuple, tuple[list[dict], list[str], list[str]]] = {}
     initial_datasets_root = Path(datasets_root).expanduser() if datasets_root else None
-    configured_source_roots = {
-        str(normalized_path(path)) for path in (protected_source_roots or [])
-    }
+    configured_source_roots = {str(normalized_path(path)) for path in (protected_source_roots or [])}
     registry_state = {
         "datasets_root": initial_datasets_root,
         "path": (
-            initial_datasets_root / "vis" / "_console" / "static" / "datasets_registry.json"
-            if initial_datasets_root is not None
-            else static_folder / "datasets_registry.json"
+            static_folder / "datasets_registry.json"
+            if control_plane_store is not None or initial_datasets_root is None
+            else initial_datasets_root / "vis" / "_console" / "static" / "datasets_registry.json"
         ),
         "configured_source_roots": configured_source_roots,
         "protected_source_roots": set(configured_source_roots),
@@ -727,6 +757,9 @@ def run_server(
         return request.cookies.get(ADMIN_SESSION_COOKIE)
 
     def _admin_authenticated() -> bool:
+        control_user = getattr(g, "control_plane_user", None)
+        if control_plane_store is not None:
+            return isinstance(control_user, dict) and control_user.get("role") == "admin"
         return _admin_auth_store().verify_session(_admin_session_token())
 
     # Background job state for non-blocking trim/delete
@@ -962,6 +995,17 @@ def run_server(
             ds_static, ""
         ) is not None
 
+    def _is_internal_remote_cache_entry(entry: dict) -> bool:
+        if bool(entry.get("internal_remote_cache", False)):
+            return True
+        root_path = Path(entry["root"]).expanduser()
+        output_dir = Path(entry["output_dir"]).expanduser()
+        return (
+            root_path.name == "remote_source"
+            and not _is_dataset_root(root_path)
+            and _root_has_cache_manifest(root_path, output_dir)
+        )
+
     def _static_has_viewer_cache(static_dir: Path) -> bool:
         static_dir = Path(static_dir).expanduser()
         if (static_dir / "viewer_manifest.json").is_file():
@@ -1101,6 +1145,10 @@ def run_server(
         _ensure_viewer_manifest(dataset_obj, ds_static, selected_episodes)
 
     def _upsert_dataset_index(repo_id: str, root_path: Path, output_dir: Path) -> tuple[str, str]:
+        from lerobot.data_platform.environment import validate_dev_path
+
+        validate_dev_path(root_path)
+        validate_dev_path(output_dir)
         root_path = normalized_path(root_path)
         output_dir = normalized_path(output_dir)
         dataset_key = _repo_key(repo_id)
@@ -1118,6 +1166,52 @@ def run_server(
             "manual_source_reason": str(existing.get("manual_source_reason") or ""),
         }
         return dataset_key
+
+    def _register_remote_cache(location: dict, cache_output_dir: Path) -> str:
+        cache_output_dir = Path(cache_output_dir).expanduser().resolve()
+        manifest = load_viewer_manifest(cache_output_dir / "static")
+        if manifest is None:
+            raise FileNotFoundError(cache_output_dir / "static" / "viewer_manifest.json")
+        placeholder_root = cache_output_dir / "remote_source"
+        dataset_key = _upsert_dataset_index(
+            str(location["dataset_key"]),
+            placeholder_root,
+            cache_output_dir,
+        )
+        datasets_index[dataset_key]["internal_remote_cache"] = True
+        _save_registry()
+        episode_ids = manifest_episode_ids(manifest)
+        first_episode = episode_ids[0] if episode_ids else 0
+        return f"/{_repo_id_from_key(dataset_key)}/episode_{first_episode}"
+
+    def _restore_remote_cache_routes() -> None:
+        if control_plane_store is None:
+            return
+        for location in control_plane_store.list_locations():
+            metadata = dict(location.get("metadata") or {})
+            cache_root = str(metadata.get("cache_root") or "").strip()
+            if not metadata.get("viewer_ready") or not cache_root:
+                continue
+            try:
+                viewer_url = _register_remote_cache(location, Path(cache_root))
+            except FileNotFoundError:
+                logging.warning(
+                    "Remote viewer cache is missing for %s; marking it stale",
+                    location.get("dataset_key") or location.get("location_id"),
+                )
+                control_plane_store.mark_viewer_stale(location["location_id"])
+            except Exception:
+                logging.exception(
+                    "Could not restore remote viewer route for %s",
+                    location.get("dataset_key") or location.get("location_id"),
+                )
+            else:
+                if viewer_url != metadata.get("viewer_url"):
+                    control_plane_store.mark_viewer_ready(
+                        location["location_id"],
+                        viewer_url=viewer_url,
+                        cache_root=cache_root,
+                    )
 
     def _empty_cache_status(status: str = "not_loaded") -> dict:
         return {
@@ -1169,6 +1263,7 @@ def run_server(
             manifest_features = manifest.get("features") or {}
             manifest_profile = manifest.get("data_profile") or {}
             return {
+                **dataset_semantics(manifest),
                 "total_episodes": int(manifest.get("total_episodes") or len(manifest_episode_ids(manifest))),
                 "image_keys": image_keys,
                 "editable_features": [],
@@ -1193,6 +1288,7 @@ def run_server(
             and (feature.get("dtype") == "image" or (is_v3 and feature.get("dtype") == "video"))
         ]
         return {
+            **dataset_semantics(info, data_profile),
             "total_episodes": total_episodes,
             "image_keys": image_keys,
             "editable_features": _editable_vector_features(features),
@@ -1711,6 +1807,7 @@ def run_server(
             "key": repo_id,
             "repo_id": repo_id,
             "loaded": True,
+            **dataset_semantics(dataset_obj.meta.info, data_profile),
             "cache_only": False,
             "root": str(getattr(dataset_obj, "root", "")),
             "output_dir": str(ds_static.parent),
@@ -1763,8 +1860,12 @@ def run_server(
             "episodes": episode_ids if episode_ids else list(range(episode_count)),
             "episode_count": episode_count or None,
             "image_keys": image_keys,
+            **{
+                key: info.get(key)
+                for key in ("robot_type", "data_profile", "operation_capabilities", "data_profile_protocol")
+            },
             "editable_features": list(info.get("editable_features") or []),
-            "data_version": info.get("data_version", DATA_VERSION_DVT1),
+            "data_version": info.get("data_version"),
             "robot_profile": info.get("robot_profile", ""),
             "signal_schema": info.get("signal_schema", ""),
             "stage_profile": info.get("stage_profile", ""),
@@ -1819,8 +1920,12 @@ def run_server(
             "episodes": episode_ids if episode_ids else list(range(total_episodes)),
             "episode_count": total_episodes,
             "image_keys": image_keys,
+            **{
+                key: info.get(key)
+                for key in ("robot_type", "data_profile", "operation_capabilities", "data_profile_protocol")
+            },
             "editable_features": list(info.get("editable_features") or []),
-            "data_version": info.get("data_version", DATA_VERSION_DVT1),
+            "data_version": info.get("data_version"),
             "dataset_format_version": info.get("dataset_format_version", ""),
             "cache": _cached_light_cache_status(root_path, output_dir),
             "labeling": labeling_status,
@@ -1907,7 +2012,7 @@ def run_server(
             {
                 "key": "viewer",
                 "label": "Viewer",
-                "href": f"/{repo_id}/episode_{first_episode}?data_version={quote(data_version, safe='')}",
+                "href": f"/{repo_id}/episode_{first_episode}?data_version={quote(data_version or '', safe='')}",
                 "enabled": viewer_ready,
                 "hint": "Prepare video and CSV cache first.",
             },
@@ -1968,6 +2073,7 @@ def run_server(
             "home_url": _home_url(repo_id),
             "nav_active": active,
             "nav_links": links,
+            "task_configuration_enabled": any(_tab_enabled(tab) for tab in ("versions", "curation_manifest")),
         }
 
     def _job_timing_snapshot(job: dict, now: float | None = None) -> tuple[int, int | None]:
@@ -1989,8 +2095,38 @@ def run_server(
         return elapsed_seconds, None
 
     def _serialize_job(job: dict) -> dict:
+        controls = {}
+        control_id = job.get("control_job_id") or job.get("persistent_job_id")
+        if control_plane_store is not None and control_id:
+            from flask import has_request_context
+
+            from lerobot.data_platform.local_execution import local_job_payload
+
+            actor = getattr(g, "control_plane_user", None) if has_request_context() else None
+            persistent = control_plane_store.job_manager.decorate(
+                control_plane_store.get_job(control_id), actor
+            )
+            job = local_job_payload(control_plane_store, persistent)
+            controls = {
+                key: persistent.get(key)
+                for key in (
+                    "requested_by",
+                    "requested_by_username",
+                    "revision",
+                    "phase",
+                    "action_reasons",
+                    "queue_ahead",
+                )
+            }
+            controls["control_job_id"] = control_id
+            controls["available_actions"] = (
+                [action for action in persistent["available_actions"] if action in {"retry", "cancel"}]
+                if actor and persistent.get("requested_by") == actor["user_id"]
+                else []
+            )
         elapsed_seconds, eta_seconds = _job_timing_snapshot(job)
         return {
+            **controls,
             "id": job["id"],
             "job_type": job.get("job_type", "precompute"),
             "dataset_key": job.get("dataset_key"),
@@ -2001,13 +2137,20 @@ def run_server(
             "total": job.get("total", 0),
             "elapsed_seconds": elapsed_seconds,
             "eta_seconds": eta_seconds,
-            "message": job.get("message", ""),
+            "message": (
+                f"Queued: {controls['queue_ahead']} task(s) ahead"
+                if job["status"] == "queued" and "queue_ahead" in controls
+                else job.get("message", "")
+            ),
             "error": job.get("error"),
             "viewer_url": job.get("viewer_url"),
             "review_url": job.get("review_url"),
             "output_root": job.get("output_root"),
             "output_dataset_key": job.get("output_dataset_key"),
+            "result_summary": job.get("result_summary"),
             "created_at": job.get("created_at"),
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
             "updated_at": job.get("updated_at"),
             "logs": job.get("logs", [])[-80:],
         }
@@ -2068,13 +2211,22 @@ def run_server(
 
     def _audit_identity() -> tuple[dict, dict]:
         local = local_actor()
+        control_user = getattr(g, "control_plane_user", None)
         username = (
-            request.headers.get("X-Forwarded-User")
+            (control_user or {}).get("username")
+            or request.headers.get("X-Forwarded-User")
             or request.headers.get("X-Remote-User")
             or request.environ.get("REMOTE_USER")
             or local["username"]
         )
         actor = {**local, "username": str(username)}
+        if isinstance(control_user, dict):
+            actor.update(
+                {
+                    "user_id": control_user.get("user_id"),
+                    "role": control_user.get("role"),
+                }
+            )
         client = {
             "remote_addr": request.headers.get("X-Forwarded-For") or request.remote_addr,
             "user_agent": request.user_agent.string,
@@ -2229,7 +2381,7 @@ def run_server(
         return float(value)
 
     def _registry_path_for_root(root_dir: Path | None) -> Path:
-        if root_dir is None:
+        if control_plane_store is not None or root_dir is None:
             return static_folder / "datasets_registry.json"
         return root_dir / "vis" / "_console" / "static" / "datasets_registry.json"
 
@@ -2245,6 +2397,8 @@ def run_server(
         return LifecycleStore(Path(registry_state["path"]).parent / "lifecycle")
 
     def _save_registry() -> None:
+        if os.environ.get("DATA_PLATFORM_INTERNAL_EXECUTION"):
+            return
         registry_path = registry_state["path"]
         entries = []
         for dataset_key, entry in sorted(datasets_index.items()):
@@ -2260,6 +2414,7 @@ def run_server(
                     "stage": str(entry.get("stage") or infer_dataset_stage(root_path)),
                     "manual_source": bool(entry.get("manual_source", False)),
                     "manual_source_reason": str(entry.get("manual_source_reason") or ""),
+                    "internal_remote_cache": _is_internal_remote_cache_entry(entry),
                 }
             )
         try:
@@ -2296,9 +2451,9 @@ def run_server(
             for value in data.get("protected_source_roots", [])
             if str(value).strip()
         }
-        registry_state["protected_source_roots"] = set(
-            registry_state["configured_source_roots"]
-        ) | persisted_source_roots
+        registry_state["protected_source_roots"] = (
+            set(registry_state["configured_source_roots"]) | persisted_source_roots
+        )
         for entry in data.get("datasets", []):
             root_path = Path(str(entry.get("root", ""))).expanduser()
             repo_id = str(entry.get("repo_id") or f"local/{root_path.name or 'dataset'}")
@@ -2311,17 +2466,23 @@ def run_server(
                     "stage": str(entry.get("stage") or infer_dataset_stage(root_path)),
                     "manual_source": bool(entry.get("manual_source", False)),
                     "manual_source_reason": str(entry.get("manual_source_reason") or ""),
+                    "internal_remote_cache": bool(entry.get("internal_remote_cache", False))
+                    or root_path.name == "remote_source",
                 }
             )
-
-    def _is_dataset_root(path: Path) -> bool:
-        return path.is_dir() and (path / "meta" / "info.json").is_file()
 
     def _visible_dataset_keys() -> list[tuple[str, str]]:
         return [
             dataset_key
             for dataset_key in sorted(datasets_index)
-            if _is_dataset_root(Path(datasets_index[dataset_key]["root"]).expanduser())
+            if not _is_internal_remote_cache_entry(datasets_index[dataset_key])
+            and (
+                _is_dataset_root(Path(datasets_index[dataset_key]["root"]).expanduser())
+                or _root_has_cache_manifest(
+                    Path(datasets_index[dataset_key]["root"]).expanduser(),
+                    Path(datasets_index[dataset_key]["output_dir"]).expanduser(),
+                )
+            )
         ]
 
     def _dataset_candidates(root_dir: Path | None = None) -> list[dict]:
@@ -2363,8 +2524,7 @@ def run_server(
             for dataset_key, entry in datasets_index.items()
         }
         output_by_root = {
-            str(normalized_path(entry["root"])): entry["output_dir"]
-            for entry in datasets_index.values()
+            str(normalized_path(entry["root"])): entry["output_dir"] for entry in datasets_index.values()
         }
         for dataset_root in roots:
             dataset_root = normalized_path(dataset_root)
@@ -2386,7 +2546,7 @@ def run_server(
                     "output_dir": str(output_dir),
                     "registered": registered_key is not None,
                     "registered_key": registered_key,
-                    "data_version": info.get("data_version", DATA_VERSION_DVT1),
+                    "data_version": info.get("data_version"),
                     "dataset_format_version": info.get("dataset_format_version", ""),
                     "cache_only": False,
                     "cache": _cached_light_cache_status(dataset_root, output_dir),
@@ -2413,7 +2573,17 @@ def run_server(
     app = Flask(__name__, static_folder=static_folder.resolve(), template_folder=template_folder.resolve())
     app.logger.setLevel(logging.ERROR)
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # specifying not to cache
+    if control_plane_store is not None:
+        from lerobot.data_platform.routes.control_plane import register_control_plane_auth_routes
+
+        register_control_plane_auth_routes(
+            app,
+            control_plane_store,
+            bootstrap_token=os.environ.get("DATA_PLATFORM_BOOTSTRAP_TOKEN", ""),
+            allow_registration=allow_registration,
+        )
     _load_registry()
+    _restore_remote_cache_routes()
 
     def _admin_login_response(token: str):
         response = jsonify({"status": "ok", "configured": True, "authenticated": True})
@@ -2428,6 +2598,15 @@ def run_server(
 
     @app.route("/api/admin/status", methods=["GET"])
     def api_admin_status():
+        if control_plane_store is not None:
+            user = getattr(g, "control_plane_user", None)
+            return jsonify(
+                {
+                    "configured": True,
+                    "authenticated": isinstance(user, dict) and user.get("role") == "admin",
+                    "central_account": True,
+                }
+            )
         store = _admin_auth_store()
         return jsonify(
             {
@@ -2438,6 +2617,8 @@ def run_server(
 
     @app.route("/api/admin/setup", methods=["POST"])
     def api_admin_setup():
+        if control_plane_store is not None:
+            return jsonify({"error": "Admin access is managed by central platform accounts"}), 409
         body = request.get_json(silent=True) or {}
         password = str(body.get("password") or "")
         if password != str(body.get("confirm_password") or ""):
@@ -2452,11 +2633,11 @@ def run_server(
 
     @app.route("/api/admin/login", methods=["POST"])
     def api_admin_login():
+        if control_plane_store is not None:
+            return jsonify({"error": "Sign in with a central administrator account"}), 409
         body = request.get_json(silent=True) or {}
         try:
-            return _admin_login_response(
-                _admin_auth_store().authenticate(str(body.get("password") or ""))
-            )
+            return _admin_login_response(_admin_auth_store().authenticate(str(body.get("password") or "")))
         except PermissionError as exc:
             return jsonify({"error": str(exc)}), 403
         except ValueError as exc:
@@ -2466,6 +2647,8 @@ def run_server(
 
     @app.route("/api/admin/logout", methods=["POST"])
     def api_admin_logout():
+        if control_plane_store is not None:
+            return jsonify({"error": "Sign out from the central platform account"}), 409
         _admin_auth_store().logout(_admin_session_token())
         response = jsonify({"status": "ok", "configured": _admin_auth_store().is_configured()})
         response.delete_cookie(ADMIN_SESSION_COOKIE, samesite="Strict")
@@ -2473,6 +2656,8 @@ def run_server(
 
     @app.route("/api/admin/password", methods=["POST"])
     def api_admin_change_password():
+        if control_plane_store is not None:
+            return jsonify({"error": "Central account passwords are not managed by Admin Mode"}), 409
         if not _admin_authenticated():
             return jsonify({"error": "Admin Mode is locked"}), 403
         body = request.get_json(silent=True) or {}
@@ -2690,15 +2875,15 @@ def run_server(
         path = request.path
         body = request.get_json(silent=True) or {}
         if _request_is_legacy_mutation(path, body) and not _admin_authenticated():
+            if control_plane_store is not None:
+                message = "An administrator account is required for in-place or delete operations."
+            else:
+                message = (
+                    "Admin Mode is locked. Unlock it from the page with the configured "
+                    "administrator password before running an in-place mutation."
+                )
             return (
-                jsonify(
-                    {
-                        "error": (
-                            "Admin Mode is locked. Unlock it from the page with the configured "
-                            "administrator password before running an in-place mutation."
-                        )
-                    }
-                ),
+                jsonify({"error": message}),
                 403,
             )
         return None
@@ -2783,6 +2968,8 @@ def run_server(
             allowed_open_links=sorted(allowed_open_links),
             legacy_mutations_enabled=True,
             admin_authenticated=_admin_authenticated(),
+            control_plane_enabled=control_plane_store is not None,
+            control_plane_user=getattr(g, "control_plane_user", None),
         )
 
     @app.route("/api/datasets")
@@ -2812,6 +2999,8 @@ def run_server(
 
     @app.route("/api/datasets/<string:dataset_namespace>/<string:dataset_name>", methods=["DELETE"])
     def api_delete_dataset(dataset_namespace, dataset_name):
+        if not _admin_authenticated():
+            return jsonify({"error": "administrator access is required to unregister datasets"}), 403
         dataset_key = (dataset_namespace, dataset_name)
         if dataset_key not in datasets_index and dataset_key not in datasets_registry:
             return jsonify({"error": f"dataset is not registered: {_repo_id_from_key(dataset_key)}"}), 404
@@ -2993,10 +3182,36 @@ def run_server(
                 options[field] = False
             options["visualize_only"] = True
             options["precomputed_only"] = True
+        try:
+            if any(
+                options.get(key)
+                for key in (
+                    "force_recompute_stage",
+                    "annotate",
+                    "write_parquet",
+                    "write_subtask",
+                    "overwrite_parquet",
+                    "overwrite_subtask_text",
+                )
+            ):
+                require_dataset_operation(
+                    root_path, "auto_stage", data_version_override=options.get("data_version")
+                )
+            if options.get("embed_policy"):
+                require_operation(info, "embedding")
+            if info.get("robot_type", "").lower() == "umi" and options.get("data_version"):
+                raise ValueError("UMI data cannot use a DVT processing profile")
+            fallback_stage_count = int(options.get("fallback_stage_count") or DEFAULT_FALLBACK_STAGE_COUNT)
+            if fallback_stage_count < 2:
+                raise ValueError("fallback_stage_count must be at least 2")
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
         selected_episodes = _parse_int_list(options.get("episodes"))
         downsample_opt = options.get("downsample")
         downsample_opt = int(downsample_opt) if downsample_opt not in (None, "") else None
-        data_version = _normalize_data_version(options.get("data_version") or info.get("data_version"))
+        data_version = resolve_processing_profile(
+            root_path, data_version_override=options.get("data_version")
+        ).legacy_data_version
         total_episodes = (
             len(selected_episodes) if selected_episodes is not None else int(info.get("total_episodes") or 0)
         )
@@ -3088,6 +3303,8 @@ def run_server(
                         overwrite_csv=_bool_option(options, "overwrite_csv", False),
                         data_version=data_version,
                         progress_callback=_update_job,
+                        fallback_stage_count=fallback_stage_count,
+                        force_recompute_stage=_bool_option(options, "force_recompute_stage", False),
                     )
                 else:
                     result = run_precompute(
@@ -3111,6 +3328,7 @@ def run_server(
                             options.get("fallback_stage_count"),
                             DEFAULT_FALLBACK_STAGE_COUNT,
                         ),
+                        task_config=_lifecycle_store().tasks.snapshot(repo_id).to_dict(),
                         write_subtask=_bool_option(options, "write_subtask", False),
                         overwrite_parquet=_bool_option(options, "overwrite_parquet", False),
                         overwrite_subtask_text=_bool_option(options, "overwrite_subtask_text", False),
@@ -3157,7 +3375,9 @@ def run_server(
                     _append_job_log(job, f"Error: {exc}")
                 _audit_job(job, "failed", exc)
 
-        threading.Thread(target=_run_job, name=f"precompute-{job_id}", daemon=True).start()
+        launch_background(
+            target=_run_job, name=f"precompute-{job_id}", daemon=True, thread_factory=threading.Thread
+        )
         return jsonify({"job": _serialize_job(job)})
 
     @app.route("/api/labeling/capabilities")
@@ -3376,17 +3596,54 @@ def run_server(
                     _append_job_log(job, f"Error: {exc}")
                 _audit_job(job, "failed", exc)
 
-        threading.Thread(target=_run_job, name=f"labeling-{job_id}", daemon=True).start()
+        launch_background(
+            target=_run_job, name=f"labeling-{job_id}", daemon=True, thread_factory=threading.Thread
+        )
         return jsonify({"job": _serialize_job(job)})
 
     @app.route("/api/jobs")
     def api_jobs():
+        if control_plane_store is not None:
+            from lerobot.data_platform.local_execution import local_job_payload
+
+            rows = [
+                row
+                for row in control_plane_store.list_jobs(
+                    limit=200, actor=getattr(g, "control_plane_user", None) or {}
+                )
+                if row["operation"].startswith("local.request.")
+            ]
+            return jsonify(
+                {
+                    "jobs": [
+                        _serialize_job(
+                            {**local_job_payload(control_plane_store, row), "persistent_job_id": None}
+                        )
+                        for row in rows[:20]
+                    ]
+                }
+            )
         with _jobs_lock:
             jobs = sorted(jobs_registry.values(), key=lambda item: item["created_at"], reverse=True)
             return jsonify({"jobs": [_serialize_job(job) for job in jobs[:20]]})
 
     @app.route("/api/jobs/<string:job_id>")
     def api_job(job_id):
+        if control_plane_store is not None:
+            from lerobot.data_platform.local_execution import local_job_payload
+
+            try:
+                row = control_plane_store.get_job(job_id)
+                if row["operation"].startswith("local.request."):
+                    return jsonify(
+                        {
+                            "job": _serialize_job(
+                                {**local_job_payload(control_plane_store, row), "persistent_job_id": None}
+                            )
+                        }
+                    )
+            except KeyError:
+                pass
         with _jobs_lock:
             job = jobs_registry.get(job_id)
             if job is None:
@@ -3528,7 +3785,9 @@ def run_server(
                     _append_job_log(job, f"Error: {exc}")
                 _audit_job(job, "failed", exc)
 
-        threading.Thread(target=_run_job, name=f"viewer-preload-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job, name=f"viewer-preload-{job['id']}", daemon=True, thread_factory=threading.Thread
+        )
         return jsonify({"job": _serialize_job(job)})
 
     @app.route("/api/viewer/<string:dataset_namespace>/<string:dataset_name>/task_map")
@@ -3820,9 +4079,7 @@ def run_server(
                 dataset_name=dataset_name,
             ),
             tagging_api_base_url=f"/api/tagging/{repo_id}",
-            legacy_mutations_enabled=(
-                _admin_authenticated() and not _dataset_is_protected(dataset_key)
-            ),
+            legacy_mutations_enabled=(_admin_authenticated() and not _dataset_is_protected(dataset_key)),
             viewer_url=f"/{repo_id}/episode_{episode_ids[0] if episode_ids else 0}",
             **_dataset_nav(
                 repo_id,
@@ -4163,11 +4420,45 @@ def run_server(
         refresh_dataset_after_episode_delete=_refresh_dataset_after_episode_delete,
         static_dir_for_key=_static_dir_for_key,
         lifecycle_store=_lifecycle_store,
+        control_plane_store=control_plane_store,
         legacy_mutations_enabled=True,
         dataset_is_protected=_dataset_is_protected,
     )
+    app.extensions["data_platform_route_context"] = route_context
+    app.config["DATA_PLATFORM_CONSOLE_MODE"] = console_mode
+    app.config["DATA_PLATFORM_LEGACY_MUTATIONS"] = legacy_mutations_enabled
+
+    def _complete_local_execution(result):
+        for entry in result.get("local_registrations") or []:
+            root = Path(entry["root"])
+            if not _is_dataset_root(root):
+                continue
+            refreshed = MetaOnlyDataset(entry["repo_id"], root=root)
+            key = _register_dataset(refreshed, Path(entry["output_dir"]))
+            _refresh_dataset_after_episode_delete(key, refreshed, Path(entry["output_dir"]) / "static")
+        _clear_episode_dependent_caches()
+
+    app.extensions["data_platform_complete_local"] = _complete_local_execution
+    if control_plane_store is not None:
+        from lerobot.data_platform.routes.control_plane import register_control_plane_routes
+
+        cache_root = (
+            Path(remote_cache_root).expanduser()
+            if remote_cache_root is not None
+            else Path(registry_state["path"]).parent.parent / "remote_cache"
+        )
+        register_control_plane_routes(
+            app,
+            control_plane_store,
+            enrollment_token=os.environ.get("DATA_PLATFORM_AGENT_ENROLLMENT_TOKEN", ""),
+            remote_cache_root=cache_root,
+            register_remote_cache=_register_remote_cache,
+            legacy_mutations_enabled=legacy_mutations_enabled,
+            task_catalog_store=_lifecycle_store().tasks,
+        )
     if any(_tab_enabled(tab) for tab in ("versions", "curation_manifest")):
         register_lifecycle_routes(app, route_context)
+        register_task_routes(app, route_context)
     if any(
         _tab_enabled(tab)
         for tab in (
@@ -4190,48 +4481,48 @@ def run_server(
         register_compare_routes(app, route_context)
 
     def _analysis_for_dataset(dataset_key: tuple[str, str], refresh: bool = False) -> dict:
-        if dataset_key in datasets_index:
-            entry_info = datasets_index[dataset_key]
-            root_path = Path(entry_info["root"]).expanduser()
-            if not _is_dataset_root(root_path):
-                ds_static = Path(entry_info["output_dir"]).expanduser() / "static"
-                if refresh:
-                    raise ValueError("analysis refresh requires the original dataset, not cache-only files")
-                analysis = read_analysis_cache(ds_static)
-                if analysis is None:
-                    manifest = load_viewer_manifest(ds_static) or _fallback_manifest_from_cache(
-                        ds_static, _repo_id_from_key(dataset_key)
-                    )
-                    if manifest is None:
-                        raise ValueError("analysis cache not found for cache-only dataset")
-                    episodes = manifest_episode_ids(manifest)
-                    meta = SimpleNamespace(
-                        episodes={
-                            int(row.get("episode_index")): {"tasks": list(row.get("tasks") or [])}
-                            for row in manifest.get("episodes") or []
-                            if row.get("episode_index") is not None
-                        },
-                        total_episodes=len(episodes),
-                        fps=int(manifest.get("fps") or 0),
-                        features=dict(manifest.get("features") or {}),
-                    )
-                    analysis = build_dataset_analysis(root_path, meta, ds_static, episodes)
-                    write_analysis_cache(ds_static, analysis)
-                return _analysis_with_live_tags(dataset_key, analysis, ds_static)
-        entry = _ensure_dataset_loaded(dataset_key)
-        dataset_obj, ds_static = entry
-        if not hasattr(dataset_obj, "root") or not hasattr(dataset_obj, "meta"):
-            raise ValueError("analysis is only available for local registered datasets")
+        from lerobot.data_platform.precompute.analysis import (
+            AnalysisMetadata,
+            analysis_input_digest,
+            load_analysis_metadata,
+        )
 
+        desired = _lifecycle_store().tasks.snapshot(_repo_id_from_key(dataset_key)).to_dict()
+        index_entry = datasets_index.get(dataset_key)
+        if index_entry and not _is_dataset_root(Path(index_entry["root"]).expanduser()):
+            ds_static = Path(index_entry["output_dir"]).expanduser() / "static"
+            manifest = load_viewer_manifest(ds_static) or _fallback_manifest_from_cache(
+                ds_static, _repo_id_from_key(dataset_key)
+            )
+            if manifest is None:
+                raise ValueError("dataset metadata is unavailable")
+            meta = AnalysisMetadata.from_report(manifest)
+            root = Path(index_entry["root"])
+            episodes = None
+        else:
+            dataset_obj, ds_static = _ensure_dataset_loaded(dataset_key)
+            root = Path(dataset_obj.root)
+            meta = load_analysis_metadata(root)
+            episodes = _dataset_episode_ids(dataset_obj, dataset_key)
+            if set(episodes) == {int(index) for index in dataset_obj.meta.episodes}:
+                episodes = None
+            manifest = load_viewer_manifest(ds_static) or {}
+
+        recorded = TaskConfigSnapshot.from_dict(manifest.get("task_config")).to_dict()
+        input_digest = analysis_input_digest(meta, ds_static, episodes)
         analysis = None if refresh else read_analysis_cache(ds_static)
+        if analysis is not None and (
+            analysis.get("task_config", {}).get("digest") != desired["digest"]
+            or analysis.get("input_digest") != input_digest
+        ):
+            analysis = None
         if analysis is None:
             analysis = build_dataset_analysis(
-                Path(dataset_obj.root),
-                dataset_obj.meta,
-                ds_static,
-                _dataset_episode_ids(dataset_obj, dataset_key),
+                root, meta, ds_static, episodes, task_config=desired, cached_task_config=recorded
             )
             write_analysis_cache(ds_static, analysis)
+        # Classification always uses the current catalog. Incompatible cached stages are omitted separately.
+        analysis["task_config_stale"] = False
         return _analysis_with_live_tags(dataset_key, analysis, ds_static)
 
     def _analysis_with_live_tags(dataset_key: tuple[str, str], analysis: dict, ds_static: Path) -> dict:
@@ -4274,6 +4565,10 @@ def run_server(
             ),
         }
         return out
+
+    if control_plane_store is not None:
+        route_context.analysis_with_live_tags = _analysis_with_live_tags
+        register_remote_analysis_routes(app, route_context)
 
     def _analysis_summary_payload(analysis: dict) -> dict:
         return {key: value for key, value in analysis.items() if key != "episodes"}
@@ -4382,6 +4677,7 @@ def run_server(
         return jsonify({"episodes": episodes_payload, "total": len(episodes_payload)})
 
     @app.route("/api/analysis/<string:dataset_namespace>/<string:dataset_name>/refresh", methods=["POST"])
+    @app.get("/api/analysis/<string:dataset_namespace>/<string:dataset_name>/refresh")
     def api_analysis_refresh(dataset_namespace, dataset_name):
         dataset_key = (dataset_namespace, dataset_name)
         try:
@@ -4494,8 +4790,7 @@ def run_server(
         tag_episode_map = {}
 
         task_str = tasks[0] if tasks else ""
-        max_stage = 5 if ("give" in task_str.lower() or "hand" in task_str.lower()) else 4
-        subtask_names = {s: generate_subtask_text(task_str, s) for s in range(-1, max_stage + 1)}
+        max_stage, subtask_names = cached_subtask_names(task_str, Path(static_dir), episode_id)
 
         dataset_info = {
             "repo_id": repo_id,
@@ -4525,6 +4820,10 @@ def run_server(
                     episode_id=episode_id,
                 ),
                 columns=columns,
+                signal_columns=manifest.get("signal_columns")
+                or signal_columns(
+                    manifest.get("features") or {}, qualify=manifest.get("robot_type") == "UMI"
+                ),
                 ignored_columns=ignored_columns,
                 flagged_url=url_for(
                     "get_flagged_episodes",
@@ -4681,7 +4980,7 @@ def run_server(
         data_version = (
             _normalize_data_version(request.args.get("data_version"))
             if request.args.get("data_version")
-            else _data_profile_for_dataset(dataset_obj).legacy_data_version
+            else resolve_processing_profile(dataset_obj.root).legacy_data_version
         )
         server_state["data_version"] = data_version
         dataset_version = (
@@ -4851,8 +5150,7 @@ def run_server(
 
         # Build labels for the task-dependent stage range: -1..4, or -1..5 for give tasks.
         task_str = tasks[0] if tasks else ""
-        max_stage = 5 if ("give" in task_str.lower() or "hand" in task_str.lower()) else 4
-        subtask_names = {s: generate_subtask_text(task_str, s) for s in range(-1, max_stage + 1)}
+        max_stage, subtask_names = cached_subtask_names(task_str, Path(static_dir), episode_id)
         _viewer_mark("flags_subtasks")
 
         resp = make_response(
@@ -4876,6 +5174,10 @@ def run_server(
                     episode_id=episode_id,
                 ),
                 columns=columns,
+                signal_columns=signal_columns(
+                    dataset_obj.features,
+                    qualify=str(dataset_obj.meta.info.get("robot_type", "")).lower() == "umi",
+                ),
                 ignored_columns=ignored_columns,
                 flagged_url=url_for(
                     "get_flagged_episodes",
@@ -4918,9 +5220,7 @@ def run_server(
                     dataset_name=dataset_name,
                 ),
                 annotate_enabled=server_state["annotate"],
-                legacy_mutations_enabled=(
-                    _admin_authenticated() and not _dataset_is_protected(dataset_key)
-                ),
+                legacy_mutations_enabled=(_admin_authenticated() and not _dataset_is_protected(dataset_key)),
                 data_version=data_version,
                 has_body_joints=has_body_joint_dimensions(dataset_obj.features),
                 has_legacy_flag=has_legacy_flag_dimension(dataset_obj.features),
@@ -5044,10 +5344,10 @@ def run_server(
             ds_static = _static_dir_for_key(dataset_key)
             manifest = load_viewer_manifest(ds_static) if ds_static is not None else None
             data_version = _normalize_data_version(
-                request.args.get("data_version")
-                or (manifest or {}).get("data_version")
-                or server_state.get("data_version")
+                request.args.get("data_version") or (manifest or {}).get("data_version")
             )
+            if manifest and dataset_semantics(manifest)["data_version"] is None:
+                data_version = None
             server_state["data_version"] = data_version
             cache_path = None
             if ds_static is not None:
@@ -5081,7 +5381,7 @@ def run_server(
             data_version = (
                 _normalize_data_version(request.args.get("data_version"))
                 if request.args.get("data_version")
-                else _data_profile_for_dataset(dataset_obj).legacy_data_version
+                else resolve_processing_profile(dataset_obj.root).legacy_data_version
             )
             server_state["data_version"] = data_version
             if cache_path is None or not cache_path.is_file():
@@ -5737,7 +6037,16 @@ def run_server(
 
     def _compute_subtask_texts(dataset_obj, episode_id: int, states: list[int]) -> list[str]:
         task = _get_episode_task_text(dataset_obj, episode_id)
-        return [generate_subtask_text(task, int(state)) for state in states]
+        config = _lifecycle_store().tasks.snapshot(getattr(dataset_obj, "repo_id", "")).to_dict()
+        count = max(2, max(states, default=4) + 1)
+        equal_time = _data_profile_for_dataset(dataset_obj).stage_profile == STAGE_PROFILE_EQUAL_TIME
+        names = {
+            state: generate_subtask_text(
+                task, int(state), task_config=config, stage_count=count, force_equal_time=equal_time
+            )
+            for state in set(states)
+        }
+        return [names[state] for state in states]
 
     def _upsert_table_column(table: pa.Table, name: str, values: list, arrow_type: pa.DataType) -> pa.Table:
         field = pa.field(name, arrow_type)
@@ -5765,7 +6074,16 @@ def run_server(
 
         timestamps = [float(r["timestamp"]) for r in rows]
         states = _compute_subtask_states(timestamps, transitions)
-        max_stage = max(4, max((int(state) for state in states), default=0))
+        max_stage = max(1, max((int(item["state"]) for item in transitions), default=4))
+        csv_path.with_suffix(".stages.json").write_text(
+            json.dumps(
+                {
+                    "stage_count": max_stage + 1,
+                    "encoding": "normalized",
+                    "source": "existing",
+                }
+            )
+        )
 
         if include_hidden_state and "subtask_state" not in fieldnames:
             fieldnames.append("subtask_state")
@@ -7378,7 +7696,12 @@ def run_server(
                     _append_job_log(job, f"Error: {exc}")
                 _audit_job(job, "failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-delete-episodes-{job_id}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-delete-episodes-{job_id}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": _serialize_job(job)})
 
     # Auto-flag issue episodes so they appear highlighted in the sidebar
@@ -7415,20 +7738,21 @@ def run_server(
             gc.collect()
             logging.info("CSV cached: %s", cache_path)
 
-    import socket
+    if start_server:
+        import socket
 
-    max_retries = 10
-    for attempt in range(max_retries):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex((host, port)) == 0:
-                if attempt < max_retries - 1:
-                    logging.warning("Port %d is in use, trying %d...", port, port + 1)
-                    port += 1
-                    continue
-                else:
+        max_retries = 10
+        for attempt in range(max_retries):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if s.connect_ex((host, port)) == 0:
+                    if attempt < max_retries - 1:
+                        logging.warning("Port %d is in use, trying %d...", port, port + 1)
+                        port += 1
+                        continue
                     raise OSError(f"Ports {port - max_retries + 1}-{port} are all in use.")
-        break
-    app.run(host=host, port=port, request_handler=QuietRequestHandler, threaded=True)
+            break
+        app.run(host=host, port=port, request_handler=QuietRequestHandler, threaded=True)
+    return app
 
 
 def get_ep_csv_fname(episode_id: int):
@@ -7506,7 +7830,7 @@ def get_episode_data(
     episode_index: int,
     max_frames: int | None = None,
     downsample: int | None = None,
-    data_version: str = DATA_VERSION_DVT1,
+    data_version: str | None = None,
 ):
     """Return episode time-series data as CSV for Dygraphs, plus plotting metadata."""
     columns, ignored_columns, selected_columns = get_columns_info(dataset)
@@ -7661,10 +7985,13 @@ def visualize_dataset_html(
     precomputed_only: int | bool = False,
     annotate: bool = False,
     datasets_root: Path | None = None,
-    data_version: str = DATA_VERSION_DVT1,
+    data_version: str | None = None,
     console_mode: str = CONSOLE_MODE_FULL,
     legacy_mutations_enabled: bool = False,
     protected_source_roots: list[Path] | None = None,
+    database_url: str | None = None,
+    allow_registration: bool = False,
+    remote_cache_root: Path | None = None,
 ) -> Path | None:
     init_logging()
 
@@ -7706,6 +8033,9 @@ def visualize_dataset_html(
                 console_mode=console_mode,
                 legacy_mutations_enabled=legacy_mutations_enabled,
                 protected_source_roots=protected_source_roots,
+                database_url=database_url,
+                allow_registration=allow_registration,
+                remote_cache_root=remote_cache_root,
             )
     else:
         # Symlink source MP4 files into the served output directory.
@@ -7768,6 +8098,9 @@ def visualize_dataset_html(
                 console_mode=console_mode,
                 legacy_mutations_enabled=legacy_mutations_enabled,
                 protected_source_roots=protected_source_roots,
+                database_url=database_url,
+                allow_registration=allow_registration,
+                remote_cache_root=remote_cache_root,
             )
 
 

@@ -1,0 +1,23 @@
+[Unit]
+Description=Data Platform node agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Delegate=yes
+KillMode=mixed
+TimeoutStopSec=60
+Environment=DATA_PLATFORM_REQUIRE_CGROUP=1
+Type=simple
+User=data-platform-agent
+Group=data-platform-agent
+WorkingDirectory=/opt/data-platform-agent/current
+EnvironmentFile=/etc/data-platform/agent.env
+ExecStart=/opt/data-platform-agent/current/.venv/bin/data-platform-agent
+Restart=always
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

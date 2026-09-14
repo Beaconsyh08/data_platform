@@ -37,10 +37,18 @@ class RouteContext:
     refresh_dataset_after_episode_delete: Callable[[tuple[str, str], object, Path], list[int]] | None = None
     static_dir_for_key: Callable[[tuple[str, str]], Path | None] | None = None
     lifecycle_store: Callable[[], object] | object | None = None
+    control_plane_store: object | None = None
+    analysis_with_live_tags: Callable[[tuple[str, str], dict, Path], dict] | None = None
     legacy_mutations_enabled: bool = False
     dataset_is_protected: Callable[[tuple[str, str]], bool] | None = None
 
     def update_job(self, job: dict, payload: dict) -> None:
+        import os
+
+        if os.environ.get("DATA_PLATFORM_INTERNAL_EXECUTION"):
+            from lerobot.data_platform.local_execution import report_local_progress
+
+            report_local_progress(payload)
         with self.jobs_lock:
             update_time = time.time()
             status = payload.get("status")

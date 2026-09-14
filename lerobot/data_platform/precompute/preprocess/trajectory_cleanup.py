@@ -14,7 +14,8 @@ import math
 import os
 import shutil
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
+from lerobot.data_platform.execution_pools import ThreadPoolExecutor
 from datetime import datetime
 from fractions import Fraction
 from pathlib import Path

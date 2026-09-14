@@ -9,10 +9,11 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from lerobot.data_platform.precompute.data_profile import STAGE_PROFILE_EQUAL_TIME, resolve_processing_profile
 from lerobot.data_platform.precompute.dataset_io import read_episode_table
+from lerobot.data_platform.precompute.signal_columns import signal_columns
 from lerobot.data_platform.precompute.timeseries import (
     BODY_JOINT_INDICES,
-    DATA_VERSION_DVT1,
     DATA_VERSION_DVT2,
     normalize_gripper_columns,
 )
@@ -518,7 +519,7 @@ def compute_quality_flags(
     fps: float | None = None,
     episode_id: int = -1,
     task: str = "",
-    data_version: str = DATA_VERSION_DVT1,
+    data_version: str = DATA_VERSION_DVT2,
     early_window_seconds: float = QUALITY_EARLY_WINDOW_SECONDS,
 ) -> list[dict]:
     """Detect suspicious early gripper transitions without mutating cache, stage, or parquet data."""
@@ -528,7 +529,7 @@ def compute_quality_flags(
     if frame_count == 0:
         return issues
 
-    data_version = str(data_version or DATA_VERSION_DVT1).upper()
+    data_version = str(data_version or DATA_VERSION_DVT2).upper()
     inferred_fps = _infer_fps_from_timestamps(timestamps, fps)
     early_count = _early_frame_count(timestamps, inferred_fps, early_window_seconds)
 
@@ -610,40 +611,20 @@ def _feature_shape(feature: dict) -> tuple:
 
 
 def get_columns_info(meta: LeRobotDatasetMetadata) -> tuple[list[dict], list[str], list[str]]:
-    columns = []
-    selected_columns = [col for col, feature in meta.features.items() if _is_plot_feature(col, feature)]
-    if "timestamp" in selected_columns:
-        selected_columns.remove("timestamp")
-    if "subtask_state" in selected_columns:
-        selected_columns.remove("subtask_state")
-
-    ignored_columns = []
-    filtered_columns = []
-    for column_name in selected_columns:
-        shape = _feature_shape(meta.features[column_name])
-        if len(shape) > 1:
-            ignored_columns.append(column_name)
-        else:
-            filtered_columns.append(column_name)
-    selected_columns = filtered_columns
-
-    for column_name in selected_columns:
-        dim_state = meta.shapes[column_name][0]
-        names = meta.features[column_name].get("names")
-        if names:
-            column_names = names
-            while not isinstance(column_names, list):
-                column_names = list(column_names.values())[0]
-            if not isinstance(column_names, list) or len(column_names) != dim_state:
-                column_names = [f"{column_name}_{i}" for i in range(dim_state)]
-        elif column_name == "exist_label" and dim_state == 1:
-            column_names = ["exist_label"]
-        else:
-            column_names = [f"{column_name}_{i}" for i in range(dim_state)]
-        columns.append({"key": column_name, "value": column_names})
-
-    selected_columns.insert(0, "timestamp")
-    return columns, ignored_columns, selected_columns
+    features = meta.features
+    columns = signal_columns(
+        features, qualify=str((getattr(meta, "info", {}) or {}).get("robot_type", "")).lower() == "umi"
+    )
+    ignored_columns = [
+        key
+        for key, feature in features.items()
+        if _is_plot_feature(key, feature) and len(_feature_shape(feature)) > 1
+    ]
+    return (
+        [{"key": c["key"], "value": c["value"]} for c in columns],
+        ignored_columns,
+        ["timestamp", *[c["key"] for c in columns]],
+    )
 
 
 def series_to_2d(series, dim: int) -> np.ndarray:
@@ -663,26 +644,33 @@ def series_to_2d(series, dim: int) -> np.ndarray:
 
 def compute_subtask_boundaries(
     timestamps: np.ndarray,
-    action_data: np.ndarray,
+    action_data: np.ndarray | None,
     state_data: np.ndarray | None,
     fps: float,
     episode_id: int = -1,
     task: str = "",
     gripper_margin: float | None = None,
-    data_version: str = DATA_VERSION_DVT1,
+    data_version: str = DATA_VERSION_DVT2,
     fallback_stage_count: int = DEFAULT_FALLBACK_STAGE_COUNT,
+    task_config: dict | None = None,
+    force_equal_time: bool = False,
 ) -> tuple[dict | None, list[dict]]:
     """Auto-detect subtask stage boundaries."""
     issues: list[dict] = []
-    data_version = str(data_version or DATA_VERSION_DVT1).upper()
+    data_version = str(data_version or DATA_VERSION_DVT2).upper()
     if gripper_margin is None:
         gripper_margin = _gripper_stage_margin_seconds(data_version)
     num_frames = len(timestamps)
-    is_pick = "pick" in task.lower() if task else False
-    is_place = any(token in task.lower() for token in ("place", "put")) if task else False
-    is_give = ("give" in task.lower() or "hand" in task.lower()) if task else False
+    from lerobot.data_platform.task_catalog import TaskConfigSnapshot
 
-    if not (is_pick or is_place or is_give):
+    resolved = TaskConfigSnapshot.from_dict(task_config).resolve(task)
+    is_pick = resolved.stage_strategy == "legacy_pick"
+    is_place = resolved.stage_strategy == "legacy_place"
+    is_give = resolved.stage_strategy == "legacy_give"
+    if not force_equal_time and task_config is not None and resolved.status not in {"unmapped", "conflict"}:
+        fallback_stage_count = resolved.stage_count
+
+    if force_equal_time or not (is_pick or is_place or is_give):
         fallback_stage_count = int(fallback_stage_count)
         if fallback_stage_count < 2:
             raise ValueError("fallback_stage_count must be at least 2")
@@ -712,6 +700,8 @@ def compute_subtask_boundaries(
         issues.append({"episode": episode_id, "type": "error", "reason": msg})
         return None, issues
 
+    if action_data is None:
+        raise ValueError("DVT Stage rules require action signals")
     action_data = normalize_gripper_columns(action_data, "action", data_version)
     state_data = (
         normalize_gripper_columns(state_data, "state", data_version) if state_data is not None else None
@@ -998,8 +988,10 @@ def write_episode_csv(
     downsample: int | None,
     overwrite: bool,
     force_recompute_stage: bool = False,
-    data_version: str = DATA_VERSION_DVT1,
+    data_version: str | None = None,
     fallback_stage_count: int = DEFAULT_FALLBACK_STAGE_COUNT,
+    task_config: dict | None = None,
+    stage_transitions: list[dict] | None = None,
 ) -> tuple[bool, dict | None, list[dict]]:
     """Write a precomputed CSV for one episode."""
     if not overwrite:
@@ -1009,6 +1001,10 @@ def write_episode_csv(
         except OSError:
             pass
 
+    profile = resolve_processing_profile(dataset_root, meta.features, data_version_override=data_version)
+    data_version = profile.legacy_data_version
+    if force_recompute_stage and not profile.stage_profile:
+        raise ValueError("Automatic Stage requires an applicable Stage policy")
     parquet_path = dataset_root / meta.get_data_file_path(episode_id)
     if not parquet_path.is_file():
         return False, None, []
@@ -1034,16 +1030,27 @@ def write_episode_csv(
     boundaries = None
     episode_issues: list[dict] = []
     existing_states = None
+    existing_max_stage = None
 
-    if use_existing_stage and "subtask_state" in data.columns:
+    if stage_transitions is not None and not force_recompute_stage:
+        transitions = sorted(stage_transitions, key=lambda item: float(item["time"]))
+        times = [float(item["time"]) for item in transitions]
+        states = [0, *[int(item["state"]) for item in transitions]]
+        existing_states = np.asarray(states)[np.searchsorted(times, data["timestamp"].values, side="right")]
+        existing_max_stage = max(1, max(states))
+    elif use_existing_stage and "subtask_state" in data.columns:
         existing_states = data["subtask_state"].values
+        existing_max_stage = max(1, max((int(state) for state in existing_states), default=4))
         logging.debug("Episode %d: using existing subtask_state from parquet", episode_id)
     else:
         action_dim = meta.shapes.get("action", [0])[0] if "action" in meta.features else 0
         state_dim = meta.shapes.get("state", [0])[0] if "state" in meta.features else 0
-        if action_dim > 0 and "action" in data.columns and len(data) > 1:
+        equal_time = profile.stage_profile == STAGE_PROFILE_EQUAL_TIME
+        if len(data) > 1 and (
+            equal_time or (data_version is not None and action_dim > 0 and "action" in data.columns)
+        ):
             fps = 1.0 / np.median(np.diff(data["timestamp"].values))
-            action_array = series_to_2d(data["action"], action_dim)
+            action_array = None if equal_time else series_to_2d(data["action"], action_dim)
             state_array = (
                 series_to_2d(data["state"], state_dim) if state_dim > 0 and "state" in data.columns else None
             )
@@ -1060,6 +1067,8 @@ def write_episode_csv(
                 task=task,
                 data_version=data_version,
                 fallback_stage_count=fallback_stage_count,
+                task_config=task_config,
+                force_equal_time=equal_time,
             )
 
     if downsample is not None and downsample > 1:
@@ -1088,7 +1097,9 @@ def write_episode_csv(
                     values = values[:dim]
                 row[: len(values)] = values
             rows.append(row)
-        return normalize_gripper_columns(np.asarray(rows), column_name, data_version)
+        if column_name in {"action", "state"}:
+            return normalize_gripper_columns(np.asarray(rows), column_name, data_version)
+        return np.asarray(rows)
 
     data_arrays = []
     for column_name in selected_columns[1:]:
@@ -1111,8 +1122,7 @@ def write_episode_csv(
 
     if existing_states is not None:
         header.append("stage")
-        max_stage = max(int(state) for state in existing_states) if len(existing_states) > 0 else 4
-        max_stage = max(max_stage, 1)
+        max_stage = existing_max_stage
         for row_idx, state in enumerate(existing_states):
             rows[row_idx].append(int(state) / float(max_stage))
     elif boundaries is not None:
@@ -1130,6 +1140,25 @@ def write_episode_csv(
             writer.writerow(header)
             writer.writerows(rows)
         temporary.replace(out_path)
+        if existing_states is not None or boundaries is not None:
+            import json
+
+            metadata_path = out_path.with_suffix(".stages.json")
+            metadata_temporary = temporary_output_path(metadata_path)
+            try:
+                metadata_temporary.write_text(
+                    json.dumps(
+                        {
+                            "stage_count": max_stage + 1,
+                            "encoding": "normalized",
+                            "source": "existing" if existing_states is not None else "generated",
+                            "stage_profile": profile.stage_profile,
+                        }
+                    )
+                )
+                metadata_temporary.replace(metadata_path)
+            finally:
+                metadata_temporary.unlink(missing_ok=True)
     finally:
         temporary.unlink(missing_ok=True)
 

@@ -83,7 +83,6 @@ def _openpi_root_candidates() -> list[Path]:
         candidates.append(_normalize_openpi_root(Path(env_root)))
     repo_root = _lerobot_repo_root()
     candidates.append(repo_root.parent / "openpi")
-    candidates.append(Path("/home/peng/yuhao.song/Codes/openpi"))
     return _unique_paths(candidates)
 
 
@@ -93,18 +92,18 @@ def _openpi_src_candidates() -> list[Path]:
 
 
 def _valid_openpi_root(root: Path) -> bool:
-    return (root / "pyproject.toml").is_file() and (root / "src" / "openpi").is_dir()
+    try:
+        return (root / "pyproject.toml").is_file() and (root / "src" / "openpi").is_dir()
+    except OSError:
+        return False
 
 
 def _default_openpi_root() -> Path:
-    for root in _openpi_root_candidates():
-        if _valid_openpi_root(root):
-            return root
     return _openpi_root_candidates()[0]
 
 
 DEFAULT_OPENPI_ROOT = _default_openpi_root()
-DEFAULT_OPENPI_SRC = _normalize_openpi_src(DEFAULT_OPENPI_ROOT)
+DEFAULT_OPENPI_SRC = DEFAULT_OPENPI_ROOT / "src"
 
 
 def _first_openpi_root() -> Path:

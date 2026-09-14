@@ -69,6 +69,7 @@ def preview_construction(
     labeling_dir: Path,
     uncertainty_threshold: int = 50,
     allow_pick_to_give: bool = False,
+    task_config: dict | None = None,
 ) -> dict:
     vocab = build_vocab(meta)
     labels = load_current_labels(labeling_dir)
@@ -81,6 +82,7 @@ def preview_construction(
             int(uncertainty_threshold),
             tags_by_episode=tags,
             allow_pick_to_give=allow_pick_to_give,
+            task_config=task_config,
         ),
         "tagging_object_count_ready": bool(tags),
     }
@@ -130,6 +132,7 @@ def run_construction(
             threshold,
             tags_by_episode=tags,
             allow_pick_to_give=allow_pick_to_give,
+            task_config=config.get("task_config"),
         ),
         "tagging_object_count_ready": bool(tags),
     }
@@ -141,6 +144,7 @@ def run_construction(
         oversample_factor=oversample_factor,
         tags_by_episode=tags,
         allow_pick_to_give=allow_pick_to_give,
+        task_config=config.get("task_config"),
     )
     _emit(
         progress_callback,

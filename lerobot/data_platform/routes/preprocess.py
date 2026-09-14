@@ -10,7 +10,11 @@ import pyarrow.parquet as pq
 from flask import jsonify, render_template, request
 
 from lerobot.data_platform.cli import get_default_output_dir, run_precompute
-from lerobot.data_platform.precompute.data_profile import resolve_data_profile
+from lerobot.data_platform.local_execution import launch_background
+from lerobot.data_platform.precompute.data_profile import (
+    require_dataset_operation,
+    resolve_processing_profile,
+)
 from lerobot.data_platform.precompute.dataset_io import (
     V3DatasetMetadata,
     is_v3_dataset,
@@ -54,6 +58,7 @@ from lerobot.data_platform.precompute.preprocess import (
     get_capabilities as get_preprocess_capabilities,
 )
 from lerobot.data_platform.precompute.preprocess.common import format_data_path, load_json
+from lerobot.data_platform.precompute.preprocess.dataset_merge import validate_merge_sources
 from lerobot.data_platform.precompute.preprocess.quality_flags import apply_task_assignment_choice
 from lerobot.data_platform.precompute.preprocess.smooth_action import SMOOTH_ACTION_META
 from lerobot.data_platform.precompute.timeseries import (
@@ -171,9 +176,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 int(item["episode_index"]) for item in load_episode_records(result.out_root)
             )
             if len(source_indices) != len(output_indices):
-                raise ValueError(
-                    "preprocess executor changed episode cardinality without explicit lineage"
-                )
+                raise ValueError("preprocess executor changed episode cardinality without explicit lineage")
             lineage = [
                 {
                     "source_dataset_version_id": parents[0].version_id,
@@ -197,6 +200,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             stage=output_stage,
             excluded_episode_indices=excluded,
             episode_lineage=lineage,
+            verify_parents=False,
         )
 
     def _published_version_at(root: Path):
@@ -213,8 +217,18 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 "Preprocess dry run complete",
                 current=job.get("total") or 1,
                 output_root=str(result.out_root),
+                result_summary=getattr(result, "summary", {}) or {},
             )
             return
+        if result.summary.get("native_images"):
+            run_precompute(
+                root=result.out_root,
+                repo_id=result.repo_id,
+                output_dir=get_default_output_dir(result.out_root),
+                visualize_only=True,
+                progress_callback=lambda payload: ctx.update_job(job, payload),
+                show_progress=False,
+            )
         version = _register_output_version(result, job)
         dataset = ctx.meta_only_dataset_cls(result.repo_id, root=result.out_root)
         dataset_key = ctx.register_dataset(dataset, get_default_output_dir(result.out_root))
@@ -239,6 +253,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             total=result.total_episodes or job.get("total") or 1,
             output_root=str(result.out_root),
             output_dataset_key=repo_id,
+            result_summary=getattr(result, "summary", {}) or {},
             dataset_version_id=version.version_id if version is not None else None,
             viewer_url=f"/{repo_id}/episode_0",
             review_url=f"/{repo_id}/smoothing" if str(result.op).startswith("smooth_action") else None,
@@ -484,6 +499,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         try:
             dataset_key = ctx.dataset_key_from_body(body)
             dataset_obj, _ = ctx.ensure_dataset_loaded(dataset_key)
+            require_dataset_operation(dataset_obj.root, "convert_action")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except KeyError:
@@ -515,7 +531,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess convert_action failed")
                 ctx.fail_job(job, "Preprocess convert_action failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-convert-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-convert-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/convert_v3/start", methods=["POST"])
@@ -655,7 +676,9 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess convert_v3 failed")
                 ctx.fail_job(job, "Preprocess convert_v3 failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-v3-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job, name=f"preprocess-v3-{job['id']}", daemon=True, thread_factory=threading.Thread
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/repair_v3_video_timestamps/start", methods=["POST"])
@@ -715,11 +738,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess v3 video timestamp repair failed")
                 ctx.fail_job(job, "Preprocess v3 video timestamp repair failed", exc)
 
-        threading.Thread(
+        launch_background(
             target=_run_job,
             name=f"preprocess-v3-timestamps-{job['id']}",
             daemon=True,
-        ).start()
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/drop_field/start", methods=["POST"])
@@ -729,6 +753,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         try:
             dataset_key = ctx.dataset_key_from_body(body)
             dataset_obj, _ = ctx.ensure_dataset_loaded(dataset_key)
+            require_dataset_operation(dataset_obj.root, "drop_field")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except KeyError:
@@ -757,7 +782,9 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess drop_field failed")
                 ctx.fail_job(job, "Preprocess drop_field failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-drop-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job, name=f"preprocess-drop-{job['id']}", daemon=True, thread_factory=threading.Thread
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/value_edit/start", methods=["POST"])
@@ -767,6 +794,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         try:
             dataset_key = ctx.dataset_key_from_body(body)
             dataset_obj, ds_static = ctx.ensure_dataset_loaded(dataset_key)
+            require_dataset_operation(dataset_obj.root, "value_edit")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except KeyError:
@@ -858,7 +886,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess value edit failed")
                 ctx.fail_job(job, "Preprocess value edit failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-value-edit-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-value-edit-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/smooth_action/start", methods=["POST"])
@@ -868,6 +901,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         try:
             dataset_key = ctx.dataset_key_from_body(body)
             dataset_obj, _ = ctx.ensure_dataset_loaded(dataset_key)
+            require_dataset_operation(dataset_obj.root, "smooth_action")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except KeyError:
@@ -907,7 +941,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess smooth_action failed")
                 ctx.fail_job(job, "Preprocess smooth_action failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-smooth-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-smooth-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/rewrite_prompts/start", methods=["POST"])
@@ -917,6 +956,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         try:
             dataset_key = ctx.dataset_key_from_body(body)
             dataset_obj, ds_static = ctx.ensure_dataset_loaded(dataset_key)
+            require_dataset_operation(dataset_obj.root, "rewrite_prompts")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except KeyError:
@@ -972,7 +1012,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess prompt rewrite failed")
                 ctx.fail_job(job, "Preprocess prompt rewrite failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-rewrite-prompts-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-rewrite-prompts-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/fix_prompt_prepositions/start", methods=["POST"])
@@ -982,6 +1027,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         try:
             dataset_key = ctx.dataset_key_from_body(body)
             dataset_obj, ds_static = ctx.ensure_dataset_loaded(dataset_key)
+            require_dataset_operation(dataset_obj.root, "fix_prompt_prepositions")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except KeyError:
@@ -1046,9 +1092,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess prompt preposition fix failed")
                 ctx.fail_job(job, "Preprocess prompt preposition fix failed", exc)
 
-        threading.Thread(
-            target=_run_job, name=f"preprocess-fix-prompt-prepositions-{job['id']}", daemon=True
-        ).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-fix-prompt-prepositions-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/apply_prompt_assignments/start", methods=["POST"])
@@ -1058,6 +1107,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         try:
             dataset_key = ctx.dataset_key_from_body(body)
             dataset_obj, ds_static = ctx.ensure_dataset_loaded(dataset_key)
+            require_dataset_operation(dataset_obj.root, "apply_prompt_assignments")
             requested_episodes = ctx.parse_int_list(options.get("episodes") or options.get("episode_ids"))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -1155,9 +1205,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Apply pending prompt assignments failed")
                 ctx.fail_job(job, "Apply pending prompt assignments failed", exc)
 
-        threading.Thread(
-            target=_run_job, name=f"preprocess-apply-prompt-assignments-{job['id']}", daemon=True
-        ).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-apply-prompt-assignments-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/lowercase_prompts/start", methods=["POST"])
@@ -1219,9 +1272,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Prompt lowercase failed")
                 ctx.fail_job(job, "Prompt lowercase failed", exc)
 
-        threading.Thread(
-            target=_run_job, name=f"preprocess-lowercase-prompts-{job['id']}", daemon=True
-        ).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-lowercase-prompts-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/quality_flags/start", methods=["POST"])
@@ -1239,7 +1295,10 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         output_dir = Path(index_entry["output_dir"]).expanduser()
         try:
             info = load_json(root_path / "meta" / "info.json")
-            default_data_version = resolve_data_profile(
+            require_dataset_operation(
+                root_path, "quality_flags", data_version_override=options.get("data_version")
+            )
+            default_data_version = resolve_processing_profile(
                 root_path, info.get("features") or {}
             ).legacy_data_version
             data_version = _data_version_option(options, default_data_version)
@@ -1308,7 +1367,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess quality flag detection failed")
                 ctx.fail_job(job, "Preprocess quality flag detection failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-quality-flags-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-quality-flags-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/clear_flags/start", methods=["POST"])
@@ -1323,6 +1387,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         dataset_root = None
         try:
             dataset_obj, loaded_static = ctx.ensure_dataset_loaded(dataset_key)
+            require_dataset_operation(dataset_obj.root, "clear_flags")
             dataset_root = Path(dataset_obj.root)
             if ds_static is None:
                 ds_static = loaded_static
@@ -1378,7 +1443,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess clear flags failed")
                 ctx.fail_job(job, "Preprocess clear flags failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-clear-flags-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-clear-flags-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/flag_fixes/start", methods=["POST"])
@@ -1405,6 +1475,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
 
         try:
             dataset_obj, ds_static = ctx.ensure_dataset_loaded(dataset_key)
+            require_dataset_operation(dataset_obj.root, "flag_fixes")
         except KeyError:
             return jsonify({"error": f"dataset is not registered: {ctx.repo_id_from_key(dataset_key)}"}), 404
         except Exception as exc:
@@ -1414,7 +1485,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         try:
             dataset_root = Path(dataset_obj.root)
             info = load_json(dataset_root / "meta" / "info.json")
-            default_data_version = resolve_data_profile(
+            default_data_version = resolve_processing_profile(
                 dataset_root, info.get("features") or {}
             ).legacy_data_version
             data_version = _data_version_option(options, default_data_version)
@@ -1570,7 +1641,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess flag fix failed")
                 ctx.fail_job(job, "Preprocess flag fix failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-flag-fix-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-flag-fix-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/standardize/start", methods=["POST"])
@@ -1589,10 +1665,10 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         prepare_workers = _positive_int_option(options, "prepare_workers", 8)
         root_path = Path(index_entry["root"]).expanduser()
         try:
-            default_standardize_version = resolve_data_profile(
-                root_path,
-                default_data_version=DATA_VERSION_DVT2,
-            ).legacy_data_version
+            require_dataset_operation(
+                root_path, "standardize", data_version_override=options.get("data_version")
+            )
+            default_standardize_version = resolve_processing_profile(root_path).legacy_data_version
             standardize_data_version = _data_version_option(options, default_standardize_version)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -1768,12 +1844,29 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                     progress_callback=_step_progress(job, repair_start, 98, f"{repair_label} output cache"),
                     show_progress=False,
                 )
+                ctx.update_job(
+                    job,
+                    {
+                        "status": "running",
+                        "current": 99,
+                        "total": 100,
+                        "message": (
+                            f"{repair_label}: registering output dataset and lifecycle fingerprints "
+                            "(scanning meta/data/videos)"
+                        ),
+                    },
+                )
                 _register_output_dataset(result, job)
             except Exception as exc:
                 logging.exception("Preprocess standardize failed")
                 ctx.fail_job(job, "Preprocess standardize failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-standardize-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-standardize-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/split/start", methods=["POST"])
@@ -1783,6 +1876,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         try:
             dataset_key = ctx.dataset_key_from_body(body)
             dataset_obj, _ = ctx.ensure_dataset_loaded(dataset_key)
+            require_dataset_operation(dataset_obj.root, "split")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except KeyError:
@@ -1809,7 +1903,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess split failed")
                 ctx.fail_job(job, "Preprocess split failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-split-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-split-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/merge/start", methods=["POST"])
@@ -1829,6 +1928,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         if missing:
             return jsonify({"error": f"dataset is not registered: {missing[0]}"}), 404
         dry_run = ctx.bool_option(options, "dry_run", False)
+        dimension_policy = options.get("dimension_policy", "strict")
         try:
             workers = max(1, int(options.get("workers") or 8))
         except (TypeError, ValueError):
@@ -1850,6 +1950,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             return jsonify({"error": f"invalid merge delete episodes: {exc}"}), 400
         try:
             out_root = _merge_out_root(options)
+            validate_merge_sources(
+                [Path(ctx.datasets_index[key]["root"]).expanduser() for key in keys],
+                dimension_policy=dimension_policy,
+            )
+        except FileNotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         job = _new_job(
@@ -1916,15 +2022,36 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                     if out_root is not None
                     else None,
                     workers=workers,
+                    dimension_policy=dimension_policy,
                     exclude_episodes=[delete_by_key.get(key) for key in keys],
-                    progress_callback=lambda payload: ctx.update_job(job, payload),
+                    progress_callback=_step_progress(job, 0, 75, "Merge")
+                    if dimension_policy == "min"
+                    else lambda payload: ctx.update_job(job, payload),
                 )
+                if dimension_policy == "min" and not dry_run:
+                    run_precompute(
+                        root=result.out_root,
+                        repo_id=result.repo_id,
+                        output_dir=get_default_output_dir(result.out_root),
+                        prepare_csv=True,
+                        prepare_videos=False,
+                        prepare_workers=workers,
+                        data_version=resolve_processing_profile(result.out_root).legacy_data_version,
+                        progress_callback=_step_progress(job, 75, 99, "Output CSV cache"),
+                        show_progress=False,
+                    )
+                    result.summary["csv_cache"] = "rebuilt_from_output"
                 _register_output_dataset(result, job)
             except Exception as exc:
                 logging.exception("Preprocess merge failed")
                 ctx.fail_job(job, "Preprocess merge failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-merge-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-merge-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/preprocess/subtract/start", methods=["POST"])
@@ -2011,5 +2138,10 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess subtract failed")
                 ctx.fail_job(job, "Preprocess subtract failed", exc)
 
-        threading.Thread(target=_run_job, name=f"preprocess-subtract-{job['id']}", daemon=True).start()
+        launch_background(
+            target=_run_job,
+            name=f"preprocess-subtract-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})

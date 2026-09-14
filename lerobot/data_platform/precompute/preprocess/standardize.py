@@ -1,6 +1,7 @@
 import json
 import shutil
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import as_completed
+from lerobot.data_platform.execution_pools import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,7 @@ import pyarrow.parquet as pq
 
 from lerobot.data_platform.precompute.data_profile import (
     SIGNAL_SCHEMA_TRAIN_16D,
-    resolve_data_profile,
+    resolve_processing_profile,
     write_data_profile,
 )
 from lerobot.data_platform.precompute.dataset_io import is_v3_info
@@ -239,13 +240,14 @@ def run_standardize_dataset(
 ) -> PreprocessResult:
     src_root = validate_dataset_root(src_root)
     info = load_json(src_root / "meta" / "info.json")
-    source_profile = resolve_data_profile(
+    source_profile = resolve_processing_profile(
         src_root,
         info.get("features") or {},
         data_version_override=data_version,
-        default_data_version=DATA_VERSION_DVT2,
     )
     data_version = source_profile.legacy_data_version
+    if data_version is None:
+        raise ValueError("Standardize requires a compatible DVT processing profile")
     output_profile = source_profile.for_signal_schema(
         SIGNAL_SCHEMA_TRAIN_16D,
         gripper_encoding=(

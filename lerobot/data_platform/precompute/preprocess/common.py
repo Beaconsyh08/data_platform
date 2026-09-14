@@ -23,6 +23,8 @@ class PreprocessResult:
 
 
 def emit(progress_callback: ProgressCallback, **payload) -> None:
+    from lerobot.data_platform.execution_pools import check_stop
+    check_stop()
     if progress_callback is not None:
         progress_callback(payload)
 

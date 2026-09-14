@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.data_platform.precompute.annotation import assign_subtask_states
+from lerobot.data_platform.precompute.data_profile import STAGE_PROFILE_EQUAL_TIME, resolve_data_profile
 from lerobot.data_platform.precompute.dataset_io import (
     V3DatasetMetadata,
     is_v3_dataset,
@@ -176,8 +177,10 @@ def write_subtask_text_to_parquet(
     dataset_root: Path,
     meta: LeRobotDatasetMetadata,
     episodes: list[int],
+    task_config: dict | None = None,
 ) -> int:
     written = 0
+    equal_time = resolve_data_profile(dataset_root).stage_profile == STAGE_PROFILE_EQUAL_TIME
     with tqdm(
         total=len(episodes),
         desc="Writing subtask text to parquet",
@@ -225,7 +228,14 @@ def write_subtask_text_to_parquet(
                     state_idx = table.column_names.index("subtask_state")
                     table = table.set_column(state_idx, "subtask_state", state_col)
 
-            subtask_texts = [generate_subtask_text(task, state) for state in states]
+            count = max(2, max((int(state) for state in states if state is not None), default=4) + 1)
+            texts = {
+                state: generate_subtask_text(
+                    task, state, task_config=task_config, stage_count=count, force_equal_time=equal_time
+                )
+                for state in set(states)
+            }
+            subtask_texts = [texts[state] for state in states]
             if is_v3_metadata(meta):
                 upsert_episode_column(
                     dataset_root,

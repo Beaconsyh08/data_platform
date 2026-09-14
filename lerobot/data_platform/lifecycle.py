@@ -14,6 +14,7 @@ import shutil
 import threading
 import uuid
 from collections import Counter, defaultdict, deque
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ import numpy as np
 import pyarrow as pa
 
 from lerobot.data_platform.lifecycle_repository import SQLiteLifecycleRepository
+from lerobot.data_platform.precompute.data_profile import resolve_data_profile
 from lerobot.data_platform.precompute.dataset_io import (
     V3DatasetMetadata,
     is_v3_dataset,
@@ -35,7 +37,6 @@ from lerobot.data_platform.precompute.dataset_io import (
     write_episode_records,
     write_task_records,
 )
-from lerobot.data_platform.precompute.data_profile import resolve_data_profile
 from lerobot.data_platform.precompute.mutations import (
     update_episode_stats_for_subtask_state,
     update_info_features,
@@ -53,6 +54,13 @@ from lerobot.data_platform.precompute.preprocess.field_ops import run_drop_field
 from lerobot.data_platform.precompute.preprocess.flag_fixes import trim_episode_inplace
 from lerobot.data_platform.precompute.preprocess.standardize import run_standardize_dataset
 from lerobot.data_platform.precompute.preprocess.value_edit import run_value_edits
+from lerobot.data_platform.task_catalog import (
+    TaskCatalogStore,
+    TaskConfigSnapshot,
+    content_digest,
+    is_task_dimension,
+    task_inventory,
+)
 
 LIFECYCLE_SCHEMA_VERSION = 3
 MANIFEST_DRAFT = "draft"
@@ -476,6 +484,7 @@ class DatasetProfileVersion:
     created_by: str
     created_at: str
     schema_version: int = LIFECYCLE_SCHEMA_VERSION
+    task_config: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -530,6 +539,7 @@ class DataRecipeVersion:
     created_by: str
     created_at: str
     schema_version: int = LIFECYCLE_SCHEMA_VERSION
+    task_config: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -639,6 +649,7 @@ class LifecycleStore:
     def __init__(self, root: Path):
         self.root = Path(root).expanduser()
         self.repository = SQLiteLifecycleRepository(self.root)
+        self.tasks = TaskCatalogStore(self.repository)
         self._upgrade_legacy_versions()
 
     def _directory(self, name: str) -> Path:
@@ -786,18 +797,11 @@ class LifecycleStore:
                     "source batch dataset_format does not match the dataset: "
                     f"declared {batch.dataset_format}, detected {physical_format}"
                 )
-            if (
-                portable.confirmed
-                and batch.robot_profile not in {"", "unknown", portable.robot_profile}
-            ):
-                raise ValueError(
-                    "source batch robot_profile does not match the portable dataset profile"
-                )
+            if portable.confirmed and batch.robot_profile not in {"", "unknown", portable.robot_profile}:
+                raise ValueError("source batch robot_profile does not match the portable dataset profile")
         if batch is not None:
             stage_profile = str(batch.metadata.get("stage_profile") or portable.stage_profile)
-            gripper_encoding = str(
-                batch.metadata.get("gripper_encoding") or portable.gripper_encoding
-            )
+            gripper_encoding = str(batch.metadata.get("gripper_encoding") or portable.gripper_encoding)
         else:
             stage_profile = (
                 portable.stage_profile
@@ -814,6 +818,8 @@ class LifecycleStore:
             "robot_profile": (
                 batch.robot_profile
                 if batch
+                else portable.robot_profile
+                if portable.confirmed
                 else inherited.get("robot_profile") or portable.robot_profile
             ),
             "signal_schema": batch.signal_schema if batch else portable.signal_schema,
@@ -821,9 +827,7 @@ class LifecycleStore:
             "lifecycle_stage": stage,
             "source_kind": batch.source_kind if batch else inherited.get("source_kind", "imported"),
             "retention_class": (
-                batch.retention_class
-                if batch
-                else "protected_source" if stage == "raw" else "managed"
+                batch.retention_class if batch else "protected_source" if stage == "raw" else "managed"
             ),
             "stage_profile": stage_profile,
             "gripper_encoding": gripper_encoding,
@@ -996,10 +1000,7 @@ class LifecycleStore:
             if not semantic_digest:
                 semantic_digest = _sha256(
                     _canonical_json(
-                        sorted(
-                            (str(item["episode_uid"]), str(item["fingerprint"]))
-                            for item in refs
-                        )
+                        sorted((str(item["episode_uid"]), str(item["fingerprint"])) for item in refs)
                     )
                 )
                 upgraded.update(
@@ -1118,11 +1119,7 @@ class LifecycleStore:
         parent_version_ids = [str(item) for item in (parent_version_ids or [])]
         parents = [self.get_version(item) for item in parent_version_ids]
         inherited_source_batch_ids = sorted(
-            {
-                source_batch_id
-                for parent in parents
-                for source_batch_id in parent.source_batch_ids
-            }
+            {source_batch_id for parent in parents for source_batch_id in parent.source_batch_ids}
         )
         normalized_source_batch_ids = sorted(
             {str(item) for item in (source_batch_ids or inherited_source_batch_ids) if str(item)}
@@ -1231,31 +1228,19 @@ class LifecycleStore:
 
         lineage = {
             **imported_lineage_by_index,
-            **{
-                int(index): dict(value)
-                for index, value in (episode_lineage_by_index or {}).items()
-            },
+            **{int(index): dict(value) for index, value in (episode_lineage_by_index or {}).items()},
         }
         episode_refs = [
             {
                 "episode_index": episode_index,
                 "episode_uid": normalized_uids[episode_index],
                 "fingerprint": episode_fingerprints[episode_index],
-                **(
-                    {"source_episode_ref": lineage[episode_index]}
-                    if episode_index in lineage
-                    else {}
-                ),
+                **({"source_episode_ref": lineage[episode_index]} if episode_index in lineage else {}),
             }
             for episode_index in episode_indices
         ]
         semantic_episode_set_digest = _sha256(
-            _canonical_json(
-                sorted(
-                    (item["episode_uid"], item["fingerprint"])
-                    for item in episode_refs
-                )
-            )
+            _canonical_json(sorted((item["episode_uid"], item["fingerprint"]) for item in episode_refs))
         )
         format_variant_of = next(
             (
@@ -1339,17 +1324,21 @@ class LifecycleStore:
         profile_id: str | None = None,
         profile_digest: str | None = None,
         executor_digest: str | None = None,
+        verify_parents: bool = True,
     ) -> DatasetVersion:
         """Register an output while carrying parent episode UIDs across reindexing."""
         if not parent_version_ids:
             raise ValueError("derived dataset requires at least one parent version")
         parents = [self.get_version(item) for item in parent_version_ids]
-        for parent in parents:
-            self.assert_version_current(parent)
+        if verify_parents:
+            for parent in parents:
+                self.assert_version_current(parent)
 
-        _fingerprint, output_fingerprints = dataset_snapshot(root)
         parent_by_id = {parent.version_id: parent for parent in parents}
         if episode_lineage is not None:
+            output_indices = {
+                int(item["episode_index"]) for item in load_episode_records(validate_dataset_root(root))
+            }
             uid_by_index = {}
             lineage_by_index = {}
             for item in episode_lineage:
@@ -1368,7 +1357,7 @@ class LifecycleStore:
                     raise ValueError(f"duplicate lineage output episode: {output_index}")
                 uid_by_index[output_index] = source_uid
                 lineage_by_index[output_index] = asdict(EpisodeRef(source_version_id, source_uid))
-            if set(uid_by_index) != set(output_fingerprints):
+            if set(uid_by_index) != output_indices:
                 raise ValueError("episode lineage must cover every output episode exactly once")
             return self.ingest(
                 root,
@@ -1385,6 +1374,7 @@ class LifecycleStore:
                 executor_digest=executor_digest,
             )
 
+        _fingerprint, output_fingerprints = dataset_snapshot(root)
         exclusions = {
             str(version_id): {int(index) for index in indices}
             for version_id, indices in (excluded_episode_indices or {}).items()
@@ -1549,8 +1539,7 @@ class LifecycleStore:
         }
         digest = _sha256(_canonical_json(content))
         expected_counts = [
-            self.get_source_batch(item).expected_episode_count
-            for item in content["source_batch_ids"]
+            self.get_source_batch(item).expected_episode_count for item in content["source_batch_ids"]
         ]
         expected_episode_count = (
             sum(int(item) for item in expected_counts)
@@ -1558,18 +1547,12 @@ class LifecycleStore:
             else None
         )
         output_episode_count = len(
-            {
-                ref["episode_uid"]
-                for item in normalized
-                for ref in item["output_episode_refs"]
-            }
+            {ref["episode_uid"] for item in normalized for ref in item["output_episode_refs"]}
         )
         report = ProcessingReconciliationReport(
             reconciliation_id=f"rec_{digest[:24]}",
             counts={
-                "input_episode_count": sum(
-                    item["input_episode_ref"] is not None for item in normalized
-                ),
+                "input_episode_count": sum(item["input_episode_ref"] is not None for item in normalized),
                 "output_episode_count": output_episode_count,
                 "expected_episode_count": expected_episode_count,
                 "expected_output_delta": (
@@ -1610,11 +1593,7 @@ class LifecycleStore:
         if not parents and not output.source_batch_ids:
             return None
         output_by_uid = {str(item["episode_uid"]): item for item in output.episode_refs}
-        parent_uids = {
-            str(item["episode_uid"])
-            for parent in parents
-            for item in parent.episode_refs
-        }
+        parent_uids = {str(item["episode_uid"]) for parent in parents for item in parent.episode_refs}
         dispositions = []
         if not parents:
             dispositions.extend(
@@ -1679,8 +1658,7 @@ class LifecycleStore:
         source_batch_id: str | None = None,
     ) -> list[ProcessingReconciliationReport]:
         records = [
-            ProcessingReconciliationReport.from_dict(item)
-            for item in self._list_records("reconciliations")
+            ProcessingReconciliationReport.from_dict(item) for item in self._list_records("reconciliations")
         ]
         if dataset_version_id:
             records = [
@@ -1708,16 +1686,24 @@ class LifecycleStore:
             task = None
         return [task] if task else []
 
-    def _episode_metadata_by_uid(self, version: DatasetVersion) -> dict[str, dict]:
+    def _episode_metadata_by_uid(
+        self,
+        version: DatasetVersion,
+        task_config: dict | None = None,
+    ) -> dict[str, dict]:
         records = {
-            int(item["episode_index"]): dict(item)
-            for item in load_episode_records(Path(version.root))
+            int(item["episode_index"]): dict(item) for item in load_episode_records(Path(version.root))
         }
         tasks_by_index = {
             int(item["task_index"]): str(item.get("task") or "")
             for item in load_task_records(Path(version.root))
             if item.get("task_index") is not None
         }
+        snapshot = (
+            TaskConfigSnapshot.from_dict(task_config)
+            if task_config
+            else self.tasks.snapshot(version.dataset_key)
+        )
         metadata = {}
         for item in version.episode_refs:
             record = records.get(int(item["episode_index"]), {})
@@ -1725,6 +1711,8 @@ class LifecycleStore:
                 **record,
                 "tasks": self._episode_tasks(record, tasks_by_index),
             }
+            resolved = [snapshot.resolve(task) for task in metadata[str(item["episode_uid"])]["tasks"]]
+            metadata[str(item["episode_uid"])]["resolved_tasks"] = [task.to_dict() for task in resolved]
         return metadata
 
     def create_dataset_profile(
@@ -1733,20 +1721,33 @@ class LifecycleStore:
         *,
         distributions: dict | None = None,
         created_by: str = "unknown",
+        task_config: dict | None = None,
     ) -> DatasetProfileVersion:
         version = self.get_version(dataset_version_id)
         self.assert_version_current(version)
         info = load_json(Path(version.root) / "meta" / "info.json")
-        episode_metadata = self._episode_metadata_by_uid(version)
+        task_config = task_config or self.tasks.snapshot(version.dataset_key).to_dict()
+        episode_metadata = self._episode_metadata_by_uid(version, task_config)
         task_counts = Counter(
-            task
-            for item in episode_metadata.values()
-            for task in item.get("tasks") or ["unassigned"]
+            task for item in episode_metadata.values() for task in item.get("tasks") or ["unassigned"]
         )
         episode_count = len(version.episode_refs)
         frame_count = int(info.get("total_frames") or 0)
         fps = float(info.get("fps") or 0)
         normalized_distributions = {"task": dict(sorted(task_counts.items()))}
+        dimensions = {"task_id", "task_family"} | {
+            f"task_attributes.{key}"
+            for item in episode_metadata.values()
+            for task in item["resolved_tasks"]
+            for key in task["attributes"]
+        }
+        for dimension in sorted(dimensions):
+            counts = Counter(
+                value
+                for item in episode_metadata.values()
+                for value in self._cohort_value(version, item, dimension)
+            )
+            normalized_distributions[dimension] = dict(sorted(counts.items()))
         for key, value in dict(distributions or {}).items():
             if not isinstance(value, dict):
                 raise ValueError(f"dataset profile distribution must be an object: {key}")
@@ -1761,6 +1762,7 @@ class LifecycleStore:
                 "duration_seconds": frame_count / fps if fps > 0 else None,
             },
             "distributions": normalized_distributions,
+            "task_config": task_config,
             "data_dimensions": dict(version.data_dimensions),
         }
         digest = _sha256(_canonical_json(content))
@@ -1787,10 +1789,7 @@ class LifecycleStore:
         *,
         dataset_version_id: str | None = None,
     ) -> list[DatasetProfileVersion]:
-        records = [
-            DatasetProfileVersion.from_dict(item)
-            for item in self._list_records("dataset_profiles")
-        ]
+        records = [DatasetProfileVersion.from_dict(item) for item in self._list_records("dataset_profiles")]
         if dataset_version_id:
             records = [item for item in records if item.dataset_version_id == dataset_version_id]
         return sorted(records, key=lambda item: item.created_at, reverse=True)
@@ -1814,7 +1813,9 @@ class LifecycleStore:
             if target_episode_count <= 0:
                 raise ValueError("target_episode_count must be positive")
         dimensions = dict(dimensions or {})
-        unsupported = sorted(set(dimensions) - COHORT_DIMENSIONS)
+        unsupported = sorted(
+            key for key in dimensions if key not in COHORT_DIMENSIONS and not is_task_dimension(key)
+        )
         if unsupported:
             raise ValueError(f"unsupported requirement dimensions: {unsupported}")
         content = {
@@ -1866,14 +1867,22 @@ class LifecycleStore:
         return DatasetRequirementVersion.from_dict(payload)
 
     def list_requirements(self) -> list[DatasetRequirementVersion]:
-        records = [
-            DatasetRequirementVersion.from_dict(item)
-            for item in self._list_records("requirements")
-        ]
+        records = [DatasetRequirementVersion.from_dict(item) for item in self._list_records("requirements")]
         return sorted(records, key=lambda item: item.created_at, reverse=True)
 
     @staticmethod
     def _cohort_value(version: DatasetVersion, metadata: dict, key: str):
+        if is_task_dimension(key):
+            values = []
+            for task in metadata.get("resolved_tasks", []):
+                value = (
+                    task["attributes"].get(key.split(".", 1)[1])
+                    if key.startswith("task_attributes.")
+                    else task.get("family" if key == "task_family" else "task_id")
+                )
+                if value not in (None, ""):
+                    values.append(value)
+            return sorted(set(values))
         if key in version.data_dimensions:
             return version.data_dimensions[key]
         if key == "task":
@@ -1883,7 +1892,13 @@ class LifecycleStore:
         tags = metadata.get("tags")
         return tags.get(key) if isinstance(tags, dict) else None
 
-    def resolve_cohort(self, dataset_version_id: str, query: dict | None = None) -> dict:
+    def resolve_cohort(
+        self,
+        dataset_version_id: str,
+        query: dict | None = None,
+        *,
+        task_config: dict | None = None,
+    ) -> dict:
         version = self.get_version(dataset_version_id)
         query = dict(query or {})
         allowed = {"episode_indices", "episode_uids", "task_contains", "metadata"}
@@ -1891,7 +1906,9 @@ class LifecycleStore:
         if unsupported:
             raise ValueError(f"unsupported cohort query fields: {unsupported}")
         metadata_filters = dict(query.get("metadata") or {})
-        unsupported_dimensions = sorted(set(metadata_filters) - COHORT_DIMENSIONS)
+        unsupported_dimensions = sorted(
+            key for key in metadata_filters if key not in COHORT_DIMENSIONS and not is_task_dimension(key)
+        )
         if unsupported_dimensions:
             raise ValueError(f"unsupported cohort metadata dimensions: {unsupported_dimensions}")
         requested_indices = (
@@ -1908,7 +1925,8 @@ class LifecycleStore:
         if isinstance(task_terms, str):
             task_terms = [task_terms]
         task_terms = [str(item).lower() for item in task_terms if str(item).strip()]
-        metadata_by_uid = self._episode_metadata_by_uid(version)
+        task_config = task_config or self.tasks.snapshot(version.dataset_key).to_dict()
+        metadata_by_uid = self._episode_metadata_by_uid(version, task_config)
         resolved = []
         for item in sorted(version.episode_refs, key=lambda value: int(value["episode_index"])):
             index = int(item["episode_index"])
@@ -1936,6 +1954,7 @@ class LifecycleStore:
             "base_fingerprint": version.fingerprint,
             "query": query,
             "episode_refs": resolved,
+            "task_config": task_config,
         }
         snapshot["digest"] = _sha256(_canonical_json(snapshot))
         snapshot["episode_count"] = len(resolved)
@@ -1955,6 +1974,7 @@ class LifecycleStore:
         composition: dict,
         *,
         random_seed: int,
+        task_config: dict | None = None,
     ) -> list[dict]:
         if not composition:
             return refs
@@ -1973,9 +1993,9 @@ class LifecycleStore:
                     raise ValueError("recipe max_episodes must be positive")
                 ordered = ordered[:limit]
             return sorted(ordered, key=lambda item: base.index_by_uid()[item["episode_uid"]])
-        if group_by not in COHORT_DIMENSIONS:
+        if group_by not in COHORT_DIMENSIONS and not is_task_dimension(group_by):
             raise ValueError(f"unsupported recipe group_by dimension: {group_by}")
-        metadata_by_uid = self._episode_metadata_by_uid(base)
+        metadata_by_uid = self._episode_metadata_by_uid(base, task_config)
         grouped: dict[str, list[dict]] = defaultdict(list)
         for ref in ordered:
             value = self._cohort_value(base, metadata_by_uid.get(ref["episode_uid"], {}), group_by)
@@ -1997,10 +2017,7 @@ class LifecycleStore:
             ratio_sum = sum(ratios.values())
             if ratio_sum <= 0:
                 raise ValueError("recipe ratios must contain a positive value")
-            raw_targets = {
-                key: int(total * value / ratio_sum)
-                for key, value in ratios.items()
-            }
+            raw_targets = {key: int(total * value / ratio_sum) for key, value in ratios.items()}
             remainder = total - sum(raw_targets.values())
             for key in sorted(ratios, key=lambda item: (-ratios[item], item))[:remainder]:
                 raw_targets[key] += 1
@@ -2034,6 +2051,7 @@ class LifecycleStore:
         deduplication: dict | None = None,
         random_seed: int = 0,
         created_by: str = "unknown",
+        task_config: dict | None = None,
     ) -> DataRecipeVersion:
         name = str(name or "").strip()
         if not name:
@@ -2044,11 +2062,15 @@ class LifecycleStore:
             self.get_requirement(requirement_id)
         include_refs = self._validate_refs(base, list(include or []), "recipe include")
         exclude_refs = self._validate_refs(base, list(exclude or []), "recipe exclude")
-        if {item["episode_uid"] for item in include_refs} & {
-            item["episode_uid"] for item in exclude_refs
-        }:
+        if {item["episode_uid"] for item in include_refs} & {item["episode_uid"] for item in exclude_refs}:
             raise ValueError("recipe cannot include and exclude the same episode")
         snapshot = dict(cohort_query_snapshot or {})
+        task_config = (
+            task_config or snapshot.get("task_config") or self.tasks.snapshot(base.dataset_key).to_dict()
+        )
+        TaskConfigSnapshot.from_dict(task_config)
+        if snapshot.get("task_config") and snapshot["task_config"] != task_config:
+            raise ValueError("recipe and cohort task configuration mismatch")
         if snapshot:
             if snapshot.get("base_dataset_version_id") != base.version_id:
                 raise ValueError("cohort snapshot base version does not match recipe base")
@@ -2059,6 +2081,8 @@ class LifecycleStore:
                 list(snapshot.get("episode_refs") or []),
                 "cohort snapshot",
             )
+            if not snapshot_refs and not include_refs:
+                raise ValueError("recipe cohort selects no episodes")
             if not include_refs:
                 include_refs = snapshot_refs
             snapshot = {**snapshot, "episode_refs": snapshot_refs}
@@ -2090,8 +2114,11 @@ class LifecycleStore:
             candidates,
             composition,
             random_seed=int(random_seed),
+            task_config=task_config,
         )
         selection_is_explicit = bool(include_refs or snapshot or composition or dedup_mode == "exact")
+        if selection_is_explicit and not selected:
+            raise ValueError("recipe selects no episodes")
         resolved_include = selected if selection_is_explicit else []
         content = {
             "name": name,
@@ -2107,6 +2134,7 @@ class LifecycleStore:
             "composition": composition,
             "deduplication": {**deduplication, "mode": dedup_mode},
             "random_seed": int(random_seed),
+            "task_config": task_config,
         }
         digest = _sha256(_canonical_json(content))
         existing = next(
@@ -2150,9 +2178,7 @@ class LifecycleStore:
     ) -> list[DataRecipeVersion]:
         records = [DataRecipeVersion.from_dict(item) for item in self._list_records("recipes")]
         if base_dataset_version_id:
-            records = [
-                item for item in records if item.base_dataset_version_id == base_dataset_version_id
-            ]
+            records = [item for item in records if item.base_dataset_version_id == base_dataset_version_id]
         return sorted(records, key=lambda item: item.created_at, reverse=True)
 
     def validate_recipe(self, recipe_id: str) -> dict:
@@ -2175,7 +2201,9 @@ class LifecycleStore:
                         "actual": len(selected_uids),
                     }
                 )
-            metadata_by_uid = self._episode_metadata_by_uid(base)
+            metadata_by_uid = self._episode_metadata_by_uid(
+                base, recipe.task_config or TaskConfigSnapshot.from_dict(None).to_dict()
+            )
             for dimension, raw_expected in requirement.dimensions.items():
                 expected_values = raw_expected if isinstance(raw_expected, list) else [raw_expected]
                 actual_values = set()
@@ -2239,6 +2267,7 @@ class LifecycleStore:
         return self.create_workspace(
             base.version_id,
             owner=owner,
+            rule_versions={"task_config": recipe.task_config or TaskConfigSnapshot.from_dict(None).to_dict()},
             decisions=decisions,
             cohort_query_snapshot={
                 **recipe.cohort_query_snapshot,
@@ -2413,9 +2442,7 @@ class LifecycleStore:
                 raise ValueError("profile step params must be an object")
             unsupported_params = sorted(set(params) - allowed_params[operation])
             if unsupported_params:
-                raise ValueError(
-                    f"unsupported params for profile step {operation}: {unsupported_params}"
-                )
+                raise ValueError(f"unsupported params for profile step {operation}: {unsupported_params}")
             step["op"] = operation
             step["params"] = dict(params)
         if kind == PROFILE_PREPROCESSING and not steps:
@@ -2451,11 +2478,7 @@ class LifecycleStore:
                 if item.get("kind") == kind and item.get("name") == name
             ]
             matching = next(
-                (
-                    item
-                    for item in existing
-                    if item.steps == steps and item.content_options == options
-                ),
+                (item for item in existing if item.steps == steps and item.content_options == options),
                 None,
             )
             if matching is not None:
@@ -2511,11 +2534,15 @@ class LifecycleStore:
             for item in self.list_profiles(kind=PROFILE_MATERIALIZATION)
             if item.name == "default-full-validation"
         ]
-        return existing[0] if existing else self.create_profile(
-            PROFILE_MATERIALIZATION,
-            "default-full-validation",
-            content_options={"validation_level": "full"},
-            created_by="system",
+        return (
+            existing[0]
+            if existing
+            else self.create_profile(
+                PROFILE_MATERIALIZATION,
+                "default-full-validation",
+                content_options={"validation_level": "full"},
+                created_by="system",
+            )
         )
 
     def create_workspace(
@@ -2532,6 +2559,9 @@ class LifecycleStore:
         model_versions: dict | None = None,
     ) -> CurationWorkspace:
         base = self.get_version(base_dataset_version_id)
+        rule_versions = dict(rule_versions or {})
+        rule_versions.setdefault("task_config", self.tasks.snapshot(base.dataset_key).to_dict())
+        TaskConfigSnapshot.from_dict(rule_versions["task_config"])
         workspace = CurationWorkspace(
             workspace_id=f"cw_{uuid.uuid4().hex}",
             base_dataset_version_id=base.version_id,
@@ -2599,14 +2629,14 @@ class LifecycleStore:
         return normalized
 
     def _validate_workspace_payload(self, workspace: CurationWorkspace) -> dict:
+        if workspace.rule_versions.get("task_config") is not None:
+            TaskConfigSnapshot.from_dict(workspace.rule_versions["task_config"])
         base = self.get_version(workspace.base_dataset_version_id)
         if base.fingerprint != workspace.base_fingerprint:
             raise ValueError("workspace base fingerprint does not match its dataset version")
         decisions = self._normalize_workspace_decisions(base, workspace.decisions)
         excluded_uids = {
-            item["episode_ref"]["episode_uid"]
-            for item in decisions
-            if item["decision"] == "exclude"
+            item["episode_ref"]["episode_uid"] for item in decisions if item["decision"] == "exclude"
         }
         selected_uids = base.episode_uids() - excluded_uids
         if not selected_uids:
@@ -2716,7 +2746,10 @@ class LifecycleStore:
             referenced_uids.update(str(item["episode_uid"]) for item in recipe.get("episode_refs") or [])
         missing = sorted(referenced_uids - new_uids)
         if missing:
-            return {"rebased": False, "conflicts": [{"episode_uid": uid, "reason": "missing"} for uid in missing]}
+            return {
+                "rebased": False,
+                "conflicts": [{"episode_uid": uid, "reason": "missing"} for uid in missing],
+            }
 
         def _new_ref(value: dict) -> dict:
             return asdict(EpisodeRef(new_base.version_id, str(value["episode_uid"])))
@@ -2777,13 +2810,9 @@ class LifecycleStore:
                 base = self.get_version(workspace.base_dataset_version_id)
                 normalized = self._normalize_workspace_decisions(base, workspace.decisions)
                 include = [
-                    item["episode_ref"]
-                    for item in normalized
-                    if item["decision"] in {"keep", "repair"}
+                    item["episode_ref"] for item in normalized if item["decision"] in {"keep", "repair"}
                 ]
-                exclude = [
-                    item["episode_ref"] for item in normalized if item["decision"] == "exclude"
-                ]
+                exclude = [item["episode_ref"] for item in normalized if item["decision"] == "exclude"]
                 manifest = max(existing, key=lambda item: item.created_at) if existing else None
                 if manifest is None:
                     manifest = self.create_manifest(
@@ -2841,6 +2870,9 @@ class LifecycleStore:
         workspace_id: str | None = None,
     ) -> CurationManifestVersion:
         base = self.get_version(base_dataset_version_id)
+        rule_versions = dict(rule_versions or {})
+        rule_versions.setdefault("task_config", self.tasks.snapshot(base.dataset_key).to_dict())
+        TaskConfigSnapshot.from_dict(rule_versions["task_config"])
         supersedes = self.get_manifest(supersedes_manifest_id) if supersedes_manifest_id else None
         if supersedes and supersedes.base_dataset_version_id != base.version_id:
             raise ValueError("superseded manifest must use the same base dataset version")
@@ -3104,7 +3136,9 @@ class LifecycleStore:
         )
         resolved_output = Path(out_root).expanduser().resolve()
         materialization_id = f"mat_{_sha256(f'{idempotency_key}:{resolved_output}')[:24]}"
-        staging_root = resolved_output.with_name(f".{resolved_output.name}.materializing-{materialization_id}")
+        staging_root = resolved_output.with_name(
+            f".{resolved_output.name}.materializing-{materialization_id}"
+        )
         with self.repository.transaction() as connection:
             existing = self._get_record(
                 "materializations",
@@ -3176,9 +3210,7 @@ class LifecycleStore:
             updated_payload = current.to_dict()
             updated_payload.update(
                 status=status,
-                output_dataset_version_id=(
-                    output_dataset_version_id or current.output_dataset_version_id
-                ),
+                output_dataset_version_id=(output_dataset_version_id or current.output_dataset_version_id),
                 error=error,
                 details={**current.details, **dict(details or {})},
                 updated_at=_now(),
@@ -3380,15 +3412,16 @@ def execute_preprocessing_profile(
 
             lineage = list(result.episode_lineage or [])
             if not lineage:
-                source_indices = sorted(int(item["episode_index"]) for item in load_episode_records(current_root))
+                source_indices = sorted(
+                    int(item["episode_index"]) for item in load_episode_records(current_root)
+                )
                 output_indices = sorted(int(item["episode_index"]) for item in load_episode_records(step_out))
                 if source_indices != output_indices:
                     raise ValueError(
                         f"profile step {operation} changed episode identity without explicit lineage"
                     )
                 lineage = [
-                    {"source_episode_index": index, "output_episode_index": index}
-                    for index in output_indices
+                    {"source_episode_index": index, "output_episode_index": index} for index in output_indices
                 ]
             next_to_base = {}
             for item in lineage:
@@ -3666,9 +3699,7 @@ def validate_materialized_dataset(root: Path, *, expected_episode_count: int) ->
                 continue
             first_value = table[name][0].as_py()
             if isinstance(first_value, list) and len(first_value) != int(shape[0]):
-                raise ValueError(
-                    f"episode {episode_index} {name} width does not match declared schema"
-                )
+                raise ValueError(f"episode {episode_index} {name} width does not match declared schema")
         total_frames += table.num_rows
     if int(info.get("total_frames") or 0) != total_frames:
         raise ValueError("meta/info total_frames does not match parquet row counts")
@@ -3732,9 +3763,7 @@ def materialize_manifest(
                 "materialization is committed but the requested replica is unavailable; "
                 "choose a new output path"
             )
-        store.assert_version_current(
-            DatasetVersion.from_dict({**version.to_dict(), "root": str(out_root)})
-        )
+        store.assert_version_current(DatasetVersion.from_dict({**version.to_dict(), "root": str(out_root)}))
         return version, {**run.to_dict(), **run.details}
 
     lease_owner = f"pid:{os.getpid()}:{threading.get_ident()}"
@@ -3849,6 +3878,20 @@ def materialize_manifest(
                 executor_digest=materialization_profile.executor_digest,
                 connection=connection,
             )
+            task_snapshot = TaskConfigSnapshot.from_dict(manifest.rule_versions.get("task_config"))
+            output_tasks = load_task_records(out_root)
+            inventory = task_inventory(output_tasks)
+            current_mapping = store.tasks.current(version.dataset_key, connection=connection)
+            store.tasks.apply(
+                version.dataset_key,
+                output_tasks,
+                catalog_version_id=task_snapshot.catalog.catalog_version_id,
+                mappings={key: value for key, value in task_snapshot.mappings.items() if key in inventory},
+                expected_version_id=current_mapping.mapping_version_id if current_mapping else None,
+                expected_inventory_digest=content_digest(inventory),
+                created_by="materialization",
+                connection=connection,
+            )
             details = {
                 "selected_episode_count": len(selected_indices),
                 "excluded_episode_count": len(excluded_indices),
@@ -3871,14 +3914,12 @@ def materialize_manifest(
             shutil.rmtree(building_root)
         current = store.get_materialization(run.materialization_id)
         if current.status != MATERIALIZATION_COMMITTED:
-            try:
+            with suppress(ValueError):
                 store.update_materialization(
                     run.materialization_id,
                     MATERIALIZATION_FAILED,
                     error=str(exc),
                 )
-            except ValueError:
-                pass
         raise
     finally:
         store.repository.release_job(run.materialization_id, owner=lease_owner)

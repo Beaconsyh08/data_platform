@@ -41,6 +41,7 @@ from lerobot.data_platform.precompute.preprocess.quality_flags import (
     run_quality_flag_detection,
 )
 from lerobot.data_platform.precompute.timeseries import (
+    DATA_VERSION_DVT1,
     DATA_VERSION_DVT2,
     normalize_gripper_columns,
     normalize_gripper_csv_value,
@@ -214,6 +215,7 @@ def test_force_recompute_stage_rebuilds_existing_csv(tmp_path: Path, monkeypatch
 
     prepare_script.run_precompute(
         root=root,
+        data_version="DVT1",
         output_dir=output_dir,
         prepare_videos=False,
         prepare_csv=True,
@@ -262,6 +264,7 @@ def test_write_parquet_enables_stage_csv_computation(tmp_path: Path, monkeypatch
 
     prepare_script.run_precompute(
         root=root,
+        data_version="DVT1",
         output_dir=tmp_path / "viewer",
         prepare_videos=False,
         prepare_csv=False,
@@ -429,7 +432,7 @@ def _prepare_script_dataset(root: Path, *, give: bool = False) -> DummyMeta:
     }
     info = {
         "codebase_version": "v2.1",
-        "robot_type": "dummy",
+        "robot_type": "h10w",
         "total_episodes": 1,
         "total_frames": len(timestamps),
         "total_tasks": 1,
@@ -681,7 +684,9 @@ def test_compute_subtask_boundaries_accepts_new_gripper_0_100_encoding():
 def test_compute_subtask_boundaries_uses_tighter_dvt2_gripper_window():
     timestamps, action, state, task = _build_episode_arrays(give=False)
 
-    dvt1_boundaries, _ = compute_subtask_boundaries(timestamps, action, state, fps=10.0, task=task)
+    dvt1_boundaries, _ = compute_subtask_boundaries(
+        timestamps, action, state, fps=10.0, task=task, data_version="DVT1"
+    )
     dvt2_boundaries, _ = compute_subtask_boundaries(
         timestamps,
         action,
@@ -693,6 +698,8 @@ def test_compute_subtask_boundaries_uses_tighter_dvt2_gripper_window():
 
     assert dvt1_boundaries is not None
     assert dvt2_boundaries is not None
+    default_boundaries, _ = compute_subtask_boundaries(timestamps, action, state, fps=10.0, task=task)
+    assert default_boundaries == dvt2_boundaries
     assert dvt2_boundaries["stage2_start"] > dvt1_boundaries["stage2_start"]
     assert dvt2_boundaries["stage2_end"] < dvt1_boundaries["stage2_end"]
     assert (
@@ -2282,6 +2289,31 @@ def test_gripper_normalization_handles_new_0_100_encoding():
     assert normalize_gripper_csv_value("state_7", "0.75", DATA_VERSION_DVT2) == "0.75"
 
 
+def test_gripper_normalization_handles_umi_0_100_scale():
+    values = np.array(
+        [
+            [6.72],
+            [80.0],
+            [91.0],
+            [0.75],
+        ],
+        dtype=np.float32,
+    )
+    normalized = normalize_gripper_columns(values, "left_gripper_pos", DATA_VERSION_DVT1)
+    np.testing.assert_allclose(normalized[:, 0], [0.0672, 0.8, 0.91, 0.0075], rtol=1e-7)
+
+    assert normalize_gripper_csv_value("left_gripper_pos", "6.72", DATA_VERSION_DVT1) == "0.0672"
+    assert normalize_gripper_csv_value("left_gripper_pos", "80", DATA_VERSION_DVT1) == "0.8"
+    assert float(normalize_gripper_csv_value("right_gripper_pos", "0.75", None)) == pytest.approx(0.75 / 100)
+    for key in ("left_gripper_pos", "right_gripper_pos"):
+        raw = np.array([0, 0.75, 1.5, 50, 100], dtype=np.float64)
+        np.testing.assert_allclose(normalize_gripper_columns(raw, key, None), raw / 100)
+        np.testing.assert_allclose(normalize_gripper_columns(raw[:3, None], key, None)[:, 0], raw[:3] / 100)
+        np.testing.assert_allclose(
+            [float(normalize_gripper_csv_value(key, str(value), None)) for value in raw], raw / 100
+        )
+
+
 def test_build_dataset_analysis_uses_exist_label_and_duration_buckets(tmp_path: Path):
     dataset_root = tmp_path / "dataset"
     static_dir = tmp_path / "static"
@@ -2305,8 +2337,8 @@ def test_build_dataset_analysis_uses_exist_label_and_duration_buckets(tmp_path: 
             "exist": {"dtype": "int32", "shape": [1], "names": None},
         },
         {
-            0: {"episode_index": 0, "tasks": ["Pick up the yellow duck"], "length": 2},
-            1: {"episode_index": 1, "tasks": ["Give the brown dog to me"], "length": 2},
+            0: {"episode_index": 0, "tasks": ["Pick up the yellow duck"], "length": 60},
+            1: {"episode_index": 1, "tasks": ["Give the brown dog to me"], "length": 120},
         },
     )
 

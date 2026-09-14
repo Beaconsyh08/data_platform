@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
+from lerobot.data_platform.execution_pools import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 

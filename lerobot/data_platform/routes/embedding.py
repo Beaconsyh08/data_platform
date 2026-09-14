@@ -6,10 +6,18 @@ from pathlib import Path
 
 from flask import jsonify, render_template, request
 
+from lerobot.data_platform.local_execution import launch_background
+from lerobot.data_platform.precompute.data_profile import require_dataset_operation
 from lerobot.data_platform.precompute.embedding import (
     get_capabilities as get_embedding_capabilities,
+)
+from lerobot.data_platform.precompute.embedding import (
     load_points as load_embedding_points,
+)
+from lerobot.data_platform.precompute.embedding import (
     load_source as load_embedding_source,
+)
+from lerobot.data_platform.precompute.embedding import (
     project_existing_embeddings,
     reducer_capabilities,
     run_embedding,
@@ -28,6 +36,7 @@ def register_embedding_routes(app, ctx: RouteContext) -> None:
         try:
             dataset_key = ctx.dataset_key_from_body(body)
             dataset_obj, ds_static = ctx.ensure_dataset_loaded(dataset_key)
+            require_dataset_operation(dataset_obj.root, "embedding")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except KeyError:
@@ -47,7 +56,11 @@ def register_embedding_routes(app, ctx: RouteContext) -> None:
         devices = str(options.get("devices") or options.get("embed_devices") or "").strip() or None
         refit = ctx.bool_option(options, "refit", False)
         repo_id = ctx.repo_id_from_key(dataset_key)
-        total = len(selected_episodes) if selected_episodes is not None else len(ctx.dataset_episode_ids(dataset_obj, dataset_key))
+        total = (
+            len(selected_episodes)
+            if selected_episodes is not None
+            else len(ctx.dataset_episode_ids(dataset_obj, dataset_key))
+        )
         job_id = uuid.uuid4().hex[:12]
         now = time.time()
         job = {
@@ -99,7 +112,9 @@ def register_embedding_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Embedding job failed")
                 ctx.fail_job(job, "Embedding failed", exc)
 
-        threading.Thread(target=_run_job, name=f"embedding-{job_id}", daemon=True).start()
+        launch_background(
+            target=_run_job, name=f"embedding-{job_id}", daemon=True, thread_factory=threading.Thread
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/<string:dataset_namespace>/<string:dataset_name>/embedding")
@@ -122,7 +137,12 @@ def register_embedding_routes(app, ctx: RouteContext) -> None:
     @app.route("/api/embedding/<string:dataset_namespace>/<string:dataset_name>/points")
     def api_embedding_points(dataset_namespace, dataset_name):
         dataset_obj, ds_static = ctx.get_ctx(dataset_namespace, dataset_name)
-        return jsonify({"points": load_embedding_points(ds_static, dataset_obj.meta), "source": load_embedding_source(ds_static)})
+        return jsonify(
+            {
+                "points": load_embedding_points(ds_static, dataset_obj.meta),
+                "source": load_embedding_source(ds_static),
+            }
+        )
 
     @app.route("/api/embedding/<string:dataset_namespace>/<string:dataset_name>/project", methods=["POST"])
     def api_embedding_project(dataset_namespace, dataset_name):

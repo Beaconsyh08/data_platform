@@ -14,7 +14,8 @@ import os
 import shutil
 import subprocess
 import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
+from lerobot.data_platform.execution_pools import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable
 

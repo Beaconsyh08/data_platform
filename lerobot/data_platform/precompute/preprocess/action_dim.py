@@ -8,6 +8,7 @@ import pyarrow.parquet as pq
 
 from lerobot.data_platform.precompute.data_profile import (
     SIGNAL_SCHEMA_TRAIN_16D,
+    require_dataset_operation,
     resolve_data_profile,
     signal_schema_from_features,
     write_data_profile,
@@ -214,6 +215,7 @@ def run_convert_action(
     progress_callback: ProgressCallback = None,
 ) -> PreprocessResult:
     src_root = validate_dataset_root(src_root)
+    require_dataset_operation(src_root, "convert_action")
     out_root = ensure_output_root(
         out_root or default_preprocess_path(src_root, f"action{target_dim}"), dry_run
     )

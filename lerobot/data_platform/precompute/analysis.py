@@ -4,13 +4,16 @@ import json
 import math
 import re
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from lerobot.data_platform.precompute.signal_columns import signal_columns
+from lerobot.data_platform.task_catalog import TaskConfigSnapshot, content_digest
 
-ANALYSIS_SCHEMA_VERSION = 8
+ANALYSIS_SCHEMA_VERSION = 11
 
 CANONICAL_OBJECTS = ["yellow duck", "brown dog", "orange lion", "green dinosaur"]
 CANONICAL_DIRECTIONS = ["left", "right"]
@@ -32,10 +35,10 @@ DURATION_BUCKETS = [
 ]
 
 SCENE_LABELS = {
-    "pick": "普通 pick",
-    "place": "普通 place",
-    "directional_pick": "方位 pick",
-    "relational_pick": "参照方位 pick",
+    "pick": "Pick",
+    "place": "Place",
+    "directional_pick": "Directional pick",
+    "relational_pick": "Relational pick",
     "give": "give",
     "unknown": "unknown",
 }
@@ -143,7 +146,9 @@ def parse_canonical_task(task: str) -> dict:
             "canonical_task": f"Give the {target} to me",
         }
 
-    match = re.fullmatch(rf"pick up the ({object_pattern}) to the (left|right) of the ({object_pattern})", text)
+    match = re.fullmatch(
+        rf"pick up the ({object_pattern}) to the (left|right) of the ({object_pattern})", text
+    )
     if match:
         target, side, reference = match.groups()
         return {
@@ -158,7 +163,9 @@ def parse_canonical_task(task: str) -> dict:
             "canonical_task": f"Pick up the {target} to the {side} of the {reference}",
         }
 
-    match = re.fullmatch(rf"pick up the ({object_pattern}) on the (left|right) of the ({object_pattern})", text)
+    match = re.fullmatch(
+        rf"pick up the ({object_pattern}) on the (left|right) of the ({object_pattern})", text
+    )
     if match:
         target, side, reference = match.groups()
         return {
@@ -225,24 +232,8 @@ def _find_known_object(text: str) -> str | None:
     return None
 
 
-def infer_task_scene(task: str) -> str:
-    canonical = parse_canonical_task(task)
-    if canonical["is_canonical"]:
-        return canonical["scene"]
-    if canonical["scene"] != "unknown":
-        return canonical["scene"]
-
-    text = (task or "").lower()
-    if any(token in text for token in ("give", "hand over", "pass", "递给", "交给")):
-        return "give"
-    is_pick = any(token in text for token in ("pick", "grasp", "take", "拿", "抓", "取"))
-    if is_pick and any(token in text for token in _DIRECTION_WORDS):
-        return "directional_pick"
-    if is_pick:
-        return "pick"
-    if any(token in text for token in ("place", "put", "insert", "drop", "放", "放置")):
-        return "place"
-    return "unknown"
+def infer_task_scene(task: str, task_config: dict | None = None) -> str:
+    return TaskConfigSnapshot.from_dict(task_config).resolve(task).scene
 
 
 def _normalize_label(value: str) -> str:
@@ -431,21 +422,128 @@ def find_cached_episode_csv(static_dir: Path, episode_id: int) -> Path | None:
     return min(candidates, key=ds_value)
 
 
+@dataclass
+class AnalysisMetadata:
+    """Portable metadata needed for analysis; contains no source filesystem handles."""
+
+    episodes: dict[int, dict]
+    tasks: dict[int, str]
+    fps: float
+    features: dict
+    total_episodes: int
+    total_frames: int | None
+    stats: dict = field(default_factory=dict)
+    info: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_report(cls, report: dict) -> AnalysisMetadata:
+        episodes = {int(row["episode_index"]): row for row in report.get("episodes", [])}
+        tasks = {
+            int(row["task_index"]): str(row["task"])
+            for row in report.get("tasks", [])
+            if "task_index" in row and "task" in row
+        }
+        return cls(
+            episodes=episodes,
+            tasks=tasks,
+            fps=float(report.get("fps") or 0),
+            features=report.get("features") or {},
+            total_episodes=int(report.get("total_episodes") or len(episodes)),
+            total_frames=_nonnegative_int(report.get("total_frames")),
+            stats=report.get("stats") or {},
+            info=report,
+        )
+
+
+def load_analysis_metadata(root: Path) -> AnalysisMetadata:
+    """Read only meta/ records, never frame Parquet shards or video files."""
+    from lerobot.data_platform.precompute.dataset_io import load_episode_records, load_task_records
+
+    info = json.loads((root / "meta" / "info.json").read_text())
+    return AnalysisMetadata.from_report(
+        {
+            **info,
+            "episodes": load_episode_records(root),
+            "tasks": load_task_records(root),
+            "stats": json.loads((root / "meta/stats.json").read_text())
+            if (root / "meta/stats.json").is_file()
+            else {},
+        }
+    )
+
+
+def _episode_record(meta: Any, episode_id: int) -> dict:
+    records = getattr(meta, "episodes", {})
+    return records.get(episode_id, records.get(str(episode_id), {})) or {}
+
+
 def _read_tasks(meta: Any, episode_id: int) -> list[str]:
-    if not hasattr(meta, "episodes"):
-        return []
-    episode_info = meta.episodes.get(episode_id)
-    if episode_info is None:
-        episode_info = meta.episodes.get(str(episode_id), {})
-    tasks = episode_info.get("tasks", []) if episode_info else []
-    return [str(task) for task in tasks if task]
+    record = _episode_record(meta, episode_id)
+    values = record.get("tasks")
+    if isinstance(values, str):
+        return [values] if values else []
+    if isinstance(values, list) and values:
+        return [str(value) for value in values if value]
+    if record.get("task"):
+        return [str(record["task"])]
+    try:
+        task = getattr(meta, "tasks", {}).get(int(record["task_index"]))
+    except (KeyError, TypeError, ValueError):
+        task = None
+    return [str(task)] if task else []
 
 
 def _episode_ids(meta: Any, episodes: list[int] | None = None) -> list[int]:
     if episodes is not None:
         return sorted({int(ep) for ep in episodes})
-    total = int(getattr(meta, "total_episodes", 0) or 0)
-    return list(range(total))
+    # Metadata IDs can be sparse. Do not invent positional IDs from total_episodes.
+    return sorted(int(ep) for ep in getattr(meta, "episodes", {}))
+
+
+def _nonnegative_int(value: Any) -> int | None:
+    try:
+        number = float(value)
+        return int(number) if math.isfinite(number) and number >= 0 and number.is_integer() else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _metadata_frames(record: dict) -> int | None:
+    length = _nonnegative_int(record.get("length"))
+    if length is not None:
+        return length
+    start = _nonnegative_int(record.get("dataset_from_index"))
+    end = _nonnegative_int(record.get("dataset_to_index"))
+    return end - start if start is not None and end is not None and end >= start else None
+
+
+def analysis_input_digest(meta: Any, static_dir: Path | None, episodes: list[int] | None = None) -> str:
+    """Invalidate saved statistics when metadata or optional CSV inputs change."""
+    records = [
+        [episode, _read_tasks(meta, episode), _metadata_frames(_episode_record(meta, episode))]
+        for episode in _episode_ids(meta, episodes)
+    ]
+    files = []
+    if static_dir is not None:
+        paths = [*(static_dir / "csv").glob("episode_*"), static_dir / "viewer_manifest.json"]
+        for path in sorted(paths):
+            if path.suffix not in {".csv", ".json"}:
+                continue
+            try:
+                stat = path.stat()
+                files.append([path.name, stat.st_size, stat.st_mtime_ns])
+            except FileNotFoundError:
+                continue
+    return content_digest(
+        {
+            "episodes": records,
+            "fps": float(getattr(meta, "fps", 0) or 0),
+            "total_frames": _nonnegative_int(getattr(meta, "total_frames", None)),
+            "features": getattr(meta, "features", {}),
+            "files": files,
+            "signal_statistics": _signal_statistics(meta),
+        }
+    )
 
 
 def _duration_from_timestamps(df: pd.DataFrame, fps: float | None) -> float:
@@ -528,34 +626,50 @@ def _review_reasons(
     exist_counts: dict[str, dict[str, int]] | None = None,
     has_stage: bool = False,
 ) -> list[str]:
+    # Task configuration gaps have their own status; this list describes cache diagnostics.
     reasons = []
-    if not canonical["is_canonical"]:
-        reasons.append("non_canonical_task_text")
-    if scene == "unknown":
-        reasons.append("unknown_scene")
-    if target == "unknown":
-        positive_objects = _positive_known_objects(exist_counts or {})
-        if len(positive_objects) > 1:
-            reasons.append("ambiguous_exist_labels")
-        reasons.append("unknown_object")
-    if cache_status == "missing_csv":
-        reasons.append("missing_csv")
     if cache_status == "csv_read_error":
         reasons.append("csv_read_error")
-    if cache_status != "missing_csv":
-        if not has_stage:
-            reasons.append("missing_stage")
+    if cache_status in {"cached", "sampled"} and not has_stage:
+        reasons.append("missing_stage")
     return reasons
+
+
+def _signal_statistics(meta: Any) -> list[dict]:
+    features = getattr(meta, "features", {}) or {}
+    info = getattr(meta, "info", {}) or {}
+    stats = getattr(meta, "stats", {}) or {}
+    rows = []
+    for column in signal_columns(features, qualify=str(info.get("robot_type", "")).lower() == "umi"):
+        feature_stats = stats.get(column["key"]) or {}
+        for index, name in enumerate(column["value"]):
+            row = {"name": name, "unit": column["unit"], "coordinate_frame": column["coordinate_frame"]}
+            for metric in ("min", "max", "mean", "std"):
+                values = feature_stats.get(metric)
+                if hasattr(values, "tolist"):
+                    values = values.tolist()
+                value = values[index] if isinstance(values, list) and index < len(values) else values
+                row[metric] = (
+                    float(value) if isinstance(value, (int, float)) and math.isfinite(value) else None
+                )
+            rows.append(row)
+    return rows
 
 
 def build_dataset_analysis(
     dataset_root: Path,
     meta: Any,
-    static_dir: Path,
+    static_dir: Path | None,
     episodes: list[int] | None = None,
+    task_config: dict | None = None,
+    cached_task_config: dict | None = None,
 ) -> dict:
-    """Build a read-only analysis summary from cached episode CSV files."""
+    """Analyze metadata directly, optionally enriching rows from compatible CSV files."""
     episode_ids = _episode_ids(meta, episodes)
+    task_snapshot = TaskConfigSnapshot.from_dict(task_config)
+    cached_snapshot = (
+        TaskConfigSnapshot.from_dict(cached_task_config) if cached_task_config else task_snapshot
+    )
     fps = float(getattr(meta, "fps", 0) or 0)
 
     scene_counts: Counter = Counter()
@@ -578,15 +692,32 @@ def build_dataset_analysis(
     all_exist_label_columns: set[str] = set()
 
     for episode_id in episode_ids:
-        csv_path = find_cached_episode_csv(static_dir, episode_id)
+        csv_path = find_cached_episode_csv(static_dir, episode_id) if static_dir is not None else None
         tasks = _read_tasks(meta, episode_id)
+        cache_stale = csv_path is not None and cached_snapshot.stage_digest(
+            tasks
+        ) != task_snapshot.stage_digest(tasks)
+        if cache_stale:
+            csv_path = None
         task_text = tasks[0] if tasks else ""
         canonical = parse_canonical_task(task_text)
-        scene = canonical["scene"] if canonical["is_canonical"] else infer_task_scene(task_text)
-        scene_label = canonical["scene_label"] if canonical["is_canonical"] else SCENE_LABELS.get(scene, scene)
+        resolved = task_snapshot.resolve(task_text)
+        scene = resolved.scene
+        scene_label = SCENE_LABELS.get(scene, scene)
+        canonical = {
+            **canonical,
+            "is_canonical": resolved.task_id is not None,
+            "task_type": scene,
+            "scene": scene,
+            "scene_label": scene_label,
+            "target": resolved.attributes.get("object", "unknown"),
+            "side": resolved.attributes.get("direction"),
+            "reference": resolved.attributes.get("reference"),
+            "canonical_task": resolved.label,
+        }
 
         if csv_path is None:
-            target = infer_target_object(task_text)
+            target = resolved.attributes.get("object", "unknown")
             scene_counts[scene_label] += 1
             target_counts[target] += 1
             canonical_task_counts[canonical["canonical_task"]] += 1
@@ -621,7 +752,7 @@ def build_dataset_analysis(
                     "duration_bucket": None,
                     "csv": None,
                     "csv_downsample": None,
-                    "cache_status": "missing_csv",
+                    "cache_status": "stale" if cache_stale else "missing_csv",
                     "exist_label_source": "missing",
                     "stage_counts": {},
                     "exist_true": {},
@@ -635,7 +766,7 @@ def build_dataset_analysis(
             df = pd.read_csv(csv_path)
         except Exception:
             missing_csv.append(episode_id)
-            target = infer_target_object(task_text)
+            target = resolved.attributes.get("object", "unknown")
             review_reasons = _review_reasons(
                 canonical=canonical,
                 scene=scene,
@@ -686,7 +817,12 @@ def build_dataset_analysis(
         if csv_downsample and csv_downsample > 1:
             sampled_csv.append(episode_id)
 
-        max_stage = 5 if scene == "give" else 4
+        max_stage = resolved.stage_count - 1
+        try:
+            stage_metadata = json.loads(csv_path.with_suffix(".stages.json").read_text())
+            max_stage = max(1, int(stage_metadata["stage_count"]) - 1)
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
         ep_stage_counts: Counter = Counter()
         stage_column = "stage" if "stage" in df.columns else None
         if stage_column is not None:
@@ -717,8 +853,8 @@ def build_dataset_analysis(
             if true_count > 0:
                 exist_episode_true[display_column] += 1
 
-        target = infer_target_object(task_text, exist_label_columns)
-        if target == "unknown":
+        target = resolved.attributes.get("object", "unknown")
+        if target == "unknown" and resolved.family in {"pick", "give"}:
             target = _target_from_exist_counts(ep_exist_counts) or target
         review_reasons = _review_reasons(
             canonical=canonical,
@@ -766,9 +902,63 @@ def build_dataset_analysis(
             }
         )
 
+    duration_counts.clear()
+    for row in episode_rows:
+        cached = row["cache_status"] in {"cached", "sampled"}
+        row["analyzed_frames"] = row["frames"] if cached else 0
+        row["analyzed_duration_seconds"] = row["duration_seconds"] if cached else 0.0
+        frames = _metadata_frames(_episode_record(meta, row["episode_id"]))
+        row["frames_source"] = "metadata" if frames is not None else "csv" if cached else "unavailable"
+        if frames is not None:
+            row["frames"] = frames
+        if frames is not None and fps > 0:
+            row["duration_seconds"] = frames / fps
+            row["duration_source"] = "metadata"
+        else:
+            row["duration_source"] = "csv" if cached else "unavailable"
+        row["duration_bucket"] = (
+            _duration_bucket(row["duration_seconds"]) if row["duration_source"] != "unavailable" else None
+        )
+        if row["duration_bucket"] is not None:
+            duration_counts[row["duration_bucket"]] += 1
+
+    task_distributions: dict[str, Counter] = defaultdict(Counter)
+    families = {}
+    for row in episode_rows:
+        tasks = [task_snapshot.resolve(text) for text in _read_tasks(meta, row["episode_id"])]
+        row["resolved_tasks"] = [task.to_dict() for task in tasks]
+        row["task_ids"] = sorted({task.task_id for task in tasks if task.task_id})
+        row["task_families"] = sorted({task.family for task in tasks})
+        row["task_attributes"] = {
+            key: sorted({task.attributes[key] for task in tasks if key in task.attributes})
+            for key in {key for task in tasks for key in task.attributes}
+        }
+        row["task_status"] = (
+            "pending" if any(task.task_id is None for task in tasks) or not tasks else "configured"
+        )
+        for task in tasks:
+            families[task.family] = task.family
+        task_distributions["task_id"].update(row["task_ids"])
+        task_distributions["task_family"].update(row["task_families"])
+        for key, values in row["task_attributes"].items():
+            task_distributions[f"task_attributes.{key}"].update(values)
+    review_reason_counts = Counter(reason for row in episode_rows for reason in row["review_reasons"])
     total_episodes = len(episode_ids)
     total_frames = sum(row["frames"] for row in episode_rows)
     total_duration = sum(row["duration_seconds"] for row in episode_rows)
+    reported_frames = _nonnegative_int(getattr(meta, "total_frames", None))
+    if (
+        episodes is None
+        and reported_frames is not None
+        and any(row["frames_source"] != "metadata" for row in episode_rows)
+    ):
+        total_frames = reported_frames
+        if fps > 0:
+            total_duration = reported_frames / fps
+    if not episode_rows and episodes is None and reported_frames is not None:
+        total_frames = reported_frames
+        total_duration = reported_frames / fps if fps > 0 else 0.0
+    analyzed_duration = sum(row["analyzed_duration_seconds"] for row in episode_rows)
     duration_episode_count = sum(duration_counts.values())
     exist_summary = []
     for column in sorted(all_exist_label_columns):
@@ -783,18 +973,36 @@ def build_dataset_analysis(
                 "true_percent": (counts.get("true", 0) / total_values * 100.0) if total_values else 0.0,
                 "episode_true": int(exist_episode_true.get(column, 0)),
                 "episode_true_percent": (
-                    exist_episode_true.get(column, 0) / total_episodes * 100.0
-                    if total_episodes
-                    else 0.0
+                    exist_episode_true.get(column, 0) / total_episodes * 100.0 if total_episodes else 0.0
                 ),
             }
         )
 
     analysis = {
         "schema_version": ANALYSIS_SCHEMA_VERSION,
+        "input_digest": analysis_input_digest(meta, static_dir, episodes),
+        "metadata_episode_count": sum(row["frames_source"] == "metadata" for row in episode_rows),
+        "reported_total_episodes": int(getattr(meta, "total_episodes", total_episodes) or total_episodes),
+        "reported_total_frames": reported_frames,
+        "analyzed_frames": sum(row["analyzed_frames"] for row in episode_rows),
+        "annotation_cache_stale": any(row["cache_status"] == "stale" for row in episode_rows),
+        "task_config": task_snapshot.to_dict(),
+        "task_configuration_pending": sum(row["task_status"] == "pending" for row in episode_rows),
+        "task_dimensions": {
+            key: _counter_items(counts, total_episodes) for key, counts in task_distributions.items()
+        },
+        "task_families": sorted(families),
         "dataset_root": str(dataset_root),
-        "static_dir": str(static_dir),
-        "canonical_objects": CANONICAL_OBJECTS,
+        "static_dir": str(static_dir) if static_dir is not None else None,
+        "canonical_objects": sorted(
+            {
+                value
+                for row in episode_rows
+                for task in row["resolved_tasks"]
+                for key in ("object", "reference")
+                if (value := task["attributes"].get(key))
+            }
+        ),
         "canonical_directions": CANONICAL_DIRECTIONS,
         "duration_buckets": [label for _, _, label in DURATION_BUCKETS],
         "duration_episode_count": int(duration_episode_count),
@@ -823,9 +1031,13 @@ def build_dataset_analysis(
             }
             for _, _, label in DURATION_BUCKETS
         ],
-        "stage_distribution": _stage_items(stage_counts, total_frames),
+        "stage_distribution": _stage_items(stage_counts),
         "stage_seconds": [
-            {"key": str(key), "seconds": float(value), "percent": (value / total_duration * 100.0) if total_duration else 0.0}
+            {
+                "key": str(key),
+                "seconds": float(value),
+                "percent": (value / analyzed_duration * 100.0) if analyzed_duration else 0.0,
+            }
             for key, value in sorted(stage_seconds.items(), key=lambda item: int(item[0]))
         ],
         "stage_by_scene": {key: _stage_items(value) for key, value in sorted(scene_stage_counts.items())},
@@ -833,6 +1045,8 @@ def build_dataset_analysis(
         "exist_distribution": exist_summary,
         "episodes": episode_rows,
     }
+    analysis["signal_statistics"] = _signal_statistics(meta)
+    analysis["signal_statistics_scope"] = "dataset"
     return analysis
 
 
@@ -846,7 +1060,9 @@ def write_analysis_cache(static_dir: Path, analysis: dict) -> None:
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary = {key: value for key, value in analysis.items() if key != "episodes"}
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False))
-    episodes_path.write_text(json.dumps({"episodes": analysis.get("episodes", [])}, indent=2, ensure_ascii=False))
+    episodes_path.write_text(
+        json.dumps({"episodes": analysis.get("episodes", [])}, indent=2, ensure_ascii=False)
+    )
 
 
 def read_analysis_cache(static_dir: Path) -> dict | None:

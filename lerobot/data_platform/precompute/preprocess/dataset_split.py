@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from lerobot.data_platform.precompute.data_profile import resolve_data_profile, write_data_profile
+from lerobot.data_platform.precompute.dataset_io import V3DatasetMetadata
 from lerobot.data_platform.precompute.preprocess.common import (
     PreprocessResult,
     ProgressCallback,
@@ -28,6 +29,7 @@ from lerobot.data_platform.precompute.preprocess.dataset_version import (
     materialize_v21_from_v3,
     run_convert_v3,
 )
+from lerobot.data_platform.precompute.preprocess.v3_native import rewrite_native_images, uses_native_images
 
 
 def parse_episode_range(value: str | tuple[int, int] | None) -> tuple[int, int] | None:
@@ -139,6 +141,22 @@ def run_split(
     source_profile = resolve_data_profile(src_root)
     if detect_dataset_version(src_root) == V30:
         source_info = load_json(src_root / "meta" / "info.json")
+        if uses_native_images(source_info):
+            meta = V3DatasetMetadata(f"local/{src_root.name}", src_root)
+            tasks = [{"task_index": index, "task": task} for index, task in meta.tasks.items()]
+            selected = _select_episodes(
+                list(meta.episodes.values()),
+                parse_episode_range(episode_range),
+                _task_filter_texts(task_filter, tasks),
+            )
+            return rewrite_native_images(
+                [src_root],
+                out_root,
+                [(0, int(row["episode_index"])) for row in selected],
+                op="split",
+                dry_run=dry_run,
+                progress_callback=progress_callback,
+            )
         with tempfile.TemporaryDirectory(
             prefix=".lerobot-v3-split-",
             dir=out_root.parent,
@@ -214,8 +232,7 @@ def run_split(
         dry_run=dry_run,
         summary={"selected_episodes": len(new_episodes), "tasks": len(new_tasks)},
         episode_lineage=[
-            {"source_episode_index": old_idx, "output_episode_index": new_idx}
-            for old_idx, new_idx in mapping
+            {"source_episode_index": old_idx, "output_episode_index": new_idx} for old_idx, new_idx in mapping
         ],
     )
     emit(

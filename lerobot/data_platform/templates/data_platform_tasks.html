@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Task setup · {{ dataset_key or 'Data Platform' }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    {% include "data_platform_workspace_styles.html" %}
+</head>
+<body class="min-h-screen text-sm text-slate-200 antialiased" x-data="taskPage()">
+    {% set page_kind = "Data Curation / Task setup" %}
+    {% set page_title = dataset_key or "Task catalog" %}
+    {% set page_subtitle = "Organize dataset instructions for analysis and balanced selections." %}
+    {% include "visualize_dataset_topbar.html" %}
+    <main class="dp-workspace space-y-5">
+        <div class="dp-notice border-rose-900 bg-rose-950/30 text-rose-200" role="alert" x-show="error" x-cloak x-text="error"></div>
+        <div class="dp-notice border-sky-900 bg-sky-950/30 text-sky-100" role="status" x-show="message" x-cloak x-text="message"></div>
+        <section class="dp-page-surface">
+            <div class="dp-page-header flex flex-wrap items-start justify-between gap-4">
+                <div>
+                    <p class="dp-section-kicker">Task setup</p>
+                    <h2 class="dp-page-title mt-1">Turn instructions into reusable task types</h2>
+                    <p class="dp-page-description">Match dataset instructions to tasks such as Open door or Load clothes. Use their type and attributes to explore coverage and build a balanced selection.</p>
+                </div>
+                <a class="dp-btn" :href="analysisUrl" x-show="analysisUrl && datasetKey === loadedDatasetKey">Open analysis</a>
+            </div>
+            <div class="grid items-end gap-3 p-5 md:grid-cols-[minmax(0,1fr)_auto]">
+                <label class="dp-field">Dataset<input class="dp-input" x-model.trim="datasetKey" @input="previewResult = null" placeholder="namespace/dataset" @keydown.enter="loadDataset()"></label>
+                <button class="dp-btn" @click="loadDataset()" :disabled="busy || !datasetKey" x-text="busy ? 'Loading…' : 'Load instructions'"></button>
+            </div>
+            <nav class="dp-tabs" aria-label="Task setup sections">
+                <template x-for="item in [{key:'dataset', label:'1. Dataset tasks'}, {key:'catalog', label:'2. Task catalog'}, {key:'selection', label:'3. Build selection'}]" :key="item.key">
+                    <button class="dp-tab" :class="tab === item.key ? 'is-active' : ''" :aria-current="tab === item.key ? 'page' : null" @click="tab = item.key" x-text="item.label"></button>
+                </template>
+            </nav>
+
+            <section x-show="tab === 'dataset'" class="space-y-4 p-5">
+                <div class="flex flex-wrap items-end justify-between gap-4">
+                    <div>
+                        <h3 class="font-semibold text-slate-100">Match your dataset instructions</h3>
+                        <p class="dp-page-description">Review automatic matches, assign an existing task, or create a definition for a new instruction.</p>
+                    </div>
+                    <label class="dp-field w-full sm:w-56">Catalog version<select class="dp-input" x-model="catalogId" @change="previewResult = null; clearSuggestions()" :disabled="busy">
+                        <template x-for="catalog in catalogs" :key="catalog.catalog_version_id"><option :value="catalog.catalog_version_id" x-text="catalogLabel(catalog)"></option></template>
+                    </select></label>
+                </div>
+                <div class="dp-empty-state" x-show="!discovered.length" x-cloak>
+                    <p class="font-semibold text-slate-200">Load a dataset to get started</p>
+                    <p class="mt-2">Its instructions and episode counts will appear here. You can also browse the task catalog.</p>
+                </div>
+                <div x-show="discovered.length" class="space-y-4" x-cloak>
+                    {% include "data_platform_task_suggestions.html" %}
+                    <div class="flex flex-wrap items-center gap-3">
+                        <input class="dp-input !mt-0 min-w-48 flex-1" x-model="taskSearch" placeholder="Search instructions or task types" aria-label="Search instructions">
+                        <select class="dp-input !mt-0 !w-auto" x-model="statusFilter" aria-label="Match status">
+                            <option value="all">All instructions</option><option value="pending">Needs setup</option><option value="conflict">Ambiguous aliases</option>
+                        </select>
+                        <span class="dp-badge" x-text="`${discovered.length} instructions`"></span>
+                        <span class="dp-badge" :class="pendingCount() ? 'border-amber-800 text-amber-200' : 'border-emerald-900 text-emerald-300'" x-text="pendingCount() ? `${pendingCount()} need setup` : 'All matched'"></span>
+                    </div>
+                    <div class="max-h-[560px] overflow-auto rounded-lg border border-slate-800">
+                        <table class="dp-table min-w-[720px]">
+                            <thead class="sticky top-0 z-10"><tr><th>Dataset instruction</th><th>Task assignment</th><th>Episodes</th><th><span class="sr-only">Actions</span></th></tr></thead>
+                            <tbody>
+                                <template x-for="row in filteredInstructions()" :key="row.mapping_key">
+                                    <tr>
+                                        <td class="max-w-md"><p class="leading-6 text-slate-200" x-text="row.raw_task"></p><span class="dp-badge mt-2" :class="row.task_id ? 'text-sky-300 border-sky-900' : 'text-amber-200 border-amber-900'" x-text="statusLabel(row.status)"></span></td>
+                                        <td class="w-72"><select class="dp-input !mt-0" x-model="mappings[row.mapping_key]" @change="previewResult = null; clearSuggestions()" :disabled="busy" :aria-label="'Task assignment: ' + row.raw_task">
+                                            <option value="" x-text="row.task_id ? 'Auto: ' + row.label : 'Choose a task or keep unconfigured'"></option>
+                                            <template x-for="task in currentCatalog().tasks" :key="task.task_id"><option :value="task.task_id" x-text="humanize(task.family) + ' · ' + task.label"></option></template>
+                                        </select><p class="mt-2 text-xs text-slate-500" x-text="row.task_id ? humanize(row.family) : 'Available by original instruction'"></p></td>
+                                        <td class="tabular-nums" x-text="row.episode_count"></td>
+                                        <td><button class="dp-btn dp-btn-compact" @click="defineDiscovered(row)" x-text="row.status === 'legacy' ? 'Save as definition' : row.task_id ? 'Edit definition' : 'Define task'"></button></td>
+                                    </tr>
+                                </template>
+                                <tr x-show="!filteredInstructions().length"><td colspan="4" class="text-center text-slate-500">No instructions match this search.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="flex flex-wrap items-center justify-between gap-4 border-t border-slate-800 pt-4">
+                        <div class="max-w-2xl text-xs leading-5 text-slate-400">
+                            <p x-text="previewResult ? `${previewResult.tasks.filter(t => t.task_id).length} of ${previewResult.tasks.length} instructions matched. Ready to apply.` : 'Preview your assignments before applying them to this dataset.'"></p>
+                            <p>Unconfigured instructions remain available. Original dataset text is preserved.</p>
+                        </div>
+                        <div class="flex gap-2"><button class="dp-btn" @click="previewMapping()" :disabled="busy">Preview matches</button><button class="dp-btn dp-btn-primary" @click="applyMapping()" :disabled="busy || !previewResult">Apply to dataset</button></div>
+                    </div>
+                </div>
+            </section>
+
+            <section x-show="tab === 'catalog'" x-cloak class="grid gap-5 p-5 lg:grid-cols-[280px_minmax(0,1fr)]">
+                <aside class="space-y-3">
+                    <div class="flex items-center justify-between"><h3 class="font-semibold">Reusable tasks</h3><button class="dp-btn dp-btn-compact" @click="newTask(''); tab = 'catalog'">New task</button></div>
+                    <input class="dp-input" x-model="catalogSearch" placeholder="Search the catalog" aria-label="Search the catalog">
+                    <div class="max-h-[600px] space-y-1 overflow-y-auto">
+                        <template x-for="task in filteredCatalog()" :key="task.task_id"><button class="w-full rounded-lg border p-3 text-left" :class="editingId === task.task_id ? 'border-sky-700 bg-sky-950/50' : 'border-transparent hover:bg-slate-800'" @click="editingId = task.task_id; editTask()"><span class="block text-xs text-sky-300" x-text="humanize(task.family)"></span><span class="mt-1 block text-sm leading-5" x-text="task.label"></span></button></template>
+                        <p class="p-3 text-xs text-slate-500" x-show="!filteredCatalog().length">No matching tasks.</p>
+                    </div>
+                </aside>
+                <div class="space-y-5 rounded-lg border border-slate-800 bg-slate-950/50 p-5">
+                    <div><h3 class="font-semibold" x-text="editingId ? 'Edit task definition' : 'Create a task definition'"></h3><p class="dp-page-description">A task type describes the action. Attributes describe the object, device, position, or destination.</p></div>
+                    <div class="grid gap-4 sm:grid-cols-2">
+                        <label class="dp-field">Task name<input class="dp-input" x-model="form.label" @input="suggestTaskId()" placeholder="Open the refrigerator door"></label>
+                        <label class="dp-field">Task type<input class="dp-input" aria-label="Task type" x-model="form.family" list="task-families" placeholder="open_door"><span class="mt-1 block text-[11px]">Choose an existing type or enter a new one.</span></label>
+                        <datalist id="task-families"><template x-for="family in families()" :key="family"><option :value="family"></option></template></datalist>
+                        <label class="dp-field sm:col-span-2">Matching instructions<textarea class="dp-input" x-model="aliasText" rows="3" placeholder="Open the fridge&#10;Open the refrigerator door"></textarea><span class="mt-1 block text-[11px]">One confirmed equivalent instruction per line.</span></label>
+                    </div>
+                    <div>
+                        <div class="mb-3 flex items-center justify-between"><h4 class="text-sm font-semibold">Task attributes</h4><button class="dp-btn dp-btn-compact" @click="attributes.push({key:'', value:''})">Add attribute</button></div>
+                        <template x-for="(attribute, index) in attributes" :key="index"><div class="mb-2 grid grid-cols-[1fr_1fr_auto] items-center gap-2"><input class="dp-input !mt-0" x-model="attribute.key" placeholder="appliance" aria-label="Attribute name"><input class="dp-input !mt-0" x-model="attribute.value" placeholder="refrigerator" aria-label="Attribute value"><button class="dp-btn dp-btn-compact" @click="attributes.splice(index, 1)" aria-label="Remove attribute">×</button></div></template>
+                    </div>
+                    <details class="dp-disclosure rounded-lg border border-slate-800"><summary>Identifier and stage settings</summary><div class="grid gap-4 p-4 sm:grid-cols-2">
+                        <label class="dp-field sm:col-span-2">Stable task ID<input class="dp-input" x-model="form.task_id" @input="customId = true" :disabled="!!editingId" placeholder="open_fridge_door"></label>
+                        <label class="dp-field">Stage method<select class="dp-input" x-model="form.stage_strategy"><option value="equal_time">Equal time intervals</option><option x-show="form.family === 'pick'" value="legacy_pick">Existing pick rules</option><option x-show="form.family === 'place'" value="legacy_place">Existing place rules</option><option x-show="form.family === 'give'" value="legacy_give">Existing give rules</option></select></label>
+                        <label class="dp-field">Number of stages<input class="dp-input" type="number" min="2" max="100" x-model.number="form.stage_count" :disabled="form.stage_strategy !== 'equal_time'"></label>
+                        <p class="text-xs leading-5 text-slate-500 sm:col-span-2">Equal intervals describe time segments. They do not detect task completion. Existing manual stages are preserved.</p>
+                    </div></details>
+                    <div class="flex flex-wrap items-center justify-between gap-4 border-t border-slate-800 pt-4"><p class="max-w-lg text-xs leading-5 text-slate-400">Saving creates a catalog version. Apply it to each dataset when ready; published selections retain their version.</p><button class="dp-btn dp-btn-primary" @click="saveDefinition()" :disabled="busy || !form.label || !form.family">Save definition</button></div>
+                </div>
+            </section>
+
+            <section x-show="tab === 'selection'" x-cloak class="space-y-5 p-5">
+                <div><h3 class="font-semibold">Build a balanced selection</h3><p class="dp-page-description">Filter episodes by task, then optionally set a target count for each group. Create a recipe and continue in Curation to review and publish it.</p></div>
+                <div class="dp-notice text-amber-200 border-amber-900 bg-amber-950/20" x-show="!curationReady()">Apply your task assignments in Dataset tasks before building a selection with the new configuration.</div>
+                <div class="dp-notice text-slate-400" x-show="isRemote">Selection building is currently available for local datasets. Remote task setup and analysis are available.</div>
+                <div class="grid gap-5 lg:grid-cols-2">
+                    <div class="space-y-3 rounded-lg border border-slate-800 p-4">
+                        <h4 class="font-semibold text-slate-200">Include matching episodes</h4>
+                        <p class="text-xs text-slate-500" x-show="!filters.length">All tasks are included. Add a filter to narrow the selection.</p>
+                        <template x-for="(filter, index) in filters" :key="index"><div class="grid grid-cols-[1fr_1fr_auto] items-center gap-2"><select class="dp-input !mt-0" x-model="filter.dimension" @change="filter.value = ''" aria-label="Filter by"><template x-for="dimension in dimensions()" :key="dimension"><option :value="dimension" x-text="dimensionLabel(dimension)"></option></template></select><input class="dp-input !mt-0" x-show="filter.dimension === 'task'" x-model="filter.value" placeholder="Instruction contains" aria-label="Instruction contains"><select class="dp-input !mt-0" x-show="filter.dimension !== 'task'" x-model="filter.value" aria-label="Filter value"><option value="">Choose a value</option><template x-for="value in dimensionValues(filter.dimension)" :key="value"><option :value="value" x-text="valueLabel(filter.dimension, value)"></option></template></select><button class="dp-btn dp-btn-compact" @click="filters.splice(index, 1)" aria-label="Remove filter">×</button></div></template>
+                        <button class="dp-btn dp-btn-compact" @click="filters.push({dimension:'task_family', value:''})">Add filter</button>
+                    </div>
+                    <div class="space-y-4 rounded-lg border border-slate-800 p-4">
+                        <label class="dp-field">Recipe name<input class="dp-input" x-model="recipeName" placeholder="laundry-balanced-v1"></label>
+                        <label class="dp-field">Dataset version<select class="dp-input" x-model="baseVersion"><option value="">Choose a registered version</option><template x-for="version in versions" :key="version.version_id"><option :value="version.version_id" x-text="version.version_id"></option></template></select></label>
+                        <p class="text-xs text-slate-500" x-show="!versions.length && !isRemote">Register a dataset version in the console before creating a recipe.</p>
+                        <label class="dp-field">Balance by<select class="dp-input" x-model="groupBy" @change="targetCounts = {}"><option value="">Keep all matching episodes</option><template x-for="dimension in dimensions()" :key="dimension"><option :value="dimension" x-text="dimensionLabel(dimension)"></option></template></select></label>
+                        <div class="grid gap-3 sm:grid-cols-2" x-show="groupBy"><template x-for="value in dimensionValues(groupBy)" :key="value"><label class="dp-field"><span x-text="valueLabel(groupBy, value)"></span><input class="dp-input" type="number" min="0" x-model.number="targetCounts[value]" placeholder="0"></label></template></div>
+                    </div>
+                </div>
+                <div class="flex flex-wrap items-center justify-between gap-4 border-t border-slate-800 pt-4"><p class="text-sm text-sky-200" role="status" x-text="cohortMessage"></p><div class="flex flex-wrap gap-2"><button class="dp-btn" @click="resolveCohort()" :disabled="busy || !baseVersion || !curationReady() || isRemote">Preview selection</button><button class="dp-btn dp-btn-primary" @click="createRecipe()" :disabled="busy || !baseVersion || !recipeName || !curationReady() || isRemote">Create recipe and workspace</button></div></div>
+            </section>
+        </section>
+    </main>
+    <script>
+        function taskPage() {
+            return {
+                tab: 'dataset', taskSearch: '', catalogSearch: '', statusFilter: 'all', isRemote: false, customId: false, sourceMappingKey: '',
+                datasetKey: {{ dataset_key|tojson }}, loadedDatasetKey: '', analysisUrl: '', catalogs: [], catalogId: '', discovered: [], mappings: {},
+                mappingVersion: null, inventoryDigest: '', previewResult: null, busy: false, error: '', message: '',
+                editingId: '', form: {}, attributes: [], aliasText: '', versions: [], baseVersion: '',
+                filters: [], groupBy: '', targetCounts: {}, recipeName: '', cohortMessage: '', appliedSnapshot: null,
+                aiConfigured: false, aiModel: '', aiRunning: false, aiProgress: '', aiSuggestions: [], aiJobId: '', aiContext: '',
+                async api(url, body) {
+                    const response = await fetch(url, body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || 'Request failed');
+                    return data;
+                },
+                async run(action) { this.error = ''; this.busy = true; try { await action(); } catch (error) { this.error = error.message; } finally { this.busy = false; } },
+                async init() {
+                    this.newTask('');
+                    if (new URLSearchParams(location.search).get('tab') === 'selection') this.tab = 'selection';
+                    await this.run(async () => { this.catalogs = (await this.api('/api/task-catalogs')).catalogs; this.catalogId = this.catalogs[0].catalog_version_id; });
+                    try { const caps = await this.api('/api/task-suggestions/capabilities'); this.aiConfigured = caps.token_configured; this.aiModel = caps.default_model; } catch (_) { this.aiConfigured = false; }
+                    if (this.datasetKey) await this.loadDataset();
+                    const carried = new URLSearchParams(location.search).get('filters');
+                    if (carried) { try { this.filters = JSON.parse(carried); this.tab = 'selection'; } catch (_) { this.error = 'Invalid filter parameters'; } }
+                },
+                humanize(value) { return String(value || '').replaceAll('_', ' ').replace(/\b\w/g, char => char.toUpperCase()); },
+                catalogLabel(catalog) { return catalog.version === 0 ? 'Built-in catalog' : `Catalog v${catalog.version}`; },
+                dimensionLabel(key) { return {task:'Instruction text', task_family:'Task type', task_id:'Task'}[key] || this.humanize(key.replace('task_attributes.', '')); },
+                valueLabel(dimension, value) {
+                    if (dimension === 'task_id') return this.currentCatalog().tasks.find(task => task.task_id === value)?.label || value;
+                    return dimension === 'task' ? value : this.humanize(value);
+                },
+                statusLabel(status) { return {mapped:'Assigned', alias:'Matched', legacy:'Compatible task', conflict:'Ambiguous alias', unmapped:'Needs setup'}[status] || status; },
+                pendingCount() { return this.discovered.filter(row => !row.task_id).length; },
+                filteredInstructions() {
+                    const search = this.taskSearch.toLowerCase().trim();
+                    return this.discovered.filter(row => (!search || `${row.raw_task} ${row.family} ${row.label}`.toLowerCase().includes(search)) && (this.statusFilter === 'all' || (this.statusFilter === 'pending' ? !row.task_id : row.status === 'conflict')));
+                },
+                filteredCatalog() {
+                    const search = this.catalogSearch.toLowerCase().trim();
+                    return this.currentCatalog().tasks.filter(task => `${task.label} ${task.family}`.toLowerCase().includes(search))
+                        .sort((left, right) => left.family.localeCompare(right.family) || left.label.localeCompare(right.label));
+                },
+                suggestTaskId() { if (!this.editingId && !this.customId) this.form.task_id = this.form.label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''); },
+                currentCatalog() { return this.catalogs.find(c => c.catalog_version_id === this.catalogId) || {tasks:[]}; },
+                families() { return [...new Set(this.currentCatalog().tasks.map(t => t.family))].sort(); },
+                newTask(text) { this.editingId = ''; this.customId = false; this.sourceMappingKey = '';  this.form = {task_id:text.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,''), label:text, family:'', stage_strategy:'equal_time', stage_count:5}; this.aliasText = text; this.attributes = [{key:'object', value:''}]; },
+                defineDiscovered(row) {
+                    if (this.currentCatalog().tasks.some(task => task.task_id === row.task_id)) {
+                        this.editingId = row.task_id; this.editTask(); this.tab = 'catalog'; return;
+                    }
+                    this.newTask(row.raw_task);
+                    this.tab = 'catalog'; this.sourceMappingKey = row.mapping_key;
+                    if (row.status === 'legacy') {
+                        this.customId = true;
+                        this.form = {task_id:row.task_id, label:row.label, family:row.family, stage_strategy:row.stage_strategy, stage_count:row.stage_count};
+                        this.attributes = Object.entries(row.attributes).map(([key,value]) => ({key,value}));
+                    }
+                },
+                editTask() { const task = this.currentCatalog().tasks.find(t => t.task_id === this.editingId); if (!task) return this.newTask(''); this.sourceMappingKey = ''; this.form = {...task}; this.aliasText = task.aliases.join('\n'); this.attributes = Object.entries(task.attributes).map(([key,value]) => ({key,value})); },
+                async loadDataset() { await this.run(async () => {
+                    const key = this.datasetKey;
+                    this.clearSuggestions();
+                    this.loadedDatasetKey = ''; this.discovered = []; this.previewResult = null; this.appliedSnapshot = null;
+                    const data = await this.api('/api/task-mappings?dataset_key=' + encodeURIComponent(key));
+                    if (this.datasetKey !== key) throw new Error('Dataset changed while loading. Load its instructions again.');
+                    this.loadedDatasetKey = key;
+                    this.analysisUrl = data.analysis_url || '/' + key + '/analysis';
+                    this.isRemote = data.remote; this.discovered = data.tasks; this.catalogId = data.snapshot.catalog.catalog_version_id;
+                    this.appliedSnapshot = data.applied_snapshot; this.mappings = {...data.snapshot.mappings};
+                    this.mappingVersion = data.mapping?.mapping_version_id || null;
+                    this.inventoryDigest = data.task_inventory_digest; this.previewResult = null;
+                    this.versions = (await this.api('/api/lifecycle/versions?dataset_key=' + encodeURIComponent(this.datasetKey))).versions || [];
+                    this.baseVersion = this.versions[0]?.version_id || ''; this.cohortMessage = '';
+                }); },
+                async saveDefinition() { await this.run(async () => {
+                    const task = {...this.form, attributes:Object.fromEntries(this.attributes.filter(a => a.key).map(a => [a.key, a.value])), aliases:this.aliasText.split('\n').map(s=>s.trim()).filter(Boolean)};
+                    const latest = this.catalogs[0];
+                    const tasks = latest.tasks.filter(t => t.task_id !== this.editingId);
+                    if (!this.editingId && tasks.some(t => t.task_id === task.task_id)) throw new Error('This task ID already exists. Edit the existing task or choose a new ID.');
+                    tasks.push(task);
+                    const result = await this.api('/api/task-catalogs', {tasks, expected_version_id:latest.catalog_version_id});
+                    this.clearSuggestions();
+                    this.catalogs = (await this.api('/api/task-catalogs')).catalogs; this.catalogId = result.catalog.catalog_version_id;
+                    this.editingId = task.task_id; this.previewResult = null;
+                    if (this.sourceMappingKey) this.mappings[this.sourceMappingKey] = task.task_id;
+                    this.tab = this.discovered.length ? 'dataset' : 'catalog'; this.message = 'Definition saved. Review the matches, then apply the catalog to your dataset.';
+                }); },
+                mappingBody() {
+                    if (!this.loadedDatasetKey || this.loadedDatasetKey !== this.datasetKey) throw new Error('Load this dataset before previewing or applying task assignments.');
+                    return {dataset_key:this.datasetKey, catalog_version_id:this.catalogId, mappings:this.mappings};
+                },
+                clearSuggestions() { this.aiSuggestions = []; this.aiJobId = ''; this.aiContext = ''; this.aiProgress = ''; },
+                async suggestWithAI() { await this.run(async () => {
+                    this.clearSuggestions(); this.aiRunning = true;
+                    try {
+                        const body = this.mappingBody();
+                        const context = JSON.stringify(body);
+                        let response = await this.api('/api/task-suggestions', {...body, model:this.aiModel});
+                        const jobId = response.job?.id || '';
+                        while (response.job && !['done', 'error'].includes(response.job.status)) {
+                            if (context !== JSON.stringify(this.mappingBody())) throw new Error('Task assignments changed. Request suggestions again.');
+                            this.aiProgress = response.job.message || 'Qwen is reviewing the instructions…';
+                            await new Promise(resolve => setTimeout(resolve, 1500));
+                            response = await this.api('/api/task-suggestions/' + jobId);
+                        }
+                        if (response.job?.status === 'error') throw new Error(response.job.error || response.job.message || 'Suggestions failed. Retry or use manual task setup.');
+                        if (context !== JSON.stringify(this.mappingBody())) throw new Error('Task assignments changed. Request suggestions again.');
+                        this.aiContext = context; this.aiJobId = jobId;
+                        this.aiSuggestions = (response.result?.suggestions || []).map(row => ({...row, selected:false, attributeRows:Object.entries(row.task?.attributes || {}).map(([key,value]) => ({key,value}))}));
+                        this.aiProgress = this.aiSuggestions.length ? 'Review the suggestions below. Nothing has been applied.' : 'All instructions already match. No model call was needed.';
+                    } finally { this.aiRunning = false; }
+                }); },
+                async saveAISuggestions() { await this.run(async () => {
+                    if (this.aiContext !== JSON.stringify(this.mappingBody())) throw new Error('Task assignments changed. Request suggestions again.');
+                    const selected = this.aiSuggestions.filter(row => row.selected).map(row => {
+                        const keys = row.attributeRows.map(attribute => attribute.key.trim()).filter(Boolean);
+                        if (new Set(keys).size !== keys.length) throw new Error('Attribute names must be unique within a task.');
+                        return {instruction:row.instruction, action:row.action, reason:row.reason, task:row.task ? {...row.task, attributes:Object.fromEntries(row.attributeRows.filter(a => a.key.trim()).map(a => [a.key.trim(), a.value]))} : null};
+                    });
+                    const context = this.aiContext;
+                    const response = await this.api('/api/task-suggestions/' + this.aiJobId + '/accept', {suggestions:selected});
+                    if (context !== JSON.stringify(this.mappingBody())) throw new Error('Definitions saved, but the selected dataset changed. Load its instructions again.');
+                    this.catalogs = [response.catalog, ...this.catalogs.filter(catalog => catalog.catalog_version_id !== response.catalog.catalog_version_id)];
+                    this.catalogId = response.catalog.catalog_version_id;
+                    this.previewResult = response.preview; this.discovered = response.preview.tasks;
+                    this.mappings = {...response.preview.snapshot.mappings}; this.inventoryDigest = response.preview.task_inventory_digest;
+                    this.clearSuggestions(); this.message = 'Selected definitions saved. Review the matches below, then apply them to this dataset.';
+                }); },
+                curationReady() {
+                    const entries = value => JSON.stringify(Object.entries(value || {}).filter(([,id]) => id).sort());
+                    return this.datasetKey === this.loadedDatasetKey && this.appliedSnapshot?.catalog.catalog_version_id === this.catalogId && entries(this.appliedSnapshot.mappings) === entries(this.mappings);
+                },
+                async previewMapping() { await this.run(async () => { this.previewResult = await this.api('/api/task-mappings/preview', this.mappingBody()); this.discovered = this.previewResult.tasks; this.inventoryDigest = this.previewResult.task_inventory_digest; }); },
+                async applyMapping() { await this.run(async () => {
+                    const result = await this.api('/api/task-mappings', {...this.mappingBody(), expected_version_id:this.mappingVersion, expected_inventory_digest:this.inventoryDigest});
+                    this.mappingVersion = result.mapping.mapping_version_id; this.appliedSnapshot = result.mapping.snapshot;
+                    this.previewResult = null; this.message = result.message + (result.job ? ' · Job: ' + (result.job.id || result.job.job_id) : '');
+                }); },
+                dimensions() { return ['task', 'task_family', 'task_id', ...[...new Set(this.discovered.flatMap(t => Object.keys(t.attributes || {})))].sort().map(key => 'task_attributes.' + key)]; },
+                dimensionValues(dimension) { return [...new Set(this.discovered.map(t => dimension === 'task' ? t.raw_task : dimension === 'task_family' ? t.family : dimension === 'task_id' ? t.task_id : (t.attributes || {})[dimension.slice(16)]).filter(Boolean))].sort(); },
+                cohortQuery() { const metadata = {}; const terms = []; for (const filter of this.filters) { if (!filter.value) continue; if (filter.dimension === 'task') terms.push(filter.value); else (metadata[filter.dimension] ||= []).push(filter.value); } return {metadata, task_contains:terms}; },
+                async resolveCohort() { await this.run(async () => { const result = await this.api('/api/curation/cohorts/resolve', {dataset_version_id:this.baseVersion, query:this.cohortQuery(), task_config:this.appliedSnapshot}); this.cohortMessage = `${result.cohort.episode_count} episodes match the selection`; }); },
+                async createRecipe() { await this.run(async () => {
+                    const composition = this.groupBy ? {group_by:this.groupBy, target_counts:Object.fromEntries(this.dimensionValues(this.groupBy).map(value=>[value, Number(this.targetCounts[value] || 0)]))} : {};
+                    const result = await this.api('/api/curation/recipes', {name:this.recipeName, base_dataset_version_id:this.baseVersion, cohort_query:this.cohortQuery(), composition, task_config:this.appliedSnapshot});
+                    const compiled = await this.api('/api/curation/recipes/' + result.recipe.recipe_id + '/compile', {});
+                    this.cohortMessage = 'Workspace created: ' + compiled.workspace.workspace_id + '. Return to Curation to review, publish, and materialize the selection.';
+                }); }
+            };
+        }
+    </script>
+</body>
+</html>

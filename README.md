@@ -40,6 +40,69 @@
 
 ## Local Data Platform
 
+**开发／生产双环境：** 新部署使用显式 `--env dev|prod`，开发验证后将同一份版本包发布到生产。
+首次初始化、角色切换、升级和回退请按 [双环境部署指南](docs/data_platform_environments.md) 操作。
+
+
+Task definitions are configurable in the console. Existing Pick/Place/Give tasks and new task families share versioned catalogs, dataset mappings, analysis and curation filters, and portable Agent configuration snapshots. See the [task onboarding guide](docs/data_platform_task_catalog.md).
+
+### Run Analysis without preparing caches
+
+Select a dataset and open **Explore → Dataset Analysis → Open analysis**. **Refresh analysis**
+runs analysis directly; neither action starts Prepare cache or a remote preparation job.
+Tasks, attributes, episode counts, frame counts, and durations come from dataset metadata.
+Duration is episode length divided by FPS. Existing CSV files optionally supply stage and
+object-presence distributions; missing optional files are shown as **Not generated**, not review flags.
+
+Remote Analysis uses the latest metadata synced by the Agent, even when no Viewer cache exists or
+the Agent is offline. The page shows the report's sync time. Update Server A first, then update the
+Agent and wait for its automatic metadata sync to include episode lengths (`analysis_metadata_version=1`). Older reports
+still provide known totals and task distributions; unavailable per-episode values remain empty.
+Preparing videos is only needed when you want to use the Viewer. Analysis does not modify source data.
+
+### Shared Qwen API key on Server A
+
+Task suggestions, Qwen API object labeling, and VLM auto-tagging use the same server-side
+`DASHSCOPE_API_KEY`. Configure it once in the deployed service environment:
+
+```bash
+sudoedit /etc/data-platform/server.env
+```
+
+Add or update these entries in that file (replace the key placeholder there):
+
+```ini
+DASHSCOPE_API_KEY=YOUR_QWEN_API_KEY
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DATA_PLATFORM_TASK_MODEL=qwen3.6-plus
+```
+
+Keep the endpoint in the same region as your key. `DATA_PLATFORM_TASK_MODEL` only controls task
+suggestions; image labeling and tagging retain their own model selectors. Save the file, then run:
+
+```bash
+sudo chmod 640 /etc/data-platform/server.env
+sudo systemctl restart data-platform-web
+sudo systemctl status data-platform-web --no-pager -l
+```
+
+For a code update, run `data-platform-update-all --env prod --release RELEASE` after development acceptance, following the deployment
+workflow below. That updater preserves the environment file. This Qwen feature runs on Server A
+and does not require another Agent upgrade or distributing the API key to Agents.
+
+In **Task setup**, load instructions, select the latest catalog, and click **Suggest with AI**.
+Review the proposed tasks, select the ones to keep, then click **Save selected & preview → Apply
+to dataset**. Suggestions use unique instruction texts and the catalog; generating and reviewing
+them require no Prepare cache. Saving suggestions creates a catalog version, while **Apply to
+dataset** remains the explicit mapping update and background CSV refresh.
+
+In **Auto labeling** and **Auto-tagging**, choose the Qwen API backend and leave the API key field
+empty to use the shared key. Explicit keys still override it. A custom endpoint requires its own
+explicit key (or `EMPTY` for a local unauthenticated server), unless it is configured centrally with
+`DASHSCOPE_BASE_URL`. The Qwen Gradio backend retains its separate ModelScope token.
+The browser receives only whether the shared key is configured. Keep the real key out of source
+files and shell command arguments. See the [task setup guide](docs/data_platform_task_catalog.md#ai-assisted-task-setup).
+
 ### Start the web console
 
 The Data Platform is included with LeRobot and does not require a separate installation. Before
@@ -62,6 +125,8 @@ logical workspaces in the same process:
 
 The two workspaces continue to share the dataset selector, Viewer, Job & Artifacts panel, and
 operation audit log. The implementation lives in [`lerobot/data_platform`](lerobot/data_platform).
+For a central MySQL-backed service with node agents on multiple servers, see the
+[distributed deployment guide](docs/distributed_data_platform_deployment.md).
 
 The platform always operates on real LeRobot metadata and trajectory data. It reports invalid
 inputs instead of replacing them with fabricated samples. Data Construction also preserves the
@@ -112,6 +177,15 @@ The data-processing area is divided into smaller modules:
 | Quality and metadata repair (`quality_flags.py`, `flag_fixes.py`, `flag_clear.py`, `prompt_rewrite.py`) | Detect data-quality problems, apply supported repairs, review task/prompt assignments, and clear resolved flags. |
 | Episode maintenance (`delete_episodes.py`) | Delete selected episodes in place, reindex the remaining data and metadata, and attempt rollback if the operation fails. |
 
+Dataset merge defaults to strict signal schemas and dimension order. Use
+`--preprocess-merge-dimension-policy min` (or **Signal dimensions → Minimum** in the Merge page)
+to align each action/state field to the smallest source layout by complete, unique dimension names.
+Missing dimensions or incompatible robot semantics/units are rejected. Dry run reports the mappings
+and dropped dimensions; execution writes a new dataset and rebuilds its signal statistics and CSV cache.
+The same Merge form supports multiple datasets on one Agent after Server A and that Agent are updated.
+Remote merge validates registered location IDs and path boundaries, then uploads the new Viewer cache
+and registers the output. Cross-Agent merging is not supported.
+
 The default console path does not expose direct source-dataset mutation controls. Cache,
 analysis, Workspaces, manifests, and lifecycle records live outside the source dataset; preprocessing
 and materialization create sibling outputs. The normal startup command also provides a password-
@@ -133,8 +207,318 @@ python -m lerobot.data_platform \
 Admin Mode can modify or delete source Parquet, videos, and metadata and should not be used for
 normal curation work.
 
+When `DATA_PLATFORM_DATABASE_URL` enables the central multi-user service, the central `admin` role
+replaces this separate local Admin Mode login. Administrators receive admin controls immediately
+after signing in. Self-registered accounts remain pending until an administrator approves them;
+approved accounts start as read-only `viewer` users with no delete permission.
+
 See [`docs/data_lifecycle_architecture.md`](docs/data_lifecycle_architecture.md) for the capability
 matrix, persisted contracts, API mapping, lifecycle states, and materialization invariants.
+
+## 中央服务器日常运维（Server A）
+
+本节记录当前中央 Data Platform 的启动、更新、检查和故障排查命令。更完整的首次安装与
+节点接入流程见 [`docs/distributed_data_platform_deployment.md`](docs/distributed_data_platform_deployment.md)。
+
+### 服务与访问入口
+
+以下端口和单环境路径用于识别已有部署；新建与升级双环境请以 [双环境部署指南](docs/data_platform_environments.md) 为准。
+
+当前 Server A 使用以下 systemd 服务：
+
+| 服务 | 作用 | 正常状态 |
+| --- | --- | --- |
+| `mysql` | 保存网页用户、会话、节点、数据位置及远程任务 | `active` |
+| `data-platform-web` | Gunicorn 中央网页服务，仅监听 `127.0.0.1:9091` | `active` |
+| `nginx` | 对浏览器提供 HTTP/HTTPS，并转发到 Gunicorn | `active` |
+| `data-platform-h100-tunnel` | 保持 Server A 到远程数据节点的反向 SSH 隧道 | `active` |
+
+查看当前 `10.8` 网段地址：
+
+```bash
+hostname -I | tr ' ' '\n' | grep '^10\.8\.'
+```
+
+浏览器入口为：
+
+```text
+https://<当前的 10.8.x.x 地址>/
+```
+
+登录页和节点/用户管理页分别为：
+
+```text
+https://<当前的 10.8.x.x 地址>/login
+https://<当前的 10.8.x.x 地址>/control-plane
+```
+
+当前使用自签名证书，未安装该证书的浏览器可能显示安全提示。不要从其他电脑直接访问
+`9091`；该端口只供 Server A 本机的 Nginx 使用。
+
+### Server A 重启之后
+
+四个服务均设置为开机自启，正常情况下服务器重启后不需要手动启动。等待约 30 秒后检查：
+
+```bash
+systemctl is-active mysql data-platform-web nginx data-platform-h100-tunnel
+```
+
+应依次得到四行 `active`。再检查中央应用：
+
+```bash
+curl http://127.0.0.1:9091/healthz
+```
+
+正常响应为：
+
+```json
+{"control_plane":true,"status":"ok"}
+```
+
+检查 Nginx HTTPS 入口（仅用于本机健康检查，因此忽略自签名证书校验）：
+
+```bash
+curl -k https://127.0.0.1/healthz
+```
+
+首次执行下面的动态 IP 配置后，Nginx 不再绑定具体 IP，反向隧道也只连接
+`127.0.0.1:443`。Server A 地址变化不会影响服务和 H100-05 Agent 自动恢复；没有稳定域名时，
+浏览器仍需改用上面查到的新 IP。Nginx 只允许 Server A 本机和公司 `10.8.0.0/16` 网段访问。
+
+```bash
+cd /home/yuhao.song/Codes/data_platform
+bash deploy/data-platform/environment.sh network --env dev
+```
+
+新网络命令仅配置所选环境，Nginx 校验失败时恢复原配置；安装日常命令使用
+`sudo bash deploy/data-platform/install-commands.sh`。首次生产接入使用双环境指南中的 `adopt-legacy`。
+
+### 固定更新流程（开发验收 → 生产发布）
+
+先按 [双环境部署指南](docs/data_platform_environments.md) 完成初始化及现有生产环境接入。
+候选版本来自已提交且干净的源码；开发、生产安装相同的 Server/Agent 包。部署仍先更新 Server A，
+再逐个升级所选环境的 Agent。开发和生产有独立的服务、MySQL 库、Lifecycle 状态、缓存及节点身份。
+
+```bash
+data-platform-update-all --env dev --version RELEASE
+# 完成人工场景测试后，保存验收结果。
+data-platform-release approve --env dev --release RELEASE --evidence /PATH/TO/evidence.json
+data-platform-update-all --env prod --release RELEASE
+```
+
+命令需要本机 sudo；SSH 使用发起者身份。Server 的依赖同步保持 `--frozen`，先离线、再在线，
+可追加 `--index-url https://pypi.tuna.tsinghua.edu.cn/simple`。常规生产更新使用已经验收的安装包，不重新构建。
+
+保留两个环境一起硬升级的入口（两套环境需已初始化并接入新部署流程）：
+
+```bash
+data-platform-update-all --env both --hard --version RELEASE
+# 已构建同名包时，使用 --release RELEASE 重用它。
+```
+
+该命令构建一次，依次更新开发和生产的 Server 与 Agent，跳过人工开发验收，保留测试、环境隔离、备份及
+健康检查。任一步失败即停止；已经成功更新的环境保留新版本。详细流程见
+[双环境部署文档](docs/data_platform_environments.md#开发和生产一起硬升级)。
+Agent 包保留在源码的 `dist/agent/`，发行清单与校验记录位于 `/var/lib/data-platform-releases/`。
+
+单独更新 Server 使用 `data-platform-update --env prod --release RELEASE`，完成后保持维护，
+匹配 Agent 也验证通过后再恢复。服务状态、版本/环境检查和 Agent 心跳全部通过才算完成。
+失败后保留维护状态、备份和上传现场；检查 `data-platform-release status --env prod` 后修复或回退。
+
+
+### 手动启动、停止和重启
+
+只重启网页服务：
+
+```bash
+sudo systemctl restart data-platform-web
+```
+
+一次重启所有中央服务和隧道：
+
+```bash
+data-platform-restart --env prod
+```
+
+查看完整状态：
+
+```bash
+sudo systemctl status mysql data-platform-web nginx data-platform-h100-tunnel --no-pager -l
+```
+
+手动停止或启动网页服务：
+
+```bash
+sudo systemctl stop data-platform-web
+sudo systemctl start data-platform-web
+```
+
+服务刚重启时 Gunicorn worker 可能尚未加载完成。此时 `systemctl status` 已显示 `running`，但
+立即执行 `curl` 仍可能暂时得到 `Connection refused`；等待几秒后重试即可。
+
+### 查看日志
+
+持续查看网页服务日志：
+
+```bash
+sudo journalctl -u data-platform-web -f
+```
+
+查看最近 100 行网页服务日志：
+
+```bash
+sudo journalctl -u data-platform-web -n 100 --no-pager -l
+```
+
+查看反向隧道日志：
+
+```bash
+sudo journalctl -u data-platform-h100-tunnel -n 100 --no-pager -l
+```
+
+查看 Nginx 日志：
+
+```bash
+sudo tail -f /var/log/nginx/access.log /var/log/nginx/error.log
+```
+
+查看 MySQL 日志：
+
+```bash
+sudo journalctl -u mysql -n 100 --no-pager -l
+```
+
+### 更新失败：MySQL 报 Out of sort memory
+
+如果更新脚本报 `service did not become healthy within 30 seconds`，并且 Gunicorn 日志显示
+`list_locations()` 查询触发 MySQL `1038: Out of sort memory`，启动失败发生在中央服务恢复
+远程 Viewer 列表时。旧查询同时读取较大的 `metadata_json` 并排序，可能耗尽 MySQL 排序缓冲。
+当前代码将排序与元数据读取拆开，保留原来的列表顺序和完整元数据。
+
+先从包含修复的工作区重新部署中央服务：
+
+```bash
+(
+  set -e
+  cd /home/yuhao.song/Codes/data_platform
+  data-platform-update-all --env prod --release RELEASE
+  curl -fsS http://127.0.0.1:9091/healthz
+)
+```
+
+等健康检查成功后，再继续前面的 Agent 构建、传输和安装步骤。使用上述带 `set -e` 的更新块时，
+中央更新失败会中止后续命令，Agent 包尚未构建或传输。修复此查询不需要修改数据库内容或
+提高全局 `sort_buffer_size`；单纯重启服务也不会部署工作区中的修复。
+
+### 用户注册、审批与权限
+
+当 `/etc/data-platform/server.env` 中设置 `DATA_PLATFORM_ALLOW_REGISTRATION=1` 时，用户可以
+从登录页申请账号。新账号不会自动登录，必须由 `admin` 在 `/control-plane` 的
+“Users and approvals”中审批。
+
+- `viewer`：默认角色，只读，不能修改或删除数据。
+- `operator`：可以运行允许的查看准备和衍生预处理任务，不能删除或原地修改。
+- `admin`：登录后自动拥有管理权限，可以审批用户；只有该角色能使用删除和原地修改功能。
+
+Bootstrap token 只用于数据库中没有任何用户时创建首位管理员。普通登录和注册不需要该
+token。不要把 Bootstrap token、Agent enrollment token 或密码写入 README、命令历史或日志。
+
+查看当前网页用户及角色：
+
+```bash
+sudo mysql -D data_platform -e "SELECT username, display_name, role, active, created_at FROM dp_users ORDER BY created_at;"
+```
+
+查看 MySQL 实际数据目录：
+
+```bash
+sudo mysql -Nse "SELECT @@hostname, @@datadir;"
+```
+
+不要直接修改 MySQL 数据目录中的文件。配置文件位于 `/etc/data-platform/server.env`，修改后
+需要重启网页服务：
+
+```bash
+sudo systemctl restart data-platform-web
+```
+
+### 远程节点与反向隧道
+
+在 Server A 检查隧道：
+
+```bash
+systemctl is-active data-platform-h100-tunnel
+sudo systemctl status data-platform-h100-tunnel --no-pager -l
+```
+
+在远程数据节点检查中央服务是否能通过本地隧道访问：
+
+```bash
+curl --noproxy '*' https://127.0.0.1:9443/healthz
+```
+
+在远程数据节点检查 Agent：
+
+```bash
+sudo systemctl status data-platform-agent --no-pager -l
+sudo journalctl -u data-platform-agent -n 100 --no-pager -l
+```
+
+如果节点未出现在 `/control-plane`，依次检查 Server A 的
+`data-platform-h100-tunnel`、节点上的 `127.0.0.1:9443/healthz`，最后检查
+`data-platform-agent` 日志。Server A 的 `data-platform-update` 不会更新远程 Agent。
+
+`/control-plane` 默认只在 Nodes 表中显示每台 Agent 的数据集数量，不会一次展开全部路径。
+点击 **View N datasets** 后可按名称或路径搜索，并按处理中、最近失败或 Viewer 缺失筛选；
+数据集列表每页显示 20 条。远程预处理统一从首页 Dataset console 发起。
+
+在首页选择 Agent、扫描路径后，点击数据集卡片上的 **select & preprocess**，即可把该节点的
+数据设为 Working dataset。页面顶部的 **Working dataset** 下拉框也同时列出 Server A 与全部
+Agent 数据集，切换后 Server 和操作表单会一起更新，刷新页面仍会恢复该选择。
+
+Server A 和 Agent 都使用同一个 **Datasets** 列表，不再向普通用户区分 Registered/Available。
+Server A 首次选择数据集时由 Operator 或 Admin 自动完成 Catalog 登记；Agent 的发现结果由节点
+同步自动登记。`unregister` 仅 Admin 可用，并且只删除 Catalog 记录，不删除磁盘数据。
+
+Cache、Standardize、Transform、Value Edit 和 Split 使用与 Server A 相同的主要参数。远程 Cache
+可选择视频/CSV、profile 和覆盖策略；衍生操作可以留空输出路径以使用安全默认值，也可以填写
+Agent 上的绝对路径。自定义路径必须位于该 Agent 配置的 `writable roots` 内，且不能是源数据集、
+源数据集的父目录或子目录。Standardize 和 Convert v3 支持显式覆盖已有数据集输出；Standardize
+还可以仅从标准化输出中删除指定 episodes。Standardize 完成后会自动生成并上传新数据集的
+Viewer cache，无需再单独执行 Prepare viewer。**Jobs** 抽屉和 **Pipeline Runs** 页面使用同一份
+任务信息，统一显示服务器、进度、耗时、日志、结果摘要和输出数据集；完成后可直接切换到输出
+数据集。输出尚无 Viewer cache 时，Job 卡片可直接启动 **Prepare viewer**，完成后同一位置切换为
+**Open viewer**。选择 Agent 数据集后也可进入 **Data Curation > Explore** 查看 Episode Viewer；
+Dataset Analysis 可直接使用 Agent 上报的元数据，无需先准备 Viewer cache。Embedding、标注和构造入口仍不显示。
+
+远程原地修改默认关闭。确实需要 Admin 执行原地值修改、v3 时间戳修复或 episode 删除时，必须
+同时设置：
+
+```bash
+# Server A: /etc/data-platform/server.env
+DATA_PLATFORM_ENABLE_LEGACY_MUTATIONS=1
+
+# 数据节点: /etc/data-platform/agent.env
+DATA_PLATFORM_AGENT_ALLOW_SOURCE_MUTATIONS=1
+```
+
+然后分别重启 `data-platform-web` 和 `data-platform-agent`。每次真实写入前，Agent 会在
+`<数据集父目录>/.data-platform-backups/<数据集名>/` 下保留持久备份；任务失败会自动恢复，成功
+后 Server A 会使旧 Viewer 缓存失效，需重新 Prepare viewer。普通 `operator` 只能生成兄弟数据集，
+不能执行这些原地操作。完整安全条件和恢复说明见
+[`docs/distributed_data_platform_deployment.md`](docs/distributed_data_platform_deployment.md)。
+
+### 常用路径
+
+| 路径 | 内容 |
+| --- | --- |
+| `/opt/data-platform` | Server A 当前运行代码与虚拟环境 |
+| `/etc/data-platform/server.env` | 中央服务配置和敏感环境变量 |
+| `/etc/systemd/system/data-platform-web.service` | 网页服务 unit |
+| `/etc/systemd/system/data-platform-h100-tunnel.service` | 反向隧道 unit |
+| `/etc/nginx/tls/` | 当前 HTTPS 证书和私钥 |
+| `/etc/data-platform/network-backups/` | 动态 IP 改造前的 Nginx 与隧道配置备份 |
+| `/srv/data-platform/remote-cache` | 远程节点上传到 Server A 的只读 Viewer 缓存 |
 
 
 ## Installation
@@ -420,3 +804,21 @@ Additionally, if you are using any of the particular policy architecture, pretra
   year={2024}
 }
 ```
+
+### UMI LeRobot v3 数据
+
+支持 UMI 三路内嵌图像、头部/左右手位姿及夹爪原始信号的预览、基础分析、拆分和同结构合并。
+数据列表显示机器人类型与 LeRobot 版本；DVT1/DVT2 保留为旧处理流程的参数。
+UMI 不套用 DVT 归一化或自动 Stage，也不生成训练用 action/state。
+操作、来源追踪与 Server A → Agent 升级顺序见 [UMI 数据支持](docs/umi_dataset_support.md)。
+
+### 多用户日志与任务管理
+
+集中部署支持在现有管理员控制面页面查看使用日志和只读数据库记录。协议 2 Agent 支持持久化执行批次、
+排队优先级、取消及符合条件的重试/终止；本地后台任务使用独立本地执行器和兼容的 `/api/jobs` 查询。
+需要配置独立日志库、安装本地执行器并升级 Agent。部署顺序、能力限制及存储分工见
+[多用户管理与任务执行](docs/data_platform_multi_user_management.md)。
+
+日常更新先在开发环境验收候选包，再执行 `data-platform-update-all --env prod --release RELEASE`。
+工具保留环境配置，维护期间备份并更新 Server、本地执行器和对应 Agent，最后校验节点心跳。
+首次环境初始化、旧生产接入和回退步骤见 [双环境部署指南](docs/data_platform_environments.md)。

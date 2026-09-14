@@ -1,0 +1,42 @@
+<div class="rounded-lg border border-slate-800 bg-slate-950/40 p-4 space-y-3">
+    <div class="flex flex-wrap items-end justify-between gap-3">
+        <div class="max-w-xl">
+            <h4 class="font-semibold text-slate-100">Suggest task definitions</h4>
+            <p class="mt-1 text-xs leading-5 text-slate-400">Qwen reviews unmatched instructions using this catalog. Review and save the suggestions before applying them.</p>
+            <p class="mt-1 text-xs" :class="aiConfigured ? 'text-emerald-300' : 'text-slate-500'" x-text="aiConfigured ? 'Using the shared server API key' : 'Set DASHSCOPE_API_KEY on Server A and restart the web service to enable suggestions.'"></p>
+        </div>
+        <div class="flex flex-wrap items-end gap-2">
+            <label class="dp-field">Model<input class="dp-input" x-model.trim="aiModel" :disabled="busy" placeholder="Server default"></label>
+            <button class="dp-btn" @click="suggestWithAI()" :disabled="busy || !aiConfigured" x-text="aiRunning ? 'Generating suggestions…' : 'Suggest with AI'"></button>
+        </div>
+    </div>
+    <p class="text-xs text-slate-400" x-show="aiProgress" x-text="aiProgress"></p>
+    <div class="space-y-3 border-t border-slate-800 pt-3" x-show="aiSuggestions.length" x-cloak>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+            <p class="text-xs text-slate-400" x-text="`${aiSuggestions.length} suggestions · ${aiSuggestions.filter(row => row.selected).length} selected`"></p>
+            <div class="flex flex-wrap gap-2"><button class="dp-btn dp-btn-compact" @click="aiSuggestions.forEach(row => row.selected = row.action !== 'review')" :disabled="busy">Select ready suggestions</button><button class="dp-btn dp-btn-compact" @click="aiSuggestions.forEach(row => row.selected = false)" :disabled="busy">Clear selection</button></div>
+        </div>
+        <div class="max-h-[600px] space-y-3 overflow-y-auto">
+            <template x-for="row in aiSuggestions" :key="row.mapping_key">
+                <div class="rounded-lg border border-slate-800 p-3 space-y-3">
+                    <label class="flex items-start gap-3">
+                        <input type="checkbox" class="mt-1" x-model="row.selected" :disabled="busy || row.action === 'review'" :aria-label="'Accept suggestion: ' + row.instruction">
+                        <span class="min-w-0 flex-1"><span class="block break-words text-slate-100" x-text="row.instruction"></span><span class="mt-1 block text-xs text-slate-400" x-text="`${row.episode_count} episodes · ${row.action === 'reuse' ? 'Existing task' : row.action === 'create' ? 'New task' : 'Needs clarification'}`"></span></span>
+                    </label>
+                    <p class="text-xs leading-5 text-slate-400" x-text="row.reason"></p>
+                    <template x-if="row.task && row.action === 'reuse'"><div><label class="dp-field">Suggested task<select class="dp-input" x-model="row.task.task_id" :disabled="busy"><template x-for="task in currentCatalog().tasks" :key="task.task_id"><option :value="task.task_id" x-text="humanize(task.family) + ' · ' + task.label"></option></template></select></label><div class="mt-2 flex flex-wrap gap-2"><template x-for="attribute in Object.entries(currentCatalog().tasks.find(task => task.task_id === row.task.task_id)?.attributes || {})" :key="attribute[0]"><span class="dp-badge" x-text="attribute[0] + ': ' + attribute[1]"></span></template></div></div></template>
+                    <template x-if="row.task && row.action === 'create'"><div class="space-y-3">
+                        <div class="grid gap-3 sm:grid-cols-2"><label class="dp-field">Task name<input class="dp-input" x-model="row.task.label" :disabled="busy"></label><label class="dp-field">Task type<input class="dp-input" x-model="row.task.family" list="task-families" :disabled="busy"></label></div>
+                        <div>
+                            <div class="flex justify-between items-center"><span class="text-xs text-slate-400">Attributes</span><button class="dp-btn dp-btn-compact" @click="row.attributeRows.push({key:'', value:''})" :disabled="busy">Add attribute</button></div>
+                            <template x-for="(attribute, index) in row.attributeRows" :key="index"><div class="mt-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2"><input class="dp-input !mt-0" x-model="attribute.key" aria-label="Suggested attribute name" :disabled="busy"><input class="dp-input !mt-0" x-model="attribute.value" aria-label="Suggested attribute value" :disabled="busy"><button class="dp-btn dp-btn-compact" @click="row.attributeRows.splice(index, 1)" aria-label="Remove suggested attribute" :disabled="busy">×</button></div></template>
+                        </div>
+                        <details class="dp-disclosure"><summary>Task ID</summary><input class="dp-input" x-model="row.task.task_id" aria-label="Suggested task ID" :disabled="busy"></details>
+                    </div></template>
+                    <button class="dp-btn dp-btn-compact" x-show="row.action === 'review'" @click="defineDiscovered({raw_task:row.instruction, mapping_key:row.mapping_key, status:'unmapped'})" :disabled="busy">Define task manually</button>
+                </div>
+            </template>
+        </div>
+        <div class="flex flex-wrap items-center justify-between gap-3"><p class="max-w-lg text-xs text-slate-400">Only selected instructions become confirmed aliases or dataset assignments. New tasks use five equal time stages.</p><button class="dp-btn dp-btn-primary" @click="saveAISuggestions()" :disabled="busy || !aiSuggestions.some(row => row.selected)">Save selected &amp; preview</button></div>
+    </div>
+</div>

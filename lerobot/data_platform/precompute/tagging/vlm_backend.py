@@ -4,7 +4,7 @@ import json
 import re
 import tempfile
 import time
-import urllib.request
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,6 @@ from lerobot.data_platform.precompute.labeling.qwen_dashscope import (
     DEFAULT_DASHSCOPE_MODEL,
     dashscope_content_text,
     dashscope_env_api_key,
-    format_dashscope_error,
     image_data_url,
     normalize_base_url,
 )
@@ -24,11 +23,16 @@ from lerobot.data_platform.precompute.labeling.qwen_remote import (
     DEFAULT_QWEN_MODEL,
     QWEN_MODELS,
     QWEN_TOKEN_ENV_VARS,
+)
+from lerobot.data_platform.precompute.labeling.qwen_remote import (
     _env_token as qwen_remote_env_token,
+)
+from lerobot.data_platform.precompute.labeling.qwen_remote import (
     normalize_endpoint as normalize_qwen_remote_endpoint,
 )
 from lerobot.data_platform.precompute.labeling.task_parser import normalize_object_name
 from lerobot.data_platform.precompute.tagging.schema import DEFAULT_VLM_MODEL, normalize_background_label
+from lerobot.data_platform.qwen import QwenClient, resolve_api_key
 
 DEFAULT_VLM_BACKEND = "qwen_dashscope"
 
@@ -140,7 +144,7 @@ def _extract_json_payload(value: Any) -> Any:
     except json.JSONDecodeError:
         match = re.search(r"\{[\s\S]*\}", text)
         if not match:
-            raise ValueError("Remote Qwen tagging response did not contain a JSON object.")
+            raise ValueError("Remote Qwen tagging response did not contain a JSON object.") from None
         return json.loads(match.group(0))
 
 
@@ -206,7 +210,12 @@ def _normalize_prompt_action_match(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, dict):
-        value = value.get("prompt_action_match") or value.get("match") or value.get("status") or value.get("result")
+        value = (
+            value.get("prompt_action_match")
+            or value.get("match")
+            or value.get("status")
+            or value.get("result")
+        )
     text = str(value).strip().lower()
     if not text or text in {"null", "none", "n/a"}:
         return None
@@ -338,7 +347,9 @@ def _build_prompt(tag_defs: list[dict]) -> str:
         )
         schema_items.append('"background":"round_table|square_table|tv_cabinet|sofa|null"')
     if "background_color" in names:
-        fields.append("background_color: the dominant color of that background furniture/surface, or null when unsure.")
+        fields.append(
+            "background_color: the dominant color of that background furniture/surface, or null when unsure."
+        )
         schema_items.append('"background_color":"<color>|null"')
     if "object_count" in names:
         fields.append(
@@ -361,12 +372,8 @@ def _build_prompt(tag_defs: list[dict]) -> str:
     schema = "{" + ",".join(schema_items) + "}"
     return (
         "Analyze the first frame image for dataset tagging. Do not guess; use null for fields that are not clearly visible. "
-        "Fields: "
-        + " ".join(fields)
-        + "\nOutput the results in the following JSON format:\n"
-        "```json\n"
-        + schema
-        + "\n```\n"
+        "Fields: " + " ".join(fields) + "\nOutput the results in the following JSON format:\n"
+        "```json\n" + schema + "\n```\n"
         "Return ONLY one JSON object, no markdown and no extra text."
     )
 
@@ -443,10 +450,8 @@ class VLMTagger:
             raise RuntimeError(f"Remote Qwen tagging failed after 3 attempts: {last_exc}")
         finally:
             if tmp_path is not None:
-                try:
+                with suppress(OSError):
                     tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     def predict_many(self, image, tag_defs: list[dict]) -> dict:
         if not tag_defs:
@@ -477,10 +482,8 @@ class VLMTagger:
             method = getattr(self.client, method_name, None)
             if method is None:
                 continue
-            try:
+            with suppress(Exception):
                 method()
-            except Exception:
-                pass
 
 
 class DashScopeVLMTagger:
@@ -498,37 +501,20 @@ class DashScopeVLMTagger:
         api_key: str | None = None,
         timeout_s: int = 120,
     ):
-        api_key = (api_key or dashscope_env_api_key() or "").strip()
-        if not api_key:
-            raise RuntimeError(
-                "OpenAI-compatible VLM tagging requires an API key value. "
-                "Set DASHSCOPE_API_KEY/QWEN_DASHSCOPE_API_KEY, paste it in the UI token field, "
-                "or use EMPTY for a local vLLM/SGLang server that ignores auth."
-            )
+        api_key = resolve_api_key(base_url, api_key)
         return cls(base_url=base_url, api_key=api_key, model_id=model_id, timeout_s=timeout_s)
 
     def _post_chat_completion(self, payload: dict) -> dict:
-        request = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except Exception as exc:
-            raise RuntimeError(format_dashscope_error(exc)) from exc
+        return QwenClient(self.base_url, self.api_key, self.timeout_s).post_chat_completion(payload)
 
     def _predict_payload_images(self, image_pils: list, prompt: str) -> Any:
         image_pils = [image for image in image_pils if image is not None]
         if not image_pils:
             raise ValueError("VLM tagging requires an image.")
         content = [{"type": "text", "text": prompt}]
-        content.extend({"type": "image_url", "image_url": {"url": image_data_url(image)}} for image in image_pils)
+        content.extend(
+            {"type": "image_url", "image_url": {"url": image_data_url(image)}} for image in image_pils
+        )
         payload = {
             "model": self.model_id,
             "messages": [

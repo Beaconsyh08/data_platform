@@ -5,6 +5,7 @@ import uuid
 
 from flask import jsonify, render_template, request
 
+from lerobot.data_platform.local_execution import launch_background
 from lerobot.data_platform.precompute.compare import load_compare_json, run_compare_build
 from lerobot.data_platform.routes.context import RouteContext
 
@@ -18,8 +19,12 @@ def register_compare_routes(app, ctx: RouteContext) -> None:
     def api_start_compare():
         body = request.get_json(silent=True) or {}
         try:
-            key_a = ctx.dataset_key_from_body({"dataset_key": body.get("dataset_key_a") or body.get("dataset_key")})
-            key_b = ctx.dataset_key_from_body({"dataset_key": body.get("dataset_key_b") or body.get("compare_with")})
+            key_a = ctx.dataset_key_from_body(
+                {"dataset_key": body.get("dataset_key_a") or body.get("dataset_key")}
+            )
+            key_b = ctx.dataset_key_from_body(
+                {"dataset_key": body.get("dataset_key_b") or body.get("compare_with")}
+            )
             dataset_a, static_a = ctx.ensure_dataset_loaded(key_a)
             dataset_b, static_b = ctx.ensure_dataset_loaded(key_b)
         except ValueError as exc:
@@ -79,7 +84,9 @@ def register_compare_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Compare job failed")
                 ctx.fail_job(job, "Compare failed", exc)
 
-        threading.Thread(target=_run_job, name=f"compare-{job_id}", daemon=True).start()
+        launch_background(
+            target=_run_job, name=f"compare-{job_id}", daemon=True, thread_factory=threading.Thread
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/<string:ns_a>/<string:name_a>/compare/<string:ns_b>/<string:name_b>")

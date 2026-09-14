@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from lerobot.data_platform.precompute.data_profile import require_dataset_operation
+
 try:
     import pandas  # noqa: F401
     import pyarrow  # noqa: F401
@@ -99,6 +101,8 @@ def run_preprocess_op(
 ) -> PreprocessResult:
     if not _AVAILABLE:
         raise RuntimeError(f"Preprocess dependencies are unavailable: {_ERROR}")
+    if src_root is not None:
+        require_dataset_operation(src_root, op, data_version_override=kwargs.get("data_version"))
     if op == "convert_action":
         return run_convert_action(src_root, out_root=out_root, progress_callback=progress_callback, **kwargs)
     if op == "convert_v3":

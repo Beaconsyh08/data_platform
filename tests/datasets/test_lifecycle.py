@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import lerobot.data_platform.lifecycle as lifecycle_module
 from lerobot.data_platform.lifecycle import (
     MANIFEST_APPROVED,
     MANIFEST_IN_REVIEW,
@@ -30,7 +31,7 @@ def _make_dataset(root: Path) -> None:
     (root / "meta").mkdir(parents=True)
     (root / "data" / "chunk-000").mkdir(parents=True)
     info = {
-        "robot_type": "test",
+        "robot_type": "h10w",
         "fps": 10,
         "codebase_version": "v2.1",
         "total_episodes": 2,
@@ -309,6 +310,41 @@ def test_derived_versions_preserve_uids_for_transform_and_merge(tmp_path: Path):
     assert len(merged.episode_uids()) == 4
 
 
+def test_prevalidated_explicit_lineage_avoids_redundant_dataset_snapshots(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    _make_dataset(source)
+    store = LifecycleStore(tmp_path / "ledger")
+    parent = store.ingest(source, "local/source")
+    shutil.copytree(source, output)
+    snapshot_calls = []
+    original_snapshot = lifecycle_module.dataset_snapshot
+
+    def tracked_snapshot(root):
+        snapshot_calls.append(Path(root))
+        return original_snapshot(root)
+
+    monkeypatch.setattr(lifecycle_module, "dataset_snapshot", tracked_snapshot)
+    derived = store.register_derived(
+        output,
+        "local/output",
+        parent_version_ids=[parent.version_id],
+        operation="standardize",
+        episode_lineage=[
+            {
+                "source_dataset_version_id": parent.version_id,
+                "source_episode_index": episode_index,
+                "output_episode_index": episode_index,
+            }
+            for episode_index in sorted(parent.uid_by_index())
+        ],
+        verify_parents=False,
+    )
+
+    assert snapshot_calls == []
+    assert derived.uid_by_index() == parent.uid_by_index()
+
+
 def test_source_delivery_dimensions_and_reconciliation_follow_derived_versions(tmp_path: Path):
     source = tmp_path / "source"
     _make_dataset(source)
@@ -354,8 +390,7 @@ def test_source_delivery_dimensions_and_reconciliation_follow_derived_versions(t
         operation="split",
         stage="standard",
         episode_lineage=[
-            {**item, "source_dataset_version_id": raw.version_id}
-            for item in result.episode_lineage
+            {**item, "source_dataset_version_id": raw.version_id} for item in result.episode_lineage
         ],
     )
 
@@ -542,9 +577,9 @@ def test_console_exposes_two_workspaces_and_guards_legacy_mutations(
     )
     assert ingested.status_code == 200
     version_id = ingested.get_json()["dataset_version"]["version_id"]
-    reconciliation = client.get(
-        f"/api/lifecycle/reconciliations?dataset_version_id={version_id}"
-    ).get_json()["reconciliations"]
+    reconciliation = client.get(f"/api/lifecycle/reconciliations?dataset_version_id={version_id}").get_json()[
+        "reconciliations"
+    ]
     assert reconciliation[0]["counts"]["outcomes"] == {"received": 2}
     dataset_profile = client.post(
         "/api/curation/dataset-profiles",
@@ -713,9 +748,7 @@ def test_identity_artifact_is_portable_and_duplicate_content_gets_unique_uid(tmp
     )
     assert imported.version_id == original.version_id
     assert imported.uid_by_index() == original.uid_by_index()
-    assert second_store.list_replicas(dataset_version_id=imported.version_id)[0].root == str(
-        copied.resolve()
-    )
+    assert second_store.list_replicas(dataset_version_id=imported.version_id)[0].root == str(copied.resolve())
 
 
 def test_workspace_revision_profile_execution_and_publish(tmp_path: Path):
@@ -932,8 +965,7 @@ def test_v3_multi_episode_shard_materializes_with_full_validation(tmp_path: Path
         operation="convert_v3",
         stage="standard",
         episode_lineage=[
-            {**item, "source_dataset_version_id": raw.version_id}
-            for item in conversion.episode_lineage
+            {**item, "source_dataset_version_id": raw.version_id} for item in conversion.episode_lineage
         ],
     )
     assert base.format_variant_of == raw.version_id

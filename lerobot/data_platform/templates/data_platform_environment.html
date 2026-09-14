@@ -1,0 +1,9 @@
+<meta name="data-platform-environment" content="{{ environment }}">
+<meta name="data-platform-release" content="{{ release }}">
+<script src="/environment.js"></script>
+<style>
+  #dp-environment-bar { position: sticky; top: 0; z-index: 10000; display: flex; flex-wrap: wrap;
+    align-items: center; gap: 12px; padding: 6px 16px; font: 13px system-ui;
+    background: {{ '#fff1c2' if environment == 'dev' else '#e8edf4' }}; color: #17243a; }
+  #dp-environment-bar select { color: #17243a; background: white; padding: 3px; border-radius: 4px; }
+</style>

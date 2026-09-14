@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Platform management · Data Platform</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        body { background: #080f1c; }
+        th { white-space: nowrap; font-weight: 500; }
+        td { vertical-align: top; }
+        button, select, input, a { outline-offset: 4px; }
+        button:disabled { opacity: .4; cursor: not-allowed; }
+        .management-tabs { position: sticky; top: 0; z-index: 20; background: #080f1cf5; backdrop-filter: blur(12px); }
+        .management-tabs button { border-bottom: 2px solid transparent; padding: 14px 16px; white-space: nowrap; color: #94a3b8; }
+        .management-tabs button[aria-current="page"] { color: #7dd3fc; border-color: #38bdf8; }
+        .management-tabs button:hover { color: #e2e8f0; }
+        .metric { border: 1px solid #263448; border-radius: 12px; padding: 20px; background: #101b2c; text-align: left; }
+        .metric strong { display: block; margin: 8px 0; font-size: 30px; color: #f1f5f9; }
+        dialog { color: #e2e8f0; background: #0f172a; border: 1px solid #334155; border-radius: 16px; width: min(900px, 94vw); max-height: 85vh; padding: 24px; }
+        dialog::backdrop { background: #020617ba; backdrop-filter: blur(3px); }
+        #admin-usage-panel th, #admin-usage-panel td { padding: 12px 8px; }
+    </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+    <main class="mx-auto max-w-7xl px-4 py-6" x-data="controlPlane()" x-init="start()">
+        <header class="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <div>
+                <div class="text-xs font-semibold uppercase tracking-wider text-sky-300">Workspace administration</div>
+                <h1 class="mt-1 text-xl font-semibold">Platform management</h1>
+                <p class="mt-1 text-sm text-slate-400">Signed in as {{ user.username }} · {{ user.role }}</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <span class="mr-2 text-xs text-slate-400" aria-live="polite" x-text="refreshing ? 'Refreshing…' : lastUpdated ? 'Updated ' + formatTime(lastUpdated) : 'Connecting…'"></span>
+                <button class="rounded-lg border border-slate-700 px-3 py-2 text-sm" :disabled="refreshing" @click="refreshSection()">Refresh</button>
+                <a href="/" class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:border-sky-600">Dataset console</a>
+                <button class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:border-red-700" @click="logout()">Sign out</button>
+            </div>
+        </header>
+
+        <p class="mb-4 rounded-lg border border-red-900 bg-red-950/30 px-3 py-2 text-sm text-red-200" role="alert" x-cloak x-show="error" x-text="error"></p>
+
+        <nav class="management-tabs mb-6 flex overflow-x-auto border-b border-slate-800" aria-label="Platform management sections">
+            <template x-for="item in sections()" :key="item.id"><button :aria-current="section === item.id ? 'page' : null" @click="selectSection(item.id)" x-text="item.label"></button></template>
+        </nav>
+        <section x-show="section === 'overview'" x-cloak class="mb-6" aria-label="Platform overview">
+            <div class="mb-5"><h2 class="text-lg font-semibold">What needs attention</h2><p class="mt-1 text-sm text-slate-400">Task counts reflect the recent jobs loaded below, not lifetime totals.</p></div>
+            <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <button class="metric" @click="openJobs('running')"><span class="text-sm text-slate-400">Running</span><strong x-text="jobCount('running')"></strong><span class="text-xs text-sky-300">View active work →</span></button>
+                <button class="metric" @click="openJobs('queued')"><span class="text-sm text-slate-400">Queued</span><strong x-text="jobCount('queued')"></strong><span class="text-xs text-sky-300">Review waiting tasks →</span></button>
+                <button class="metric" @click="openJobs('attention')"><span class="text-sm text-slate-400">Needs attention</span><strong class="!text-amber-300" x-text="jobCount('attention')"></strong><span class="text-xs text-sky-300">Failed, interrupted or stopping →</span></button>
+                <button class="metric" @click="selectSection('nodes')"><span class="text-sm text-slate-400">Connected nodes</span><strong x-text="nodes.filter(node => node.status === 'online').length + ' / ' + nodes.length"></strong><span class="text-xs text-sky-300">Check nodes and datasets →</span></button>
+            </div>
+            {% if user.role == "admin" %}
+            <div class="mt-5 grid gap-4 md:grid-cols-2">
+                <button class="rounded-xl border border-slate-800 bg-slate-900 p-5 text-left" @click="userStatus = 'inactive'; selectSection('users')"><h3 class="font-medium">Account access <span class="ml-2 rounded bg-amber-950 px-2 py-1 text-xs text-amber-200" x-text="users.filter(account => !account.active).length + ' inactive'"></span></h3><p class="mt-2 text-sm text-slate-400">Review pending registrations and disabled accounts.</p></button>
+                <button class="rounded-xl border border-slate-800 bg-slate-900 p-5 text-left" @click="selectSection('usage')"><h3 class="font-medium">Usage and audit</h3><p class="mt-2 text-sm text-slate-400">Inspect user activity, failed requests and log delivery status.</p></button>
+            </div>
+            {% endif %}
+        </section>
+        {% if user.role == "admin" %}
+        <section x-show="section === 'users'" x-cloak class="mb-6 rounded-xl border border-slate-800 bg-slate-900">
+            <div class="border-b border-slate-800 px-4 py-3">
+                <h2 class="font-semibold">Users and access</h2>
+                <p class="mt-1 text-xs text-slate-400">Self-registered accounts remain inactive until approved. New accounts start as Viewer and cannot modify or delete data.</p>
+            </div>
+            <div class="flex flex-wrap gap-3 p-4">
+                <input type="search" aria-label="Search users" placeholder="Search name or username" x-model="userSearch" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
+                <select aria-label="Account status" x-model="userStatus" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"><option value="">All accounts</option><option value="inactive">Pending / disabled</option><option value="active">Active</option></select>
+                <span class="self-center text-xs text-slate-400" x-text="filteredUsers().length + ' accounts'"></span>
+            </div>
+            <p class="px-4 pb-4 text-sm text-slate-400" x-show="!filteredUsers().length">No accounts match these filters.</p>
+            <div class="overflow-x-auto">
+                <table class="min-w-full text-left text-sm">
+                    <thead class="text-xs uppercase text-slate-500"><tr><th class="px-4 py-3">User</th><th class="px-4 py-3">Role</th><th class="px-4 py-3">Status</th><th class="px-4 py-3">Actions</th></tr></thead>
+                    <tbody class="divide-y divide-slate-800">
+                        <template x-for="account in filteredUsers()" :key="account.user_id">
+                            <tr>
+                                <td class="px-4 py-3"><div class="font-medium" x-text="account.username"></div></td>
+                                <td class="px-4 py-3">
+                                    <select class="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm"
+                                            :value="account.role" @change="updateUser(account, {role: $event.target.value})">
+                                        <option value="viewer">Viewer</option><option value="operator">Operator</option><option value="admin">Admin</option>
+                                    </select>
+                                </td>
+                                <td class="px-4 py-3"><span :class="account.active ? 'text-emerald-300' : 'text-amber-300'" x-text="account.active ? 'Approved' : 'Pending / disabled'"></span></td>
+                                <td class="px-4 py-3">
+                                    <button class="rounded-lg border border-emerald-800 bg-emerald-950/50 px-3 py-1.5 text-emerald-200"
+                                            x-show="!account.active" @click="updateUser(account, {active: true})">Approve</button>
+                                    <button class="rounded-lg border border-red-900 bg-red-950/40 px-3 py-1.5 text-red-200"
+                                            x-show="account.active && account.user_id !== currentUserId" @click="updateUser(account, {active: false})">Disable</button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% endif %}
+
+        <section x-show="section === 'nodes'" x-cloak class="mb-6 rounded-xl border border-slate-800 bg-slate-900">
+            <div class="border-b border-slate-800 px-4 py-3">
+                <h2 class="font-semibold">Nodes</h2>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full text-left text-sm">
+                    <thead class="text-xs uppercase text-slate-500"><tr><th class="px-4 py-3">Name</th><th class="px-4 py-3">Host</th><th class="px-4 py-3">Status</th><th class="px-4 py-3">Datasets</th><th class="px-4 py-3">Last heartbeat</th></tr></thead>
+                    <tbody class="divide-y divide-slate-800">
+                        <template x-for="node in nodes" :key="node.node_id">
+                            <tr>
+                                <td class="px-4 py-3 font-medium" x-text="node.name"></td>
+                                <td class="px-4 py-3 text-slate-400" x-text="node.hostname"></td>
+                                <td class="px-4 py-3" x-text="node.status"></td>
+                                <td class="px-4 py-3">
+                                    <button class="rounded-lg border border-sky-800 bg-sky-950/60 px-3 py-1.5 text-xs text-sky-200"
+                                            @click="selectNode(node.node_id)"
+                                            x-text="`View ${nodeLocationCount(node.node_id)} datasets`"></button>
+                                </td>
+                                <td class="px-4 py-3 text-slate-400" x-text="node.last_seen_at || 'never'"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="mb-6 rounded-xl border border-slate-800 bg-slate-900" x-ref="remoteLocationsSection" x-show="section === 'nodes'" x-cloak>
+            <div class="flex flex-wrap items-end justify-between gap-3 border-b border-slate-800 px-4 py-3">
+                <div>
+                    <h2 class="font-semibold">Remote dataset locations</h2>
+                    <p class="mt-1 text-xs text-slate-400">Choose one server to inspect its catalog. Run preprocessing from the Dataset console.</p>
+                </div>
+                <div class="grid w-full gap-3 sm:grid-cols-3 lg:w-auto">
+                    <label class="min-w-52 text-xs text-slate-400">
+                        <span class="mb-1 block">Server</span>
+                        <select class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                                x-model="selectedNodeId" @change="locationPage = 1">
+                            <option value="">Choose a server</option>
+                            <template x-for="node in nodes" :key="`server-filter-${node.node_id}`">
+                                <option :value="node.node_id" x-text="`${node.name} (${nodeLocationCount(node.node_id)})`"></option>
+                            </template>
+                        </select>
+                    </label>
+                    <label class="text-xs text-slate-400">
+                        <span class="mb-1 block">Search</span>
+                        <input class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                               type="search" placeholder="Name or path" x-model.debounce.250ms="locationSearch"
+                               @input="locationPage = 1">
+                    </label>
+                    <label class="text-xs text-slate-400">
+                        <span class="mb-1 block">Status</span>
+                        <select class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                                x-model="locationStatusFilter" @change="locationPage = 1">
+                            <option value="">All statuses</option>
+                            <option value="processing">Processing</option>
+                            <option value="error">Latest job failed</option>
+                            <option value="viewer_missing">Viewer missing</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+            <div class="divide-y divide-slate-800">
+                <p class="px-4 py-8 text-center text-sm text-slate-500" x-show="!selectedNodeId">
+                    Choose a server above, or use its dataset-count button, to inspect remote locations.
+                </p>
+                <template x-for="location in paginatedLocations()" :key="location.location_id">
+                    <article class="grid gap-3 px-4 py-4 lg:grid-cols-[minmax(0,1fr)_auto]">
+                        <div class="min-w-0">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span class="rounded-full border border-sky-800 bg-sky-950/60 px-2 py-0.5 text-xs font-semibold text-sky-200"
+                                      x-text="location.node_name || location.node_id"></span>
+                                <span class="font-medium" x-text="locationName(location)"></span>
+                                <span class="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400"
+                                      x-text="locationStatus(location)"></span>
+                            </div>
+                            <div class="mt-1 text-xs text-slate-500"
+                                 x-text="location.node_hostname && location.node_hostname !== location.node_name ? `Host: ${location.node_hostname}` : ''"></div>
+                            <div class="mt-1 truncate font-mono text-xs text-slate-400" x-text="location.root"></div>
+                            <a class="mt-2 inline-block text-sm text-sky-300 hover:text-sky-200" x-show="location.metadata.viewer_url" :href="location.metadata.viewer_url">Open viewer</a>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button class="rounded-lg border border-sky-800 bg-sky-950/60 px-3 py-2 text-sm text-sky-200"
+                                    x-show="canOperate" @click="prepareViewer(location)">Prepare viewer</button>
+                            <a class="rounded-lg border border-violet-800 bg-violet-950/60 px-3 py-2 text-sm text-violet-200"
+                               :href="`/?select=remote:${encodeURIComponent(location.location_id)}&page=preprocessing`">Open in Dataset console</a>
+                        </div>
+                    </article>
+                </template>
+                <p class="px-4 py-8 text-center text-sm text-slate-500"
+                   x-show="selectedNodeId && filteredLocations().length === 0">
+                    No remote datasets match this server and filter.
+                </p>
+                <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-xs text-slate-400"
+                     x-show="selectedNodeId && filteredLocations().length > 0">
+                    <span x-text="locationPageSummary()"></span>
+                    <div class="flex items-center gap-2">
+                        <button class="rounded border border-slate-700 px-3 py-1.5 disabled:opacity-40"
+                                :disabled="locationPage <= 1" @click="locationPage -= 1">Previous</button>
+                        <span x-text="`Page ${locationPage} / ${locationPageCount()}`"></span>
+                        <button class="rounded border border-slate-700 px-3 py-1.5 disabled:opacity-40"
+                                :disabled="locationPage >= locationPageCount()" @click="locationPage += 1">Next</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        {% if user.role == "admin" %}
+        <section id="admin-usage-panel" x-show="section === 'usage'" x-cloak class="mb-6 rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h2 class="font-semibold">Usage overview and audit log</h2>
+            <p class="text-xs text-slate-400">Key visits and actions; polling and video chunks are excluded. Logs may arrive after a short delay.</p>
+            <div class="my-3 flex flex-wrap gap-2">
+                <select aria-label="User" x-model="usageFilters.user_id" class="rounded bg-slate-950 p-2"><option value="">All users</option><template x-for="account in users" :key="account.user_id"><option :value="account.user_id" x-text="account.username"></option></template></select>
+                <input aria-label="Operation" placeholder="Operation" x-model="usageFilters.operation" class="rounded bg-slate-950 p-2">
+                <input aria-label="Dataset" placeholder="Dataset key" x-model="usageFilters.dataset_key" class="rounded bg-slate-950 p-2">
+                <input aria-label="Since" type="date" x-model="usageFilters.since" class="rounded bg-slate-950 p-2">
+                <input aria-label="Until" type="date" x-model="usageFilters.until" class="rounded bg-slate-950 p-2">
+                <select aria-label="Result" x-model="usageFilters.status" class="rounded bg-slate-950 p-2"><option value="">All results</option><option>success</option><option>failed</option><option>accepted</option><option>cancelled</option></select>
+                <button @click="usageOffset = 0; loadUsage()" class="rounded border border-sky-800 px-3 py-2">Search / refresh</button>
+            </div>
+            <p class="text-amber-300" x-text="adminError"></p>
+            <div class="my-3 grid gap-3 sm:grid-cols-3">
+                <div class="rounded bg-slate-950 p-3"><div class="text-xs text-slate-400">Active users</div><div class="text-xl" x-text="usageSummary.active_users ?? '—'"></div></div>
+                <div class="rounded bg-slate-950 p-3"><div class="text-xs text-slate-400">Recorded outcomes</div><div class="text-xl" x-text="usageSummary.event_count ?? '—'"></div></div>
+                <div class="rounded bg-slate-950 p-3"><div class="text-xs text-slate-400">Average request duration</div><div class="text-xl" x-text="usageSummary.average_request_ms == null ? '—' : Math.round(usageSummary.average_request_ms) + ' ms'"></div></div>
+            </div>
+            <p class="text-xs text-amber-300" x-text="usageSummary.delivery?.error || usageSummary.error || ''"></p>
+            <p class="text-xs text-slate-400" x-text="usageSummary.delivery ? `Waiting to sync: ${usageSummary.delivery.pending_control_events + usageSummary.delivery.pending_spool_events}; last sync: ${usageSummary.delivery.last_success || 'pending'}` : 'Log delivery not configured'"></p>
+            <details class="my-2 text-xs"><summary>Operation counts</summary><table><tbody><template x-for="row in usageSummary.counts || []" :key="row.operation + row.status"><tr><td class="pr-3" x-text="row.operation"></td><td class="pr-3" x-text="row.status"></td><td x-text="row.count"></td></tr></template></tbody></table></details>
+            <div class="max-h-96 overflow-auto"><table class="w-full text-left text-sm"><thead><tr><th>Time</th><th>User</th><th>Operation</th><th>Result</th><th>Details</th></tr></thead>
+                <tbody><template x-for="entry in usageEvents" :key="entry.event_id"><tr class="border-t border-slate-800">
+                    <td x-text="entry.timestamp"></td><td x-text="entry.actor?.username || userLabel(entry.actor?.user_id)"></td>
+                    <td x-text="entry.operation"></td><td x-text="entry.status"></td><td><details><summary>View</summary><pre class="max-w-xl overflow-auto" x-text="JSON.stringify(entry, null, 2)"></pre><button x-show="entry.details?.job_id" @click="showJob(entry.details.job_id)">Job history</button></details></td>
+                </tr></template></tbody></table></div>
+            <div class="mt-3 flex gap-3"><button :disabled="usageOffset === 0" @click="usageOffset -= 50; loadUsage()">Previous</button><span x-text="Math.floor(usageOffset / 50) + 1"></span><button :disabled="!usageMore" @click="usageOffset += 50; loadUsage()">Next</button></div>
+        </section>
+        <section id="admin-database-panel" x-show="section === 'database'" x-cloak class="mb-6 rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h2 class="font-semibold">Database browser · read only</h2>
+            <div class="my-3 flex flex-wrap gap-2">
+                <select aria-label="Database table" x-model="databaseTable" @change="databaseOffset = 0; databaseField = ''; loadDatabase()" class="rounded bg-slate-950 p-2"><option value="">Choose a table</option><template x-for="table in databaseTables" :key="table.key"><option :value="table.key" x-text="table.key"></option></template></select>
+                <select aria-label="Filter column" x-model="databaseField" class="rounded bg-slate-950 p-2"><option value="">No column filter</option><template x-for="column in databaseColumns()" :key="column.name"><option :value="column.name" x-text="column.name"></option></template></select>
+                <input aria-label="Filter value" placeholder="Exact value" x-model="databaseValue" class="rounded bg-slate-950 p-2">
+                <button @click="databaseOffset = 0; loadDatabase()">Apply</button>
+            </div>
+            <p class="text-amber-300" x-text="databaseError"></p>
+            <details class="my-3 text-xs text-slate-400" x-show="databaseTable"><summary>Table schema</summary><p class="mt-2" x-text="databaseColumns().map(column => column.name + ': ' + column.type).join(' · ')"></p></details>
+            <div class="max-h-96 overflow-auto"><table class="w-full text-left text-xs"><thead><tr><template x-for="column in databaseColumns()" :key="column.name"><th class="p-2" x-text="['user_id', 'requested_by'].includes(column.name) ? 'username' : column.name"></th></template></tr></thead><tbody>
+                <template x-for="(row, index) in databaseRows" :key="index"><tr class="border-t border-slate-800"><template x-for="column in databaseColumns()" :key="column.name"><td class="max-w-sm p-2"><details><summary class="truncate" x-text="databaseCell(row, column.name)"></summary><pre class="overflow-auto" x-text="['user_id', 'requested_by'].includes(column.name) ? userLabel(row[column.name]) : JSON.stringify(row[column.name], null, 2)"></pre></details></td></template></tr></template>
+            </tbody></table></div>
+            <div class="mt-3 flex gap-3"><button :disabled="databaseOffset === 0" @click="databaseOffset -= 50; loadDatabase()">Previous</button><span x-text="Math.floor(databaseOffset / 50) + 1"></span><button :disabled="!databaseMore" @click="databaseOffset += 50; loadDatabase()">Next</button></div>
+        </section>
+        {% endif %}
+        <dialog x-ref="historyDialog" @close="jobHistory = null" aria-labelledby="history-title">
+            <div class="mb-4 flex items-center justify-between"><h2 id="history-title" class="text-lg font-semibold">Execution details</h2><button autofocus @click="$refs.historyDialog.close()" class="rounded-lg border border-slate-700 px-3 py-2">Close</button></div>
+            <p class="mb-4 break-all font-mono text-xs text-slate-400" x-text="jobHistory?.job_id"></p>
+            <h3 class="mb-2 text-sm font-semibold">Attempts</h3>
+            <p class="text-sm text-slate-400" x-show="!jobHistory?.attempts?.length">No execution attempts recorded.</p>
+            <template x-for="attempt in jobHistory?.attempts || []" :key="attempt.attempt_id"><div class="mb-2 rounded-lg border border-slate-700 p-3"><div class="flex gap-3 text-sm"><span x-text="'Attempt ' + attempt.attempt_no"></span><span x-text="attempt.status"></span></div><p class="mt-1 text-xs text-slate-400" x-text="formatTime(attempt.started_at)"></p><p class="mt-2 whitespace-pre-wrap break-words text-sm text-amber-200" x-text="attempt.error || ''"></p></div></template>
+            <h3 class="mb-2 mt-5 text-sm font-semibold">Recent events</h3>
+            <p class="text-sm text-slate-400" x-show="!jobHistory?.events?.length">No job logs yet.</p>
+            <template x-for="(event, index) in jobHistory?.events || []" :key="event.event_id || index"><div class="border-b border-slate-800 py-2"><time class="text-xs text-slate-500" x-text="formatTime(event.created_at || event.timestamp)"></time><p class="whitespace-pre-wrap break-words text-sm" x-text="event.message || event.operation"></p></div></template>
+            <details class="mt-5 text-xs text-slate-400"><summary>Raw execution record</summary><pre class="mt-2 max-h-80 overflow-auto" x-text="JSON.stringify(jobHistory, null, 2)"></pre></details>
+        </dialog>
+        <section x-show="section === 'jobs'" x-cloak class="rounded-xl border border-slate-800 bg-slate-900">
+            <div class="border-b border-slate-800 p-4"><h2 class="font-semibold">Task queue and recent history</h2><p class="mt-1 text-xs text-slate-400">Controls depend on your role, task capability and confirmed execution state.</p>
+                <div class="mt-4 flex flex-wrap items-center gap-3">
+                    <input type="search" aria-label="Search jobs" placeholder="Operation, dataset or Job ID" style="min-width: 16rem" x-model="jobSearch" @input="jobPage = 1" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
+                    <select aria-label="Job status" x-model="jobStatus" @change="jobPage = 1" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"><option value="">All statuses</option><option value="attention">Needs attention</option><option value="queued">Queued</option><option value="running">Running</option><option value="done">Completed</option><option value="error">Failed</option><option value="cancelled">Cancelled</option><option value="cancel_requested">Stopping</option><option value="interrupted">Interrupted</option></select>
+                    <label class="text-sm"><input type="checkbox" x-model="myJobsOnly" @change="jobPage = 1"> My jobs</label>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full text-left text-sm">
+                    <thead class="text-xs uppercase text-slate-500"><tr><th class="px-4 py-3">Operation</th><th class="px-4 py-3">Status</th><th class="px-4 py-3">Created</th><th class="px-4 py-3">Result</th><th class="px-4 py-3">Controls</th></tr></thead>
+                    <tbody class="divide-y divide-slate-800">
+                        <template x-for="job in paginatedJobs()" :key="job.job_id">
+                            <tr><td class="px-4 py-3 text-sm"><div class="font-medium" x-text="job.operation"></div><div class="mt-1 max-w-xs truncate text-xs text-slate-400" x-text="jobDataset(job)"></div><div class="mt-1 text-xs text-slate-500" x-text="job.requested_by_username || userLabel(job.requested_by)"></div></td><td class="px-4 py-3"><span class="inline-block rounded-full px-2 py-0.5 text-xs" :class="statusClass(job.status)" x-text="job.status"></span><div class="text-xs text-slate-400" x-text="job.phase"></div><div class="text-xs" x-text="job.progress?.total ? Math.round(100 * (job.progress.current || 0) / job.progress.total) + '%' : ''"></div><div class="text-xs text-amber-300" x-text="job.queue_reason"></div></td><td class="px-4 py-3 text-slate-400" x-text="formatTime(job.created_at)"></td><td class="max-w-lg truncate px-4 py-3 font-mono text-xs text-slate-400" x-text="job.error || (job.result?.viewer_url ? 'Viewer ready' : job.status === 'done' ? 'Completed' : '—')" :title="job.error || ''"></td><td class="px-4 py-3"><div class="flex flex-wrap gap-2">
+                                <button @click="showJob(job.job_id)" class="text-sky-300">Details</button>
+                                <template x-for="action in ['retry', 'cancel', 'terminate'].filter(item => job.available_actions?.includes(item))" :key="action"><button :disabled="busyJob === job.job_id" @click="controlJob(job, action)" x-text="action === 'cancel' ? (job.status === 'queued' ? 'Cancel queued' : 'Request stop') : action === 'retry' ? 'Retry' : 'Force stop'" class="rounded border border-slate-700 px-2 py-1"></button></template>
+                                <select aria-label="Job priority" x-show="job.available_actions?.includes('priority')" :value="job.priority" @change="controlJob(job, 'priority', {priority: Number($event.target.value)})" class="rounded bg-slate-950 p-1"><option value="0">Low</option><option value="1">Normal</option><option value="2">High</option></select>
+                                </div><p class="text-xs text-slate-400" x-text="job.control_reason"></p></td></tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <p class="p-8 text-center text-sm text-slate-400" x-show="!filteredJobs().length">No jobs match these filters.</p>
+            <div class="flex items-center justify-between border-t border-slate-800 p-4 text-xs text-slate-400"><span x-text="filteredJobs().length + ' matching / ' + jobs.length + ' recent jobs loaded'"></span><div class="flex items-center gap-3"><button :disabled="jobPage <= 1" @click="jobPage--">Previous</button><span x-text="jobPage + ' / ' + jobPageCount()"></span><button :disabled="jobPage >= jobPageCount()" @click="jobPage++">Next</button></div></div>
+        </section>
+    </main>
+    <script>
+        function controlPlane() {
+            return {
+                nodes: [], locations: [], jobs: [], users: [], selectedNodeId: '', error: '', timer: null,
+                myJobsOnly: false, busyJob: null, jobHistory: null,
+                section: 'overview', refreshing: false, lastUpdated: null,
+                jobSearch: '', jobStatus: '', jobPage: 1, jobPageSize: 20, databaseRequest: 0,
+                userSearch: '', userStatus: '', historyRequest: 0,
+                sections() {
+                    return [
+                        {id: 'overview', label: 'Overview'}, {id: 'jobs', label: 'Jobs'},
+                        {id: 'nodes', label: 'Nodes & datasets'},
+                        ...(this.isAdmin ? [{id: 'users', label: 'Users & access'},
+                            {id: 'usage', label: 'Usage & audit'}, {id: 'database', label: 'Database'}] : []),
+                    ];
+                },
+                async selectSection(id) {
+                    this.section = this.sections().some(item => item.id === id) ? id : 'overview';
+                    window.history.replaceState(null, '', '#' + this.section);
+                    if (this.section === 'usage') await this.loadUsage();
+                    if (this.section === 'database' && !this.databaseTables.length) await this.loadTables();
+                },
+                async refreshSection() {
+                    await this.load();
+                    if (this.section === 'usage') await this.loadUsage();
+                    if (this.section === 'database') { await this.loadTables(); await this.loadDatabase(); }
+                },
+                async loadTables() {
+                    try { this.databaseTables = (await this.request('/api/admin/database/tables')).tables; this.databaseError = ''; }
+                    catch (error) { this.databaseError = error.message; }
+                },
+                formatTime(value) {
+                    if (!value) return '—';
+                    const date = new Date(typeof value === 'number' ? value * 1000 : value);
+                    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+                },
+                matchesJobStatus(job, status) {
+                    return !status || (status === 'attention'
+                        ? ['error', 'interrupted', 'cancel_requested'].includes(job.status) : job.status === status);
+                },
+                statusClass(status) {
+                    if (status === 'done' || status === 'online') return 'bg-emerald-950 text-emerald-300';
+                    if (['error', 'interrupted'].includes(status)) return 'bg-red-950 text-red-300';
+                    if (['queued', 'cancel_requested'].includes(status)) return 'bg-amber-950 text-amber-300';
+                    return 'bg-slate-800 text-sky-200';
+                },
+                jobCount(status) { return this.jobs.filter(job => this.matchesJobStatus(job, status)).length; },
+                openJobs(status) { this.jobStatus = status; this.jobSearch = ''; this.myJobsOnly = false; this.jobPage = 1; this.selectSection('jobs'); },
+                locationName(location) {
+                    if (!location) return '';
+                    const parts = String(location.root || '').split('/').filter(Boolean);
+                    return parts.length ? parts[parts.length - 1] : (location.dataset_key || '');
+                },
+                jobDataset(job) { return this.locationName(this.locations.find(location => location.location_id === job.location_id)); },
+                userLabel(id) { return this.users.find(account => account.user_id === id)?.username || (id === this.currentUserId ? this.currentUsername : 'Unknown user'); },
+                filteredJobs() {
+                    const query = this.jobSearch.trim().toLowerCase();
+                    return this.jobs.filter(job => (!this.myJobsOnly || job.requested_by === this.currentUserId)
+                        && this.matchesJobStatus(job, this.jobStatus)
+                        && (!query || `${job.operation} ${job.job_id} ${this.jobDataset(job)}`.toLowerCase().includes(query)));
+                },
+                jobPageCount() { return Math.max(1, Math.ceil(this.filteredJobs().length / this.jobPageSize)); },
+                paginatedJobs() { const start = (Math.min(this.jobPage, this.jobPageCount()) - 1) * this.jobPageSize; return this.filteredJobs().slice(start, start + this.jobPageSize); },
+                filteredUsers() {
+                    const query = this.userSearch.trim().toLowerCase();
+                    return this.users.filter(account => (!query || `${account.display_name} ${account.username}`.toLowerCase().includes(query))
+                        && (!this.userStatus || (this.userStatus === 'active' ? account.active : !account.active)));
+                },
+                usageEvents: [], usageSummary: {}, usageFilters: {user_id: '', operation: '', dataset_key: '', status: '', since: '', until: ''}, usageOffset: 0, usageMore: false, adminError: '',
+                databaseTables: [], databaseTable: '', databaseRows: [], databaseField: '', databaseValue: '', databaseOffset: 0, databaseMore: false, databaseError: '',
+                locationSearch: '', locationStatusFilter: '', locationPage: 1, locationPageSize: 20,
+                isAdmin: {{ (user.role == "admin")|tojson }},
+                canOperate: {{ (user.role in ["admin", "operator"])|tojson }},
+                currentUserId: {{ user.user_id|tojson }},
+                currentUsername: {{ user.username|tojson }},
+                async request(url, options = {}) {
+                    const response = await fetch(url, {headers: {'Content-Type': 'application/json'}, ...options});
+                    const body = await response.json();
+                    if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+                    return body;
+                },
+                async start() {
+                    await this.load(); await this.selectSection(window.location.hash.slice(1) || 'overview');
+                    this.timer = setInterval(() => { if (!document.hidden) this.load(); }, 5000);
+                },
+                destroy() { clearInterval(this.timer); },
+                async load() {
+                    if (this.refreshing) return;
+                    this.refreshing = true;
+                    try {
+                        const requests = [this.request('/api/control/nodes'), this.request('/api/control/locations'), this.request('/api/control/jobs')];
+                        if (this.isAdmin) requests.push(this.request('/api/auth/users'));
+                        const responses = await Promise.all(requests);
+                        this.nodes = responses[0].nodes; this.locations = responses[1].locations; this.jobs = responses[2].jobs;
+                        if (this.isAdmin) this.users = responses[3].users;
+                        this.error = '';
+                        if (this.selectedNodeId && !this.nodes.some(node => node.node_id === this.selectedNodeId)) this.selectedNodeId = '';
+                        this.clampLocationPage();
+                        this.jobPage = Math.min(this.jobPage, this.jobPageCount());
+                        this.lastUpdated = new Date().toISOString();
+                    } catch (error) { this.error = error.message; }
+                    finally { this.refreshing = false; }
+                },
+                async controlJob(job, action, extra = {}) {
+                    if (action === 'terminate') {
+                        const reason = prompt('Reason for forced termination (temporary output may be discarded):');
+                        if (!reason?.trim() || !confirm('Terminate this execution and all its child processes?')) return;
+                        extra = {...extra, reason, confirm: true};
+                    }
+                    this.busyJob = job.job_id;
+                    try {
+                        const key = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+                        await this.request(`/api/control/jobs/${job.job_id}/${action}`, {method: action === 'priority' ? 'PATCH' : 'POST', body: JSON.stringify({revision: job.revision, idempotency_key: key, ...extra})});
+                        await this.load();
+                    } catch (error) { this.error = error.message; } finally { this.busyJob = null; }
+                },
+                async showJob(id) {
+                    const requestId = ++this.historyRequest;
+                    try {
+                        const [attempts, events] = await Promise.all([this.request(`/api/control/jobs/${id}/attempts`), this.request(`/api/control/jobs/${id}/events`)]);
+                        if (requestId !== this.historyRequest) return;
+                        this.jobHistory = {job_id: id, job: this.jobs.find(job => job.job_id === id), ...attempts, ...events};
+                        this.$refs.historyDialog.showModal();
+                    }
+                    catch (error) { this.error = error.message; }
+                },
+                async loadUsage() {
+                    const query = new URLSearchParams({limit: 50, offset: this.usageOffset});
+                    for (const [key, value] of Object.entries(this.usageFilters)) if (value) query.set(key, key === 'until' ? value + 'T23:59:59.999999+00:00' : value);
+                    try { this.usageSummary = await this.request('/api/admin/usage-summary?' + query); const data = await this.request('/api/admin/usage-events?' + query); this.usageEvents = data.events; this.usageMore = data.has_more; this.adminError = ''; }
+                    catch (error) { this.adminError = error.message; }
+                },
+                databaseCell(row, name) { return ['user_id', 'requested_by'].includes(name) ? this.userLabel(row[name]) : typeof row[name] === 'object' ? JSON.stringify(row[name]) : row[name]; },
+                databaseColumns() { return this.databaseTables.find(table => table.key === this.databaseTable)?.columns || []; },
+                async loadDatabase() {
+                    const requestId = ++this.databaseRequest;
+                    this.databaseRows = []; this.databaseMore = false;
+                    if (!this.databaseTable) { this.databaseRows = []; this.databaseMore = false; this.databaseError = ''; return; }
+                    const query = new URLSearchParams({limit: 50, offset: this.databaseOffset});
+                    if (this.databaseField) { query.set('field', this.databaseField); query.set('value', this.databaseValue); }
+                    try { const data = await this.request(`/api/admin/database/tables/${encodeURIComponent(this.databaseTable)}/rows?${query}`); if (requestId !== this.databaseRequest) return; this.databaseRows = data.rows; this.databaseMore = data.has_more; this.databaseError = ''; }
+                    catch (error) { if (requestId === this.databaseRequest) this.databaseError = error.message; }
+                },
+                selectNode(nodeId) {
+                    this.selectSection('nodes');
+                    this.selectedNodeId = nodeId;
+                    this.locationPage = 1;
+                    this.$nextTick(() => this.$refs.remoteLocationsSection?.scrollIntoView({behavior: 'smooth', block: 'start'}));
+                },
+                nodeLocationCount(nodeId) {
+                    return this.locations.filter(location => location.node_id === nodeId).length;
+                },
+                latestLocationJob(locationId) {
+                    return this.jobs.find(job => job.location_id === locationId) || null;
+                },
+                locationStatus(location) {
+                    const status = this.latestLocationJob(location.location_id)?.status;
+                    if (['queued', 'running', 'cancel_requested', 'interrupted'].includes(status)) return 'processing';
+                    if (status === 'error') return 'latest job failed';
+                    return location.metadata?.viewer_url ? 'viewer ready' : 'viewer missing';
+                },
+                filteredLocations() {
+                    if (!this.selectedNodeId) return [];
+                    const query = this.locationSearch.trim().toLowerCase();
+                    return this.locations.filter(location => {
+                        if (location.node_id !== this.selectedNodeId) return false;
+                        if (query) {
+                            const haystack = `${location.dataset_key} ${location.root}`.toLowerCase();
+                            if (!haystack.includes(query)) return false;
+                        }
+                        const status = this.latestLocationJob(location.location_id)?.status;
+                        if (this.locationStatusFilter === 'processing') {
+                            return ['queued', 'running', 'cancel_requested', 'interrupted'].includes(status);
+                        }
+                        if (this.locationStatusFilter === 'error') return status === 'error';
+                        if (this.locationStatusFilter === 'viewer_missing') {
+                            return !location.metadata?.viewer_url;
+                        }
+                        return true;
+                    });
+                },
+                locationPageCount() {
+                    return Math.max(1, Math.ceil(this.filteredLocations().length / this.locationPageSize));
+                },
+                clampLocationPage() {
+                    this.locationPage = Math.min(Math.max(1, this.locationPage), this.locationPageCount());
+                },
+                paginatedLocations() {
+                    const page = Math.min(this.locationPage, this.locationPageCount());
+                    const start = (page - 1) * this.locationPageSize;
+                    return this.filteredLocations().slice(start, start + this.locationPageSize);
+                },
+                locationPageSummary() {
+                    const total = this.filteredLocations().length;
+                    const start = (this.locationPage - 1) * this.locationPageSize + 1;
+                    const end = Math.min(total, this.locationPage * this.locationPageSize);
+                    return `Showing ${start}-${end} of ${total} datasets`;
+                },
+                async prepareViewer(location) {
+                    try { await this.request(`/api/control/locations/${location.location_id}/viewer-jobs`, {method: 'POST', body: '{}'}); await this.load(); this.openJobs('queued'); }
+                    catch (error) { this.error = error.message; }
+                },
+                async updateUser(account, patch) {
+                    try {
+                        await this.request(`/api/auth/users/${account.user_id}`, {method: 'PATCH', body: JSON.stringify(patch)});
+                        await this.load();
+                    } catch (error) { this.error = error.message; await this.load(); }
+                },
+                async logout() { await this.request('/api/auth/logout', {method: 'POST', body: '{}'}); window.location.assign('/login'); },
+            };
+        }
+    </script>
+</body>
+</html>

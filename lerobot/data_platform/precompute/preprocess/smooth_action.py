@@ -1,5 +1,6 @@
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import as_completed
+from lerobot.data_platform.execution_pools import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pyarrow.parquet as pq
 
 from lerobot.common.datasets.compute_stats import aggregate_stats
 from lerobot.common.datasets.utils import cast_stats_to_numpy, serialize_dict
+from lerobot.data_platform.precompute.data_profile import require_dataset_operation
 from lerobot.data_platform.precompute.dataset_io import is_v3_info, update_episode_metadata
 from lerobot.data_platform.precompute.preprocess.common import (
     PreprocessResult,
@@ -199,6 +201,7 @@ def run_smooth_action(
     progress_callback: ProgressCallback = None,
 ) -> PreprocessResult:
     src_root = validate_dataset_root(src_root)
+    require_dataset_operation(src_root, "smooth_action")
     window = _validate_window(window)
     out_root = ensure_output_root(
         out_root or default_preprocess_path(src_root, f"smooth_action_w{window}"), dry_run

@@ -1,0 +1,23 @@
+[Unit]
+Description=Data Platform local persistent job executor
+After=network-online.target data-platform-web.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=data-platform
+Group=data-platform
+WorkingDirectory=/opt/data-platform
+EnvironmentFile=/etc/data-platform/server.env
+Environment=DATA_PLATFORM_REQUIRE_CGROUP=1
+ExecStart=/opt/data-platform/.venv/bin/python -m lerobot.data_platform.local_execution
+Restart=always
+RestartSec=5
+Delegate=yes
+KillMode=mixed
+TimeoutStopSec=60
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

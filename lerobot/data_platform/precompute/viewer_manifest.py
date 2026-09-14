@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from lerobot.data_platform.precompute.data_profile import resolve_data_profile
+from lerobot.data_platform.precompute.data_profile import (
+    DatasetDataProfile,
+    dataset_semantics,
+    resolve_processing_profile,
+)
+from lerobot.data_platform.precompute.signal_columns import SIGNAL_COLUMNS_VERSION, signal_columns
 
 VIEWER_MANIFEST = "viewer_manifest.json"
 
@@ -33,8 +38,11 @@ def build_viewer_manifest(
     meta,
     episodes: list[int],
     image_keys: list[str],
-    data_version: str,
+    data_version: str | None,
     downsample: int | None = None,
+    task_config: dict | None = None,
+    data_profile: DatasetDataProfile | None = None,
+    fallback_stage_count: int = 5,
 ) -> dict:
     episode_rows = []
     total_frames = 0
@@ -51,7 +59,7 @@ def build_viewer_manifest(
         )
 
     features = dict(getattr(meta, "features", {}) or {})
-    data_profile = resolve_data_profile(
+    data_profile = data_profile or resolve_processing_profile(
         root,
         features,
         data_version_override=data_version,
@@ -59,9 +67,14 @@ def build_viewer_manifest(
     video_keys = list(getattr(meta, "video_keys", []) or [])
     return {
         "version": 1,
+        "task_config": task_config,
+        "fallback_stage_count": fallback_stage_count,
         "repo_id": repo_id,
         "root": str(Path(root).expanduser()),
-        "data_version": str(data_version),
+        **dataset_semantics(getattr(meta, "info", {}) or {"features": features}, data_profile),
+        "signal_columns_version": SIGNAL_COLUMNS_VERSION,
+        "signal_columns": signal_columns(features, qualify=data_profile.robot_profile == "umi"),
+        "data_version": data_profile.legacy_data_version,
         "data_profile": data_profile.to_dict(),
         "fps": int(getattr(meta, "fps", 0) or 0),
         "total_episodes": len(episode_rows),
@@ -82,8 +95,11 @@ def write_viewer_manifest(
     episodes: list[int],
     image_keys: list[str],
     static_dir: Path,
-    data_version: str,
+    data_version: str | None,
     downsample: int | None = None,
+    task_config: dict | None = None,
+    data_profile: DatasetDataProfile | None = None,
+    fallback_stage_count: int = 5,
 ) -> Path:
     static_dir = Path(static_dir)
     static_dir.mkdir(parents=True, exist_ok=True)
@@ -95,6 +111,9 @@ def write_viewer_manifest(
         image_keys=image_keys,
         data_version=data_version,
         downsample=downsample,
+        task_config=task_config,
+        data_profile=data_profile,
+        fallback_stage_count=fallback_stage_count,
     )
     path = static_dir / VIEWER_MANIFEST
     path.write_text(json.dumps(manifest, indent=2))

@@ -12,6 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from flask import abort, jsonify, redirect, render_template, request, send_file
 
+from lerobot.data_platform.local_execution import launch_background
 from lerobot.data_platform.precompute.dataset_io import read_episode_table
 from lerobot.data_platform.precompute.labeling import sample_episodes_by_task_type
 from lerobot.data_platform.precompute.tagging import (
@@ -263,7 +264,9 @@ def register_tagging_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Auto-tagging job failed")
                 ctx.fail_job(job, "Auto-tagging failed", exc)
 
-        threading.Thread(target=_run_job, name=f"tagging-{job_id}", daemon=True).start()
+        launch_background(
+            target=_run_job, name=f"tagging-{job_id}", daemon=True, thread_factory=threading.Thread
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/<string:dataset_namespace>/<string:dataset_name>/tagging")
@@ -286,9 +289,7 @@ def register_tagging_routes(app, ctx: RouteContext) -> None:
             episode_ids = sorted(records)
             image_key = _tagging_image_key(ds_static, active_variant)
         first_episode = episode_ids[0] if episode_ids else 0
-        source_protected = bool(
-            ctx.dataset_is_protected and ctx.dataset_is_protected(dataset_key)
-        )
+        source_protected = bool(ctx.dataset_is_protected and ctx.dataset_is_protected(dataset_key))
         return render_template(
             "visualize_dataset_tagging.html",
             dataset_namespace=dataset_namespace,

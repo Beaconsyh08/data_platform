@@ -96,11 +96,12 @@ def _candidate_from_record(
     vocab: set[str],
     threshold: int,
     tags_by_episode: dict[int, dict] | None = None,
+    task_config: dict | None = None,
 ) -> dict | None:
     score = uncertainty(record)
     if score < 0 or score > threshold:
         return None
-    scenario = classify_task(record.get("task") or "")
+    scenario = classify_task(record.get("task") or "", task_config)
     if scenario.name == UNKNOWN or scenario.parsed is None:
         return None
 
@@ -141,10 +142,11 @@ def summarize_candidates(
     uncertainty_threshold: int,
     tags_by_episode: dict[int, dict] | None = None,
     allow_pick_to_give: bool = False,
+    task_config: dict | None = None,
 ) -> dict:
     summary: dict[str, dict] = defaultdict(lambda: {"candidate_count": 0, "missing_distribution": Counter()})
     for record in _records_from_labels(labels):
-        candidate = _candidate_from_record(record, vocab, uncertainty_threshold, tags_by_episode)
+        candidate = _candidate_from_record(record, vocab, uncertainty_threshold, tags_by_episode, task_config)
         if candidate is None:
             continue
         scenario_names = [candidate["scenario"].name]
@@ -154,21 +156,31 @@ def summarize_candidates(
             bucket = summary[scenario_name]
             bucket["candidate_count"] += 1
             bucket["missing_distribution"].update(candidate["detected_missing"])
-            bucket.setdefault("source_visual_distribution", Counter()).update([candidate["source_visual_object"]])
+            bucket.setdefault("source_visual_distribution", Counter()).update(
+                [candidate["source_visual_object"]]
+            )
             bucket.setdefault("source_scenario_distribution", Counter()).update([candidate["scenario"].name])
             if candidate["source_reference_object"]:
-                bucket.setdefault("reference_distribution", Counter()).update([candidate["source_reference_object"]])
+                bucket.setdefault("reference_distribution", Counter()).update(
+                    [candidate["source_reference_object"]]
+                )
             if candidate["direction"]:
                 bucket.setdefault("direction_distribution", Counter()).update([candidate["direction"]])
-            bucket.setdefault("background_distribution", Counter()).update([candidate.get("background") or "unknown"])
-            bucket.setdefault("object_count_distribution", Counter()).update([candidate["object_count_bucket"]])
+            bucket.setdefault("background_distribution", Counter()).update(
+                [candidate.get("background") or "unknown"]
+            )
+            bucket.setdefault("object_count_distribution", Counter()).update(
+                [candidate["object_count_bucket"]]
+            )
 
     return {
         scenario: {
             "candidate_count": values["candidate_count"],
             "missing_distribution": dict(sorted(values["missing_distribution"].items())),
             "source_visual_distribution": dict(sorted(values.get("source_visual_distribution", {}).items())),
-            "source_scenario_distribution": dict(sorted(values.get("source_scenario_distribution", {}).items())),
+            "source_scenario_distribution": dict(
+                sorted(values.get("source_scenario_distribution", {}).items())
+            ),
             "reference_distribution": dict(sorted(values.get("reference_distribution", {}).items())),
             "direction_distribution": dict(sorted(values.get("direction_distribution", {}).items())),
             "background_distribution": dict(sorted(values.get("background_distribution", {}).items())),
@@ -186,10 +198,11 @@ def select_sources(
     oversample_factor: float = 1.0,
     tags_by_episode: dict[int, dict] | None = None,
     allow_pick_to_give: bool = False,
+    task_config: dict | None = None,
 ) -> list[ConstructionPlan]:
     candidates_by_scenario: dict[str, list[dict]] = defaultdict(list)
     for record in _records_from_labels(labels):
-        candidate = _candidate_from_record(record, vocab, uncertainty_threshold, tags_by_episode)
+        candidate = _candidate_from_record(record, vocab, uncertainty_threshold, tags_by_episode, task_config)
         if candidate is not None:
             candidates_by_scenario[candidate["scenario"].name].append(candidate)
             if allow_pick_to_give and candidate["scenario"].name == SINGLE_PICK:
@@ -259,7 +272,11 @@ def select_sources(
                 )
 
             candidate, missing_obj = min(
-                ((candidate, missing_obj) for candidate in available for missing_obj in candidate["detected_missing"]),
+                (
+                    (candidate, missing_obj)
+                    for candidate in available
+                    for missing_obj in candidate["detected_missing"]
+                ),
                 key=option_rank,
             )
             source_obj = candidate["source_visual_object"]

@@ -21,7 +21,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +29,7 @@ from tqdm.auto import tqdm
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.common.utils.utils import init_logging
+from lerobot.data_platform.execution_pools import ThreadPoolExecutor
 from lerobot.data_platform.operation_log import audit_cli_main
 from lerobot.data_platform.precompute.annotation import (
     DEFAULT_FALLBACK_STAGE_COUNT,
@@ -40,7 +41,11 @@ from lerobot.data_platform.precompute.construction import (
     default_synthetic_path,
     run_construction,
 )
-from lerobot.data_platform.precompute.data_profile import resolve_data_profile
+from lerobot.data_platform.precompute.data_profile import (
+    require_dataset_operation,
+    resolve_data_profile,
+    resolve_processing_profile,
+)
 from lerobot.data_platform.precompute.dataset_io import V3DatasetMetadata, is_v3_dataset
 from lerobot.data_platform.precompute.embedding import EmbeddingResult, run_embedding
 from lerobot.data_platform.precompute.labeling import (
@@ -79,6 +84,7 @@ from lerobot.data_platform.precompute.preprocess import (
     run_standardize_dataset,
     run_subtract,
 )
+from lerobot.data_platform.precompute.signal_columns import SIGNAL_COLUMNS_VERSION, signal_columns
 from lerobot.data_platform.precompute.tagging import (
     DEFAULT_VLM_BACKEND,
     DEFAULT_VLM_MODEL,
@@ -92,7 +98,8 @@ from lerobot.data_platform.precompute.timeseries import (
 )
 from lerobot.data_platform.precompute.v3_viewer import run_v3_viewer_precompute
 from lerobot.data_platform.precompute.video import encode_episode_video
-from lerobot.data_platform.precompute.viewer_manifest import write_viewer_manifest
+from lerobot.data_platform.precompute.viewer_manifest import load_viewer_manifest, write_viewer_manifest
+from lerobot.data_platform.task_catalog import TaskConfigSnapshot
 
 
 @dataclass
@@ -244,6 +251,8 @@ def _write_subtask_annotations(
 ) -> None:
     ann_path = static_dir / "subtask_annotations.json"
     existing = {}
+    generated_path = static_dir / "subtask_annotations_generated.json"
+    generated = json.loads(generated_path.read_text()) if generated_path.is_file() else {}
     if ann_path.is_file():
         try:
             existing = json.loads(ann_path.read_text())
@@ -251,7 +260,9 @@ def _write_subtask_annotations(
             existing = {}
 
     for episode_key, bounds in all_boundaries.items():
-        if overwrite_csv or episode_key not in existing:
+        if episode_key not in existing or (
+            overwrite_csv and existing[episode_key] == generated.get(episode_key)
+        ):
             if bounds.get("equal_time"):
                 transitions = [
                     {"time": boundary_time, "state": stage_index}
@@ -276,8 +287,10 @@ def _write_subtask_annotations(
                 if bounds.get("is_give"):
                     transitions.append({"time": bounds["stage4_end"], "state": 5})
             existing[episode_key] = transitions
+            generated[episode_key] = transitions
 
     ann_path.write_text(json.dumps(existing, indent=2))
+    generated_path.write_text(json.dumps(generated, indent=2))
     logging.info(
         "Saved auto subtask annotations for %d episodes to %s",
         len(all_boundaries),
@@ -309,6 +322,7 @@ def run_precompute(
     write_parquet: bool = False,
     force_recompute_stage: bool = False,
     fallback_stage_count: int = DEFAULT_FALLBACK_STAGE_COUNT,
+    task_config: dict | None = None,
     write_subtask: bool = False,
     overwrite_parquet: bool = False,
     overwrite_subtask_text: bool = False,
@@ -365,13 +379,22 @@ def run_precompute(
     repo_id = repo_id or f"local/{root.name or 'dataset'}"
     source_is_v3 = is_v3_dataset(root)
     meta = load_platform_metadata(root, repo_id)
-    data_version = resolve_data_profile(
+    data_profile = resolve_processing_profile(
         root,
         meta.features,
         data_version_override=data_version,
-    ).legacy_data_version
-    if data_version not in {DATA_VERSION_DVT1, DATA_VERSION_DVT2}:
-        raise ValueError(f"Unsupported data_version: {data_version}")
+    )
+    data_version = data_profile.legacy_data_version
+    if not data_profile.stage_profile and (
+        force_recompute_stage
+        or (
+            not visualize_only
+            and (annotate or write_parquet or write_subtask or overwrite_parquet or overwrite_subtask_text)
+        )
+    ):
+        raise ValueError("Automatic Stage requires an applicable Stage policy")
+    if embed_policy is not None:
+        require_dataset_operation(root, "embedding")
 
     if image_keys is None:
         image_keys = [
@@ -389,6 +412,41 @@ def run_precompute(
 
     static_dir = output_dir / "static"
     static_dir.mkdir(parents=True, exist_ok=True)
+    previous_manifest = load_viewer_manifest(static_dir) or {}
+    previous_snapshot = TaskConfigSnapshot.from_dict(previous_manifest.get("task_config"))
+    if task_config is None and (
+        previous_snapshot.mapping_version_id is not None or previous_snapshot.catalog.version != 0
+    ):
+        task_config = previous_snapshot.to_dict()
+    task_snapshot = TaskConfigSnapshot.from_dict(task_config)
+    task_texts = [task for row in meta.episodes.values() for task in row.get("tasks", [])]
+    stage_config_changed = task_snapshot.stage_digest(task_texts) != previous_snapshot.stage_digest(
+        task_texts
+    )
+    column_description = signal_columns(
+        meta.features, qualify=str((getattr(meta, "info", {}) or {}).get("robot_type", "")).lower() == "umi"
+    )
+    csv_schema_changed = (
+        previous_manifest.get("signal_columns") != column_description
+        or previous_manifest.get("signal_columns_version") != SIGNAL_COLUMNS_VERSION
+        or previous_manifest.get("data_profile") != data_profile.to_dict()
+        or previous_manifest.get("fallback_stage_count") != fallback_stage_count
+    )
+    if csv_schema_changed:
+        overwrite_csv = True
+        if previous_manifest:
+            episodes = sorted(
+                set(episodes) | {int(row["episode_index"]) for row in previous_manifest.get("episodes", [])}
+            )
+    if stage_config_changed and data_profile.stage_profile:
+        # A manifest pins one stage configuration for the entire cache.
+        episodes = sorted(meta.episodes)
+        prepare_csv = True
+        overwrite_csv = True
+    annotation_path = static_dir / "subtask_annotations.json"
+    generated_path = static_dir / "subtask_annotations_generated.json"
+    annotations = json.loads(annotation_path.read_text()) if annotation_path.is_file() else {}
+    generated_annotations = json.loads(generated_path.read_text()) if generated_path.is_file() else {}
 
     if visualize_only:
         logging.info(
@@ -490,6 +548,7 @@ def run_precompute(
             overwrite_videos=overwrite_video,
             overwrite_csv=False,
             data_version=data_version,
+            fallback_stage_count=fallback_stage_count,
             progress_callback=progress_callback,
         )
         needs_prepare = prepare_csv
@@ -534,6 +593,13 @@ def run_precompute(
                         force_recompute_stage=bool(force_recompute_stage),
                         data_version=data_version,
                         fallback_stage_count=fallback_stage_count,
+                        task_config=task_config,
+                        stage_transitions=(
+                            annotations[str(episode_id)]
+                            if str(episode_id) in annotations
+                            and annotations[str(episode_id)] != generated_annotations.get(str(episode_id))
+                            else None
+                        ),
                     )
                     return episode_id, boundaries, episode_issues
 
@@ -645,7 +711,7 @@ def run_precompute(
         _emit_progress(
             progress_callback, status="running", step="write_subtask", message="Writing subtask text"
         )
-        written = write_subtask_text_to_parquet(root, meta, episodes)
+        written = write_subtask_text_to_parquet(root, meta, episodes, task_config=task_config)
         logging.info("Wrote subtask text for %d episodes", written)
         if written:
             update_info_features(
@@ -659,20 +725,22 @@ def run_precompute(
                 },
             )
 
-    if not source_is_v3:
-        try:
-            write_viewer_manifest(
-                root=root,
-                repo_id=repo_id,
-                meta=meta,
-                episodes=episodes,
-                image_keys=image_keys,
-                static_dir=static_dir,
-                data_version=data_version,
-                downsample=downsample,
-            )
-        except OSError as exc:
-            logging.warning("Could not write viewer manifest to %s: %s", static_dir, exc)
+    try:
+        write_viewer_manifest(
+            root=root,
+            repo_id=repo_id,
+            meta=meta,
+            episodes=episodes,
+            image_keys=image_keys,
+            static_dir=static_dir,
+            data_version=data_version,
+            downsample=downsample,
+            task_config=task_snapshot.to_dict(),
+            data_profile=data_profile,
+            fallback_stage_count=fallback_stage_count,
+        )
+    except OSError as exc:
+        raise OSError(f"Could not write viewer manifest to {static_dir}") from exc
 
     labeling_result = None
     if label_bbox:
@@ -697,6 +765,17 @@ def run_precompute(
             logging.info("Trial object labeling seed: %s", sample_result.seed)
             if not label_episodes:
                 raise ValueError("No supported episodes found for trial labeling.")
+        if task_config is not None:
+            label_episodes = [
+                episode
+                for episode in label_episodes
+                if task_snapshot.resolve((meta.episodes[episode].get("tasks") or [""])[0]).family
+                in {"pick", "give"}
+            ]
+            if not label_episodes:
+                raise ValueError(
+                    "Current task definitions do not support the pick/give object-labeling algorithm"
+                )
         _emit_progress(
             progress_callback,
             status="running",
@@ -978,8 +1057,8 @@ def main():
         choices=[DATA_VERSION_DVT1, DATA_VERSION_DVT2],
         default=None,
         help=(
-            "Override the robot/Stage profile. By default the portable dataset profile is used; "
-            "dimensions are only a legacy fallback."
+            "Select a legacy DVT processing policy (default: DVT2 stage v1). UMI uses equal-time Stage without "
+            "a DVT override; unknown layouts keep raw signals. Source profiles are preserved."
         ),
     )
     parser.add_argument(
@@ -1025,7 +1104,7 @@ def main():
         "--fallback-stage-count",
         type=int,
         default=DEFAULT_FALLBACK_STAGE_COUNT,
-        help="Number of equal-duration stages for tasks without pick/place/give rules. Default: 5.",
+        help="Equal-duration stage count for UMI and DVT tasks without pick/place/give rules. Default: 5.",
     )
     parser.add_argument(
         "--write-subtask",
@@ -1220,6 +1299,12 @@ def main():
         type=Path,
         default=None,
         help="Output root for --preprocess-merge-with.",
+    )
+    parser.add_argument(
+        "--preprocess-merge-dimension-policy",
+        choices=("strict", "min"),
+        default="strict",
+        help="Merge signal dimensions: strict schema/order matching, or min using complete dimension names.",
     )
     parser.add_argument(
         "--preprocess-subtract-with",
@@ -1553,6 +1638,35 @@ def main():
         default=9091,
         help="Web port used by visualize_dataset_html.",
     )
+    parser.add_argument(
+        "--database-url",
+        type=str,
+        default=os.environ.get("DATA_PLATFORM_DATABASE_URL", ""),
+        help=(
+            "Enable the central multi-user control plane with a SQLAlchemy database URL. "
+            "For MySQL use mysql+pymysql://...; prefer DATA_PLATFORM_DATABASE_URL to avoid shell history."
+        ),
+    )
+    parser.add_argument(
+        "--allow-registration",
+        type=int,
+        choices=[0, 1],
+        default=int(os.environ.get("DATA_PLATFORM_ALLOW_REGISTRATION", "0")),
+        help=(
+            "Allow users to request read-only viewer accounts after the first administrator exists. "
+            "An administrator must approve each account before it can sign in."
+        ),
+    )
+    parser.add_argument(
+        "--remote-cache-root",
+        type=Path,
+        default=(
+            Path(os.environ["DATA_PLATFORM_REMOTE_CACHE_ROOT"])
+            if os.environ.get("DATA_PLATFORM_REMOTE_CACHE_ROOT")
+            else None
+        ),
+        help="Server-A directory for read-only viewer caches uploaded by remote agents.",
+    )
 
     args = parser.parse_args()
     init_logging()
@@ -1589,6 +1703,9 @@ def main():
             console_mode=args.console_mode,
             legacy_mutations_enabled=bool(args.enable_legacy_mutations),
             protected_source_roots=args.protected_source_root,
+            database_url=args.database_url or None,
+            allow_registration=bool(args.allow_registration),
+            remote_cache_root=args.remote_cache_root,
         )
         return
 
@@ -1727,11 +1844,22 @@ def main():
             merge_roots,
             out_root=args.preprocess_merge_out,
             dry_run=dry_run,
+            dimension_policy=args.preprocess_merge_dimension_policy,
             src_static_dirs=[get_default_output_dir(root) / "static" for root in merge_roots],
             out_static_dir=(get_default_output_dir(args.preprocess_merge_out) / "static")
             if args.preprocess_merge_out is not None
             else None,
         )
+        if args.preprocess_merge_dimension_policy == "min" and not dry_run:
+            run_precompute(
+                root=result.out_root,
+                repo_id=result.repo_id,
+                output_dir=get_default_output_dir(result.out_root),
+                prepare_csv=True,
+                prepare_videos=False,
+                data_version=resolve_processing_profile(result.out_root).legacy_data_version,
+            )
+            result.summary["csv_cache"] = "rebuilt_from_output"
         logging.info("Preprocess merge result: %s", result)
         preprocess_ran = True
     if args.preprocess_subtract_with:

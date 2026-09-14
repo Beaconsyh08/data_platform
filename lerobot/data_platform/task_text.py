@@ -1,5 +1,34 @@
 """Generate stage descriptions used by the local data platform."""
 
+import json
+from contextlib import suppress
+from pathlib import Path
+
+
+def cached_subtask_names(task: str, static_dir: Path, episode_id: int) -> tuple[int, dict[int, str]]:
+    from lerobot.data_platform.precompute.analysis import find_cached_episode_csv
+    from lerobot.data_platform.precompute.data_profile import STAGE_PROFILE_EQUAL_TIME
+    from lerobot.data_platform.precompute.viewer_manifest import load_viewer_manifest
+    from lerobot.data_platform.task_catalog import TaskConfigSnapshot
+
+    manifest = load_viewer_manifest(Path(static_dir)) or {}
+    config = manifest.get("task_config")
+    count = TaskConfigSnapshot.from_dict(config).resolve(task).stage_count
+    csv_path = find_cached_episode_csv(Path(static_dir), episode_id)
+    if csv_path:
+        with suppress(OSError, ValueError, TypeError, KeyError):
+            count = int(json.loads(csv_path.with_suffix(".stages.json").read_text())["stage_count"])
+    return count - 1, {
+        stage: generate_subtask_text(
+            task,
+            stage,
+            task_config=config,
+            stage_count=count,
+            force_equal_time=manifest.get("stage_profile") == STAGE_PROFILE_EQUAL_TIME,
+        )
+        for stage in range(-1, count)
+    }
+
 
 def _parse_task_object(task: str) -> tuple[str, str]:
     task_lower = task.lower().strip()
@@ -77,24 +106,42 @@ _DEFAULT_TEMPLATES = [
 ]
 
 
-def generate_subtask_text(task: str, stage: int, subtask_override: list[str] | None = None) -> str:
+def generate_subtask_text(
+    task: str,
+    stage: int,
+    subtask_override: list[str] | None = None,
+    *,
+    task_config: dict | None = None,
+    stage_count: int | None = None,
+    force_equal_time: bool = False,
+) -> str:
     """Return the stage description for a task."""
+    from lerobot.data_platform.task_catalog import TaskConfigSnapshot
+
+    resolved = TaskConfigSnapshot.from_dict(task_config).resolve(task)
     object_name, target = _parse_task_object(task)
+    object_name = resolved.attributes.get("object", object_name)
 
     if stage == -1:
+        if force_equal_time or resolved.stage_strategy == "equal_time":
+            return "Unassigned stage"
         return f"{object_name} not found"
 
     if subtask_override is not None and 0 <= stage < len(subtask_override):
         return subtask_override[stage]
 
+    if force_equal_time or resolved.stage_strategy == "equal_time":
+        count = stage_count or resolved.stage_count
+        return f"Stage {max(0, min(count - 1, stage)) + 1}/{count}"
+
     task_lower = task.lower()
-    if "give" in task_lower or "hand" in task_lower:
+    if resolved.stage_strategy == "legacy_give":
         stage = max(0, min(5, stage))
         return _GIVE_TEMPLATES[stage].format(object=object_name, target=target).strip()
-    if "pick" in task_lower or "grasp" in task_lower or "grab" in task_lower or "lift" in task_lower:
+    if resolved.stage_strategy == "legacy_pick":
         stage = max(0, min(4, stage))
         return _PICK_TEMPLATES[stage].format(object=object_name)
-    if "place" in task_lower or "put" in task_lower:
+    if resolved.stage_strategy == "legacy_place":
         stage = max(0, min(4, stage))
         return _PLACE_TEMPLATES[stage].format(object=object_name)
 

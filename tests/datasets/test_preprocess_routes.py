@@ -3,6 +3,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from flask import Flask
 
 from lerobot.data_platform.precompute.preprocess.common import PreprocessResult
@@ -17,7 +18,14 @@ class _ImmediateThread:
         self.target()
 
 
-def _route_context(src_root: Path):
+def _route_context(src_root: Path, *, legacy: bool = False):
+    # These route doubles model legacy DVT jobs; declare that policy explicitly.
+    from lerobot.data_platform.precompute.data_profile import profile_from_data_version, write_data_profile
+
+    if legacy:
+        write_data_profile(
+            src_root, profile_from_data_version("DVT2", {}, resolution_source="test_fixture", confirmed=True)
+        )
     jobs = {}
     lock = threading.Lock()
 
@@ -58,6 +66,178 @@ def _route_context(src_root: Path):
         append_job_log=append_job_log,
         serialize_job=lambda job: dict(job),
     )
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_merge_min_route_rebuilds_cache_before_registration_and_reports_plan(
+    tmp_path: Path, monkeypatch, dry_run
+):
+    sources = [tmp_path / "source", tmp_path / "second"]
+    info = {
+        "fps": 10,
+        "robot_type": "test",
+        "features": {"action": {"dtype": "float32", "shape": [2], "names": ["left", "right"]}},
+    }
+    for source in sources:
+        (source / "meta").mkdir(parents=True)
+        (source / "data").mkdir()
+        (source / "meta/info.json").write_text(json.dumps(info))
+    ctx = _route_context(sources[0])
+    ctx.datasets_index[("local", "second")] = {"root": str(sources[1])}
+    ctx.repo_key = lambda value: tuple(value.split("/", 1))
+    ctx.parse_int_list = lambda value: value
+    ctx.ensure_dataset_loaded = lambda key: (
+        SimpleNamespace(root=Path(ctx.datasets_index[key]["root"]), total_episodes=1),
+        None,
+    )
+    ctx.meta_only_dataset_cls = lambda repo_id, root: SimpleNamespace(repo_id=repo_id, root=root)
+    ctx.lifecycle_store = None
+    ctx.append_operation_log = None
+    events = []
+    ctx.register_dataset = lambda *_args, **_kwargs: events.append("register") or ("local", "merged")
+    output = tmp_path / "merged"
+    summary = {
+        "dimension_alignment": [{"source_position": 1, "fields": {"action": {"source_indices": [1, 0]}}}]
+    }
+
+    def merge(roots, **kwargs):
+        assert roots == sources
+        assert kwargs["dimension_policy"] == "min"
+        assert kwargs["dry_run"] == dry_run
+        events.append("merge")
+        kwargs["progress_callback"]({"status": "done", "current": 2, "total": 2})
+        assert next(iter(ctx.jobs_registry.values()))["status"] == "running"
+        if not dry_run:
+            (output / "meta").mkdir(parents=True)
+            (output / "meta/info.json").write_text(json.dumps(info))
+        return PreprocessResult(
+            op="merge",
+            src_roots=roots,
+            out_root=output,
+            repo_id="local/merged",
+            dry_run=dry_run,
+            summary=summary,
+        )
+
+    def precompute(**kwargs):
+        assert kwargs["root"] == output
+        assert kwargs["prepare_csv"] is True
+        events.append("cache")
+        kwargs["progress_callback"]({"status": "done", "current": 2, "total": 2})
+        assert next(iter(ctx.jobs_registry.values()))["status"] == "running"
+
+    monkeypatch.setattr(preprocess_routes, "run_merge", merge)
+    monkeypatch.setattr(preprocess_routes, "run_precompute", precompute)
+    monkeypatch.setattr(preprocess_routes.threading, "Thread", _ImmediateThread)
+    app = Flask(__name__)
+    preprocess_routes.register_preprocess_routes(app, ctx)
+    response = app.test_client().post(
+        "/api/preprocess/merge/start",
+        json={
+            "options": {
+                "src_keys": ["local/source", "local/second"],
+                "out_root": str(output),
+                "dimension_policy": "min",
+                "dry_run": dry_run,
+            }
+        },
+    )
+    assert response.status_code == 200
+    job = response.get_json()["job"]
+    assert job["status"] == "done"
+    assert job["result_summary"]["dimension_alignment"] == summary["dimension_alignment"]
+    assert events == (["merge"] if dry_run else ["merge", "cache", "register"])
+
+
+def test_merge_route_rejects_unknown_dimension_policy_before_starting_job(tmp_path: Path):
+    source = tmp_path / "source"
+    (source / "meta").mkdir(parents=True)
+    (source / "data").mkdir()
+    (source / "meta/info.json").write_text(json.dumps({"features": {}}))
+    ctx = _route_context(source)
+    ctx.repo_key = lambda value: tuple(value.split("/", 1))
+    ctx.parse_int_list = lambda value: value
+    app = Flask(__name__)
+    preprocess_routes.register_preprocess_routes(app, ctx)
+    response = app.test_client().post(
+        "/api/preprocess/merge/start",
+        json={
+            "options": {
+                "src_keys": ["local/source", "local/source"],
+                "dimension_policy": "truncate",
+            }
+        },
+    )
+    assert response.status_code == 400
+    assert "dimension_policy" in response.get_json()["error"]
+    assert not ctx.jobs_registry
+
+
+def test_standardize_reports_lifecycle_registration_after_precompute(tmp_path: Path, monkeypatch):
+    src_root = tmp_path / "source"
+    out_root = tmp_path / "standardized"
+    (src_root / "meta").mkdir(parents=True)
+    (src_root / "data").mkdir()
+    (src_root / "meta" / "info.json").write_text(
+        json.dumps({"codebase_version": "v2.1", "total_episodes": 2, "features": {}})
+    )
+    dataset = SimpleNamespace(root=src_root, repo_id="local/source", total_episodes=2)
+
+    def fake_precompute(**kwargs):
+        kwargs["progress_callback"](
+            {"status": "done", "current": 1, "total": 1, "message": "Precompute complete"}
+        )
+
+    def fake_standardize(*_args, **_kwargs):
+        (out_root / "meta").mkdir(parents=True)
+        (out_root / "data").mkdir()
+        (out_root / "meta" / "info.json").write_text(
+            json.dumps({"codebase_version": "v2.1", "total_episodes": 2, "features": {}})
+        )
+        return PreprocessResult(
+            op="standardize",
+            src_roots=[src_root],
+            out_root=out_root,
+            repo_id="local/standardized",
+            total_episodes=2,
+        )
+
+    monkeypatch.setattr(preprocess_routes, "run_precompute", fake_precompute)
+    monkeypatch.setattr(preprocess_routes, "run_standardize_dataset", fake_standardize)
+    monkeypatch.setattr(preprocess_routes.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        preprocess_routes,
+        "resolve_processing_profile",
+        lambda *_args, **_kwargs: SimpleNamespace(legacy_data_version="DVT2"),
+    )
+    app = Flask(__name__)
+    ctx = _route_context(src_root, legacy=True)
+    ctx.parse_int_list = lambda value: value
+    ctx.ensure_dataset_loaded = lambda _key: (dataset, src_root / "vis" / "static")
+    ctx.dataset_episode_ids = lambda *_args: [0, 1]
+    ctx.meta_only_dataset_cls = lambda repo_id, root: SimpleNamespace(repo_id=repo_id, root=root)
+    ctx.register_dataset = lambda *_args, **_kwargs: ("local", "standardized")
+    ctx.lifecycle_store = None
+    ctx.append_operation_log = None
+    preprocess_routes.register_preprocess_routes(app, ctx)
+
+    response = app.test_client().post(
+        "/api/preprocess/standardize/start",
+        json={"dataset_key": "local/source", "options": {"out_root": str(out_root)}},
+    )
+
+    assert response.status_code == 200
+    job = response.get_json()["job"]
+    assert job["status"] == "done"
+    messages = [entry["message"] for entry in job["logs"]]
+    precompute_index = max(
+        index for index, message in enumerate(messages) if "Precompute complete" in message
+    )
+    registration_index = next(
+        index for index, message in enumerate(messages) if "registering output dataset" in message
+    )
+    assert precompute_index < registration_index
+    assert "scanning meta/data/videos" in messages[registration_index]
 
 
 def test_convert_v3_route_uses_indexed_root_without_legacy_dataset_load(tmp_path: Path, monkeypatch):
@@ -372,7 +552,7 @@ def test_delete_all_flagged_refreshes_viewer_episode_state_before_job_finishes(
     monkeypatch.setattr(preprocess_routes, "delete_episodes_inplace", fake_delete)
     monkeypatch.setattr(preprocess_routes.threading, "Thread", _ImmediateThread)
     app = Flask(__name__)
-    ctx = _route_context(src_root)
+    ctx = _route_context(src_root, legacy=True)
     audit = {}
     ctx.ensure_dataset_loaded = lambda _key: (dataset, static_dir)
     ctx.parse_int_list = lambda value: value

@@ -12,7 +12,8 @@ import argparse
 import json
 import os
 import shutil
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import as_completed
+from lerobot.data_platform.execution_pools import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 

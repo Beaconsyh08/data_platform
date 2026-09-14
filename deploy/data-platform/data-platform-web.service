@@ -1,0 +1,19 @@
+[Unit]
+Description=Central Data Platform web service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=data-platform
+Group=data-platform
+WorkingDirectory=/opt/data-platform
+EnvironmentFile=/etc/data-platform/server.env
+ExecStart=/opt/data-platform/.venv/bin/gunicorn --workers 1 --threads 8 --timeout 3600 --bind 127.0.0.1:9091 "lerobot.data_platform.wsgi:create_app()"
+Restart=always
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

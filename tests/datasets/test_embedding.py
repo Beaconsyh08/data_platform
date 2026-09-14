@@ -5,8 +5,12 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from lerobot.data_platform.precompute.embedding import policy_backend
+from lerobot.data_platform.precompute.embedding.policy_backend import (
+    DEFAULT_OPENPI_CONFIG,
+    resolve_openpi_config,
+)
 from lerobot.data_platform.precompute.embedding.reducer import fit_reducer, transform
-from lerobot.data_platform.precompute.embedding.policy_backend import DEFAULT_OPENPI_CONFIG, resolve_openpi_config
 from lerobot.data_platform.precompute.embedding.runner import project_existing_embeddings, run_embedding
 
 
@@ -85,3 +89,39 @@ def test_resolve_openpi_config_from_checkpoint_metadata(tmp_path: Path):
     assert resolve_openpi_config(ckpt, None) == "pi05_h10w_dual_full_finetune_0417_ALL"
     assert resolve_openpi_config(ckpt, "manual_config") == "manual_config"
     assert resolve_openpi_config(tmp_path / "missing", None) == DEFAULT_OPENPI_CONFIG
+
+
+def test_openpi_root_probe_skips_inaccessible_candidate(tmp_path: Path, monkeypatch):
+    blocked_root = tmp_path / "blocked"
+    blocked_project = blocked_root / "pyproject.toml"
+    original_is_file = Path.is_file
+
+    def guarded_is_file(path: Path) -> bool:
+        if path == blocked_project:
+            raise PermissionError(path)
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", guarded_is_file)
+
+    assert policy_backend._valid_openpi_root(blocked_root) is False
+
+
+def test_openpi_root_candidates_use_repo_sibling(tmp_path: Path, monkeypatch):
+    repo_root = tmp_path / "data_platform"
+    for name in ("OPENPI_ROOT", "OPENPI_SRC", "OPENPI_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(policy_backend, "_lerobot_repo_root", lambda: repo_root)
+
+    assert policy_backend._openpi_root_candidates() == [tmp_path / "openpi"]
+
+
+def test_default_openpi_root_does_not_probe_candidates(tmp_path: Path, monkeypatch):
+    configured_root = tmp_path / "openpi"
+    monkeypatch.setattr(policy_backend, "_openpi_root_candidates", lambda: [configured_root])
+
+    def fail_if_probed(_root: Path) -> bool:
+        raise AssertionError("OpenPI paths must not be probed while choosing the import-time default")
+
+    monkeypatch.setattr(policy_backend, "_valid_openpi_root", fail_if_probed)
+
+    assert policy_backend._default_openpi_root() == configured_root

@@ -112,7 +112,7 @@ def _make_dataset(root: Path, task: str = "pick duck", task_index: int = 0) -> N
     (root / "data" / "chunk-000").mkdir(parents=True)
     (root / "meta").mkdir(parents=True)
     info = {
-        "robot_type": "dummy",
+        "robot_type": "h10w",
         "fps": 10,
         "codebase_version": "v2.1",
         "total_episodes": 2,

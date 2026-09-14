@@ -2,14 +2,23 @@ import csv
 import json
 import shutil
 import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from contextlib import suppress
+from copy import deepcopy
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from lerobot.data_platform.precompute.data_profile import resolve_data_profile, write_data_profile
+from lerobot.common.datasets.compute_stats import aggregate_stats
+from lerobot.common.datasets.utils import cast_stats_to_numpy, serialize_dict
+from lerobot.data_platform.execution_pools import ThreadPoolExecutor
+from lerobot.data_platform.precompute.data_profile import (
+    resolve_data_profile,
+    signal_schema_from_features,
+    write_data_profile,
+)
+from lerobot.data_platform.precompute.dataset_io import V3DatasetMetadata
 from lerobot.data_platform.precompute.preprocess.common import (
     PreprocessResult,
     ProgressCallback,
@@ -32,6 +41,19 @@ from lerobot.data_platform.precompute.preprocess.dataset_version import (
     detect_dataset_version,
     materialize_v21_from_v3,
     run_convert_v3,
+)
+from lerobot.data_platform.precompute.preprocess.merge_alignment import (
+    SIGNAL_FIELDS,
+    SignalProjection,
+    numeric_stats,
+    plan_signal_alignment,
+    project_signals,
+    signal_names,
+)
+from lerobot.data_platform.precompute.preprocess.v3_native import (
+    rewrite_native_images,
+    uses_native_images,
+    validate_native_schemas,
 )
 
 
@@ -58,11 +80,38 @@ def _feature_signature(feature: dict) -> tuple[str, tuple]:
     return _feature_dtype(feature), _feature_shape(feature)
 
 
-def _validate_compatible(roots: list[Path], infos: list[dict]):
+def _validate_compatible(roots: list[Path], infos: list[dict], *, source_infos: list[dict] | None = None):
     base = infos[0]
     base_features = base.get("features") or {}
-    base_profile = resolve_data_profile(roots[0], base_features)
-    for root, info in zip(roots[1:], infos[1:], strict=False):
+    original_infos = source_infos if source_infos is not None else infos
+    profiles = [
+        resolve_data_profile(root, info.get("features") or {})
+        for root, info in zip(roots, original_infos, strict=True)
+    ]
+    if source_infos is not None:
+        schemas = {profile.signal_schema for profile in profiles}
+        if len(schemas) > 1 and any(
+            profile.signal_schema != signal_schema_from_features(info.get("features") or {})
+            for profile, info in zip(profiles, original_infos, strict=True)
+        ):
+            raise ValueError(
+                "dataset data profile mismatch: cannot align different custom signal_schema values"
+            )
+        output_schema = signal_schema_from_features(base_features)
+        if len(schemas) == 1 and all(
+            original.get("features") == aligned.get("features")
+            for original, aligned in zip(original_infos, infos, strict=True)
+        ):
+            output_schema = profiles[0].signal_schema
+        profiles = [profile.for_signal_schema(output_schema) for profile in profiles]
+    base_profile = profiles[0]
+    if any(profile.robot_profile == "umi" for profile in profiles):
+        if any(info.get("features") != base_features for info in infos):
+            raise ValueError("UMI merge requires identical full feature names, order, types and semantics")
+        if source_infos is not None:
+            raise ValueError("UMI merge requires dimension_policy='strict'")
+    seen_features = dict(base_features)
+    for root, info, profile in zip(roots[1:], infos[1:], profiles[1:], strict=True):
         if info.get("robot_type") != base.get("robot_type"):
             raise ValueError(
                 f"{root} robot_type={info.get('robot_type')} differs from {base.get('robot_type')}"
@@ -70,9 +119,20 @@ def _validate_compatible(roots: list[Path], infos: list[dict]):
         if info.get("fps") != base.get("fps"):
             raise ValueError(f"{root} fps={info.get('fps')} differs from {base.get('fps')}")
         features = info.get("features") or {}
-        for name in sorted(set(base_features) & set(features)):
-            base_feature = base_features[name] or {}
+        for name in sorted(set(seen_features) & set(features)):
+            base_feature = seen_features[name] or {}
             feature = features[name] or {}
+            if name in SIGNAL_FIELDS and base_feature.get("names") != feature.get("names"):
+                base_names = base_feature.get("names")
+                names = feature.get("names")
+                if base_names is not None:
+                    base_names = signal_names(base_feature, name)
+                if names is not None:
+                    names = signal_names(feature, name)
+                if names != base_names:
+                    raise ValueError(
+                        f"{name} dimension names/order mismatch; use dimension_policy='min' to align"
+                    )
             if _feature_signature(feature) == _feature_signature(base_feature):
                 continue
             base_shape = _feature_shape(base_feature)
@@ -88,12 +148,10 @@ def _validate_compatible(roots: list[Path], infos: list[dict]):
                 f"{root} has dtype={_feature_dtype(feature)} shape={list(shape)}; "
                 "please standardize datasets first or merge only compatible datasets"
             )
-        profile = resolve_data_profile(root, features)
+        seen_features.update(features)
         semantic_fields = ("robot_profile", "signal_schema", "gripper_encoding", "stage_profile")
         mismatches = [
-            field
-            for field in semantic_fields
-            if getattr(profile, field) != getattr(base_profile, field)
+            field for field in semantic_fields if getattr(profile, field) != getattr(base_profile, field)
         ]
         if mismatches:
             details = ", ".join(
@@ -102,6 +160,20 @@ def _validate_compatible(roots: list[Path], infos: list[dict]):
             )
             raise ValueError(f"dataset data profile mismatch for {root}: {details}")
     return base_profile
+
+
+def validate_merge_sources(src_roots: list[Path], dimension_policy: str = "strict") -> None:
+    """Validate metadata and dimension mappings before launching a merge worker."""
+    roots = [validate_dataset_root(root) for root in src_roots]
+    if len(roots) < 2:
+        raise ValueError("merge requires at least two source datasets")
+    infos = [load_json(root / "meta" / "info.json") for root in roots]
+    aligned_infos, _ = plan_signal_alignment(infos, dimension_policy)
+    _validate_compatible(roots, aligned_infos, source_infos=infos if dimension_policy == "min" else None)
+    if any(uses_native_images(info) for info in infos):
+        if not all(uses_native_images(info) for info in infos):
+            raise ValueError("Native embedded-image merge requires matching v3 image storage")
+        validate_native_schemas([V3DatasetMetadata(f"local/{root.name}", root) for root in roots])
 
 
 def _build_task_map(roots: list[Path]) -> tuple[list[dict], dict[str, dict[int, int]]]:
@@ -267,12 +339,22 @@ def _write_merged_episode(
     task_map: dict[int, int],
     merged_features: dict,
     arrow_fields: dict[str, pa.Field],
-) -> tuple[int, int]:
+    projections: tuple[SignalProjection, ...] = (),
+    expected_length: int | None = None,
+) -> tuple[int, int, dict]:
     src = src_root / format_data_path(src_info, old_idx)
     dst = out_root / format_data_path(out_info, new_idx)
     if not src.is_file():
         raise FileNotFoundError(f"Missing source parquet: {src}")
     table = pq.read_table(src)
+    if projections:
+        if table.num_rows != expected_length:
+            raise ValueError(f"Episode {old_idx} row count does not match episode metadata")
+        if set(table["episode_index"].to_pylist()) != {old_idx}:
+            raise ValueError(f"Episode {old_idx} Parquet contains rows from another episode")
+        if table["frame_index"].to_pylist() != list(range(table.num_rows)):
+            raise ValueError(f"Episode {old_idx} has invalid frame_index ordering")
+    table, signal_stats = project_signals(table, projections)
     table = _remap_episode_table(
         table,
         new_idx=new_idx,
@@ -281,9 +363,13 @@ def _write_merged_episode(
         merged_features=merged_features,
         arrow_fields=arrow_fields,
     )
+    if projections:
+        for name in ("episode_index", "frame_index", "index", "task_index", "timestamp"):
+            if name in table.column_names:
+                signal_stats[name] = numeric_stats(table[name].to_pylist())
     dst.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(table, dst)
-    return old_idx, new_idx
+    return old_idx, new_idx, signal_stats
 
 
 def _copy_file(src: Path, dst: Path) -> bool:
@@ -611,6 +697,8 @@ def _merge_static_artifacts(
     frame_offsets: dict[int, int],
     src_static_dirs: list[Path | None] | None,
     out_static_dir: Path | None,
+    *,
+    copy_csv: bool = True,
 ) -> dict:
     if not src_static_dirs or out_static_dir is None:
         return {}
@@ -633,9 +721,10 @@ def _merge_static_artifacts(
         src_static = src_dirs[src_pos] if src_pos < len(src_dirs) else None
         if src_static is None:
             continue
-        summary["csv_files"] += _copy_cached_csvs(
-            src_static, out_static, old_idx, new_idx, frame_offsets[new_idx]
-        )
+        if copy_csv:
+            summary["csv_files"] += _copy_cached_csvs(
+                src_static, out_static, old_idx, new_idx, frame_offsets[new_idx]
+            )
         summary["video_files"] += _copy_cached_videos(src_static, out_static, old_idx, new_idx)
         summary["labeling_vis_files"] += _copy_labeling_visuals(src_static, out_static, old_idx, new_idx)
     summary["labeling_jsonl_files"] += _merge_record_jsonl(
@@ -679,6 +768,7 @@ def run_merge(
     _op: str = "merge",
     _default_op: str = "merge",
     _summary_extra: dict | None = None,
+    dimension_policy: str = "strict",
 ) -> PreprocessResult:
     roots = [validate_dataset_root(root) for root in src_roots]
     if not roots:
@@ -687,7 +777,37 @@ def run_merge(
         raise ValueError("merge requires at least two source datasets")
     out_root = ensure_output_root(out_root or default_preprocess_path(roots[0], _default_op), dry_run)
     infos = [load_json(root / "meta" / "info.json") for root in roots]
-    output_profile = _validate_compatible(roots, infos)
+    aligned_infos, projections = plan_signal_alignment(infos, dimension_policy)
+    output_profile = _validate_compatible(
+        roots, aligned_infos, source_infos=infos if dimension_policy == "min" else None
+    )
+    if dimension_policy == "min":
+        if out_static_dir is None and src_static_dirs:
+            out_static_dir = out_root.parent / "vis" / f"local_vis_{out_root.name}" / "static"
+        if out_static_dir is not None and Path(out_static_dir).exists() and not dry_run:
+            raise FileExistsError(f"Output cache already exists; choose a fresh output: {out_static_dir}")
+    if any(uses_native_images(info) for info in infos):
+        if not all(uses_native_images(info) for info in infos):
+            raise ValueError("Native embedded-image merge requires matching v3 image storage")
+        if dimension_policy != "strict":
+            raise ValueError("Native embedded-image merge requires dimension_policy='strict'")
+        if any(info["features"] != infos[0]["features"] for info in infos):
+            raise ValueError("Native merge requires identical full feature schemas")
+        excluded = exclude_episodes or [set() for _ in roots]
+        if len(excluded) != len(roots):
+            raise ValueError("exclude_episodes must match the number of source datasets")
+        selections = []
+        for position, root in enumerate(roots):
+            available = set(V3DatasetMetadata(f"local/{root.name}", root).episodes)
+            excluded_ids = set(excluded[position] or [])
+            if excluded_ids - available:
+                raise ValueError(
+                    f"{root} episodes not found for merge delete: {sorted(excluded_ids - available)}"
+                )
+            selections.extend((position, index) for index in sorted(available - excluded_ids))
+        return rewrite_native_images(
+            roots, out_root, selections, op=_op, dry_run=dry_run, progress_callback=progress_callback
+        )
     v3_positions = [position for position, root in enumerate(roots) if detect_dataset_version(root) == V30]
     if v3_positions:
         source_info = infos[v3_positions[0]]
@@ -720,6 +840,7 @@ def run_merge(
                 _op=_op,
                 _default_op=_default_op,
                 _summary_extra=_summary_extra,
+                dimension_policy=dimension_policy,
             )
             summary = {
                 **legacy_result.summary,
@@ -742,6 +863,8 @@ def run_merge(
                 converted_info = load_json(out_root / "meta" / "info.json")
                 write_data_profile(out_root, output_profile, info=converted_info)
                 write_json(out_root / "meta" / "info.json", converted_info)
+                if dimension_policy == "min":
+                    write_json(out_root / "meta" / "preprocess_merge.json", summary)
             return PreprocessResult(
                 op=_op,
                 src_roots=roots,
@@ -753,7 +876,7 @@ def run_merge(
                 summary=summary,
                 episode_lineage=list(legacy_result.episode_lineage),
             )
-    merged_features = _merge_features(infos)
+    merged_features = _merge_features(aligned_infos)
     merged_tasks, task_maps = _build_task_map(roots)
     exclude_by_root = _normalize_exclude_episodes(roots, exclude_episodes)
     raw_episode_map, episodes_out, stats_out, total_frames = _build_episode_map(roots, exclude_by_root)
@@ -782,6 +905,21 @@ def run_merge(
                 str(root): sorted(values) for root, values in exclude_by_root.items()
             },
             **(_summary_extra or {}),
+            "dimension_policy": dimension_policy,
+            **(
+                {
+                    "dimension_alignment": [
+                        {
+                            "source_position": position,
+                            "fields": {item.field: item.summary() for item in items},
+                        }
+                        for position, items in enumerate(projections)
+                    ],
+                    "csv_cache": "rebuild_from_output",
+                }
+                if dimension_policy == "min"
+                else {}
+            ),
         },
         episode_lineage=[
             {
@@ -820,9 +958,11 @@ def run_merge(
             running += int(episode["length"])
 
         info_by_root = {str(root): src_info for root, src_info in zip(roots, infos, strict=False)}
+        episode_lengths = {row["episode_index"]: row["length"] for row in episodes_out}
+        signal_stats_by_episode = {}
         if worker_count == 1 or len(episode_map) <= 1:
-            for idx, (_src_pos, src_root, old_idx, new_idx) in enumerate(episode_map, start=1):
-                _write_merged_episode(
+            for idx, (src_pos, src_root, old_idx, new_idx) in enumerate(episode_map, start=1):
+                _, _, signal_stats_by_episode[new_idx] = _write_merged_episode(
                     src_root,
                     old_idx,
                     new_idx,
@@ -833,6 +973,8 @@ def run_merge(
                     task_map=task_maps[str(src_root)],
                     merged_features=merged_features,
                     arrow_fields=arrow_fields,
+                    projections=projections[src_pos],
+                    expected_length=episode_lengths[new_idx],
                 )
                 emit(
                     progress_callback,
@@ -856,11 +998,13 @@ def run_merge(
                         task_map=task_maps[str(src_root)],
                         merged_features=merged_features,
                         arrow_fields=arrow_fields,
+                        projections=projections[src_pos],
+                        expected_length=episode_lengths[new_idx],
                     ): (old_idx, new_idx)
-                    for _src_pos, src_root, old_idx, new_idx in episode_map
+                    for src_pos, src_root, old_idx, new_idx in episode_map
                 }
                 for idx, future in enumerate(as_completed(futures), start=1):
-                    old_idx, new_idx = future.result()
+                    old_idx, new_idx, signal_stats_by_episode[new_idx] = future.result()
                     emit(
                         progress_callback,
                         status="running",
@@ -868,6 +1012,23 @@ def run_merge(
                         total=len(episode_map),
                         message=f"Merged episode {old_idx} -> {new_idx}",
                     )
+
+        if dimension_policy == "min":
+            stats_by_episode = {row["episode_index"]: deepcopy(row) for row in stats_out}
+            stats_out = []
+            for episode in episodes_out:
+                episode_index = episode["episode_index"]
+                row = stats_by_episode.get(episode_index, {"episode_index": episode_index, "stats": {}})
+                row["stats"].update(signal_stats_by_episode[episode_index])
+                for feature_stats in row["stats"].values():
+                    feature_stats.setdefault("count", [episode["length"]])
+                stats_out.append(row)
+            write_jsonl(out_root / "meta" / "episodes_stats.jsonl", stats_out)
+            write_json(
+                out_root / "meta" / "stats.json",
+                serialize_dict(aggregate_stats([cast_stats_to_numpy(row["stats"]) for row in stats_out])),
+            )
+            write_json(out_root / "meta" / "preprocess_merge.json", result.summary)
 
         written_parquets = list((out_root / "data").rglob("*.parquet"))
         if len(written_parquets) != len(episode_map):
@@ -883,13 +1044,19 @@ def run_merge(
         if out_static_dir is None and src_static_dirs:
             out_static_dir = out_root.parent / "vis" / f"local_vis_{out_root.name}" / "static"
         artifact_summary = _merge_static_artifacts(
-            episode_map, frame_offsets, src_static_dirs, out_static_dir
+            episode_map,
+            frame_offsets,
+            src_static_dirs,
+            out_static_dir,
+            copy_csv=dimension_policy != "min",
         )
         if artifact_summary:
             result.summary["artifacts"] = artifact_summary
     except Exception:
         if out_root.exists():
             shutil.rmtree(out_root, ignore_errors=True)
+        if dimension_policy == "min" and out_static_dir is not None:
+            shutil.rmtree(out_static_dir, ignore_errors=True)
         raise
     emit(
         progress_callback,

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from flask import jsonify, request
 
-from lerobot.data_platform.cli import get_default_output_dir
+from lerobot.data_platform.cli import get_default_output_dir, run_precompute
 from lerobot.data_platform.lifecycle import (
     MANIFEST_PUBLISHED,
     EpisodeRef,
@@ -18,6 +18,7 @@ from lerobot.data_platform.lifecycle import (
     execute_preprocessing_profile,
     materialize_manifest,
 )
+from lerobot.data_platform.local_execution import launch_background
 
 
 def register_lifecycle_routes(app, ctx) -> None:
@@ -88,9 +89,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                 episode_index = int(item.pop("episode_index"))
                 if episode_index not in uid_by_index:
                     raise ValueError(f"episode not found in base dataset version: {episode_index}")
-                item["episode_ref"] = asdict(
-                    EpisodeRef(version.version_id, uid_by_index[episode_index])
-                )
+                item["episode_ref"] = asdict(EpisodeRef(version.version_id, uid_by_index[episode_index]))
             normalized.append(item)
         return normalized
 
@@ -131,9 +130,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                     or ([str(options["source_batch_id"])] if options.get("source_batch_id") else [])
                 ),
                 data_dimensions=dict(options.get("data_dimensions") or {}),
-                identity_artifact=(
-                    options.get("identity_artifact") or options.get("identity_artifact_path")
-                ),
+                identity_artifact=(options.get("identity_artifact") or options.get("identity_artifact_path")),
             )
         except Exception as exc:
             quarantine = store.record_quarantine(
@@ -195,7 +192,9 @@ def register_lifecycle_routes(app, ctx) -> None:
                 logging.exception("Lifecycle ingest job failed")
                 ctx.fail_job(job, "Lifecycle ingest failed", exc)
 
-        threading.Thread(target=run, name=f"lifecycle-ingest-{job['id']}", daemon=True).start()
+        launch_background(
+            target=run, name=f"lifecycle-ingest-{job['id']}", daemon=True, thread_factory=threading.Thread
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/lifecycle/versions")
@@ -239,9 +238,7 @@ def register_lifecycle_routes(app, ctx) -> None:
 
     @app.route("/api/lifecycle/source-batches", methods=["GET"])
     def api_lifecycle_source_batches_list():
-        return jsonify(
-            {"source_batches": [item.to_dict() for item in _store().list_source_batches()]}
-        )
+        return jsonify({"source_batches": [item.to_dict() for item in _store().list_source_batches()]})
 
     @app.route("/api/lifecycle/source-batches", methods=["POST"])
     def api_lifecycle_source_batch_create():
@@ -290,6 +287,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                 str(body.get("dataset_version_id") or ""),
                 distributions=dict(body.get("distributions") or {}),
                 created_by=str(body.get("created_by") or "local-user"),
+                task_config=body.get("task_config"),
             )
             return jsonify({"dataset_profile": profile.to_dict()})
         except KeyError as exc:
@@ -304,6 +302,7 @@ def register_lifecycle_routes(app, ctx) -> None:
             cohort = _store().resolve_cohort(
                 str(body.get("dataset_version_id") or ""),
                 dict(body.get("query") or {}),
+                task_config=body.get("task_config"),
             )
             return jsonify({"cohort": cohort})
         except KeyError as exc:
@@ -313,9 +312,7 @@ def register_lifecycle_routes(app, ctx) -> None:
 
     @app.route("/api/curation/requirements", methods=["GET"])
     def api_curation_requirements_list():
-        return jsonify(
-            {"requirements": [item.to_dict() for item in _store().list_requirements()]}
-        )
+        return jsonify({"requirements": [item.to_dict() for item in _store().list_requirements()]})
 
     @app.route("/api/curation/requirements", methods=["POST"])
     def api_curation_requirement_create():
@@ -353,7 +350,9 @@ def register_lifecycle_routes(app, ctx) -> None:
             base = store.get_version(str(body.get("base_dataset_version_id") or ""))
             cohort_query = dict(body.get("cohort_query") or {})
             cohort_snapshot = (
-                store.resolve_cohort(base.version_id, cohort_query) if cohort_query else {}
+                store.resolve_cohort(base.version_id, cohort_query, task_config=body.get("task_config"))
+                if cohort_query
+                else {}
             )
             recipe = store.create_recipe(
                 str(body.get("name") or ""),
@@ -366,6 +365,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                 deduplication=dict(body.get("deduplication") or {}),
                 random_seed=int(body.get("random_seed") or 0),
                 created_by=str(body.get("created_by") or "local-user"),
+                task_config=body.get("task_config"),
             )
             return jsonify({"recipe": recipe.to_dict()})
         except KeyError as exc:
@@ -472,7 +472,9 @@ def register_lifecycle_routes(app, ctx) -> None:
 
         def run() -> None:
             try:
-                ctx.update_job(job, {"status": "running", "message": f"Executing profile {profile.profile_id}"})
+                ctx.update_job(
+                    job, {"status": "running", "message": f"Executing profile {profile.profile_id}"}
+                )
                 version, summary = execute_preprocessing_profile(
                     _store(),
                     base.version_id,
@@ -496,7 +498,9 @@ def register_lifecycle_routes(app, ctx) -> None:
                 logging.exception("Lifecycle preprocessing failed")
                 ctx.fail_job(job, "Lifecycle preprocessing failed", exc)
 
-        threading.Thread(target=run, name=f"lifecycle-preprocess-{job['id']}", daemon=True).start()
+        launch_background(
+            target=run, name=f"lifecycle-preprocess-{job['id']}", daemon=True, thread_factory=threading.Thread
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/curation/workspaces", methods=["GET"])
@@ -574,9 +578,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                     base, list(changes["annotation_patches"] or [])
                 )
             if "repair_recipes" in changes:
-                changes["repair_recipes"] = _normalize_repairs(
-                    base, list(changes["repair_recipes"] or [])
-                )
+                changes["repair_recipes"] = _normalize_repairs(base, list(changes["repair_recipes"] or []))
             updated = store.update_workspace(
                 workspace_id,
                 expected_revision=int(body.get("expected_revision") or 0),
@@ -747,6 +749,16 @@ def register_lifecycle_routes(app, ctx) -> None:
                     workers=workers,
                     progress_callback=lambda payload: ctx.update_job(job, payload),
                 )
+                run_precompute(
+                    root=out_root,
+                    repo_id=version.dataset_key,
+                    output_dir=get_default_output_dir(out_root),
+                    prepare_workers=workers,
+                    visualize_only=True,
+                    task_config=_store().tasks.snapshot(version.dataset_key).to_dict(),
+                    show_progress=False,
+                    progress_callback=lambda payload: ctx.update_job(job, payload),
+                )
                 refreshed = ctx.meta_only_dataset_cls(version.dataset_key, root=out_root)
                 dataset_key = ctx.register_dataset(refreshed, get_default_output_dir(out_root))
                 ds_static = get_default_output_dir(out_root) / "static"
@@ -769,7 +781,12 @@ def register_lifecycle_routes(app, ctx) -> None:
                 logging.exception("Lifecycle materialization failed")
                 ctx.fail_job(job, "Lifecycle materialization failed", exc)
 
-        threading.Thread(target=run, name=f"lifecycle-materialize-{job['id']}", daemon=True).start()
+        launch_background(
+            target=run,
+            name=f"lifecycle-materialize-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+        )
         return jsonify({"job": ctx.serialize_job(job)})
 
     @app.route("/api/lifecycle/materializations/<string:materialization_id>")

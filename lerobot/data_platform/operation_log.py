@@ -26,7 +26,17 @@ except ImportError:  # pragma: no cover - Data Platform is normally run on Linux
 
 LOG_FILENAME = "operation_log.jsonl"
 SCHEMA_VERSION = 1
-_SENSITIVE_KEY_PARTS = ("api_key", "apikey", "authorization", "cookie", "password", "secret", "token")
+_SENSITIVE_KEY_PARTS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "cookie",
+    "password",
+    "secret",
+    "token",
+    "credential",
+    "database_url",
+)
 _WRITE_LOCK = threading.Lock()
 
 
@@ -58,6 +68,10 @@ def sanitize_for_log(value: Any, *, _depth: int = 0) -> Any:
             sanitized.append(f"<{len(items) - 500} more items>")
         return sanitized
     if isinstance(value, str):
+        import re
+
+        value = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+:[^/@\s]+@", r"\1<redacted>@", value)
+        value = re.sub(r"(?i)(bearer\s+)[a-zA-Z0-9._~+/=-]+", r"\1<redacted>", value)
         return value if len(value) <= 4000 else value[:4000] + "<truncated>"
     if value is None or isinstance(value, (bool, int, float)):
         return value

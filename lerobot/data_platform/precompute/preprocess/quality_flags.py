@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
+from lerobot.data_platform.execution_pools import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
 
 from lerobot.data_platform.precompute.annotation import QUALITY_FLAG_TYPE, compute_quality_flags, series_to_2d
-from lerobot.data_platform.precompute.data_profile import resolve_data_profile
+from lerobot.data_platform.precompute.data_profile import (
+    require_dataset_operation,
+    resolve_processing_profile,
+)
 from lerobot.data_platform.precompute.dataset_io import (
     V3DatasetMetadata,
     is_v3_dataset,
@@ -1043,9 +1047,10 @@ def run_quality_flag_detection(
     progress_callback: ProgressCallback = None,
 ) -> PreprocessResult:
     root = validate_dataset_root(Path(root))
+    require_dataset_operation(root, "quality_flags", data_version_override=data_version)
     static_dir = Path(static_dir).expanduser()
     info = load_json(root / "meta" / "info.json")
-    selected_data_version = resolve_data_profile(
+    selected_data_version = resolve_processing_profile(
         root,
         info.get("features") or {},
         data_version_override=data_version,

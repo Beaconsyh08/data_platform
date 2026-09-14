@@ -15,7 +15,7 @@
 <!-- Use [Alpine.js](https://alpinejs.dev), a lightweight JavaScript framework. -->
 <!-- Use [tailwindcss](https://tailwindcss.com/), CSS classes for styling html -->
 <!-- Use [dygraphs](https://dygraphs.com/), a lightweight JS charting library -->
-<body class="flex h-screen max-h-screen flex-col overflow-hidden bg-slate-950 text-slate-200 font-mono text-sm" x-data="createAlpineData()">
+<body class="flex h-screen max-h-screen flex-col overflow-hidden bg-slate-950 text-slate-200 font-mono text-sm" x-data="createAlpineData()" @keydown.window="handleFrameKey($event)">
     {% set page_kind = "Episode Viewer" %}
     {% set page_title = dataset_info.repo_id %}
     {% set page_subtitle = "Episode " ~ episode_id %}
@@ -383,7 +383,7 @@
                           : 'bg-gray-700/50 text-gray-400',
                         stageEditEnabled ? 'cursor-pointer' : 'cursor-default']"
                       @click="stageEditEnabled && advanceSubtask()"
-                      :title="stageEditEnabled ? `Click or press A to advance subtask state (resets after ${_maxSubtaskState()})` : 'Read-only (use --annotate 1 to enable editing)'"></span>
+                      :title="stageEditEnabled ? `Click or press N to advance subtask state (resets after ${_maxSubtaskState()})` : 'Read-only (use --annotate 1 to enable editing)'"></span>
                 <template x-if="stageEditEnabled">
                     <div class="flex items-center gap-1">
                         <button @click="saveStageEdits()"
@@ -445,8 +445,29 @@
                     <div class="mt-1 text-[11px] text-slate-400" x-text="taskAssignmentStatus"></div>
                 </div>
             </template>
-            <div class="text-xs hidden md:block text-gray-400">
-                Hotkeys: <span class="font-mono">Space</span> play/pause, <span class="font-mono">←</span>/<span class="font-mono">→</span> slower/faster, <span class="font-mono">↓</span>/<span class="font-mono">↑</span> next/prev episode, <span class="font-mono">F</span> toggle flag, <span class="font-mono">A</span> subtask
+            <div class="relative shrink-0 text-xs" x-data="{ hotkeysOpen: false }"
+                 @click.outside="hotkeysOpen = false" @keydown.escape.window="hotkeysOpen = false">
+                <button type="button" @click="hotkeysOpen = !hotkeysOpen" @keydown.space.stop
+                        :aria-expanded="hotkeysOpen" aria-controls="viewer-hotkeys"
+                        class="rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-slate-300 hover:border-slate-500 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400">
+                    Hotkeys
+                </button>
+                <div id="viewer-hotkeys" x-show="hotkeysOpen" x-cloak x-transition.opacity
+                     class="absolute right-0 top-full z-50 mt-2 w-80 max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto rounded-lg border border-slate-700 bg-slate-900 p-4 shadow-xl">
+                    <p class="mb-3 font-semibold text-slate-100">Keyboard shortcuts</p>
+                    <dl class="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-4 gap-y-2 text-slate-300">
+                        <dt class="font-mono text-sky-300">Space</dt><dd>Play / pause</dd>
+                        <dt class="font-mono text-sky-300">A / D</dt><dd>Pause and step one frame backward / forward. Hold to repeat.</dd>
+                        <dt class="font-mono text-sky-300">← / →</dt><dd>Slower / faster playback; move the selected trim handle when active.</dd>
+                        <dt class="font-mono text-sky-300">↓ / ↑</dt><dd>Next / previous episode</dd>
+                        <dt class="font-mono text-sky-300">F</dt><dd>Toggle flag</dd>
+                        <dt class="font-mono text-sky-300">B</dt><dd>Edit background tag</dd>
+                        <dt class="font-mono text-sky-300">N</dt><dd>Advance Stage / Subtask (editing enabled)</dd>
+                        <dt class="font-mono text-sky-300">T</dt><dd>Toggle trim (editing enabled)</dd>
+                        <dt class="font-mono text-sky-300">Esc</dt><dd>Close shortcuts or zoom</dd>
+                    </dl>
+                    <p class="mt-3 border-t border-slate-800 pt-3 text-slate-500">Shortcuts are inactive while typing in a field.</p>
+                </div>
             </div>
         </div>
 
@@ -551,7 +572,7 @@
                                   if (!rows) {
                                     return;
                                   }
-                                  dygraphIndex = Math.min(rows - 1, Math.max(0, Math.floor(pc * rows / 100)));
+                                  dygraphIndex = timeToGraphRow(time, graph);
                                   if (dygraphArmJoints) dygraphArmJoints.setSelection(dygraphIndex, undefined, true, true);
                                   if (dygraphGripperFlag) dygraphGripperFlag.setSelection(dygraphIndex, undefined, true, true);
 
@@ -583,7 +604,21 @@
             <div class="min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_24rem] gap-3">
                 <div class="min-h-0 rounded-lg border border-slate-700 bg-slate-950/40 p-2 overflow-hidden flex flex-col">
                     <div class="mb-2 flex flex-wrap items-center gap-2">
-                        <div class="max-w-56 relative text-sm select-none" @click.outside="isGroupDropdownOpen = false">
+                        <span class="rounded border border-slate-700 bg-slate-950/60 px-3 py-2 text-xs font-semibold text-slate-300"
+                              x-text="graphLoading ? 'Loading charts...' : ((dygraphArmJoints || dygraphGripperFlag) ? 'Charts ready' : 'Preparing charts...')"></span>
+                        <div x-show="usesUmiPlotGroups" class="flex flex-wrap items-center gap-1.5" role="group" aria-label="UMI pose groups">
+                            <template x-for="group in jointGroups.filter(g => g.graph === 'arm')" :key="group.id">
+                                <button type="button"
+                                    @click="toggleGroup(group.id)"
+                                    :aria-pressed="group.enabled"
+                                    :title="group.label"
+                                    class="rounded-md border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                                    :class="group.enabled ? 'border-sky-400/60 bg-sky-400/15 text-sky-200 shadow-sm' : 'border-slate-700 bg-slate-950/40 text-slate-500 hover:border-slate-500 hover:text-slate-300'"
+                                    x-text="group.shortLabel">
+                                </button>
+                            </template>
+                        </div>
+                        <div x-show="!usesUmiPlotGroups" class="max-w-56 relative text-sm select-none" @click.outside="isGroupDropdownOpen = false">
                             <div
                                 @click="isGroupDropdownOpen = !isGroupDropdownOpen"
                                 class="p-2 border border-slate-500 rounded flex justify-between items-center cursor-pointer bg-slate-900"
@@ -594,7 +629,7 @@
 
                             <div x-show="isGroupDropdownOpen"
                                 class="absolute mt-1 border border-slate-500 rounded shadow-lg z-10 bg-slate-900 w-full">
-                                <template x-for="group in jointGroups" :key="group.id">
+                                <template x-for="group in jointGroups.filter(g => !usesUmiPlotGroups || g.graph === 'arm')" :key="group.id">
                                     <div
                                         @click="toggleGroup(group.id)"
                                         class="p-2 cursor-pointer"
@@ -605,13 +640,11 @@
                                 </template>
                             </div>
                         </div>
-                        <span class="rounded border border-slate-700 bg-slate-950/60 px-3 py-2 text-xs font-semibold text-slate-300"
-                              x-text="graphLoading ? 'Loading charts...' : ((dygraphArmJoints || dygraphGripperFlag) ? 'Charts ready' : 'Preparing charts...')"></span>
                     </div>
 
                     <div class="grid grid-cols-1 2xl:grid-cols-2 auto-rows-fr gap-2 flex-1 min-h-0">
                         <div class="min-h-0 rounded border border-slate-800 p-2 bg-slate-900/30 flex flex-col">
-                            <p class="text-xs font-medium text-gray-300 mb-1">{{ "Arm Joint Groups + Body Joint Group" if has_body_joints else "Left/Right Arm Joint Groups A+B (Combined)" }}</p>
+                            <p class="text-xs font-medium text-gray-300 mb-1" x-text="usesUmiPlotGroups ? 'UMI Pose/Orientation Signals' : (has_body_joints ? 'Arm Joint Groups + Body Joint Group' : 'Left/Right Arm Joint Groups A+B (Combined)')"></p>
                             <div id="graph-arm-joints" class="relative flex-1 min-h-0" @mouseleave="() => {
                                 if (dygraphArmJoints) {
                                     dygraphArmJoints.setSelection(dygraphIndex, undefined, true, true);
@@ -651,15 +684,11 @@
 
                 <div class="min-h-0 rounded-lg border border-slate-700 bg-slate-900/40 flex flex-col">
                 <div class="shrink-0 flex items-center justify-between px-3 py-2 border-b border-slate-700">
-                    <p class="text-sm font-semibold">State / Action</p>
+                    <p class="text-sm font-semibold" x-text="usesUmiPlotGroups ? 'UMI Signals' : 'State / Action'"></p>
                     <div class="flex gap-1">
                         <button class="text-xs px-2 py-1 rounded border border-slate-500 hover:bg-slate-700" @click="setAllSeries(true)">All</button>
                         <button class="text-xs px-2 py-1 rounded border border-slate-500 hover:bg-slate-700" @click="setAllSeries(false)">None</button>
                     </div>
-                </div>
-
-                <div class="px-3 py-1 text-[10px] text-gray-400 shrink-0">
-                    Compact telemetry panel (`state_i` and `action_i` per row). Toggle checkbox to show/hide a series.
                 </div>
 
                 <div class="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
@@ -667,7 +696,7 @@
                         <span x-text="graphLoading ? 'Loading telemetry...' : 'Preparing telemetry...'"></span>
                     </div>
                     <div class="grid grid-cols-1 gap-1" x-show="currentFrameData">
-                        <div class="grid grid-cols-[2.2rem_minmax(0,1fr)_minmax(0,1fr)] gap-1 px-1 text-[10px] text-gray-400 uppercase tracking-wide sticky top-0 bg-slate-900/90 z-10">
+                        <div x-show="stateActionRows.length > 0" class="grid grid-cols-[2.2rem_minmax(0,1fr)_minmax(0,1fr)] gap-1 px-1 text-[10px] text-gray-400 uppercase tracking-wide sticky top-0 bg-slate-900/90 z-10">
                             <span>Idx</span>
                             <span>State</span>
                             <span>Action</span>
@@ -706,20 +735,22 @@
                         </template>
 
                         <template x-if="auxiliaryRows.length > 0">
-                            <div class="pt-2 mt-1 border-t border-slate-700">
-                                <p class="px-1 mb-1 text-[10px] uppercase tracking-wide text-gray-500">Other Numeric</p>
-                                <div class="grid grid-cols-1 gap-1">
-                                    <template x-for="cell in auxiliaryRows" :key="cell.label">
-                                        <label class="flex items-center justify-between gap-2 rounded border border-slate-700 bg-slate-950/60 px-2 py-1 text-[10px]">
+                            <div class="pt-2 mt-1" :class="usesUmiPlotGroups ? 'grid grid-cols-3 gap-2' : 'border-t border-slate-700'">
+                                <template x-for="group in auxiliaryGroups" :key="group.key">
+                                <div class="grid grid-cols-1 content-start gap-1 mb-2 min-w-0" :class="usesUmiPlotGroups && group.key === 'other' ? 'col-span-3' : ''">
+                                    <p class="px-1 text-xs text-gray-400" x-text="group.label"></p>
+                                    <template x-for="cell in group.cells" :key="cell.label">
+                                        <label :title="signalDescription(cell.label)" class="flex items-center justify-between gap-2 rounded border border-slate-700 bg-slate-950/60 px-2 py-1 text-[10px]">
                                             <div class="flex items-center gap-1 min-w-0">
                                                 <input type="checkbox" x-model="cell.checked" @change="syncCheckedFromFrame()" class="shrink-0">
                                                 <span class="inline-block w-1.5 h-1.5 rounded-full shrink-0" :style="`background-color: ${cell.color}`"></span>
-                                                <span class="truncate" x-text="cell.label"></span>
+                                                <span class="truncate" x-text="signalShortLabel(cell.label)"></span>
                                             </div>
                                             <span class="font-mono text-right shrink-0" :style="`color: ${cell.color}`" x-text="formatCellValue(cell.value)"></span>
                                         </label>
                                     </template>
                                 </div>
+                                </template>
                             </div>
                         </template>
                     </div>
@@ -786,6 +817,7 @@
                 videosKeysSelected: [],
                 videoCodecHint: "{{ video_codec_hint }}",
                 dataVersion: {{ data_version | tojson }},
+                signalColumns: {{ signal_columns | default([], true) | tojson }},
                 hasBodyJoints: {{ has_body_joints | tojson }},
                 hasLegacyFlag: {{ has_legacy_flag | tojson }},
                 imageKeys: {{ image_keys | tojson }},
@@ -799,6 +831,9 @@
                 _onSpeedStep: null,
                 _onCloseZoom: null,
                 _pausedForZoom: [],
+                labelToGroupIds: {},
+                groupTargetById: {},
+                usesUmiPlotGroups: false,
                 leftASet: null,
                 leftBSet: null,
                 rightASet: null,
@@ -816,18 +851,7 @@
                 armJointMask: [],
                 gripperFlagMask: [],
                 isGroupDropdownOpen: false,
-                jointGroups: [
-                    { id: "left_a", label: "Left Arm Joint Group A", enabled: true },
-                    { id: "left_b", label: "Left Arm Joint Group B", enabled: true },
-                    { id: "right_a", label: "Right Arm Joint Group A", enabled: true },
-                    { id: "right_b", label: "Right Arm Joint Group B", enabled: true },
-                        ...({{ has_body_joints | tojson }} ? [{ id: "body", label: "Body Joint Group", enabled: true }] : []),
-                    {
-                        id: "gripper_flag",
-                        label: {{ ("Left/Right Gripper + Flag + Stage" if has_legacy_flag else "Left/Right Gripper + Stage") | tojson }},
-                        enabled: true
-                    },
-                ],
+                jointGroups: [],
                 playbackRates: [0.25, 0.5, 1, 2, 3, 5],
                 playbackRate: 1,
                 videoLoadRevision: 0,
@@ -1038,9 +1062,8 @@
                         this.scheduleFilterMapLoad();
                     }
                     const csvBaseUrl = "{{ csv_url }}";
-                    const csvParams = new URLSearchParams({
-                        data_version: this.dataVersion || 'DVT1',
-                    });
+                    const csvParams = new URLSearchParams();
+                    if (this.dataVersion) csvParams.set('data_version', this.dataVersion);
                     const pageCacheBust = new URLSearchParams(window.location.search).get('_t');
                     if (pageCacheBust) {
                         csvParams.set('_t', pageCacheBust);
@@ -1123,26 +1146,12 @@
                     const actionCol = this.columns.find(c => c.key === "action");
                     const stateLabels = stateCol ? stateCol.value : [];
                     const actionLabels = actionCol ? actionCol.value : [];
-
-                    const leftASet = new Set();
-                    const leftBSet = new Set();
-                    const rightASet = new Set();
-                    const rightBSet = new Set();
-                    const bodySet = new Set();
-                    const gripperFlagSet = new Set();
-                    this.leftASet = leftASet;
-                    this.leftBSet = leftBSet;
-                    this.rightASet = rightASet;
-                    this.rightBSet = rightBSet;
-                    this.bodySet = bodySet;
-                    this.gripperFlagSet = gripperFlagSet;
-
-                    const leftAIdx = new Set([0, 1, 2, 6]);
-                    const leftBIdx = new Set([3, 4, 5]);
-                    const rightAIdx = new Set([8, 9, 10, 14]);
-                    const rightBIdx = new Set([11, 12, 13]);
-                    const bodyIdx = this.hasBodyJoints ? new Set([16, 17, 18]) : new Set();
-                    const gripperFlagIdx = this.hasLegacyFlag ? new Set([7, 15, 16]) : new Set([7, 15]);
+                    const signalByLabel = new Map();
+                    for (const column of (this.signalColumns || [])) {
+                        for (const value of (column.value || [])) {
+                            signalByLabel.set(value, column);
+                        }
+                    }
 
                     const getIndexFromLabel = (label) => {
                         const match = label.match(/(\d+)$/);
@@ -1152,25 +1161,190 @@
                         return parseInt(match[1], 10);
                     };
 
-                    const assignToGroup = (label) => {
-                        const idx = getIndexFromLabel(label);
-                        if (idx === null) {
+                    const makeGroup = (id, label, graph) => {
+                        const entry = {
+                            id,
+                            label,
+                            enabled: true,
+                            graph,
+                            set: new Set(),
+                        };
+                        groupById[id] = entry;
+                        groups.push(entry);
+                        groupTargetById[id] = graph;
+                        return entry;
+                    };
+                    const addToGroup = (label, groupId) => {
+                        const set = groupById[groupId]?.set;
+                        if (!set) {
                             return;
                         }
-                        if (leftAIdx.has(idx)) leftASet.add(label);
-                        else if (leftBIdx.has(idx)) leftBSet.add(label);
-                        else if (rightAIdx.has(idx)) rightASet.add(label);
-                        else if (rightBIdx.has(idx)) rightBSet.add(label);
-                        else if (bodyIdx.has(idx)) bodySet.add(label);
-                        else if (gripperFlagIdx.has(idx)) gripperFlagSet.add(label);
+                        set.add(label);
+                        const key = label.toString();
+                        const current = Array.isArray(labelToGroupIds[key]) ? labelToGroupIds[key] : [];
+                        if (!current.includes(groupId)) {
+                            current.push(groupId);
+                        }
+                        labelToGroupIds[key] = current;
+                    };
+                    const labelToGroupIds = {};
+                    const groupById = {};
+                    const groupTargetById = {};
+                    const groups = [];
+                    this.labelToGroupIds = labelToGroupIds;
+                    this.groupTargetById = groupTargetById;
+
+                    const usesUmiSignals = (this.signalColumns || []).some((column) => {
+                        const key = column.key || "";
+                        return [
+                            "head_pose",
+                            "left_arm_pose",
+                            "right_arm_pose",
+                            "head_quaternion_pose",
+                            "left_arm_quaternion_pose",
+                            "right_arm_quaternion_pose",
+                            "left_gripper_pos",
+                            "right_gripper_pos",
+                        ].includes(key);
+                    });
+                    this.usesUmiPlotGroups = usesUmiSignals;
+
+                    const assignNonUmiByIndex = () => {
+                        const leftASet = new Set();
+                        const leftBSet = new Set();
+                        const rightASet = new Set();
+                        const rightBSet = new Set();
+                        const bodySet = new Set();
+                        const gripperFlagSet = new Set();
+
+                        const leftAGroup = makeGroup("left_a", "Left Arm Joint Group A", "arm");
+                        const leftBGroup = makeGroup("left_b", "Left Arm Joint Group B", "arm");
+                        const rightAGroup = makeGroup("right_a", "Right Arm Joint Group A", "arm");
+                        const rightBGroup = makeGroup("right_b", "Right Arm Joint Group B", "arm");
+                        if (this.hasBodyJoints) {
+                            makeGroup("body", "Body Joint Group", "arm");
+                        }
+                        makeGroup(
+                            "gripper_flag",
+                            this.hasLegacyFlag
+                                ? "Left/Right Gripper + Flag + Stage"
+                                : "Left/Right Gripper + Stage",
+                            "gripper"
+                        );
+
+                        const leftAIdx = new Set([0, 1, 2, 6]);
+                        const leftBIdx = new Set([3, 4, 5]);
+                        const rightAIdx = new Set([8, 9, 10, 14]);
+                        const rightBIdx = new Set([11, 12, 13]);
+                        const bodyIdx = this.hasBodyJoints ? new Set([16, 17, 18]) : new Set();
+                        const gripperFlagIdx = this.hasLegacyFlag ? new Set([7, 15, 16]) : new Set([7, 15]);
+
+                        const assignToGroup = (label) => {
+                            const idx = getIndexFromLabel(label);
+                            if (idx === null) {
+                                return;
+                            }
+                            if (leftAIdx.has(idx)) {
+                                leftASet.add(label);
+                                addToGroup(label, leftAGroup.id);
+                            } else if (leftBIdx.has(idx)) {
+                                leftBSet.add(label);
+                                addToGroup(label, leftBGroup.id);
+                            } else if (rightAIdx.has(idx)) {
+                                rightASet.add(label);
+                                addToGroup(label, rightAGroup.id);
+                            } else if (rightBIdx.has(idx)) {
+                                rightBSet.add(label);
+                                addToGroup(label, rightBGroup.id);
+                            } else if (bodyIdx.has(idx)) {
+                                bodySet.add(label);
+                                addToGroup(label, "body");
+                            } else if (gripperFlagIdx.has(idx)) {
+                                gripperFlagSet.add(label);
+                                addToGroup(label, "gripper_flag");
+                            }
+                        };
+
+                        stateLabels.forEach(assignToGroup);
+                        actionLabels.forEach(assignToGroup);
+
+                        this.leftASet = leftASet;
+                        this.leftBSet = leftBSet;
+                        this.rightASet = rightASet;
+                        this.rightBSet = rightBSet;
+                        this.bodySet = bodySet;
+                        this.gripperFlagSet = gripperFlagSet;
                     };
 
-                    stateLabels.forEach(assignToGroup);
-                    actionLabels.forEach(assignToGroup);
+                    const assignUmiByColumn = () => {
+                        const xyz = new Set(["x", "y", "z"]);
+                        const rpy = new Set(["roll", "pitch", "yaw"]);
+                        const quat = new Set(["qw", "qx", "qy", "qz"]);
+                        for (const [part, title] of [["head", "Head"], ["left_arm", "Left"], ["right_arm", "Right"]]) {
+                            const eulerGroup = makeGroup(part + "_rpy", title + " XYZ + Roll/Pitch/Yaw", "arm");
+                            const quatGroup = makeGroup(part + "_quat", title + " XYZ + qw/qx/qy/qz", "arm");
+                            eulerGroup.shortLabel = title + "3";
+                            quatGroup.shortLabel = title + "4";
+                            for (const label of labels.slice(1)) {
+                                const key = signalByLabel.get(label)?.key;
+                                const component = label.split(".").pop();
+                                if (key === part + "_pose") {
+                                    if (xyz.has(component)) {
+                                        addToGroup(label, eulerGroup.id);
+                                        addToGroup(label, quatGroup.id);
+                                    } else if (rpy.has(component)) {
+                                        addToGroup(label, eulerGroup.id);
+                                    }
+                                } else if (key === part + "_quaternion_pose" && quat.has(component)) {
+                                    addToGroup(label, quatGroup.id);
+                                }
+                            }
+                        }
+                        // Gripper and stage checkboxes remain independent of the six pose groups.
+                        for (const key of ["left_gripper_pos", "right_gripper_pos"]) {
+                            makeGroup(key, key, "gripper");
+                            if (labels.includes(key)) addToGroup(key, key);
+                        }
+                        makeGroup("gripper_flag", "Stage", "gripper");
+                    };
+
+                    if (usesUmiSignals) {
+                        assignUmiByColumn();
+                    } else {
+                        assignNonUmiByIndex();
+                        this.jointGroups = groups;
+                    }
 
                     // Add the task-dependent normalized stage series to the gripper/stage group.
-                    if (labels.includes("stage")) {
-                        gripperFlagSet.add("stage");
+                    const gripperFlagGroup = groupById.gripper_flag;
+                    if (gripperFlagGroup && labels.includes("stage")) {
+                        addToGroup("stage", gripperFlagGroup.id);
+                    }
+
+                    this.jointGroups = usesUmiSignals
+                        ? groups.filter(item => item.set.size > 0)
+                        : groups;
+
+                    const activeByGraph = (graph, label) => {
+                        const ids = this.labelToGroupIds[label] || [];
+                        return ids.some(id => this.groupTargetById[id] === graph);
+                    };
+
+                    if (this.jointGroups.length === 0) {
+                        this.usesUmiPlotGroups = false;
+                        this.jointGroups = [
+                            { id: "left_a", label: "Left Arm Joint Group A", enabled: true },
+                            { id: "left_b", label: "Left Arm Joint Group B", enabled: true },
+                            { id: "right_a", label: "Right Arm Joint Group A", enabled: true },
+                            { id: "right_b", label: "Right Arm Joint Group B", enabled: true },
+                            {
+                                id: "gripper_flag",
+                                label: this.hasLegacyFlag
+                                    ? "Left/Right Gripper + Flag + Stage"
+                                    : "Left/Right Gripper + Stage",
+                                enabled: true,
+                            },
+                        ];
                     }
 
                     const seriesOptions = {};
@@ -1178,16 +1352,11 @@
                         seriesOptions[label] = { strokePattern: [6, 4] };
                     }
 
-                    const buildVisibility = (set) => labels.slice(1).map(label => set.has(label));
-                    this.leftAMask = buildVisibility(leftASet);
-                    this.leftBMask = buildVisibility(leftBSet);
-                    this.rightAMask = buildVisibility(rightASet);
-                    this.rightBMask = buildVisibility(rightBSet);
-                    this.bodyMask = buildVisibility(bodySet);
-                    this.armJointMask = labels.slice(1).map((_, idx) => (
-                        this.leftAMask[idx] || this.leftBMask[idx] || this.rightAMask[idx] || this.rightBMask[idx] || this.bodyMask[idx]
-                    ));
-                    this.gripperFlagMask = buildVisibility(gripperFlagSet);
+                    const buildVisibilityByGraph = (graph) => labels
+                        .slice(1)
+                        .map(label => activeByGraph(graph, label));
+                    this.armJointMask = buildVisibilityByGraph("arm");
+                    this.gripperFlagMask = buildVisibilityByGraph("gripper");
 
                     const syncSelection = (row) => {
                         if (this.dygraphArmJoints) this.dygraphArmJoints.setSelection(row, undefined, true, true);
@@ -1229,6 +1398,7 @@
                         let fallbackIndex = 0;
                         return labelsInOrder.map(label => {
                             if (label === "stage") return "#ab47bc";
+                            if (usesUmiSignals) return this.umiSignalColor(label);
                             const idx = getIndexFromLabel(label);
                             const key = colorKeyFromIndex(idx);
                             if (key !== null && baseColors[key]) {
@@ -2456,6 +2626,44 @@
                         && !/^subtask_state/.test(cell.label)
                     ));
                 },
+                get auxiliaryGroups() {
+                    const groups = new Map();
+                    for (const cell of this.auxiliaryRows) {
+                        if (this.usesUmiPlotGroups && /_quaternion_pose\.[xyz]$/.test(cell.label)) continue;
+                        const column = this.signalColumns.find(item => item.value.includes(cell.label));
+                        const key = column?.group || 'other';
+                        if (!groups.has(key)) groups.set(key, {key, label: {head: 'Head', left: 'Left', right: 'Right', other: 'Stage'}[key] || key, cells: []});
+                        groups.get(key).cells.push(cell);
+                    }
+                    if (this.usesUmiPlotGroups) {
+                        return ['head', 'left', 'right', 'other'].filter(key => groups.has(key)).map(key => groups.get(key));
+                    }
+                    return [...groups.values()];
+                },
+                signalShortLabel(label) {
+                    if (!this.usesUmiPlotGroups) return label;
+                    if (label.endsWith('_gripper_pos')) return 'gripper';
+                    return label.split('.').pop();
+                },
+                umiSignalColor(label) {
+                    const parts = ['head', 'left_arm', 'right_arm'];
+                    const components = ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'qw', 'qx', 'qy', 'qz'];
+                    const part = parts.findIndex(prefix => label.startsWith(prefix + '_'));
+                    const component = components.indexOf(label.split('.').pop());
+                    if (part >= 0 && component >= 0) {
+                        const hue = ((part * 10 + component) * 137.508) % 360;
+                        return `hsl(${hue.toFixed(2)}, 78%, 65%)`;
+                    }
+                    return label === 'left_gripper_pos' ? '#38bdf8'
+                        : label === 'right_gripper_pos' ? '#fb923c' : '#ab47bc';
+                },
+                signalDescription(label) {
+                    const column = this.signalColumns.find(item => item.value.includes(label));
+                    if (!column) return label;
+                    const display = ['left_gripper_pos', 'right_gripper_pos'].includes(column.key)
+                        ? ' · Raw range: 0–100 · Display: raw / 100 (0–1)' : '';
+                    return `${label} · Unit: ${column.unit || 'Not declared'} · Coordinate frame: ${column.coordinate_frame || 'Not declared'}${display}`;
+                },
                 formatCellValue(value) {
                     return typeof value === "number" ? value.toFixed(2) : value;
                 },
@@ -2515,20 +2723,8 @@
                     if (!graph) {
                         return;
                     }
-                    let index = 0;
-                    if (this.video && this.video.duration) {
-                        let pc = (100 / this.video.duration) * (time === undefined ? this.video.currentTime : time);
-                        if (isNaN(pc)) pc = 0;
-                        const rows = graph.numRows();
-                        if (!rows) {
-                            return;
-                        }
-                        index = Math.floor(pc * rows / 100);
-                    } else {
-                        const targetTime = time === undefined ? this.dygraphTime : time;
-                        const row = graph.getRowForX(targetTime);
-                        index = row === null ? 0 : row;
-                    }
+                    const targetTime = time === undefined ? (this.video?.currentTime ?? this.dygraphTime) : time;
+                    let index = this.timeToGraphRow(targetTime, graph);
                     const maxIndex = graph.rawData_ ? graph.rawData_.length - 1 : -1;
                     if (maxIndex < 0) {
                         return;
@@ -2558,7 +2754,7 @@
                         this.checked = checkedNew;
                         this.applyVisibility();
                     }
-                    this.updateImages(index);
+                    this.updateImages(this.timeToFrame(targetTime));
                 },
 
                 //#endregion
@@ -2793,27 +2989,19 @@
                         }
                     }
                     const enabled = new Set(this.jointGroups.filter(g => g.enabled).map(g => g.id));
-                    const leftAOn = enabled.has("left_a");
-                    const leftBOn = enabled.has("left_b");
-                    const rightAOn = enabled.has("right_a");
-                    const rightBOn = enabled.has("right_b");
-                    const bodyOn = enabled.has("body");
-                    const gripperFlagOn = enabled.has("gripper_flag");
+                    const activeByGraph = (graph, label) => {
+                        const groupIds = this.labelToGroupIds[label] || [];
+                        return groupIds.some((groupId) => enabled.has(groupId) && this.groupTargetById[groupId] === graph);
+                    };
 
                     if (this.dygraphArmJoints) {
                         this.dygraphArmJoints.setVisibility(labels.map((label) => (
-                            (checkedByLabel[label] ?? true) && (
-                                (leftAOn && this.leftASet?.has(label)) ||
-                                (leftBOn && this.leftBSet?.has(label)) ||
-                                (rightAOn && this.rightASet?.has(label)) ||
-                                (rightBOn && this.rightBSet?.has(label)) ||
-                                (bodyOn && this.bodySet?.has(label))
-                            )
+                            (checkedByLabel[label] ?? true) && activeByGraph("arm", label)
                         )));
                     }
                     if (this.dygraphGripperFlag) {
                         this.dygraphGripperFlag.setVisibility(
-                            labels.map((label) => (checkedByLabel[label] ?? true) && gripperFlagOn && this.gripperFlagSet?.has(label))
+                            labels.map((label) => (checkedByLabel[label] ?? true) && activeByGraph("gripper", label))
                         );
                     }
                 },
@@ -3263,6 +3451,42 @@
                 },
 
                 // ── Trim annotation methods ──
+
+                handleFrameKey(event) {
+                    const key = (event.key || '').toLowerCase();
+                    if (!['a', 'd'].includes(key) || event.defaultPrevented || event.isComposing
+                        || event.ctrlKey || event.metaKey || event.altKey) return;
+                    const target = event.target;
+                    if (target?.isContentEditable || target?.closest?.('input, textarea, select, [role="textbox"]')) return;
+                    event.preventDefault();
+                    // Native key repeat supplies one additional step per repeated keydown.
+                    this.stepFrame(key === 'd' ? 1 : -1);
+                },
+
+                stepFrame(direction) {
+                    const source = this.isZoomOpen && this.$refs.zoomVideo ? this.$refs.zoomVideo : this.video;
+                    const time = source && Number.isFinite(source.currentTime) ? source.currentTime : this.dygraphTime;
+                    const frame = this.clampTrimFrame(this.timeToFrame(time) + direction);
+                    const nextTime = this.frameToTime(frame);
+                    const videos = new Set([...(this.videos || []), this.video, this.$refs.zoomVideo]);
+                    for (const video of videos) {
+                        if (!video) continue;
+                        video.pause();
+                        if (video.readyState > 0) {
+                            video.currentTime = Number.isFinite(video.duration)
+                                ? Math.min(nextTime, video.duration) : nextTime;
+                        }
+                    }
+                    this._pausedForZoom = (this.videos || []).map(() => true);
+                    this.dygraphTime = nextTime;
+                    this.dygraphIndex = this.timeToGraphRow(nextTime);
+                    for (const graph of [this.dygraphArmJoints, this.dygraphGripperFlag]) {
+                        if (graph) graph.setSelection(this.timeToGraphRow(nextTime, graph), undefined, true, true);
+                    }
+                    this.updateTableValues(nextTime);
+                    this.updateImages(frame);
+                    this._updateCurrentStage();
+                },
 
                 maxTrimFrame() {
                     const graph = this.dygraphArmJoints || this.dygraphGripperFlag;
@@ -3952,7 +4176,7 @@
             } else if (key === 'b' || key === 'B') {
                 e.preventDefault();
                 window.dispatchEvent(new CustomEvent('visualizer-edit-background-tag'));
-            } else if ((key === 'a' || key === 'A') && window.__stageEditEnabled) {
+            } else if ((key === 'n' || key === 'N') && window.__stageEditEnabled) {
                 e.preventDefault();
                 window.dispatchEvent(new CustomEvent('visualizer-advance-subtask'));
             } else if ((key === 't' || key === 'T') && window.__stageEditEnabled) {

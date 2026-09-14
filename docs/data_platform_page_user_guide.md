@@ -1,5 +1,7 @@
 # Data Platform 页面功能与操作手册
 
+任务类型、对象和属性现可通过页面维护；旧 Pick/Place/Give 与开关门、装载衣物等新任务共用版本化定义。新增任务、别名复用、筛选配比及 Agent 配置同步见 [Task setup](data_platform_task_catalog.md)。
+
 > 适用范围：当前仓库 `lerobot.data_platform` Web 页面，包含 Data Platform 与 Data Curation 两个逻辑 Workspace。
 > 页面默认地址：`http://127.0.0.1:9091`。本文按当前代码整理，更新时间为 2026-08-24。
 
@@ -70,6 +72,8 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 
 ## 3. 首页布局和通用操作
 
+页面上的数据集名称显示实际目录名，不显示 Agent 注册时添加的路径哈希后缀；内部标识和链接保持不变，同名数据集可通过节点和完整路径区分。
+
 首页采用单主画布布局，不再常驻显示数据集左栏和任务右栏：
 
 | 区域 | 用途 |
@@ -83,20 +87,18 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 
 1. 打开 `Data Platform > Datasets`，在 `root_dir` 输入数据集父目录。
 2. 点击 `Scan`。
-3. 切到 `Available`，查看扫描到的目录。
-4. 选择一个或多个数据集，点击 `Register selected`；单个数据集可点击 `Add to catalog`。
-5. 切回 `Registered`，点击数据集名称将其设为 working dataset。页面自动补取轻量详情，具体操作在执行时按需加载数据，不再需要单独执行 `Load`。
-6. 选中数据集后，通过顶部功能页导航进入所需操作；后续也可使用顶部 Dataset selector 快速切换。
+3. 页面用一个 `Datasets` 列表显示扫描结果，不再区分 `Available` 和 `Registered`。
+4. 点击数据集即可将其设为 working dataset；如果它是首次出现，平台会在后台自动完成 Catalog 登记。页面自动补取轻量详情，具体操作在执行时按需加载数据，不需要单独执行 `Register` 或 `Load`。
+5. 选中数据集后，通过顶部功能页导航进入所需操作；后续也可使用顶部 Working dataset 选择器快速切换。
 
-扫描只识别存在 `meta/info.json` 的完整 LeRobot 数据集。cache-only 项目暂不出现在发现、注册和选择界面。
+扫描只识别存在 `meta/info.json` 的完整 LeRobot 数据集。cache-only 项目暂不出现在发现和选择界面。中央平台中，Viewer 账号只读；首次选择尚未进入 Catalog 的 Server A 数据集需要 Operator 或 Admin，Agent 数据集则由节点同步自动登记。
 
-### 3.2 `Registered`、`Available` 和源数据保护
+### 3.2 数据集列表和源数据保护
 
-- `Available`：在 `root_dir` 下扫描到、但尚未注册到当前工作台的目录。
-- `Registered`：已保存到工作台 Catalog 的项目；选择后即可使用。
+- `Datasets`：统一显示当前路径下发现的数据集；Catalog 状态由平台在后台维护，不需要用户切换列表。
 - `Mark root as source`：将当前路径及其所有子目录视为源数据区，服务器拒绝原地删除、修复和覆盖。
 - `protect`：只保护一个已注册数据集，适合它不在统一源数据路径下的情况。
-- `unregister`：只移除 Catalog 记录，不会删除数据集文件，也不受源数据保护限制。
+- `unregister`：仅 Admin 可见，只移除 Catalog 记录，不会删除数据集文件，也不受源数据保护限制。
 
 数据阶段与保护级别是两个独立维度：Raw、Standard、Curated 表示数据处于闭环的哪个阶段；`source protected` 表示是否允许原地修改。Preprocess 输出默认属于 Standard/Managed，只有输出仍位于受保护路径下或被手工标记时才继续受保护。
 
@@ -334,6 +336,43 @@ v3 视频编码模式：
 4. 设置 workers，先 dry-run。
 5. 正式执行后，Parquet、视频、cache、label、tag、flag 等索引会随新 episode 编号重映射。
 
+`Signal dimensions` 默认选择 `Strict`，要求同名字段维度一致，已声明的信号维度名称和顺序也必须一致。
+选择 `Minimum` 可以合并不同维度的 `action`、`state`、`observation.state`：
+
+- 每个字段独立采用维度最小的 source 的名称和顺序；维度相同时采用先选中的 source。
+- 根据 `meta/info.json` 中完整且不重复的 `features.<field>.names` 匹配和重排，支持名称列表或单轴字典。
+- 最小 source 的所有维度必须存在于每个 source 中。缺失维度、未命名、重名、单位或语义不兼容都会拒绝，不会按位置截断或猜测名称。
+- 机器人、FPS、夹爪编码和 stage profile 仍须兼容。17D flag 与 19D 身体关节不能因为索引相同就当作同一维。
+- Dry run 的 job 摘要包含 `dimension_alignment`：目标名称、每个来源对应的索引（从 0 开始）及被丢弃的名称。
+- 只写新数据集，同步更新实际向量、schema 和 episode/global stats。页面和 CLI 会从输出重建 CSV，再完成注册；其他视频、标签和人工标注沿用原有索引重映射。
+
+CLI 参数：`--preprocess-merge-dimension-policy min`；API 参数：`options.dimension_policy: "min"`。
+直接调用 Python `run_merge(..., dimension_policy="min")` 时，旧 CSV 不会复制；如需 Viewer 缓存，需对输出执行 cache preparation。
+
+Agent 数据集也支持 Merge：选择远端 working dataset 后，source 列表仅显示同一 Agent 上可用的数据集。
+选择至少两个 source，再选择 `Minimum`；输出可留空自动生成同级目录，也可填写该 Agent writable roots 下的绝对路径。
+Agent 会执行同样的维度检查、统计更新和 CSV 重建，上传输出的 Viewer 缓存，然后在控制台注册新数据集。
+Dry run 仅返回计划，不生成输出或上传缓存。跨 Agent 合并不支持。
+
+服务器和 Agent 都需更新到包含此功能的版本，并重启服务；页面根据 Agent 心跳上报的 `preprocess.merge` 能力显示远端 Merge 入口。
+远端 API 使用 `POST /api/control/locations/{首个source的location_id}/preprocess-jobs`，请求示例：
+
+```json
+{
+  "op": "merge",
+  "options": {
+    "source_location_ids": ["source-a-location-id", "source-b-location-id"],
+    "dimension_policy": "min",
+    "exclude_episodes": [[], [1, 3]],
+    "workers": 8,
+    "dry_run": true
+  }
+}
+```
+
+`source_location_ids` 包含全部 source，顺序决定同维度时采用哪一个布局；`exclude_episodes` 与它逐项对应。
+控制端从注册记录解析源路径，Agent 再次校验同节点、允许读取范围，以及输出与每个 source 分离。
+
 #### Subtract
 
 用途：从当前数据集 A 中，排除在一个或多个数据集 B 中出现的相同 episode，输出 `A - B`。
@@ -366,7 +405,8 @@ Viewer 在 cache 准备完成后可打开。页面主要包含视频、时间轴
 | `←` / `→` | 降低/提高播放速度；编辑 trim handle 时用于微调 |
 | `↓` / `↑` | 下一个/上一个 episode |
 | `F` | 打开 flag 原因窗口 |
-| `A` | 推进一个 Stage/Subtask |
+| `A` / `D` | 暂停播放并后退 / 前进一帧；长按连续移动，松开停止 |
+| `N` | 推进一个 Stage/Subtask |
 | `T` | 开关 Trim 模式 |
 | `B` | 编辑 background tag |
 
@@ -380,7 +420,7 @@ Viewer 在 cache 准备完成后可打开。页面主要包含视频、时间轴
 ### 6.3 Stage 编辑
 
 1. 点击 `EDIT OFF` 切换为 `EDIT ON`。
-2. 播放到 Stage 边界处，点击 `S:x/y` 或按 `A` 依次推进 Stage。
+2. 播放到 Stage 边界处，点击 `S:x/y` 或按 `N` 依次推进 Stage。
 3. 可在曲线上拖动阶段边界。
 4. 点击 `Save stage`。
 
@@ -404,26 +444,44 @@ Viewer 在 cache 准备完成后可打开。页面主要包含视频、时间轴
 - 卡片只负责展示状态和引导准备流程，不会在点击时自动启动后台任务；
 - `visualize` 模式只显示该模式允许访问的 Viewer 与 Analysis，避免暴露被服务端禁用的功能。
 
-Analysis 页面用于数据集整体检查，会汇总：
+### Run Analysis directly
 
-- episode 数、canonical task 覆盖、CSV cache 覆盖；
-- 总帧数、总时长、tagged episode 数；
-- scene/task 类型和 canonical task 分布；
-- Stage、`exist_label`、时长和 tag 分布；
-- cache 缺失或抽样状态；
-- Needs Review 中的未知类别、异常行和 review reason。
+1. Select a local or Agent dataset, then click **Open analysis** in Explore.
+2. Use **Refresh analysis** to rerun it. Prepare cache is not a prerequisite and is not started automatically.
+3. Filter by task type, task attributes, instruction text, duration, or available annotation values.
+4. Open an episode in Viewer if its Viewer artifacts are available.
 
-推荐用法：
+Task distributions, episode counts, frame counts, and duration come from metadata. Duration is
+`length / fps`; v3.0 can also supply length through `dataset_to_index - dataset_from_index`.
+Sampled CSV rows do not replace the full dataset frame count. Existing CSV files optionally add
+stage and object-presence statistics, and existing tags remain usable. **Not generated** means an
+optional CSV is absent; it does not create a review flag. Unreadable CSV files still have diagnostics.
 
-1. Cache 完成后点击 `Refresh analysis`。
-2. 先检查 cache 覆盖是否完整。
-3. 用 Scene Tabs 查看 Give、Pick、Place 和 Pick 子类型。
-4. 点击矩阵单元、Stage、时长、tag 或 review reason 下钻到 episode 列表。
-5. 点击 episode ID 回到 Viewer 复核。
+Remote Analysis reads the last Agent metadata report and displays its sync time, so the Agent need
+not be online while you inspect it. After upgrading the Agent, wait for the automatic metadata sync to report episode
+lengths (on startup and every 300 seconds by default). An older report can still show known totals and tasks; unavailable per-episode lengths and
+durations are not invented. No remote analysis request queues a Prepare job.
 
-Analysis 依赖 CSV cache。出现 `missing_csv` 或页面没有 episode 行时，先回首页补齐 CSV cache。
+Task classification always uses the applied catalog. If cached stages were generated with a different
+stage policy, those annotations are omitted while current metadata statistics remain available.
+Analysis may save its own small derived statistics outside the source dataset; it does not generate
+CSV/video files or change source prompts, frame data, or metadata.
 
 ## 8. Data Curation：标注功能
+
+### Shared Qwen configuration and task suggestions
+
+Set `DASHSCOPE_API_KEY` in Server A's `/etc/data-platform/server.env`, then restart
+`data-platform-web`. Qwen API **Auto labeling**, VLM **Auto-tagging**, and **Task setup → Suggest
+with AI** share this credential. Leave the per-job API key field empty to use it; Gradio continues
+to require its separate ModelScope token. See the [configuration commands](../README.md#shared-qwen-api-key-on-server-a).
+
+For task onboarding, load instructions and select the latest catalog, generate suggestions, review
+and select the proposed definitions, then use **Save selected & preview → Apply to dataset**.
+Suggestions only use task text and the catalog; no Prepare cache is needed. Ambiguous instructions
+remain available for manual setup. Applying a mapping still starts the existing background CSV
+refresh. The [task setup guide](data_platform_task_catalog.md#ai-assisted-task-setup) describes review,
+version checks, and remote dataset behavior.
 
 ### 8.1 Object Labeling
 
@@ -606,6 +664,10 @@ Compare 页面目前偏审计视图，统计和 overlap 主要以 JSON 展示。
 
 任务完成后，先确认状态为 `done/success`，再打开新输出或开始下一个写任务。
 
+如果任务生成了新的数据集，输出卡片会提供 `Use dataset`。Viewer cache 尚未生成时还会显示
+`Prepare viewer`；点击后直接在输出所在的 Server A 或 Agent 上启动 cache 任务。cache 完成后，
+同一输出卡片会改为 `Open viewer`。
+
 ### 11.2 结果与产物入口
 
 `Data Curation > Explore > Overview` 会始终显示当前模式允许访问的可视化卡片，并根据产物状态提供 `Open` 或准备入口；对应功能页顶部和 Job 详情中仍保留就近的结果链接：
@@ -620,6 +682,10 @@ Compare 页面目前偏审计视图，统计和 overlap 主要以 JSON 展示。
 - Compare。
 
 按钮显示 `missing` 或禁用时，应先完成对应前置任务，而不是直接拼 URL。
+
+Agent 数据集也可以进入 `Data Curation > Explore > Overview`。远程 Explore 展示 Dataset Analysis 和
+Episode Viewer。Analysis 直接使用已同步的元数据；Viewer 有 cache 时直接打开，没有 cache 时
+Operator/Admin 可启动 `Prepare viewer`。Embedding、标注和构造等入口仍不显示。
 
 ### 11.3 Pipeline Runs 与 Operation history
 
@@ -638,7 +704,8 @@ Compare 页面目前偏审计视图，统计和 overlap 主要以 JSON 展示。
 ### 12.1 只浏览和分析
 
 ```text
-Scan → Register/Load → Cache → Viewer → Analysis
+Scan / Agent automatic sync → Register/Load → Open analysis
+                                  → Prepare cache → Viewer (optional)
 ```
 
 整个流程不需要修改源数据。Viewer 中不要打开 EDIT、TRIM 或 DEL。
@@ -660,7 +727,7 @@ Cache → Object Labeling trial → Object Labeling full
 → Label Review → Merge labels（确有需要时）
 → Data Construction Preview → Construction
 → Accept/Reject → Finalize rejected
-→ 注册输出 → Cache → Analysis
+→ 注册输出 → Analysis
 ```
 
 ### 12.4 自动标签和数据集对比
@@ -681,8 +748,9 @@ Auto-tagging trial → Auto-tagging full → Tag Review
 
 ### Analysis 没有 episode 行
 
-- 通常是 CSV cache 缺失；
-- 回 Cache 补齐 CSV 后，再点击 `Refresh analysis`。
+- 检查本机 episode 元数据是否可读，或远程 Agent 是否已上报 episode 清单。
+- 远程缺少清单时，升级 Agent 并等待自动元数据同步（启动时及默认每 300 秒）；然后点击 **Refresh analysis**。
+- 不需要通过 Prepare cache 补齐基础分析。
 
 ### Labeling 或 VLM tag 无法启动
 
@@ -722,3 +790,66 @@ Auto-tagging trial → Auto-tagging full → Tag Review
 - `lerobot/data_platform/routes/`：Preprocess、Tagging、Construction、Embedding、Compare 路由；
 - `lerobot/data_platform/precompute/`：实际数据处理、写入和输出逻辑。
 - `docs/data_lifecycle_architecture.md`：双平面 capability matrix、对象契约、接口和物化不变量。
+
+## UMI 数据与处理能力
+
+数据列表不再显示 DVT1/DVT2 分类标签，而显示实际机器人类型与 LeRobot 存储版本。
+UMI 数据可直接准备三路预览缓存、查看头部/左右手位姿与夹爪曲线、运行基础分析和同结构拆分合并。
+曲线的单位和坐标系未声明时保持未知，夹爪显示采集值；依赖 DVT action/state 的操作不可用。
+原始信号统计代表完整数据集，不随筛选变化。详细操作和写入行为见 [UMI 数据支持](umi_dataset_support.md)。
+
+
+## 默认 Stage 策略
+
+处理表单默认选择 `H10W DVT2 · stage v1`（`h10w_dvt2_stage_v1`），切换到旧 DVT1 数据也不会
+自动改回旧规则；需要兼容旧行为时手动选择 DVT1。数据集列表的机器人类型与处理默认值分别显示。
+
+UMI 的 Cache 和 Stage 表单显示 `时间等分 · 5 段（UMI）`；可调整“时间等分段数”（至少 2）。
+UMI 的所有任务按 episode 的起止时间均匀切分，不使用关节位姿、夹爪阈值或 DVT 标准化。
+已有合法 Stage 默认保留，主动重新切分会重新生成缓存阶段。本地和远程 Agent 接收同一段数与重算选项。
+
+## 多用户日志与任务控制
+
+管理员使用现有账号登录 `/control-plane` 后直接看到使用日志和只读数据库面板。
+任务行按实际权限显示重试、排队取消、请求停止、强制终止和优先级选项；没有额外管理员入口。
+“请求停止”成功只代表请求已接受，直到执行器确认进程退出后才显示 `cancelled`。
+`interrupted` 表示节点执行状态尚需核实，不会立即重新执行。
+本地请求重放、原地修改及旧 Agent 的运行中控制可能不可用，页面会显示能力限制。
+日志库未配置或暂时离线会显示提示，不会把未知日志结果当成成功。
+详细配置和部署步骤见 [多用户管理与任务执行](data_platform_multi_user_management.md)。
+
+### 平台管理入口
+
+集中部署时，首页顶部的 **Platform management** 打开平台管理页，替代原先 Nodes 入口和账号菜单中的
+Manage users。复用现有登录与权限，不需要第二套管理员账号。
+
+- **Overview**：查看近期任务中的运行、排队、异常数量及在线节点，点击卡片进入对应列表。
+- **Jobs**：按状态、操作、数据集、Job ID 或“我的任务”筛选；每页 20 条。Details 展示执行批次、
+  错误和近期事件，原始记录折叠显示；重试、取消、终止仍由后端能力与权限决定。
+- **Nodes & datasets**：查看节点及其数据位置，保留 Viewer 准备和数据控制台跳转。
+- 管理员另外可见 **Users & access**、**Usage & audit** 和 **Database**，分别管理账号权限、查询使用日志、
+  只读浏览数据库。日志和数据库在切换到对应页签时加载。
+
+概览及任务筛选基于当前接口加载的近期任务，不代表平台历史总量。页签可通过 URL 中的
+`#jobs`、`#users` 等直接打开；小屏幕下页签和宽表格可横向滚动。
+
+### 自己的任务与管理员任务控制
+
+Jobs 抽屉和 Pipeline Runs 页面共用任务控制：operator/admin 可重试自己已结束且支持重试的任务，
+取消自己的排队任务，或请求停止支持安全停止的运行任务。按钮旁显示 username 和不可操作原因。
+请求停止只表示已接受停止意图，须等待执行器确认所有进程退出；不会立即显示取消完成。
+Viewer 角色保持只读。
+
+这些页面使用 `/api/jobs/<id>/retry` 和 `/api/jobs/<id>/cancel`，后端强制校验提交者。
+管理员操作其他人的任务应进入 Platform management → Jobs，沿用管理员控制接口。
+未适配安全恢复的任务、旧协议执行或退出待确认的任务仍可能禁用重试/停止，不因管理员身份跳过执行安全检查。
+管理页面的常规用户展示统一使用 username；API 的稳定 user_id 继续用于关联和权限判断。
+
+### 开发环境与角色体验
+
+开发入口使用服务器 HTTPS 的 8443 端口，生产入口保留 443。页面顶部显示环境、版本和当前身份。
+开发管理员登录后，可在顶部切换到操作员 A、操作员 B 或只读用户，并返回管理员。切换是真实权限体验：
+API 校验、任务归属和配额使用当前测试用户，已提交任务不会因为随后切换而改变归属。
+同一浏览器的开发标签页同步切换，生产会话独立。普通账号与生产环境没有角色切换入口。
+测试用户需由管理员先运行 `data-platform-environment seed-dev-users --env dev` 初始化。
+维护期间新任务和其他业务写入暂不可用；具体部署和验收见 [双环境部署指南](data_platform_environments.md)。

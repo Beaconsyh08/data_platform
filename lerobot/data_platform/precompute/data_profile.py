@@ -14,11 +14,14 @@ from lerobot.data_platform.precompute.timeseries import (
 )
 
 DATA_PROFILE_FILENAME = "data_profile.json"
-DATA_PROFILE_SCHEMA_VERSION = 1
+DATA_PROFILE_SCHEMA_VERSION = 2
+DATA_PROFILE_PROTOCOL = 3
+DEFAULT_PROCESSING_DATA_VERSION = DATA_VERSION_DVT2
 ROBOT_PROFILE_DVT1 = "h10w_dvt1"
 ROBOT_PROFILE_DVT2 = "h10w_dvt2"
 STAGE_PROFILE_DVT1 = "h10w_dvt1_stage_v1"
 STAGE_PROFILE_DVT2 = "h10w_dvt2_stage_v1"
+STAGE_PROFILE_EQUAL_TIME = "time_equal_v1"
 SIGNAL_SCHEMA_STANDARD_16D = "dual_arm_standard_16d"
 # Backward-compatible import name for callers written before the Data Platform/Curation scope split.
 SIGNAL_SCHEMA_TRAIN_16D = SIGNAL_SCHEMA_STANDARD_16D
@@ -32,7 +35,7 @@ class DatasetDataProfile:
     signal_schema: str
     gripper_encoding: str
     stage_profile: str
-    legacy_data_version: str
+    legacy_data_version: str | None
     resolution_source: str
     confirmed: bool
 
@@ -69,10 +72,13 @@ def signal_schema_from_features(features: dict | None) -> str:
 def has_body_joint_dimensions(features: dict | None) -> bool:
     """Return whether the stored signal layout contains DVT2 body joints 16..18."""
     features = features or {}
-    return max(
-        feature_vector_dim(features.get("action")),
-        feature_vector_dim(features.get("state")),
-    ) >= 18
+    return (
+        max(
+            feature_vector_dim(features.get("action")),
+            feature_vector_dim(features.get("state")),
+        )
+        >= 18
+    )
 
 
 def has_legacy_flag_dimension(features: dict | None) -> bool:
@@ -108,19 +114,22 @@ def profile_from_data_version(
 
 
 def _profile_from_dict(payload: dict, source: str) -> DatasetDataProfile:
+    schema_version = int(payload.get("schema_version") or 1)
+    if schema_version not in {1, DATA_PROFILE_SCHEMA_VERSION}:
+        raise ValueError(f"Unsupported data profile schema version in {source}: {schema_version}")
     data_version = str(payload.get("legacy_data_version") or "").upper()
-    if data_version not in {DATA_VERSION_DVT1, DATA_VERSION_DVT2}:
+    if data_version not in {"", DATA_VERSION_DVT1, DATA_VERSION_DVT2}:
         raise ValueError(f"Invalid data profile legacy_data_version in {source}")
     signal_schema = str(payload.get("signal_schema") or "unknown")
     if signal_schema == _LEGACY_SIGNAL_SCHEMA_TRAIN_16D:
         signal_schema = SIGNAL_SCHEMA_STANDARD_16D
     return DatasetDataProfile(
-        schema_version=int(payload.get("schema_version") or DATA_PROFILE_SCHEMA_VERSION),
+        schema_version=schema_version,
         robot_profile=str(payload.get("robot_profile") or ""),
         signal_schema=signal_schema,
         gripper_encoding=str(payload.get("gripper_encoding") or "unknown"),
         stage_profile=str(payload.get("stage_profile") or ""),
-        legacy_data_version=data_version,
+        legacy_data_version=data_version or None,
         resolution_source=str(payload.get("resolution_source") or source),
         confirmed=bool(payload.get("confirmed", False)),
     )
@@ -135,13 +144,16 @@ def resolve_data_profile(
 ) -> DatasetDataProfile:
     """Resolve semantic profile without treating vector dimensions as authoritative identity."""
     root = Path(root).expanduser()
-    info: dict = {}
+    try:
+        info = json.loads((root / "meta" / "info.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        info = {}
     if features is None:
-        try:
-            info = json.loads((root / "meta" / "info.json").read_text())
-        except (OSError, json.JSONDecodeError):
-            info = {}
         features = info.get("features") or {}
+    if str(info.get("robot_type") or "").lower() == "umi":
+        if data_version_override:
+            raise ValueError("UMI data cannot use a DVT processing profile")
+        return profile_from_info({**info, "features": features})
 
     if data_version_override:
         return profile_from_data_version(
@@ -189,20 +201,166 @@ def resolve_data_profile(
                 gripper_encoding="normalized_0_1" if source_version == DATA_VERSION_DVT2 else "legacy",
             )
 
-    if default_data_version:
+    if default_data_version and _has_legacy_signals(features):
         return profile_from_data_version(
             default_data_version,
             features,
             resolution_source="operation_default",
             confirmed=True,
         )
+    return profile_from_info({**info, "features": features})
 
-    inferred = infer_data_version_from_features(features)
+
+def _has_legacy_signals(features: dict) -> bool:
+    return any(feature_vector_dim(features.get(key)) >= 16 for key in ("action", "state"))
+
+
+def profile_from_info(info: dict) -> DatasetDataProfile:
+    """Resolve advertised metadata too, without requiring access to remote source files."""
+    features = info.get("features") or {}
+    robot = str(info.get("robot_type") or "").strip().lower()
+    if robot == "umi":
+        required = {f"{part}_pose": 6 for part in ("head", "left_arm", "right_arm")}
+        required.update({f"{part}_quaternion_pose": 7 for part in ("head", "left_arm", "right_arm")})
+        required.update(left_gripper_pos=1, right_gripper_pos=1)
+        recognized = all(feature_vector_dim(features.get(key)) == dim for key, dim in required.items())
+        return DatasetDataProfile(
+            DATA_PROFILE_SCHEMA_VERSION,
+            "umi",
+            "umi_dual_hand_head_v1" if recognized else "unknown",
+            "unknown",
+            STAGE_PROFILE_EQUAL_TIME if recognized else "",
+            None,
+            "robot_type_and_features",
+            recognized,
+        )
+    embedded = info.get("data_profile")
+    if isinstance(embedded, dict):
+        return _profile_from_dict(embedded, "data_profile")
+    if info.get("data_version") in {DATA_VERSION_DVT1, DATA_VERSION_DVT2}:
+        return profile_from_data_version(
+            info["data_version"], features, resolution_source="legacy_metadata", confirmed=False
+        )
+    if robot in {"h10w", "dvt1", "dvt2"} or (not robot and _has_legacy_signals(features)):
+        return profile_from_data_version(
+            infer_data_version_from_features(features),
+            features,
+            resolution_source="dimension_inference",
+            confirmed=False,
+        )
+    return DatasetDataProfile(
+        DATA_PROFILE_SCHEMA_VERSION,
+        "unknown",
+        signal_schema_from_features(features),
+        "unknown",
+        "",
+        None,
+        "unrecognized",
+        False,
+    )
+
+
+@dataclass(frozen=True)
+class OperationCapability:
+    available: bool
+    reason: str | None = None
+
+
+def default_processing_profile(profile: DatasetDataProfile, features: dict) -> DatasetDataProfile:
+    """Choose operation defaults independently of the source dataset's recorded identity."""
+    if profile.legacy_data_version is None:
+        return profile
     return profile_from_data_version(
-        inferred,
-        features,
-        resolution_source="dimension_inference",
-        confirmed=False,
+        DEFAULT_PROCESSING_DATA_VERSION, features, resolution_source="operation_default", confirmed=True
+    )
+
+
+def resolve_processing_profile(
+    root: Path, features: dict | None = None, *, data_version_override: str | None = None
+) -> DatasetDataProfile:
+    profile = resolve_data_profile(root, features, data_version_override=data_version_override)
+    if data_version_override:
+        return profile
+    if features is None:
+        features = json.loads((Path(root) / "meta/info.json").read_text()).get("features") or {}
+    return default_processing_profile(profile, features)
+
+
+def operation_capabilities(profile: DatasetDataProfile, features: dict) -> dict[str, dict]:
+    legacy = profile.legacy_data_version is not None
+    reason = "Requires a compatible DVT action/state processing profile"
+    result = {
+        op: asdict(OperationCapability(legacy, None if legacy else reason))
+        for op in (
+            "standardize",
+            "convert_action",
+            "smooth_action",
+            "value_edit",
+            "quality_flags",
+            "flag_fixes",
+            "auto_stage",
+            "embedding",
+            "stage_return_alignment",
+            "stage_return_height_alignment",
+        )
+    }
+    for op in ("viewer.prepare", "analysis", "split", "merge", "convert_v3", "clear_flags"):
+        result[op] = asdict(OperationCapability(True))
+    if profile.stage_profile == STAGE_PROFILE_EQUAL_TIME:
+        result["auto_stage"] = asdict(OperationCapability(True))
+    # Other mutating operations have not been validated for native UMI signals yet.
+    for op in ("drop_field", "subtract"):
+        result[op] = asdict(
+            OperationCapability(legacy, None if legacy else "Not supported for this signal layout")
+        )
+    if profile.robot_profile == "umi" and profile.signal_schema == "unknown":
+        for op in ("split", "merge"):
+            result[op] = asdict(OperationCapability(False, "Unrecognized UMI signal layout"))
+    return result
+
+
+def dataset_semantics(info: dict, profile: DatasetDataProfile | None = None) -> dict:
+    profile = profile or profile_from_info(info)
+    return {
+        "robot_type": info.get("robot_type") or "unknown",
+        "codebase_version": info.get("codebase_version"),
+        "data_profile": profile.to_dict(),
+        "default_processing_profile": default_processing_profile(
+            profile, info.get("features") or {}
+        ).to_dict(),
+        "data_version": profile.legacy_data_version,
+        "robot_profile": profile.robot_profile,
+        "signal_schema": profile.signal_schema,
+        "stage_profile": profile.stage_profile,
+        "profile_confirmed": profile.confirmed,
+        "data_profile_protocol": DATA_PROFILE_PROTOCOL,
+        "operation_capabilities": operation_capabilities(profile, info.get("features") or {}),
+    }
+
+
+def required_data_profile_protocol(info: dict) -> int:
+    """Old Agents omit robot_type; unclassified signal layouts require a fresh discovery report."""
+    profile = profile_from_info(info)
+    if profile.robot_profile == "umi" or (info.get("features") and profile.legacy_data_version is None):
+        return DATA_PROFILE_PROTOCOL
+    return 0
+
+
+def require_operation(info: dict, operation: str, *, profile: DatasetDataProfile | None = None) -> None:
+    profile = profile or profile_from_info(info)
+    op = operation.removeprefix("preprocess.")
+    capability = operation_capabilities(profile, info.get("features") or {}).get(op)
+    if capability is not None and not capability["available"]:
+        raise ValueError(f"{op}: {capability['reason']}")
+
+
+def require_dataset_operation(
+    root: Path, operation: str, *, data_version_override: str | None = None
+) -> None:
+    root = Path(root)
+    info = json.loads((root / "meta/info.json").read_text())
+    require_operation(
+        info, operation, profile=resolve_data_profile(root, data_version_override=data_version_override)
     )
 
 

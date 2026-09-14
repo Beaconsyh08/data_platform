@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import csv
 import io
 import json
 import subprocess
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
+from lerobot.data_platform.execution_pools import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -18,12 +18,19 @@ import pandas as pd
 import pyarrow.parquet as pq
 from PIL import Image
 
+from lerobot.data_platform.precompute.annotation import write_episode_csv
+from lerobot.data_platform.precompute.data_profile import (
+    DatasetDataProfile,
+    dataset_semantics,
+    resolve_processing_profile,
+)
+from lerobot.data_platform.precompute.dataset_io import V3DatasetMetadata
 from lerobot.data_platform.precompute.preprocess.dataset_version import (
     V30,
     detect_dataset_version,
     validate_v3_dataset,
 )
-from lerobot.data_platform.precompute.timeseries import normalize_gripper_columns
+from lerobot.data_platform.precompute.signal_columns import SIGNAL_COLUMNS_VERSION, signal_columns
 from lerobot.data_platform.precompute.video import temporary_output_path
 
 ProgressCallback = Callable[[dict], None] | None
@@ -96,91 +103,28 @@ def _format_video_path(info: dict, episode: pd.Series, video_key: str) -> Path:
     )
 
 
-def _feature_dim(feature: dict) -> int:
-    shape = feature.get("shape") or []
-    if isinstance(shape, int):
-        return int(shape)
-    if len(shape) == 1:
-        return int(shape[0])
-    return 0
-
-
-def _feature_names(key: str, feature: dict, dim: int) -> list[str]:
-    names = feature.get("names")
-    while isinstance(names, dict) and names:
-        names = next(iter(names.values()))
-    if isinstance(names, (list, tuple)) and len(names) == dim:
-        return [str(name) for name in names]
-    if key == "exist_label" and dim == 1:
-        return ["exist_label"]
-    return [f"{key}_{index}" for index in range(dim)]
-
-
-def _cell_values(value: Any) -> list[Any]:
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple, np.ndarray)):
-        return list(value)
-    return [value]
-
-
 def _write_episode_csv(
     root: Path,
     info: dict,
     episode: pd.Series,
     out_path: Path,
     downsample: int | None,
-    data_version: str,
+    data_version: str | None,
+    fallback_stage_count: int = 5,
+    force_recompute_stage: bool = False,
 ) -> None:
-    features = info.get("features") or {}
-    plot_keys = []
-    for key, feature in features.items():
-        dtype = str(feature.get("dtype") or "")
-        numeric = dtype in {"float32", "int32"} or (
-            key == "exist_label" and dtype.startswith(("float", "int", "uint"))
-        )
-        if numeric and key not in {"timestamp", "subtask_state"} and _feature_dim(feature) > 0:
-            plot_keys.append(key)
-
-    data_path = root / _format_data_path(info, episode)
-    available = set(pq.read_schema(data_path).names)
-    plot_keys = [key for key in plot_keys if key in available]
-    columns = ["timestamp", *plot_keys]
-    table = pq.read_table(
-        data_path,
-        columns=columns,
-        filters=[("episode_index", "=", int(episode["episode_index"]))],
+    write_episode_csv(
+        root,
+        V3DatasetMetadata(f"local/{root.name}", root),
+        int(episode["episode_index"]),
+        out_path,
+        None,
+        downsample,
+        True,
+        data_version=data_version,
+        fallback_stage_count=fallback_stage_count,
+        force_recompute_stage=force_recompute_stage,
     )
-    data = table.to_pandas()
-    if downsample is not None and downsample > 1:
-        data = data.iloc[::downsample].reset_index(drop=True)
-
-    header = ["timestamp"]
-    matrices = [np.asarray(data["timestamp"], dtype=np.float64).reshape(-1, 1)]
-    for key in plot_keys:
-        feature = features[key]
-        fallback_dim = _feature_dim(feature)
-        values = [_cell_values(value) for value in data[key]]
-        actual_dim = max((len(value) for value in values), default=0)
-        dim = actual_dim or fallback_dim
-        rows = []
-        for value in values:
-            row = [np.nan] * dim
-            row[: min(dim, len(value))] = value[:dim]
-            rows.append(row)
-        matrix = normalize_gripper_columns(np.asarray(rows, dtype=np.float64), key, data_version)
-        matrices.append(matrix)
-        header.extend(_feature_names(key, feature, dim))
-
-    temporary = temporary_output_path(out_path)
-    try:
-        with temporary.open("w", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(header)
-            writer.writerows(np.hstack(matrices).tolist())
-        temporary.replace(out_path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _clip_video(source: Path, target: Path, start: float, end: float) -> None:
@@ -290,8 +234,10 @@ def _write_manifest(
     episodes: pd.DataFrame,
     visual_keys: list[str],
     static_dir: Path,
-    data_version: str,
+    data_version: str | None,
     downsample: int | None,
+    profile: DatasetDataProfile | None = None,
+    fallback_stage_count: int = 5,
 ) -> None:
     episode_rows = []
     total_frames = 0
@@ -309,10 +255,17 @@ def _write_manifest(
         )
     manifest = {
         "version": 1,
+        "fallback_stage_count": fallback_stage_count,
         "codebase_version": V30,
         "repo_id": repo_id,
         "root": str(root),
-        "data_version": data_version,
+        **dataset_semantics(
+            info, profile or resolve_processing_profile(root, data_version_override=data_version)
+        ),
+        "signal_columns_version": SIGNAL_COLUMNS_VERSION,
+        "signal_columns": signal_columns(
+            info.get("features") or {}, qualify=str(info.get("robot_type", "")).lower() == "umi"
+        ),
         "fps": int(info["fps"]),
         "total_episodes": len(episode_rows),
         "total_frames": total_frames,
@@ -337,8 +290,10 @@ def run_v3_viewer_precompute(
     downsample: int | None = None,
     overwrite_videos: bool = False,
     overwrite_csv: bool = False,
-    data_version: str = "DVT1",
+    data_version: str | None = None,
     progress_callback: ProgressCallback = None,
+    fallback_stage_count: int = 5,
+    force_recompute_stage: bool = False,
 ) -> V3ViewerResult:
     """Build per-episode viewer artifacts without changing the v3.0 dataset."""
     root = Path(root).expanduser()
@@ -347,6 +302,28 @@ def run_v3_viewer_precompute(
         raise ValueError(f"Expected a v3.0 dataset: {root}")
     validate_v3_dataset(root)
     info = json.loads((root / "meta" / "info.json").read_text())
+    profile = resolve_processing_profile(root, data_version_override=data_version)
+    data_version = profile.legacy_data_version
+    if fallback_stage_count < 2:
+        raise ValueError("fallback_stage_count must be at least 2")
+    if force_recompute_stage:
+        if not profile.stage_profile:
+            raise ValueError("Automatic Stage requires an applicable Stage policy")
+        overwrite_csv = prepare_csv = True
+    manifest_path = output_dir / "static/viewer_manifest.json"
+    previous = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
+    description = signal_columns(info.get("features") or {}, qualify=profile.robot_profile == "umi")
+    if (
+        previous.get("signal_columns_version") != SIGNAL_COLUMNS_VERSION
+        or previous.get("signal_columns") != description
+        or previous.get("data_profile") != profile.to_dict()
+        or previous.get("fallback_stage_count") != fallback_stage_count
+    ):
+        overwrite_csv = True
+        if previous and episodes is not None:
+            episodes = sorted(
+                set(episodes) | {int(row["episode_index"]) for row in previous.get("episodes", [])}
+            )
     episode_table = _load_episode_metadata(root)
     available_ids = {int(value) for value in episode_table["episode_index"]}
     selected_ids = sorted(available_ids if episodes is None else {int(value) for value in episodes})
@@ -372,7 +349,16 @@ def run_v3_viewer_precompute(
         if prepare_csv:
             csv_path = csv_dir / f"episode_{episode_index:06d}_ds{downsample or 1}.csv"
             if overwrite_csv or not _has_nonempty_cache(csv_path):
-                _write_episode_csv(root, info, episode, csv_path, downsample, data_version)
+                _write_episode_csv(
+                    root,
+                    info,
+                    episode,
+                    csv_path,
+                    downsample,
+                    data_version,
+                    fallback_stage_count,
+                    force_recompute_stage,
+                )
         if prepare_videos:
             for video_key in video_keys:
                 target = videos_dir / video_key / f"episode_{episode_index:06d}_h264.mp4"
@@ -419,6 +405,8 @@ def run_v3_viewer_precompute(
         static_dir,
         data_version,
         downsample,
+        profile,
+        fallback_stage_count,
     )
     _emit(
         progress_callback,
