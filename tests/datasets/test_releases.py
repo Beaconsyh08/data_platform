@@ -257,6 +257,7 @@ def test_deploy_order_and_failure_preserve_maintenance(
     monkeypatch.setattr(release_cli, "agent_preflight", lambda deployment: events.append("ssh"))
 
     def prepare(deployment, version, **kwargs):
+        assert kwargs["hard"] is hard
         events.append("prepare")
         if failure == "prepare":
             raise RuntimeError("dependency failed")
@@ -419,3 +420,18 @@ def test_hard_agent_install_skips_approval_but_still_checks_hashes(release, monk
     with pytest.raises(ValueError, match="checksum"):
         release_cli._install_agent_target(Deployment("prod"), "candidate", target, hard=True)
     assert calls == []
+
+
+def test_hard_server_prepare_skips_only_approval(release, tmp_path, monkeypatch):
+    monkeypatch.setattr(Deployment, "root", property(lambda self: tmp_path / "installed"))
+    deployment = Deployment("prod")
+    target = deployment.root / "releases/candidate"
+    target.mkdir(parents=True)
+    (target / "manifest.sha256").write_text(releases.digest(release / "release.json"))
+    with pytest.raises(FileNotFoundError):
+        releases.prepare_server(deployment, "candidate")
+    assert releases.prepare_server(deployment, "candidate", hard=True) == target
+    assert not (release / "approval.json").exists()
+    (release / "server.tar.gz").write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="checksum"):
+        releases.prepare_server(deployment, "candidate", hard=True)

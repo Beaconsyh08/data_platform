@@ -283,8 +283,10 @@ def switch_current(deployment: Deployment, release: Path):
     pointer.replace(deployment.root / "current")
 
 
-def prepare_server(deployment: Deployment, version: str, *, index_url: str | None = None) -> Path:
-    root, manifest = verify_release(version, production=deployment.environment == "prod")
+def prepare_server(
+    deployment: Deployment, version: str, *, index_url: str | None = None, hard: bool = False
+) -> Path:
+    root, manifest = verify_release(version, production=deployment.environment == "prod" and not hard)
     target = deployment.root / "releases" / version
     if target.exists():
         if (target / "manifest.sha256").read_text().strip() != digest(root / "release.json"):

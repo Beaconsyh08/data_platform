@@ -159,7 +159,7 @@ def deploy(
         if with_agent:
             agent_preflight(deployment)
         # Dependency errors never modify the running installation or pause user work.
-        target = releases.prepare_server(deployment, version, index_url=index_url)
+        target = releases.prepare_server(deployment, version, index_url=index_url, hard=hard)
         previous = (deployment.root / "current").resolve() if (deployment.root / "current").exists() else None
         set_maintenance(store, True, release=version)
         state = {
