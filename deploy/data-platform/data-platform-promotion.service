@@ -1,0 +1,17 @@
+[Unit]
+Description=Data Platform restricted production deployment bridge
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=data-platform-dev
+RuntimeDirectory=data-platform-promotion
+RuntimeDirectoryMode=0750
+UMask=0077
+ExecStart=/opt/data-platform/dev/current/.venv/bin/python -I -m lerobot.data_platform.promotion
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

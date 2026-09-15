@@ -11,3 +11,9 @@ ln -sfn /usr/local/lib/data-platform/update-all.sh /usr/local/bin/data-platform-
 ln -sfn /usr/local/lib/data-platform/restart-server.sh /usr/local/bin/data-platform-restart
 ln -sfn /usr/local/lib/data-platform/release.sh /usr/local/bin/data-platform-release
 ln -sfn /usr/local/lib/data-platform/environment.sh /usr/local/bin/data-platform-environment
+install -m 0644 "$SCRIPT_DIR/data-platform-promotion.service" /etc/systemd/system/data-platform-promotion.service
+systemctl daemon-reload
+if [[ -x /opt/data-platform/dev/current/.venv/bin/python ]]; then
+    systemctl enable --now data-platform-promotion.service
+    systemctl restart data-platform-promotion.service
+fi

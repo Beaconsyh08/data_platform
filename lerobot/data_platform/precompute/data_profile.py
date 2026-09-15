@@ -150,7 +150,7 @@ def resolve_data_profile(
         info = {}
     if features is None:
         features = info.get("features") or {}
-    if str(info.get("robot_type") or "").lower() == "umi":
+    if str(info.get("robot_type") or "").strip().lower() in {"umi", "umi-gripperbody-head"}:
         if data_version_override:
             raise ValueError("UMI data cannot use a DVT processing profile")
         return profile_from_info({**info, "features": features})
@@ -219,7 +219,7 @@ def profile_from_info(info: dict) -> DatasetDataProfile:
     """Resolve advertised metadata too, without requiring access to remote source files."""
     features = info.get("features") or {}
     robot = str(info.get("robot_type") or "").strip().lower()
-    if robot == "umi":
+    if robot in {"umi", "umi-gripperbody-head"}:
         required = {f"{part}_pose": 6 for part in ("head", "left_arm", "right_arm")}
         required.update({f"{part}_quaternion_pose": 7 for part in ("head", "left_arm", "right_arm")})
         required.update(left_gripper_pos=1, right_gripper_pos=1)

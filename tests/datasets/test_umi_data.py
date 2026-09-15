@@ -514,3 +514,16 @@ def test_umi_rejects_semantic_merge_mismatch_and_dvt_override(umi_root, tmp_path
     with pytest.raises(ValueError, match="DVT"):
         run_standardize_dataset(umi_root, tmp_path / "standardized", data_version="DVT2")
     assert not (tmp_path / "standardized").exists()
+
+
+def test_legacy_umi_robot_label_is_not_dvt(umi_root):
+    from lerobot.data_platform.precompute.data_profile import profile_from_info
+
+    path = umi_root / "meta/info.json"
+    info = json.loads(path.read_text())
+    info["robot_type"] = "UMI-GripperBody-Head"
+    path.write_text(json.dumps(info))
+    assert profile_from_info(info).robot_profile == "umi"
+    assert resolve_data_profile(umi_root).robot_profile == "umi"
+    with pytest.raises(ValueError, match="UMI"):
+        resolve_data_profile(umi_root, data_version_override="DVT2")

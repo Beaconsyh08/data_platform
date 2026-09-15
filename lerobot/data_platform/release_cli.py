@@ -223,6 +223,11 @@ def deploy(
                         [*ssh_prefix(), "ssh", *options, host, f"rm -rf -- {shlex.quote(directory)}"]
                     )
             # A server-only update deliberately leaves maintenance enabled until matching Agents are checked.
+            if (
+                deployment.environment == "dev"
+                and Path("/etc/systemd/system/data-platform-promotion.service").is_file()
+            ):
+                releases.run(["systemctl", "try-restart", "data-platform-promotion.service"])
             state["status"] = "installed" if with_agent else "server-installed"
             state["finished_at"] = time.time()
             releases.atomic_json(state_path, state)

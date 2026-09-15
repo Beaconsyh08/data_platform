@@ -288,3 +288,76 @@ vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), context);
     target = tmp_path / "test.cjs"
     target.write_text(harness)
     subprocess.run(["node", str(target), str(script)], check=True, capture_output=True, text=True, timeout=10)
+
+
+def test_production_promotion_requires_real_admin_and_confirmation(environment, monkeypatch):
+    from lerobot.data_platform import promotion
+
+    app, store = app_and_store(environment)
+    client = app.test_client()
+    calls = []
+    monkeypatch.setattr(
+        promotion, "call_helper", lambda payload: calls.append(payload) or {"status": "started"}
+    )
+    assert post(client, "/api/dev/production", {"confirm": True, "revision": "abc"}).status_code == 401
+    bootstrap(client)
+    assert post(client, "/api/dev/production", {"revision": "abc"}).status_code == 400
+    assert not calls
+    assert post(client, "/api/dev/production", {"confirm": True, "revision": "abc"}).status_code == 202
+    assert calls == [{"action": "promote", "revision": "abc"}]
+    seed_test_users(store)
+    assert post(client, "/api/dev/role-session", {"identity": "operator_a"}).status_code == 200
+    assert post(client, "/api/dev/production", {"confirm": True, "revision": "abc"}).status_code == 403
+    assert len(calls) == 1
+
+
+def test_promotion_rejects_stale_confirmation(tmp_path, monkeypatch):
+    from lerobot.data_platform import promotion
+
+    monkeypatch.setattr(promotion.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        promotion, "snapshot", lambda: {"can_promote": True, "revision": "new", "reason": None}
+    )
+    original = promotion.Path
+    monkeypatch.setattr(
+        promotion, "Path", lambda value: tmp_path / "lock" if value.endswith(".lock") else original(value)
+    )
+    with pytest.raises(ValueError, match="changed"):
+        promotion.handle_request({"action": "promote", "revision": "old"})
+
+
+@pytest.mark.parametrize("production_environment,expected", [("legacy", False), ("prod", True)])
+def test_promotion_snapshot_blocks_legacy_production(tmp_path, monkeypatch, production_environment, expected):
+    import json
+    from types import SimpleNamespace
+
+    from lerobot.data_platform import promotion, releases
+
+    root = tmp_path / "R2"
+    root.mkdir()
+    (root / "release.json").write_text(json.dumps({"commit": "abc"}))
+    (root / "approval.json").write_text(
+        json.dumps(
+            {
+                "environment": "dev",
+                "instance_id": "dev-id",
+                "manifest_sha256": releases.digest(root / "release.json"),
+            }
+        )
+    )
+    monkeypatch.setattr(releases, "RELEASE_ROOT", tmp_path)
+
+    def get(url, **kwargs):
+        dev = ":9092/" in url
+        value = {
+            "environment": "dev" if dev else production_environment,
+            "release": "R2" if dev else "R1",
+            "instance_id": "dev-id" if dev else "prod-id",
+        }
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: value)
+
+    monkeypatch.setattr(promotion.requests, "get", get)
+    monkeypatch.setattr(promotion.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout="inactive"))
+    state = promotion.snapshot()
+    assert state["can_promote"] is expected
+    assert state["comparison"] == ("different" if expected else "unknown")

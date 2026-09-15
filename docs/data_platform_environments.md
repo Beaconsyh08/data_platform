@@ -448,3 +448,38 @@ data-platform-release rollback --env prod --release PREVIOUS --restore-backup /P
 
 上线验收必须额外在真实 MySQL、systemd、Nginx、SSH 隧道和数据节点完成。重点检查开发账号不能访问生产库、
 两个环境同时登录、独立执行器资源限制、Viewer/预处理产物归属及一次完整回退演练。
+
+## 开发页面的环境对比与发布入口
+
+命名环境页面使用英文横幅：`Development · Test data · Rn` / `Production · Rn`。
+开发页面登录后会每 15 秒检查生产版本；比较的是已部署的代码版本，数据库和数据集始终独立，
+不做逐条数据比较，也不会把开发数据库或样本复制到生产。
+
+管理员可点击 `Deploy to production`，确认当前版本后触发现有 Server → Agent 发布流程。
+切换为 Operator/Viewer 测试身份时不能发布。请求有会话、CSRF、管理员权限和安装包摘要校验，
+同一时间只允许一个发布；接受请求后页面显示发布状态，生产短暂进入维护状态。
+
+首次启用页面发布服务，在控制节点执行：
+
+```bash
+cd /home/yuhao.song/Codes/data_platform
+sudo bash deploy/data-platform/install-commands.sh
+sudo systemctl status data-platform-promotion.service --no-pager
+```
+
+桥接服务通过仅开发服务账号可连接的本地 Unix socket 接收固定操作，不给 Web 进程通用 sudo 权限。
+升级开发代码后重新运行安装命令以重启桥接服务。生产的 SSH 地址需能由 root 非交互解析，
+生产配置中的私钥、Agent 名称、环境身份必须正确；不会继承浏览器提交的地址、命令或路径。
+
+按钮不可用时横幅会解释原因：旧生产部署尚未迁移、服务不可用、维护中、发布进行中、版本一致，
+或当前安装包还没有完成开发验收。先完成本文的生产迁移与 `data-platform-release approve` 验收流程。
+验收必须针对当前准确版本，不能沿用旧版本的批准记录。页面不绕过验收，也不触发硬升级。
+
+发布日志与状态：
+
+```bash
+sudo journalctl -u data-platform-production-promotion --no-pager -n 100
+sudo cat /opt/data-platform/prod/deployment.json
+```
+
+出现失败时按原升级恢复流程排查；页面不会自动回滚数据库。

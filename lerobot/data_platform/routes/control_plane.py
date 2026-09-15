@@ -145,6 +145,9 @@ def register_control_plane_auth_routes(
     from lerobot.data_platform.environment_web import install_environment_web
 
     install_environment_web(app, store)
+    from lerobot.data_platform.promotion import register_promotion_routes
+
+    register_promotion_routes(app, store)
     register_dev_role_routes(app, store)
     install_usage_audit(app)
     public_paths = {
