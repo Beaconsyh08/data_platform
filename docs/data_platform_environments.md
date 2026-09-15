@@ -302,6 +302,37 @@ DATA_PLATFORM_DEPLOY_AGENT_NAMES=dev-node
 
 ## 日常开发、验收和生产发布
 
+构建或安装遇到 PyPI 网络问题时，可在正式更新命令后添加
+`--index-url https://pypi.tuna.tsinghua.edu.cn/simple`。该参数同时用于发布包构建
+（包括 Agent wheel 的隔离构建依赖）和依赖安装。构建失败尚未进入环境切换阶段时，
+修复后重新构建即可；已生成的完整发布包则通过 `--release` 复用。
+
+### 网页生产部署进度
+
+点击 **Deploy to production** 并确认后，会打开持续显示的进度窗口，每 3 秒自动查询。
+窗口显示版本、当前步骤、耗时和步骤时间线，包括依赖准备、任务排空、备份、迁移、服务重启、
+健康检查、Agent 更新和心跳验证。长步骤显示动态等待状态，不显示估算百分比。
+
+刷新页面后会恢复进行中的部署。**Hide** 只隐藏窗口，不取消部署；顶部
+**Deployment progress** 可以重新打开。成功或失败后显示最终结果，失败时标出最后执行的步骤；
+网络中断会提示正在重连，不会直接判断部署失败。生产服务重启期间，开发环境仍可查询进度。
+
+进度使用现有 `deployment.json` 中的步骤记录，网页发起信息保存在生产部署目录的
+`promotion-request.json`。只返回步骤和时间等公开状态，不向页面发送原始命令输出或凭据。
+
+### 从网页验收批准
+
+开发环境的真实管理员可点击顶部 **Review and approve**。角色预览身份不能审批。
+面板显示当前版本，自动检查开发服务状态、环境身份、版本、配置 Agent 的版本和心跳，
+以及代表性本地任务对应的节点。自动检查通过后，逐项确认已经完成的六项人工验收，
+点击 **Approve this release**。所有选项初始均不勾选。
+
+服务端会再次检查并绑定当前发布包摘要，记录审批人的用户 ID、username 和验收内容，
+复用命令行审批所用的 `approval.json`。版本改变、维护中或检查失败时不能提交旧确认。
+审批本身不会部署生产；成功后，满足生产部署条件时 **Deploy to production** 才会启用。
+新版本需要重新验收。命令行审批方式继续可用。
+
+
 单节点可配置 `DATA_PLATFORM_DEPLOY_AGENT_HOST`、`DATA_PLATFORM_DEPLOY_IDENTITY_FILE` 和
 `DATA_PLATFORM_DEPLOY_AGENT_NAMES`。多节点使用 `DATA_PLATFORM_DEPLOY_AGENT_TARGETS` 的 JSON 数组：
 

@@ -9,6 +9,8 @@ import pwd
 import socket
 import struct
 import subprocess
+import time
+import uuid
 from pathlib import Path
 
 import requests
@@ -54,13 +56,19 @@ def snapshot():
         text=True,
         check=False,
     ).stdout.strip()
+    from lerobot.data_platform.deployment import Deployment
+    from lerobot.data_platform.deployment_progress import production_progress
+
+    progress = production_progress(Deployment("prod").root, state)
     if prod.get("environment") != "prod":
         reason = (
             "Production is unavailable or still uses legacy deployment. Complete production migration first."
         )
     elif dev.get("environment") != "dev":
         reason = "Development is unavailable."
-    elif state in {"activating", "active", "deactivating"}:
+    elif state in {"activating", "active", "deactivating"} or (
+        progress and progress["status"] in {"running", "maintenance"}
+    ):
         reason = "Production deployment is in progress."
     elif dev.get("maintenance") or prod.get("maintenance"):
         reason = "An environment is under maintenance."
@@ -74,9 +82,19 @@ def snapshot():
     return {
         **environments,
         "revision": revision,
+        "approved": approved,
+        "can_approve": bool(
+            revision
+            and dev.get("environment") == "dev"
+            and not dev.get("maintenance")
+            and state not in {"activating", "active", "deactivating"}
+            and not (progress and progress["status"] in {"running", "maintenance"})
+            and not approved
+        ),
         "can_promote": reason is None,
         "reason": reason,
         "deployment_state": state or "inactive",
+        "progress": progress,
         "comparison": comparison,
     }
 
@@ -89,6 +107,8 @@ def handle_request(payload):
         raise PermissionError("Root helper required")
     if payload.get("action") == "status":
         return snapshot()
+    if payload.get("action") in {"check-acceptance", "approve"}:
+        return handle_acceptance(payload)
     if payload.get("action") != "promote":
         raise ValueError("Unsupported action")
     with Path("/run/data-platform-promotion.lock").open("w") as lock:
@@ -100,28 +120,66 @@ def handle_request(payload):
 
         version = state["dev"]["release"]
         verify_release(version, production=True)
-        subprocess.run(["systemctl", "reset-failed", UNIT], capture_output=True, check=False)
-        subprocess.run(
-            [
-                "systemd-run",
-                "--quiet",
-                "--collect",
-                f"--unit={UNIT}",
-                "/opt/data-platform/dev/current/.venv/bin/python",
-                "-I",
-                "-m",
-                "lerobot.data_platform.release_cli",
-                "deploy",
-                "--env",
-                "prod",
-                "--release",
-                version,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return {"status": "started", "release": version}
+        from lerobot.data_platform.deployment import Deployment
+        from lerobot.data_platform.releases import atomic_json
+
+        launch_path = Deployment("prod").root / "promotion-request.json"
+        launch = {"id": str(uuid.uuid4()), "release": version, "started_at": time.time(), "status": "queued"}
+        atomic_json(launch_path, launch)
+        try:
+            subprocess.run(["systemctl", "reset-failed", UNIT], capture_output=True, check=False)
+            subprocess.run(
+                [
+                    "systemd-run",
+                    "--quiet",
+                    "--collect",
+                    f"--unit={UNIT}",
+                    "/opt/data-platform/dev/current/.venv/bin/python",
+                    "-I",
+                    "-m",
+                    "lerobot.data_platform.release_cli",
+                    "deploy",
+                    "--env",
+                    "prod",
+                    "--release",
+                    version,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except BaseException:
+            launch["status"] = "failed"
+            launch["finished_at"] = time.time()
+            atomic_json(launch_path, launch)
+            raise
+        return {"status": "started", "release": version, "deployment_id": launch["id"]}
+
+
+def handle_acceptance(payload):
+    """Bind acceptance to the current artifact while excluding concurrent development upgrades."""
+    import fcntl
+
+    from lerobot.data_platform.deployment import Deployment
+    from lerobot.data_platform.releases import approve_release, check_release_acceptance
+
+    deployment = Deployment("dev")
+    with Path("/run/data-platform-promotion.lock").open("w") as promotion_lock:
+        fcntl.flock(promotion_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with (deployment.root / ".deployment.lock").open("a") as deployment_lock:
+            fcntl.flock(deployment_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            state = snapshot()
+            if not state["can_approve"] or payload.get("revision") != state["revision"]:
+                raise ValueError("Release changed or cannot be approved; refresh and review again")
+            version = state["dev"]["release"]
+            if payload["action"] == "check-acceptance":
+                check_release_acceptance(deployment, version)
+                return {"status": "ready", "release": version, "revision": state["revision"]}
+            actor = payload.get("actor")
+            if not isinstance(actor, dict) or actor.get("role") != "admin" or not actor.get("user_id"):
+                raise ValueError("A development administrator is required")
+            approve_release(deployment, version, payload.get("evidence"), approved_by=actor)
+            return {"status": "approved", "release": version, "revision": state["revision"]}
 
 
 def call_helper(payload):
@@ -132,6 +190,8 @@ def call_helper(payload):
         with client.makefile("rb") as stream:
             result = json.loads(stream.readline(65536))
     if "error" in result:
+        if result.get("conflict"):
+            raise ValueError(result["error"])
         raise RuntimeError(result["error"])
     return result
 
@@ -160,6 +220,11 @@ def serve():
                         if len(line) > 4096:
                             raise ValueError("Request too large")
                         result = handle_request(json.loads(line))
+                except ValueError:
+                    result = {
+                        "error": "Release changed or acceptance is incomplete; refresh and review again.",
+                        "conflict": True,
+                    }
                 except Exception:
                     result = {
                         "error": "Deployment request rejected; refresh status and check deployment prerequisites."
@@ -176,6 +241,72 @@ def register_promotion_routes(app, store):
     identity = EnvironmentIdentity.from_env()
     if not identity or identity.name != "dev":
         return
+
+    @app.route("/api/dev/acceptance", methods=["GET", "POST"])
+    def acceptance():
+        actor = getattr(g, "control_plane_user", None)
+        if not actor or actor.get("role") != "admin" or actor.get("original_actor"):
+            return jsonify(error="A development administrator session is required"), 403
+        body = request.get_json(silent=True) if request.method == "POST" else request.args
+        if request.method == "POST" and not isinstance(body, dict):
+            return jsonify(error="Expected a JSON object"), 400
+        if not body or not isinstance(body.get("revision"), str):
+            return jsonify(error="Select a release to review"), 400
+        if request.method == "POST" and (not isinstance(body, dict) or body.get("confirm") is not True):
+            return jsonify(error="Confirm acceptance of the selected release"), 400
+        try:
+            payload = {"action": "check-acceptance", "revision": body["revision"]}
+            if request.method == "POST":
+                from lerobot.data_platform.management_storage import enqueue_event
+                from lerobot.data_platform.operation_log import build_operation_event
+
+                evidence = body.get("evidence")
+                required = {
+                    "role_permissions",
+                    "environment_isolation",
+                    "local_job",
+                    "remote_viewer",
+                    "remote_preprocess",
+                    "rollback_drill",
+                }
+                if (
+                    not isinstance(evidence, dict)
+                    or not isinstance(evidence.get("release"), str)
+                    or any(evidence.get(key) is not True for key in required)
+                ):
+                    return jsonify(error="Complete and confirm every acceptance scenario"), 400
+                evidence = {key: evidence[key] for key in required | {"release"}}
+                actor = {key: actor[key] for key in ("user_id", "username", "role")}
+                payload.update(action="approve", evidence=evidence, actor=actor)
+                with store.sessions.begin() as session:
+                    enqueue_event(
+                        session,
+                        build_operation_event(
+                            "deployment.acceptance.requested",
+                            status="requested",
+                            actor=actor,
+                            details={"manifest_sha256": body["revision"], "evidence": evidence},
+                        ),
+                    )
+            result = call_helper(payload)
+            if request.method == "POST":
+                with store.sessions.begin() as session:
+                    enqueue_event(
+                        session,
+                        build_operation_event(
+                            "deployment.acceptance.approved",
+                            status="success",
+                            actor=actor,
+                            details={"manifest_sha256": result["revision"], "release": result["release"]},
+                        ),
+                    )
+            return jsonify(result)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 409
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            return jsonify(
+                error="Automatic acceptance checks failed or service is unavailable. Check development services, Agent versions and heartbeats, and a completed local job."
+            ), 503
 
     @app.route("/api/dev/production", methods=["GET", "POST"])
     def production():

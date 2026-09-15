@@ -162,14 +162,19 @@ def _validate_compatible(roots: list[Path], infos: list[dict], *, source_infos: 
     return base_profile
 
 
-def validate_merge_sources(src_roots: list[Path], dimension_policy: str = "strict") -> None:
+def validate_merge_sources(
+    src_roots: list[Path],
+    dimension_policy: str = "strict",
+    dimension_names: list[dict] | None = None,
+    padding_value: float = 0,
+) -> None:
     """Validate metadata and dimension mappings before launching a merge worker."""
     roots = [validate_dataset_root(root) for root in src_roots]
     if len(roots) < 2:
         raise ValueError("merge requires at least two source datasets")
     infos = [load_json(root / "meta" / "info.json") for root in roots]
-    aligned_infos, _ = plan_signal_alignment(infos, dimension_policy)
-    _validate_compatible(roots, aligned_infos, source_infos=infos if dimension_policy == "min" else None)
+    aligned_infos, _ = plan_signal_alignment(infos, dimension_policy, dimension_names, padding_value)
+    _validate_compatible(roots, aligned_infos, source_infos=infos if dimension_policy != "strict" else None)
     if any(uses_native_images(info) for info in infos):
         if not all(uses_native_images(info) for info in infos):
             raise ValueError("Native embedded-image merge requires matching v3 image storage")
@@ -769,6 +774,8 @@ def run_merge(
     _default_op: str = "merge",
     _summary_extra: dict | None = None,
     dimension_policy: str = "strict",
+    dimension_names: list[dict] | None = None,
+    padding_value: float = 0,
 ) -> PreprocessResult:
     roots = [validate_dataset_root(root) for root in src_roots]
     if not roots:
@@ -777,11 +784,13 @@ def run_merge(
         raise ValueError("merge requires at least two source datasets")
     out_root = ensure_output_root(out_root or default_preprocess_path(roots[0], _default_op), dry_run)
     infos = [load_json(root / "meta" / "info.json") for root in roots]
-    aligned_infos, projections = plan_signal_alignment(infos, dimension_policy)
-    output_profile = _validate_compatible(
-        roots, aligned_infos, source_infos=infos if dimension_policy == "min" else None
+    aligned_infos, projections = plan_signal_alignment(
+        infos, dimension_policy, dimension_names, padding_value
     )
-    if dimension_policy == "min":
+    output_profile = _validate_compatible(
+        roots, aligned_infos, source_infos=infos if dimension_policy != "strict" else None
+    )
+    if dimension_policy != "strict":
         if out_static_dir is None and src_static_dirs:
             out_static_dir = out_root.parent / "vis" / f"local_vis_{out_root.name}" / "static"
         if out_static_dir is not None and Path(out_static_dir).exists() and not dry_run:
@@ -841,6 +850,8 @@ def run_merge(
                 _default_op=_default_op,
                 _summary_extra=_summary_extra,
                 dimension_policy=dimension_policy,
+                dimension_names=dimension_names,
+                padding_value=padding_value,
             )
             summary = {
                 **legacy_result.summary,
@@ -863,7 +874,7 @@ def run_merge(
                 converted_info = load_json(out_root / "meta" / "info.json")
                 write_data_profile(out_root, output_profile, info=converted_info)
                 write_json(out_root / "meta" / "info.json", converted_info)
-                if dimension_policy == "min":
+                if dimension_policy != "strict":
                     write_json(out_root / "meta" / "preprocess_merge.json", summary)
             return PreprocessResult(
                 op=_op,
@@ -906,6 +917,8 @@ def run_merge(
             },
             **(_summary_extra or {}),
             "dimension_policy": dimension_policy,
+            "dimension_names": dimension_names,
+            "padding_value": padding_value,
             **(
                 {
                     "dimension_alignment": [
@@ -917,7 +930,7 @@ def run_merge(
                     ],
                     "csv_cache": "rebuild_from_output",
                 }
-                if dimension_policy == "min"
+                if dimension_policy != "strict"
                 else {}
             ),
         },
@@ -1013,7 +1026,7 @@ def run_merge(
                         message=f"Merged episode {old_idx} -> {new_idx}",
                     )
 
-        if dimension_policy == "min":
+        if dimension_policy != "strict":
             stats_by_episode = {row["episode_index"]: deepcopy(row) for row in stats_out}
             stats_out = []
             for episode in episodes_out:
@@ -1048,14 +1061,14 @@ def run_merge(
             frame_offsets,
             src_static_dirs,
             out_static_dir,
-            copy_csv=dimension_policy != "min",
+            copy_csv=dimension_policy == "strict",
         )
         if artifact_summary:
             result.summary["artifacts"] = artifact_summary
     except Exception:
         if out_root.exists():
             shutil.rmtree(out_root, ignore_errors=True)
-        if dimension_policy == "min" and out_static_dir is not None:
+        if dimension_policy != "strict" and out_static_dir is not None:
             shutil.rmtree(out_static_dir, ignore_errors=True)
         raise
     emit(

@@ -21,6 +21,7 @@ VALIDATION_TESTS = [
     "tests/datasets/test_execution_supervisor.py",
     "tests/datasets/test_environments.py",
     "tests/datasets/test_releases.py",
+    "tests/datasets/test_deployment_progress.py",
     "tests/datasets/test_control_plane.py",
     "tests/datasets/test_job_management.py",
     "tests/datasets/test_data_platform_agent.py",
@@ -67,7 +68,9 @@ def extract_archive(archive: Path, destination: Path):
         stream.extractall(destination)
 
 
-def build_release(source: Path, version: str) -> Path:
+def build_release(source: Path, version: str, *, index_url: str | None = None) -> Path:
+    if index_url and not index_url.startswith("https://"):
+        raise ValueError("Package index must use HTTPS")
     version = validate_version(version)
     source = source.resolve()
     status = run(
@@ -111,6 +114,8 @@ def build_release(source: Path, version: str) -> Path:
             for key, value in os.environ.items()
             if not key.startswith(("DATA_PLATFORM_", "DASHSCOPE_"))
         }
+        if index_url:
+            env["UV_DEFAULT_INDEX"] = index_url
         env["PYTHONPATH"] = str(snapshot)
         for key in ("HF_HOME", "HF_DATASETS_CACHE", "HF_LEROBOT_HOME", "UV_CACHE_DIR"):
             env[key] = str(root / "test-cache" / key)
@@ -233,7 +238,7 @@ def check_nodes(store, version: str, *, required_names: list[str]):
             )
 
 
-def approve_release(deployment: Deployment, version: str, evidence: Path):
+def check_release_acceptance(deployment: Deployment, version: str):
     if deployment.environment != "dev":
         raise ValueError("Only development can approve a release")
     root, _ = verify_release(version)
@@ -243,7 +248,8 @@ def approve_release(deployment: Deployment, version: str, evidence: Path):
 
     check_server_environment()
     store = ControlPlaneStore(os.environ["DATA_PLATFORM_DATABASE_URL"])
-    health(deployment, version)
+    if health(deployment, version).get("maintenance"):
+        raise RuntimeError("Development is under maintenance")
     run(["systemctl", "is-active", "--quiet", *deployment.units])
     check_nodes(
         store, version, required_names=[name for target in agent_targets() for name in target.node_names]
@@ -252,7 +258,13 @@ def approve_release(deployment: Deployment, version: str, evidence: Path):
     if not local_state.is_file():
         raise RuntimeError("Run a representative local job before approving this release")
     check_nodes(store, version, required_names=[json.loads(local_state.read_text())["name"]])
-    report = json.loads(evidence.read_text())
+    return root
+
+
+def approve_release(
+    deployment: Deployment, version: str, evidence: Path | dict, *, approved_by: dict | None = None
+):
+    report = json.loads(evidence.read_text()) if isinstance(evidence, Path) else evidence
     required = {
         "role_permissions",
         "environment_isolation",
@@ -261,8 +273,13 @@ def approve_release(deployment: Deployment, version: str, evidence: Path):
         "remote_preprocess",
         "rollback_drill",
     }
-    if report.get("release") != version or any(report.get(key) is not True for key in required):
+    if (
+        not isinstance(report, dict)
+        or report.get("release") != version
+        or any(report.get(key) is not True for key in required)
+    ):
         raise ValueError("Manual acceptance must identify this release and pass every required scenario")
+    root = check_release_acceptance(deployment, version)
     atomic_json(
         root / "approval.json",
         {
@@ -270,7 +287,7 @@ def approve_release(deployment: Deployment, version: str, evidence: Path):
             "instance_id": os.environ["DATA_PLATFORM_INSTANCE_ID"],
             "manifest_sha256": digest(root / "release.json"),
             "approved_at": time.time(),
-            "approved_by": os.environ.get("SUDO_USER", str(os.getuid())),
+            "approved_by": approved_by or os.environ.get("SUDO_USER", str(os.getuid())),
             "evidence": report,
         },
     )

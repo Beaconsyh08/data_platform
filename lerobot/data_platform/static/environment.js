@@ -29,36 +29,179 @@
             if (!auth.user) return;
             observedUser = auth.user.user_id;
             const user = document.createElement('span');
-            user.textContent = `${auth.user.display_name} (${auth.user.role})`;
+            user.textContent = `${auth.user.username} (${auth.user.role})`;
             bar.append(user);
             if (environment === 'dev') {
                 const comparison = document.createElement('span');
                 comparison.textContent = 'Checking production release…';
                 bar.append(comparison);
                 const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'dp-production-deploy';
                 button.textContent = 'Deploy to production';
                 button.disabled = true;
                 if (auth.user.role === 'admin' && !auth.user.original_actor) bar.append(button);
-                let snapshot;
+                const approveButton = document.createElement('button');
+                approveButton.type = 'button';
+                approveButton.className = 'dp-production-deploy';
+                approveButton.textContent = 'Review and approve';
+                approveButton.disabled = true;
+                const dialog = document.createElement('dialog');
+                dialog.className = 'dp-acceptance-dialog';
+                dialog.setAttribute('aria-labelledby', 'dp-acceptance-title');
+                dialog.innerHTML = `<h2 id="dp-acceptance-title">Release acceptance</h2>
+                    <p data-release></p><p data-checks role="status">Checking development services and Agents…</p>
+                    <p>Confirm each scenario only after completing it on this release. Approval does not deploy to production.</p>
+                    <form><fieldset><legend>Manual acceptance</legend>
+                    <label><input type="checkbox" name="role_permissions"> Role permissions and account isolation work correctly</label>
+                    <label><input type="checkbox" name="environment_isolation"> Development and production data remain isolated</label>
+                    <label><input type="checkbox" name="local_job"> A representative local job completed successfully</label>
+                    <label><input type="checkbox" name="remote_viewer"> Remote dataset viewing works</label>
+                    <label><input type="checkbox" name="remote_preprocess"> Remote preprocessing completed successfully</label>
+                    <label><input type="checkbox" name="rollback_drill"> The rollback procedure has been tested</label>
+                    </fieldset><div class="dp-acceptance-actions"><button type="button" data-close>Cancel</button>
+                    <button type="submit" disabled>Approve this release</button></div></form>`;
+                const form = dialog.querySelector('form');
+                const submit = dialog.querySelector('[type="submit"]');
+                const checks = dialog.querySelector('[data-checks]');
+                let review, ready = false, approving = false;
+                const syncSubmit = () => {
+                    submit.disabled = approving || !ready || ![...form.querySelectorAll('input')].every(input => input.checked);
+                };
+                form.addEventListener('change', syncSubmit);
+                dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
+                dialog.addEventListener('cancel', event => { if (approving) event.preventDefault(); });
+                dialog.addEventListener('close', () => { review = null; ready = false; form.reset(); syncSubmit(); });
+                if (auth.user.role === 'admin' && !auth.user.original_actor) {
+                    bar.insertBefore(approveButton, button);
+                    document.body.append(dialog);
+                }
+                approveButton.addEventListener('click', async () => {
+                    if (!snapshot?.can_approve) return;
+                    review = {revision: snapshot.revision, release: snapshot.dev.release};
+                    const selected = review;
+                    ready = false; form.reset(); syncSubmit();
+                    dialog.querySelector('[data-release]').textContent = `Release: ${review.release}`;
+                    checks.textContent = 'Checking development services, environment identity, Agent versions and heartbeats…';
+                    dialog.showModal();
+                    try {
+                        const response = await originalFetch(`/api/dev/acceptance?revision=${encodeURIComponent(review.revision)}`, {cache: 'no-store'});
+                        const result = await response.json();
+                        if (!response.ok) throw new Error(result.error);
+                        if (review !== selected) return;
+                        ready = true;
+                        checks.textContent = 'Automatic checks passed. Confirm the completed manual scenarios below.';
+                    } catch (error) { if (review === selected) checks.textContent = error.message; }
+                    syncSubmit();
+                });
+                form.addEventListener('submit', async event => {
+                    event.preventDefault();
+                    syncSubmit();
+                    if (submit.disabled || !review) return;
+                    approving = true; syncSubmit();
+                    dialog.querySelector('[data-close]').disabled = true;
+                    try {
+                        const evidence = {release: review.release};
+                        form.querySelectorAll('input').forEach(input => { evidence[input.name] = input.checked; });
+                        const response = await window.fetch('/api/dev/acceptance', {
+                            method: 'POST', headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({revision: review.revision, confirm: true, evidence}),
+                        });
+                        const result = await response.json();
+                        if (!response.ok) throw new Error(result.error);
+                        dialog.close();
+                        await refresh();
+                    } catch (error) { ready = false; checks.textContent = `${error.message} Close and reopen this review to retry.`; }
+                    finally { approving = false; dialog.querySelector('[data-close]').disabled = false; syncSubmit(); }
+                });
+                const progressButton = document.createElement('button');
+                progressButton.type = 'button'; progressButton.className = 'dp-production-deploy';
+                progressButton.textContent = 'Deployment progress'; progressButton.hidden = true;
+                const progressDialog = document.createElement('dialog');
+                progressDialog.className = 'dp-acceptance-dialog dp-deployment-dialog';
+                progressDialog.setAttribute('aria-labelledby', 'dp-deployment-title');
+                progressDialog.innerHTML = `<h2 id="dp-deployment-title">Production deployment</h2>
+                    <p data-deploy-release></p><p data-deploy-status role="status" aria-live="polite"></p>
+                    <progress aria-label="Deployment in progress"></progress><p data-deploy-time></p>
+                    <ol data-deploy-steps></ol><p data-deploy-connection></p>
+                    <p>Closing this window does not stop the deployment.</p><button type="button" data-deploy-close>Hide</button>`;
+                bar.append(progressButton); document.body.append(progressDialog);
+                let trackedDeployment, hiddenDeployment, completedDeployment, latestProgress, suppressedProgressId;
+                const rememberDeployment = value => {
+                    try { if (value) window.sessionStorage?.setItem('dp-production-deployment', value);
+                          else window.sessionStorage?.removeItem('dp-production-deployment'); } catch (_) {}
+                };
+                try { trackedDeployment = window.sessionStorage?.getItem('dp-production-deployment'); } catch (_) {}
+                const showProgress = () => { if (!progressDialog.open) progressDialog.showModal(); };
+                progressButton.addEventListener('click', () => { suppressedProgressId = null; renderProgress(snapshot?.progress); showProgress(); });
+                progressDialog.querySelector('[data-deploy-close]').addEventListener('click', () => progressDialog.close());
+                progressDialog.addEventListener('close', () => { hiddenDeployment = latestProgress?.id; });
+                const renderProgress = progress => {
+                    if (!progress || progress.id === suppressedProgressId) return;
+                    latestProgress = progress;
+                    const terminal = ['installed', 'failed', 'server-installed'].includes(progress.status);
+                    progressButton.hidden = false;
+                    progressDialog.querySelector('[data-deploy-release]').textContent = `Release: ${progress.release}`;
+                    progressDialog.querySelector('[data-deploy-status]').textContent = progress.message;
+                    progressDialog.querySelector('[data-deploy-status]').dataset.status = progress.status;
+                    progressDialog.querySelector('progress').hidden = terminal;
+                    const elapsed = Math.max(0, Math.floor((progress.finished_at || (terminal ? progress.updated_at : Date.now() / 1000)) - progress.started_at));
+                    progressDialog.querySelector('[data-deploy-time]').textContent = `${terminal && !progress.finished_at ? 'Last recorded elapsed' : 'Elapsed'}: ${Math.floor(elapsed / 60)}m ${elapsed % 60}s · Updated: ${new Date(progress.updated_at * 1000).toLocaleTimeString()}`;
+                    const list = progressDialog.querySelector('[data-deploy-steps]');
+                    list.replaceChildren();
+                    for (const step of progress.steps || []) {
+                        const row = document.createElement('li');
+                        row.textContent = `${new Date(step.at * 1000).toLocaleTimeString()} — ${step.message}`;
+                        list.append(row);
+                    }
+                    progressDialog.querySelector('[data-deploy-connection]').textContent = terminal ? '' : 'Updates automatically every 3 seconds.';
+                    progressDialog.querySelector('[data-deploy-close]').textContent = terminal ? 'Close' : 'Hide';
+                    if (!terminal) {
+                        trackedDeployment = progress.id; rememberDeployment(progress.id);
+                        if (hiddenDeployment !== progress.id) showProgress();
+                    } else if (trackedDeployment === progress.id && completedDeployment !== progress.id) {
+                        completedDeployment = progress.id; rememberDeployment(null); showProgress();
+                    }
+                };
+                let snapshot, refreshing = false, submittingDeployment = false;
                 const refresh = async () => {
+                    if (refreshing) return;
+                    refreshing = true;
                     try {
                         const response = await originalFetch('/api/dev/production', {cache: 'no-store'});
                         snapshot = await response.json();
                         if (!response.ok) throw new Error(snapshot.error);
                         comparison.textContent = `Production: ${snapshot.prod.release || snapshot.prod.environment || 'Unknown'} · ${snapshot.comparison === 'same' ? 'Same release' : (snapshot.comparison === 'different' ? 'Different releases' : 'Comparison unavailable')}`;
                         comparison.title = 'Compares deployed code releases. Databases and datasets remain separate.';
-                        button.disabled = !snapshot.can_promote;
+                        renderProgress(snapshot.progress);
+                        button.disabled = submittingDeployment || !snapshot.can_promote;
+                        approveButton.disabled = !snapshot.can_approve || approving;
+                        approveButton.textContent = snapshot.approved ? 'Release approved' : 'Review and approve';
+                        approveButton.title = snapshot.approved ? 'This release has been approved' : (snapshot.can_approve ? 'Review acceptance checks for this release' : snapshot.reason || 'Acceptance unavailable');
+                        if (review && (review.revision !== snapshot.revision || !snapshot.can_approve) && !approving) {
+                            ready = false; syncSubmit();
+                            checks.textContent = 'Release or availability changed. Close and reopen this review.';
+                        }
                         button.title = snapshot.reason || 'Deploy this tested release to production';
                         if (snapshot.reason) comparison.textContent += ` · ${snapshot.reason}`;
                     } catch (error) {
                         comparison.textContent = error.message || 'Production status unavailable';
                         button.disabled = true;
-                    }
+                        approveButton.disabled = true;
+                        if (progressDialog.open) progressDialog.querySelector('[data-deploy-connection]').textContent = 'Connection interrupted; retrying automatically. Deployment may still be running.';
+                    } finally { refreshing = false; }
                 };
                 button.addEventListener('click', async () => {
-                    if (!snapshot?.can_promote) return;
+                    if (submittingDeployment || !snapshot?.can_promote) return;
                     if (!confirm(`Deploy ${snapshot.dev.release} to production? Production will briefly enter maintenance. Production databases and datasets will be preserved.`)) return;
                     button.disabled = true;
+                    submittingDeployment = true;
+                    suppressedProgressId = latestProgress?.id;
+                    progressDialog.querySelector('[data-deploy-status]').textContent = 'Submitting deployment request…';
+                    progressDialog.querySelector('[data-deploy-release]').textContent = `Release: ${snapshot.dev.release}`;
+                    progressDialog.querySelector('[data-deploy-steps]').replaceChildren();
+                    progressDialog.querySelector('progress').hidden = false;
+                    showProgress();
                     try {
                         const response = await window.fetch('/api/dev/production', {
                             method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -66,12 +209,17 @@
                         });
                         const result = await response.json();
                         if (!response.ok) throw new Error(result.error);
+                        trackedDeployment = result.deployment_id;
+                        rememberDeployment(trackedDeployment);
                         comparison.textContent = `Deploying ${result.release} to production…`;
-                    } catch (error) { alert(error.message); }
+                        progressDialog.querySelector('[data-deploy-status]').textContent = 'Request accepted. Waiting for deployment progress…';
+                    } catch (error) { progressDialog.querySelector('[data-deploy-status]').textContent = error.message;
+                        progressDialog.querySelector('progress').hidden = true;
+                    } finally { submittingDeployment = false; }
                     await refresh();
                 });
                 await refresh();
-                setInterval(refresh, 15000);
+                setInterval(refresh, 3000);
             }
             if (environment !== 'dev' || !auth.dev_role_switch) return;
             const response = await originalFetch('/api/dev/role-session');

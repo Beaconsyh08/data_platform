@@ -22,11 +22,6 @@
                     <input id="username" autocomplete="username" required minlength="3" maxlength="64"
                            class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 outline-none focus:border-sky-500">
                 </label>
-                <label class="block" id="display-name-field" {% if configured %}hidden{% endif %}>
-                    <span class="mb-1 block text-sm text-slate-300">Display name</span>
-                    <input id="display-name" autocomplete="name" maxlength="128"
-                           class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 outline-none focus:border-sky-500">
-                </label>
                 <label class="block">
                     <span class="mb-1 block text-sm text-slate-300">Password</span>
                     <input id="password" type="password" autocomplete="current-password" required minlength="10" maxlength="256"
@@ -46,6 +41,7 @@
                     {{ "Sign in" if configured else "Bootstrap administrator" }}
                 </button>
             </form>
+            {% if configured %}<p class="mt-4 text-sm text-slate-400">Forgot password? Contact your administrator for a reset link.</p>{% endif %}
             {% if configured and allow_registration %}
             <button id="mode-toggle" class="mt-4 w-full text-sm text-sky-300 hover:text-sky-200">Request a viewer account</button>
             {% endif %}
@@ -60,13 +56,11 @@
         const errorBox = document.getElementById('error');
         const successBox = document.getElementById('success');
         const submitButton = document.getElementById('submit');
-        const displayNameField = document.getElementById('display-name-field');
         const bootstrapField = document.getElementById('bootstrap-field');
         const bootstrapToken = document.getElementById('bootstrap-token');
         const toggle = document.getElementById('mode-toggle');
 
         function syncMode() {
-            displayNameField.hidden = mode === 'login';
             if (bootstrapField) bootstrapField.hidden = mode !== 'bootstrap';
             submitButton.textContent = mode === 'login' ? 'Sign in' : mode === 'register' ? 'Submit registration' : 'Bootstrap administrator';
             if (toggle) toggle.textContent = mode === 'register' ? 'Back to sign in' : 'Request a viewer account';
@@ -87,7 +81,6 @@
             const payload = {
                 username: document.getElementById('username').value,
                 password: document.getElementById('password').value,
-                display_name: document.getElementById('display-name').value,
             };
             if (mode === 'bootstrap' && bootstrapToken) payload.bootstrap_token = bootstrapToken.value;
             try {

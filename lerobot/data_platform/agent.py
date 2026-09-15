@@ -72,6 +72,8 @@ _MERGE_OPTION_KEYS = {
     "source_location_ids",
     "_source_locations",
     "dimension_policy",
+    "dimension_names",
+    "padding_value",
     "exclude_episodes",
     "workers",
     "dry_run",
@@ -623,6 +625,7 @@ class DataPlatformAgent:
             "disk": disk,
             "data_profile_protocol": DATA_PROFILE_PROTOCOL,
             "operations": operations,
+            "merge_alignment_protocol": 2,
             "source_mutations_enabled": self.allow_source_mutations,
             "task_config_protocol": TASK_CONFIG_PROTOCOL,
         }
@@ -1019,7 +1022,12 @@ class DataPlatformAgent:
         ]
         if roots[0] != source_root or len(set(roots)) != len(roots):
             raise ValueError("merge source roots must be distinct and start with the job source")
-        validate_merge_sources(roots, dimension_policy=options.get("dimension_policy", "strict"))
+        validate_merge_sources(
+            roots,
+            dimension_policy=options.get("dimension_policy", "strict"),
+            dimension_names=options.get("dimension_names"),
+            padding_value=options.get("padding_value", 0),
+        )
         excluded = options.get("exclude_episodes")
         if excluded is not None:
             if not isinstance(excluded, list) or len(excluded) != len(roots):

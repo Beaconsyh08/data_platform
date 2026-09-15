@@ -361,3 +361,243 @@ def test_promotion_snapshot_blocks_legacy_production(tmp_path, monkeypatch, prod
     state = promotion.snapshot()
     assert state["can_promote"] is expected
     assert state["comparison"] == ("different" if expected else "unknown")
+
+
+def test_password_changes_require_csrf_and_real_identity(environment):
+    app, store = app_and_store(environment)
+    client = app.test_client()
+    admin = bootstrap(client).json["user"]
+    payload = {
+        "current_password": "long-test-password",
+        "new_password": "replacement-password",
+        "confirm_password": "replacement-password",
+    }
+    assert (
+        client.post("/api/auth/password", json=payload, base_url="https://localhost:8443").status_code == 403
+    )
+    seed_test_users(store)
+    assert post(client, "/api/dev/role-session", {"identity": "viewer"}).status_code == 200
+    assert post(client, "/api/auth/password", payload).status_code == 403
+    assert post(client, "/api/dev/role-session", {"identity": "admin"}).status_code == 200
+    assert post(client, f"/api/auth/users/{admin['user_id']}/password-reset").status_code == 200
+
+
+def test_web_acceptance_requires_real_admin_complete_evidence_and_records_actor(environment, monkeypatch):
+    from lerobot.data_platform import promotion
+
+    app, store = app_and_store(environment)
+    client = app.test_client()
+    admin = bootstrap(client).json["user"]
+    calls = []
+
+    def helper(payload):
+        calls.append(payload)
+        return {"status": "approved", "release": "R3", "revision": "revision-3"}
+
+    monkeypatch.setattr(promotion, "call_helper", helper)
+    assert post(client, "/api/dev/acceptance", {"revision": "revision-3", "confirm": True}).status_code == 400
+    assert calls == []
+    evidence = dict.fromkeys(
+        (
+            "role_permissions",
+            "environment_isolation",
+            "local_job",
+            "remote_viewer",
+            "remote_preprocess",
+            "rollback_drill",
+        ),
+        True,
+    )
+    evidence["release"] = "R3"
+    body = {"revision": "revision-3", "confirm": True, "evidence": evidence, "actor": {"username": "forged"}}
+    result = post(client, "/api/dev/acceptance", body)
+    assert result.status_code == 200
+    assert calls[-1]["actor"]["user_id"] == admin["user_id"]
+    assert calls[-1]["actor"]["username"] != "forged"
+    assert calls[-1]["action"] == "approve"
+    seed_test_users(store)
+    post(client, "/api/dev/role-session", {"identity": "operator_a"})
+    assert post(client, "/api/dev/acceptance", body).status_code == 403
+    assert (
+        client.get("/api/dev/acceptance?revision=revision-3", base_url="https://localhost:8443").status_code
+        == 403
+    )
+    assert len(calls) == 1
+
+
+def test_web_acceptance_conflict_is_reported(environment, monkeypatch):
+    from lerobot.data_platform import promotion
+
+    app, store = app_and_store(environment)
+    client = app.test_client()
+    bootstrap(client)
+
+    def conflict(payload):
+        raise ValueError("Release changed")
+
+    monkeypatch.setattr(promotion, "call_helper", conflict)
+    response = client.get("/api/dev/acceptance?revision=old", base_url="https://localhost:8443")
+    assert response.status_code == 409
+    assert response.json["error"] == "Release changed"
+
+
+def test_acceptance_helper_rechecks_revision_and_never_deploys(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from lerobot.data_platform import deployment, promotion, releases
+
+    monkeypatch.setattr(promotion.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        deployment, "Deployment", lambda name: SimpleNamespace(root=tmp_path, environment=name)
+    )
+    original = promotion.Path
+    monkeypatch.setattr(
+        promotion,
+        "Path",
+        lambda value: tmp_path / "promotion.lock" if value.endswith(".lock") else original(value),
+    )
+    monkeypatch.setattr(
+        promotion, "snapshot", lambda: {"can_approve": True, "revision": "current", "dev": {"release": "R3"}}
+    )
+    approvals = []
+    checks = []
+    monkeypatch.setattr(releases, "approve_release", lambda *args, **kwargs: approvals.append((args, kwargs)))
+    monkeypatch.setattr(releases, "check_release_acceptance", lambda *args: checks.append(args))
+    with pytest.raises(ValueError):
+        promotion.handle_request({"action": "approve", "revision": "old"})
+    assert not approvals
+    assert (
+        promotion.handle_request({"action": "check-acceptance", "revision": "current"})["status"] == "ready"
+    )
+    assert len(checks) == 1
+    result = promotion.handle_request(
+        {
+            "action": "approve",
+            "revision": "current",
+            "evidence": {},
+            "actor": {"user_id": "admin-id", "username": "admin", "role": "admin"},
+        }
+    )
+    assert result["status"] == "approved"
+    assert approvals[0][1]["approved_by"]["user_id"] == "admin-id"
+
+
+def test_approval_receipt_binds_evidence_and_actor_to_artifact(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from lerobot.data_platform import releases
+
+    (tmp_path / "release.json").write_text('{"commit": "test"}')
+    monkeypatch.setenv("DATA_PLATFORM_INSTANCE_ID", "dev-instance")
+    monkeypatch.setattr(releases, "check_release_acceptance", lambda *args: tmp_path)
+    report = dict.fromkeys(
+        (
+            "role_permissions",
+            "environment_isolation",
+            "local_job",
+            "remote_viewer",
+            "remote_preprocess",
+            "rollback_drill",
+        ),
+        True,
+    )
+    report["release"] = "R3"
+    target = SimpleNamespace(environment="dev")
+    with pytest.raises(ValueError):
+        releases.approve_release(target, "R3", {**report, "rollback_drill": False})
+    assert not (tmp_path / "approval.json").exists()
+    actor = {"user_id": "admin-id", "username": "admin", "role": "admin"}
+    releases.approve_release(target, "R3", report, approved_by=actor)
+    receipt = json.loads((tmp_path / "approval.json").read_text())
+    assert receipt["approved_by"] == actor
+    assert receipt["manifest_sha256"] == releases.digest(tmp_path / "release.json")
+    assert receipt["evidence"] == report
+
+
+def test_acceptance_browser_requires_checks_then_enables_deploy(tmp_path):
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("Node.js required")
+    script = Path(__file__).parents[2] / "lerobot/data_platform/static/environment.js"
+    harness = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+class Element {
+    constructor(tag) { this.tag = tag; this.children = []; this.events = {}; this.parts = {}; this.dataset = {}; }
+    append(item) { this.children.push(item); }
+    replaceChildren() { this.children = []; }
+    prepend(item) { this.children.unshift(item); }
+    insertBefore(item, next) { this.children.splice(this.children.indexOf(next), 0, item); }
+    setAttribute() {}
+    addEventListener(event, fn) { this.events[event] = fn; }
+    set innerHTML(html) {
+        for (const name of ['form', '[type="submit"]', '[data-checks]', '[data-close]', '[data-release]']) this.parts[name] = new Element(name);
+        this.parts.form.inputs = [...html.matchAll(/type="checkbox" name="([^"]+)"/g)].map(match => ({name: match[1], checked: false}));
+        this.parts.form.reset = () => this.parts.form.inputs.forEach(input => { input.checked = false; });
+    }
+    querySelector(name) { return this.parts[name] ||= new Element(name); }
+    querySelectorAll() { return this.inputs; }
+    showModal() { this.open = true; }
+    close() { this.open = false; this.events.close(); }
+}
+let readyCallback, poll, approved = false, posts = [], progress = null;
+const body = new Element('body');
+const context = {
+    window: {fetch: async (url, init = {}) => {
+        let result;
+        if (url === '/api/auth/status') result = {csrf_token:'csrf', user:{user_id:'admin',username:'admin',role:'admin'}};
+        else if (url === '/api/dev/production') result = {dev:{release:'R3'},prod:{release:'R2'},revision:'rev3',comparison:'different',approved,can_approve:!approved,can_promote:approved,progress};
+        else if (url.startsWith('/api/dev/acceptance')) {
+            if (init.method === 'POST') { posts.push(JSON.parse(init.body)); approved = true; }
+            result = {status: approved ? 'approved' : 'ready', release:'R3', revision:'rev3'};
+        } else throw new Error(url);
+        return {ok:true, json:async () => result};
+    }, addEventListener() {}},
+    document: {body, createElement: tag => new Element(tag), querySelector: name => ({content:name.includes('environment')?'dev':'R3'}),
+        addEventListener: (event, callback) => { readyCallback = callback; }},
+    location: {href:'https://example.test/',origin:'https://example.test'},
+    setInterval: callback => { poll = callback; }, Headers, Request, URL,
+};
+vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), context);
+(async () => {
+    await readyCallback();
+    const bar = body.children[0];
+    const approve = bar.children.find(item => item.textContent === 'Review and approve');
+    const deploy = bar.children.find(item => item.textContent === 'Deploy to production');
+    assert.ok(approve); assert.equal(approve.disabled, false); assert.equal(deploy.disabled, true);
+    await approve.events.click();
+    const dialog = body.children.find(item => item.tag === 'dialog');
+    const form = dialog.querySelector('form');
+    const submit = dialog.querySelector('[type="submit"]');
+    assert.equal(dialog.open, true); assert.equal(submit.disabled, true);
+    await form.events.submit({preventDefault(){}}); assert.equal(posts.length, 0);
+    form.inputs.forEach(input => { input.checked = true; }); form.events.change();
+    assert.equal(submit.disabled, false);
+    await form.events.submit({preventDefault(){}});
+    assert.equal(posts.length, 1); assert.equal(posts[0].revision, 'rev3');
+    assert.equal(posts[0].evidence.rollback_drill, true); assert.equal(posts[0].confirm, true);
+    assert.equal(dialog.open, false); assert.equal(deploy.disabled, false);
+    assert.equal(approve.disabled, true); assert.equal(approve.textContent, 'Release approved');
+    progress = {id:'run-1',release:'R3',status:'running',message:'Backing up',started_at:10,updated_at:20,
+        steps:[{at:20,message:'Backing up'}]};
+    await poll();
+    const progressDialog = body.children.filter(item => item.tag === 'dialog')[1];
+    assert.equal(progressDialog.open, true);
+    assert.equal(progressDialog.querySelector('[data-deploy-status]').textContent, 'Backing up');
+    assert.equal(progressDialog.querySelector('progress').hidden, false);
+    progressDialog.close(); await poll(); assert.equal(progressDialog.open, false);
+    progress = {...progress,status:'installed',message:'Deployment completed successfully',finished_at:30};
+    await poll(); assert.equal(progressDialog.open, true);
+    assert.equal(progressDialog.querySelector('progress').hidden, true);
+    assert.equal(progressDialog.querySelector('[data-deploy-status]').textContent, 'Deployment completed successfully');
+    progressDialog.close(); await poll(); assert.equal(progressDialog.open, false);
+
+})().catch(error => { console.error(error); process.exit(1); });
+"""
+    target = tmp_path / "acceptance.cjs"
+    target.write_text(harness)
+    subprocess.run(["node", str(target), str(script)], check=True, capture_output=True, text=True, timeout=10)

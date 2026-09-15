@@ -4,7 +4,7 @@ import logging
 import os
 import shutil
 import subprocess
-import tempfile
+import uuid
 from pathlib import Path
 
 import cv2
@@ -18,11 +18,10 @@ def temporary_output_path(target: Path) -> Path:
     """Return a unique sibling path that preserves the target suffix."""
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(
-        prefix=f".{target.stem}.",
-        suffix=target.suffix,
-        dir=target.parent,
-    )
+    # Cache artifacts must honor the directory's shared ACL and the worker's umask.
+    # mkstemp's fixed 0600 mode masks inherited grants after atomic replacement.
+    name = target.parent / f".{target.stem}.{uuid.uuid4().hex}{target.suffix}"
+    descriptor = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
     os.close(descriptor)
     return Path(name)
 

@@ -33,7 +33,7 @@ def seed_test_users(store) -> None:
             scheduler_lock(session)
             if session.get(DevTestUser, name) is not None:
                 continue
-            user = store._new_user(f"dev_test_{name}", secrets.token_urlsafe(48), f"开发测试 {name}", role)
+            user = store._new_user(f"dev_test_{name}", secrets.token_urlsafe(48), role)
             session.add(user)
             session.add(DevTestUser(name=name, user_id=user.user_id))
 

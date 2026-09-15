@@ -290,3 +290,152 @@ def test_merge_identical_unnamed_signals_preserves_values(tmp_path, policy, name
     table = pq.read_table(output / "data/chunk-000/episode_000002.parquet")
     assert table["action"].to_pylist() == [[10, 20], [11, 21]]
     assert [_snapshot(root) for root in roots] == snapshots
+
+
+@pytest.mark.parametrize("policy,target_dim", [("min", 17), ("pad", 20)])
+@pytest.mark.parametrize("v3", [False, True])
+def test_explicit_prefix_tail_merge_17_and_20(tmp_path, policy, target_dim, v3):
+    from lerobot.data_platform.precompute.preprocess.merge_alignment import numeric_stats
+
+    roots = [tmp_path / "short", tmp_path / "wide"]
+    mappings = []
+    for root, dimension in zip(roots, [17, 20], strict=True):
+        _make_named_dataset(root, ["left", "right"], ["grip"])
+        info = load_json(root / "meta/info.json")
+        names = [f"joint_{i}" for i in range(16)] + [f"extra_{i}" for i in range(dimension - 17)] + ["tail"]
+        mappings.append(dict.fromkeys(("action", "state"), names))
+        episode_stats = load_jsonl(root / "meta/episodes_stats.jsonl")
+        for field in ("action", "state"):
+            info["features"][field].update(shape=[dimension], names=[field], units=["rad"] * dimension)
+        write_json(root / "meta/info.json", info)
+        for episode, path in enumerate(sorted((root / "data").rglob("*.parquet"))):
+            table = pq.read_table(path)
+            values = [[float(i + 100 * episode) for i in range(dimension)] for _ in range(table.num_rows)]
+            for field in ("action", "state"):
+                table = table.set_column(
+                    table.column_names.index(field),
+                    field,
+                    pa.array(values, type=pa.list_(pa.float32(), dimension)),
+                )
+                episode_stats[episode]["stats"][field] = numeric_stats(values)
+            pq.write_table(table, path)
+        write_jsonl(root / "meta/episodes_stats.jsonl", episode_stats)
+    if v3:
+        roots[1] = run_convert_v3(roots[1], tmp_path / "wide_v3", workers=1).out_root
+    before = [_snapshot(root) for root in roots]
+    preview = run_merge(
+        roots,
+        tmp_path / "preview",
+        dry_run=True,
+        dimension_policy=policy,
+        dimension_names=mappings,
+        padding_value=-1 if policy == "pad" else 0,
+    )
+    assert not (tmp_path / "preview").exists()
+    plan = preview.summary["dimension_alignment"][0]["fields"]["action"]
+    assert plan["target_dim"] == target_dim
+    assert plan["source_indices"][-1] == 16
+    if policy == "pad":
+        assert plan["source_indices"][16:19] == [None, None, None]
+    result = run_merge(
+        roots,
+        tmp_path / "output",
+        dimension_policy=policy,
+        dimension_names=mappings,
+        padding_value=-1 if policy == "pad" else 0,
+        workers=1,
+    )
+    info = load_json(result.out_root / "meta/info.json")
+    assert info["features"]["action"]["shape"] == [target_dim]
+    assert info["features"]["action"]["names"][-1] == "tail"
+    if v3:
+        meta = V3DatasetMetadata(result.repo_id, result.out_root)
+        first = read_episode_table(result.out_root, meta, 0)
+        third = read_episode_table(result.out_root, meta, 2)
+        validate_v3_dataset(result.out_root)
+    else:
+        first = pq.read_table(result.out_root / "data/chunk-000/episode_000000.parquet")
+        third = pq.read_table(result.out_root / "data/chunk-000/episode_000002.parquet")
+    expected_short = list(range(16)) + ([-1] * 3 if policy == "pad" else []) + [16]
+    expected_wide = list(range(16)) + (list(range(16, 19)) if policy == "pad" else []) + [19]
+    for field in ("action", "state"):
+        assert first[field].to_pylist()[0] == expected_short
+        assert third[field].to_pylist()[0] == expected_wide
+        stats = load_json(result.out_root / "meta/stats.json")[field]
+        assert len(stats["mean"]) == target_dim
+    assert first["untouched"].to_pylist() == [42, 42]
+    assert [_snapshot(root) for root in roots] == before
+
+
+def test_named_padding_aligns_units_and_reports_padded_signals(tmp_path):
+    roots = [tmp_path / "short", tmp_path / "wide"]
+    _make_named_dataset(roots[0], ["left", "right"], ["grip"])
+    _make_named_dataset(roots[1], ["right", "body", "left"], ["grip"])
+    result = run_merge(roots, tmp_path / "output", dimension_policy="pad", workers=1)
+    first = pq.read_table(result.out_root / "data/chunk-000/episode_000000.parquet")
+    assert first["action"].to_pylist()[0] == [20, 0, 10]
+    assert result.summary["dimension_alignment"][0]["fields"]["action"]["padded_names"] == ["body"]
+    assert load_json(result.out_root / "meta/info.json")["features"]["action"]["units"] == ["rad"] * 3
+
+
+@pytest.mark.parametrize(
+    "mapping", [[{"action": ["x"]}, {}], [{"action": ["x", "x"]}, {}], [{"unknown": ["x"]}, {}]]
+)
+def test_explicit_mapping_rejects_invalid_names_without_writing(tmp_path, mapping):
+    roots = [tmp_path / "a", tmp_path / "b"]
+    for root in roots:
+        _make_named_dataset(root, ["left", "right"], ["grip"])
+    with pytest.raises(ValueError):
+        run_merge(roots, tmp_path / "output", dimension_policy="min", dimension_names=mapping)
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize("dimensions,prefix,tail", [([5, 8], 3, 2), ([9, 12, 10], 6, 3), ([2, 7], 1, 1)])
+@pytest.mark.parametrize("policy", ["min", "pad"])
+def test_explicit_alignment_supports_arbitrary_dimensions(dimensions, prefix, tail, policy):
+    from lerobot.data_platform.precompute.preprocess.merge_alignment import (
+        plan_signal_alignment,
+        project_signals,
+    )
+
+    infos, mappings = [], []
+    for dimension in dimensions:
+        infos.append(
+            {
+                "features": {
+                    "observation.state": {"shape": [dimension], "dtype": "float32", "names": ["states"]}
+                }
+            }
+        )
+        names = (
+            [f"head{i}" for i in range(prefix)]
+            + [f"middle{i}" for i in range(dimension - prefix - tail)]
+            + [f"tail{i}" for i in range(tail)]
+        )
+        mappings.append({"observation.state": names})
+    aligned, projections = plan_signal_alignment(infos, policy, mappings, -7 if policy == "pad" else 0)
+    target_dimension = min(dimensions) if policy == "min" else max(dimensions)
+    for dimension, info, projection in zip(dimensions, aligned, projections, strict=True):
+        assert info["features"]["observation.state"]["shape"] == [target_dimension]
+        table = pa.table(
+            {"observation.state": pa.array([list(range(dimension))], type=pa.list_(pa.float32(), dimension))}
+        )
+        output, stats = project_signals(table, projection)
+        values = output["observation.state"].to_pylist()[0]
+        assert values[:prefix] == list(range(prefix))
+        assert values[-tail:] == list(range(dimension - tail, dimension))
+        assert len(stats["observation.state"]["mean"]) == target_dimension
+        if policy == "pad" and dimension < target_dimension:
+            assert values[dimension - tail : target_dimension - tail] == [-7] * (target_dimension - dimension)
+
+
+@pytest.mark.parametrize("dtype,fill", [("uint8", -1), ("int8", 128), ("int32", 0.5), ("float32", 1e100)])
+def test_padding_value_must_fit_signal_type(dtype, fill):
+    from lerobot.data_platform.precompute.preprocess.merge_alignment import plan_signal_alignment
+
+    infos = [
+        {"features": {"action": {"shape": [len(names)], "names": names, "dtype": dtype}}}
+        for names in (["x"], ["x", "y"])
+    ]
+    with pytest.raises(ValueError, match="padding"):
+        plan_signal_alignment(infos, "pad", padding_value=fill)

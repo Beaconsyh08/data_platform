@@ -164,7 +164,10 @@ class JobManager:
                 if submitter is None or not submitter.active or submitter.role not in {"admin", "operator"}:
                     continue
                 if job.operation.startswith("mutation.") and submitter.role != "admin":
-                    continue
+                    from lerobot.data_platform.episode_deletion_requests import has_approved_deletion
+
+                    if not has_approved_deletion(session, job):
+                        continue
                 if sum(row.requested_by == job.requested_by for row in active) >= self.user_limit:
                     continue
                 location = session.get(DatasetLocation, job.location_id)

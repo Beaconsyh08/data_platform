@@ -49,8 +49,8 @@ app.jobSearch = 'KITCHEN'; assert.equal(app.filteredJobs().length, 3);
 app.myJobsOnly = true; assert.equal(app.filteredJobs().length, 1);
 app.jobSearch = 'missing'; assert.equal(app.filteredJobs().length, 0);
 assert.equal(app.jobPageCount(), 1);
-app.users = [{user_id:'owner', username:'test', display_name:'Alice', active:false},
-    {user_id:'other', username:'another', display_name:'Bob', active:true}];
+app.users = [{user_id:'owner', username:'alice', active:false},
+    {user_id:'other', username:'bob', active:true}];
 app.userSearch = 'alice'; assert.equal(app.filteredUsers().length, 1);
 app.userStatus = 'active'; assert.equal(app.filteredUsers().length, 0);
 app.databaseRows = [{old:'row'}]; app.databaseTable = ''; app.loadDatabase();

@@ -156,35 +156,49 @@ def deploy(
             raise RuntimeError(
                 "Database schema is incompatible; remain in maintenance and restore the backup explicitly"
             )
-        if with_agent:
-            agent_preflight(deployment)
-        # Dependency errors never modify the running installation or pause user work.
-        target = releases.prepare_server(deployment, version, index_url=index_url, hard=hard)
         previous = (deployment.root / "current").resolve() if (deployment.root / "current").exists() else None
-        set_maintenance(store, True, release=version)
         state = {
             "environment": deployment.environment,
             "release": version,
             "previous": str(previous) if previous else None,
             "started_at": time.time(),
-            "status": "maintenance",
+            "status": "running",
+            "steps": [],
             "mode": "hard" if hard else "standard",
             "approval_bypassed": hard and deployment.environment == "prod",
             "requested_by": os.environ.get("SUDO_USER", str(os.getuid())),
         }
         state_path = deployment.root / "deployment.json"
-        releases.atomic_json(state_path, state)
-        wait_until_idle(store)
+
+        def progress(phase):
+            state["phase"] = phase
+            state["updated_at"] = time.time()
+            state["steps"].append({"phase": phase, "at": state["updated_at"]})
+            releases.atomic_json(state_path, state)
+
         try:
+            progress("preflight")
+            if with_agent:
+                agent_preflight(deployment)
+            # Dependency errors never modify the running installation or pause user work.
+            progress("dependencies")
+            target = releases.prepare_server(deployment, version, index_url=index_url, hard=hard)
+            progress("draining")
+            set_maintenance(store, True, release=version)
+            wait_until_idle(store)
+            progress("stopping")
             # Only the selected environment is stopped. Existing jobs have already drained.
             if previous is not None:
                 releases.run(["systemctl", "stop", *deployment.units])
             saved = deployment.root / "backups" / f"{version}-{time.time_ns()}"
+            progress("backup")
             backup(deployment, saved)
             state["backup"] = str(saved)
             releases.atomic_json(state_path, state)
             if restore_from is not None:
+                progress("restore")
                 restore_backup(deployment, restore_from)
+            progress("migration")
             migration_env = dict(os.environ, DATA_PLATFORM_RELEASE=version)
             releases.run(
                 [
@@ -199,12 +213,17 @@ def deploy(
                 env=migration_env,
             )
             set_maintenance(store, True, release=version)
+            progress("restart")
             releases.switch_current(deployment, target)
             releases.install_server_units(deployment)
             releases.run(["systemctl", "restart", *deployment.units])
+            progress("health")
             releases.wait_healthy(deployment, version)
+            if with_agent:
+                progress("agents")
             remote = install_agent(deployment, version, hard=hard) if with_agent else None
             if with_agent:
+                progress("heartbeats")
                 for attempt in range(30):
                     try:
                         releases.check_nodes(
@@ -228,18 +247,22 @@ def deploy(
                 and Path("/etc/systemd/system/data-platform-promotion.service").is_file()
             ):
                 releases.run(["systemctl", "try-restart", "data-platform-promotion.service"])
-            state["status"] = "installed" if with_agent else "server-installed"
-            state["finished_at"] = time.time()
-            releases.atomic_json(state_path, state)
             if with_agent:
+                progress("reopening")
                 set_maintenance(store, False, release=version)
                 deployment.maintenance_file.unlink(missing_ok=True)
+            state["status"] = "installed" if with_agent else "server-installed"
+            state["finished_at"] = time.time()
+            progress("complete" if with_agent else "server-only")
+            if with_agent:
                 history = deployment.root / "update-history.jsonl"
                 with history.open("a") as stream:
                     stream.write(json.dumps(state) + "\n")
             print(json.dumps(state))
         except BaseException:
             state["status"] = "failed"
+            state["finished_at"] = time.time()
+            state["updated_at"] = state["finished_at"]
             releases.atomic_json(state_path, state)
             # No automatic DB reversal and no automatic reopening after a partial upgrade.
             raise
@@ -297,14 +320,14 @@ def main():
         if args.release and args.version:
             parser.error("Choose --version to build once or --release to reuse existing artifacts")
         if args.version:
-            releases.build_release(args.source, version)
+            releases.build_release(args.source, version, index_url=args.index_url)
         deploy_both(version, index_url=args.index_url)
         return
     deployment = Deployment(args.env)
     if args.command == "build":
         if args.env != "dev":
             parser.error("Build candidates in dev; production reuses approved artifacts")
-        print(releases.build_release(args.source, version))
+        print(releases.build_release(args.source, version, index_url=args.index_url))
     elif args.command == "approve":
         if not args.evidence:
             parser.error("--evidence is required for manual acceptance")
@@ -313,7 +336,7 @@ def main():
         if args.version and not args.release:
             if args.env != "dev":
                 parser.error("Production requires --release for an approved artifact")
-            releases.build_release(args.source, version)
+            releases.build_release(args.source, version, index_url=args.index_url)
         deploy(
             deployment,
             version,

@@ -13,8 +13,11 @@ from lerobot.data_platform.deployment import Deployment, read_environment_file, 
 from lerobot.data_platform.deployment_network import nginx_config
 
 
+@pytest.mark.parametrize("index_url", [None, "https://mirror.test/simple"])
 @pytest.mark.parametrize("lock_in_archive", [False, True])
-def test_build_checks_archived_lock_before_tests_and_preserves_it(tmp_path, monkeypatch, lock_in_archive):
+def test_build_checks_archived_lock_before_tests_and_preserves_it(
+    tmp_path, monkeypatch, lock_in_archive, index_url
+):
     source = tmp_path / "source"
     source.mkdir()
     # An ignored local lock file must not hide a missing lock in the Git archive.
@@ -41,6 +44,8 @@ def test_build_checks_archived_lock_before_tests_and_preserves_it(tmp_path, monk
             kwargs["stdout"].write("passed")
             return
         if "--output-dir" in argv:
+            if index_url:
+                assert kwargs["env"]["UV_DEFAULT_INDEX"] == index_url
             output = Path(argv[argv.index("--output-dir") + 1])
             output.mkdir()
             agent = output / "agent.tar.gz"
@@ -55,11 +60,11 @@ def test_build_checks_archived_lock_before_tests_and_preserves_it(tmp_path, monk
     monkeypatch.setattr(releases, "run", run)
     if not lock_in_archive:
         with pytest.raises(RuntimeError, match="committed source archive is missing uv.lock"):
-            releases.build_release(source, "candidate")
+            releases.build_release(source, "candidate", index_url=index_url)
         assert not any("pytest" in call or "--output-dir" in call for call in calls)
         assert not (releases.RELEASE_ROOT / "candidate").exists()
     else:
-        root = releases.build_release(source, "candidate")
+        root = releases.build_release(source, "candidate", index_url=index_url)
         releases.verify_release("candidate")
         with tarfile.open(root / "server.tar.gz") as stream:
             assert stream.extractfile("uv.lock").read() == lock
@@ -306,6 +311,14 @@ def test_deploy_order_and_failure_preserve_maintenance(
         state = json.loads((Deployment(environment_name).root / "deployment.json").read_text())
         assert state["mode"] == ("hard" if hard else "standard")
         assert state["approval_bypassed"] is hard
+    progress = json.loads((Deployment(environment_name).root / "deployment.json").read_text())
+    assert progress["status"] == ("failed" if failure else "installed")
+    assert (
+        progress["phase"]
+        == {"prepare": "dependencies", "health": "health", "agent": "agents", None: "complete"}[failure]
+    )
+    assert progress["steps"][0]["phase"] == "preflight"
+    assert progress["finished_at"] >= progress["started_at"]
     assert not (release / "approval.json").exists()
 
 
@@ -318,7 +331,12 @@ def test_hard_upgrade_builds_once_and_stops_on_failure(release, monkeypatch, bui
 
     events = []
     monkeypatch.setattr(release_cli.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(releases, "build_release", lambda *args: events.append("build"))
+
+    def build_release(*args, **kwargs):
+        assert kwargs["index_url"] == "https://mirror.test/simple"
+        events.append("build")
+
+    monkeypatch.setattr(releases, "build_release", build_release)
     monkeypatch.setattr(
         release_cli, "load_environment", lambda target: events.append(f"load-{target.environment}")
     )
@@ -435,3 +453,38 @@ def test_hard_server_prepare_skips_only_approval(release, tmp_path, monkeypatch)
     (release / "server.tar.gz").write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="checksum"):
         releases.prepare_server(deployment, "candidate", hard=True)
+
+
+@pytest.mark.parametrize("command", ["build", "deploy"])
+def test_development_cli_forwards_index_to_build(monkeypatch, command):
+    import sys
+
+    from lerobot.data_platform import release_cli
+
+    monkeypatch.setattr(release_cli.os, "geteuid", lambda: 0)
+    calls = []
+    monkeypatch.setattr(releases, "build_release", lambda *args, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(release_cli, "deploy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release",
+            command,
+            "--env",
+            "dev",
+            "--version",
+            "candidate",
+            "--index-url",
+            "https://mirror.test/simple",
+        ],
+    )
+    release_cli.main()
+    assert calls == [{"index_url": "https://mirror.test/simple"}]
+
+
+def test_build_rejects_non_https_index_before_creating_artifacts(tmp_path, monkeypatch):
+    monkeypatch.setattr(releases, "RELEASE_ROOT", tmp_path / "artifacts")
+    with pytest.raises(ValueError, match="HTTPS"):
+        releases.build_release(tmp_path, "candidate", index_url="http://mirror.test/simple")
+    assert not releases.RELEASE_ROOT.exists()

@@ -1302,9 +1302,21 @@ def main():
     )
     parser.add_argument(
         "--preprocess-merge-dimension-policy",
-        choices=("strict", "min"),
+        choices=("strict", "min", "pad"),
         default="strict",
-        help="Merge signal dimensions: strict schema/order matching, or min using complete dimension names.",
+        help="Merge dimensions: strict, minimum named layout, or padding to the named union.",
+    )
+    parser.add_argument(
+        "--preprocess-merge-dimension-names",
+        type=Path,
+        default=None,
+        help="JSON file: per-source action/state dimension-name mappings, in merge source order.",
+    )
+    parser.add_argument(
+        "--preprocess-merge-padding-value",
+        type=float,
+        default=0,
+        help="Finite fill value for padding merge (default: 0).",
     )
     parser.add_argument(
         "--preprocess-subtract-with",
@@ -1845,12 +1857,16 @@ def main():
             out_root=args.preprocess_merge_out,
             dry_run=dry_run,
             dimension_policy=args.preprocess_merge_dimension_policy,
+            dimension_names=json.loads(args.preprocess_merge_dimension_names.read_text())
+            if args.preprocess_merge_dimension_names
+            else None,
+            padding_value=args.preprocess_merge_padding_value,
             src_static_dirs=[get_default_output_dir(root) / "static" for root in merge_roots],
             out_static_dir=(get_default_output_dir(args.preprocess_merge_out) / "static")
             if args.preprocess_merge_out is not None
             else None,
         )
-        if args.preprocess_merge_dimension_policy == "min" and not dry_run:
+        if args.preprocess_merge_dimension_policy != "strict" and not dry_run:
             run_precompute(
                 root=result.out_root,
                 repo_id=result.repo_id,

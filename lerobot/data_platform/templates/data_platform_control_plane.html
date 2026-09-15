@@ -37,6 +37,7 @@
                 <button class="rounded-lg border border-slate-700 px-3 py-2 text-sm" :disabled="refreshing" @click="refreshSection()">Refresh</button>
                 <a href="/" class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:border-sky-600">Dataset console</a>
                 <button class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:border-red-700" @click="logout()">Sign out</button>
+                <a href="/account/password" class="rounded-lg border border-slate-700 px-3 py-2 text-sm">Change password</a>
             </div>
         </header>
 
@@ -67,7 +68,7 @@
                 <p class="mt-1 text-xs text-slate-400">Self-registered accounts remain inactive until approved. New accounts start as Viewer and cannot modify or delete data.</p>
             </div>
             <div class="flex flex-wrap gap-3 p-4">
-                <input type="search" aria-label="Search users" placeholder="Search name or username" x-model="userSearch" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
+                <input type="search" aria-label="Search users" placeholder="Search username" x-model="userSearch" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
                 <select aria-label="Account status" x-model="userStatus" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"><option value="">All accounts</option><option value="inactive">Pending / disabled</option><option value="active">Active</option></select>
                 <span class="self-center text-xs text-slate-400" x-text="filteredUsers().length + ' accounts'"></span>
             </div>
@@ -91,6 +92,7 @@
                                             x-show="!account.active" @click="updateUser(account, {active: true})">Approve</button>
                                     <button class="rounded-lg border border-red-900 bg-red-950/40 px-3 py-1.5 text-red-200"
                                             x-show="account.active && account.user_id !== currentUserId" @click="updateUser(account, {active: false})">Disable</button>
+                                    <button class="rounded-lg border border-slate-700 px-3 py-1.5" @click="resetPassword(account)">Reset password</button>
                                 </td>
                             </tr>
                         </template>
@@ -288,6 +290,12 @@
             <div class="flex items-center justify-between border-t border-slate-800 p-4 text-xs text-slate-400"><span x-text="filteredJobs().length + ' matching / ' + jobs.length + ' recent jobs loaded'"></span><div class="flex items-center gap-3"><button :disabled="jobPage <= 1" @click="jobPage--">Previous</button><span x-text="jobPage + ' / ' + jobPageCount()"></span><button :disabled="jobPage >= jobPageCount()" @click="jobPage++">Next</button></div></div>
         </section>
     </main>
+    <dialog id="password-reset-link" class="rounded-xl bg-slate-900 p-6 text-slate-100" onclose="this.querySelector('input').value = ''">
+        <h2 class="text-lg font-semibold">Password reset link</h2>
+        <p class="my-3">Verify the user's identity and send this link privately. It expires in 15 minutes and works once.</p>
+        <input readonly aria-label="Password reset link" class="w-full bg-slate-950 p-3" onclick="this.select()">
+        <button class="mt-4 rounded border px-3 py-2" onclick="this.closest('dialog').close()">Close</button>
+    </dialog>
     <script>
         function controlPlane() {
             return {
@@ -353,7 +361,7 @@
                 paginatedJobs() { const start = (Math.min(this.jobPage, this.jobPageCount()) - 1) * this.jobPageSize; return this.filteredJobs().slice(start, start + this.jobPageSize); },
                 filteredUsers() {
                     const query = this.userSearch.trim().toLowerCase();
-                    return this.users.filter(account => (!query || `${account.display_name} ${account.username}`.toLowerCase().includes(query))
+                    return this.users.filter(account => (!query || account.username.toLowerCase().includes(query))
                         && (!this.userStatus || (this.userStatus === 'active' ? account.active : !account.active)));
                 },
                 usageEvents: [], usageSummary: {}, usageFilters: {user_id: '', operation: '', dataset_key: '', status: '', since: '', until: ''}, usageOffset: 0, usageMore: false, adminError: '',
@@ -489,6 +497,15 @@
                 async prepareViewer(location) {
                     try { await this.request(`/api/control/locations/${location.location_id}/viewer-jobs`, {method: 'POST', body: '{}'}); await this.load(); this.openJobs('queued'); }
                     catch (error) { this.error = error.message; }
+                },
+                async resetPassword(account) {
+                    if (!confirm(`Generate a 15-minute password reset link for ${account.username}? Previous links will expire.`)) return;
+                    try {
+                        const result = await this.request(`/api/auth/users/${account.user_id}/password-reset`, {method: 'POST', body: '{}'});
+                        const dialog = document.getElementById('password-reset-link');
+                        dialog.querySelector('input').value = `${window.location.origin}/reset-password#${result.token}`;
+                        dialog.showModal();
+                    } catch (error) { this.error = error.message; }
                 },
                 async updateUser(account, patch) {
                     try {

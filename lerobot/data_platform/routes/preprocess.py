@@ -1929,6 +1929,8 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             return jsonify({"error": f"dataset is not registered: {missing[0]}"}), 404
         dry_run = ctx.bool_option(options, "dry_run", False)
         dimension_policy = options.get("dimension_policy", "strict")
+        dimension_names = options.get("dimension_names")
+        padding_value = options.get("padding_value", 0)
         try:
             workers = max(1, int(options.get("workers") or 8))
         except (TypeError, ValueError):
@@ -1953,6 +1955,8 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             validate_merge_sources(
                 [Path(ctx.datasets_index[key]["root"]).expanduser() for key in keys],
                 dimension_policy=dimension_policy,
+                dimension_names=dimension_names,
+                padding_value=padding_value,
             )
         except FileNotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
@@ -2023,12 +2027,14 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                     else None,
                     workers=workers,
                     dimension_policy=dimension_policy,
+                    dimension_names=dimension_names,
+                    padding_value=padding_value,
                     exclude_episodes=[delete_by_key.get(key) for key in keys],
                     progress_callback=_step_progress(job, 0, 75, "Merge")
-                    if dimension_policy == "min"
+                    if dimension_policy != "strict"
                     else lambda payload: ctx.update_job(job, payload),
                 )
-                if dimension_policy == "min" and not dry_run:
+                if dimension_policy != "strict" and not dry_run:
                     run_precompute(
                         root=result.out_root,
                         repo_id=result.repo_id,

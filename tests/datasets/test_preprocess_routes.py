@@ -68,9 +68,10 @@ def _route_context(src_root: Path, *, legacy: bool = False):
     )
 
 
+@pytest.mark.parametrize("policy", ["min", "pad"])
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_merge_min_route_rebuilds_cache_before_registration_and_reports_plan(
-    tmp_path: Path, monkeypatch, dry_run
+    tmp_path: Path, monkeypatch, dry_run, policy
 ):
     sources = [tmp_path / "source", tmp_path / "second"]
     info = {
@@ -102,7 +103,9 @@ def test_merge_min_route_rebuilds_cache_before_registration_and_reports_plan(
 
     def merge(roots, **kwargs):
         assert roots == sources
-        assert kwargs["dimension_policy"] == "min"
+        assert kwargs["dimension_policy"] == policy
+        assert kwargs["dimension_names"] == [{"action": ["a", "b"]}] * 2
+        assert kwargs["padding_value"] == (2 if policy == "pad" else 0)
         assert kwargs["dry_run"] == dry_run
         events.append("merge")
         kwargs["progress_callback"]({"status": "done", "current": 2, "total": 2})
@@ -137,7 +140,9 @@ def test_merge_min_route_rebuilds_cache_before_registration_and_reports_plan(
             "options": {
                 "src_keys": ["local/source", "local/second"],
                 "out_root": str(output),
-                "dimension_policy": "min",
+                "dimension_policy": policy,
+                "dimension_names": [{"action": ["a", "b"]}] * 2,
+                "padding_value": 2 if policy == "pad" else 0,
                 "dry_run": dry_run,
             }
         },

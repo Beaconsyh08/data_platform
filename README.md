@@ -42,6 +42,7 @@
 
 **开发／生产双环境：** 新部署使用显式 `--env dev|prod`，开发验证后将同一份版本包发布到生产。
 首次初始化、角色切换、升级和回退请按 [双环境部署指南](docs/data_platform_environments.md) 操作。
+账号统一使用 username；改密和管理员重置流程见 [账号与密码恢复](docs/data_platform_accounts.md)。
 
 
 Task definitions are configurable in the console. Existing Pick/Place/Give tasks and new task families share versioned catalogs, dataset mappings, analysis and curation filters, and portable Agent configuration snapshots. See the [task onboarding guide](docs/data_platform_task_catalog.md).
@@ -813,6 +814,12 @@ UMI 不套用 DVT 归一化或自动 Stage，也不生成训练用 action/state�
 操作、来源追踪与 Server A → Agent 升级顺序见 [UMI 数据支持](docs/umi_dataset_support.md)。
 
 ### 多用户日志与任务管理
+
+不同维度的 Minimum/Padding 合并及页面显式映射配置见
+[不同维度的数据集合并](docs/data_platform_merge_alignment.md)。
+
+Agent 文件权限、任务提交反馈及 operator 删除 episode 的审批流程见
+[执行权限与删除审批](docs/data_platform_permissions.md)。
 
 集中部署支持在现有管理员控制面页面查看使用日志和只读数据库记录。协议 2 Agent 支持持久化执行批次、
 排队优先级、取消及符合条件的重试/终止；本地后台任务使用独立本地执行器和兼容的 `/api/jobs` 查询。

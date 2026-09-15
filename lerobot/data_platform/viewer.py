@@ -1292,6 +1292,9 @@ def run_server(
             "total_episodes": total_episodes,
             "image_keys": image_keys,
             "editable_features": _editable_vector_features(features),
+            "merge_signal_features": {
+                k: features[k] for k in ("action", "state", "observation.state") if k in features
+            },
             "data_version": data_profile.legacy_data_version,
             "robot_profile": data_profile.robot_profile,
             "signal_schema": data_profile.signal_schema,
@@ -1816,6 +1819,11 @@ def run_server(
             "episode_count": len(episode_ids),
             "image_keys": _dataset_image_keys(dataset_obj),
             "editable_features": _editable_vector_features(dataset_obj.features),
+            "merge_signal_features": {
+                k: dataset_obj.features[k]
+                for k in ("action", "state", "observation.state")
+                if k in dataset_obj.features
+            },
             "data_version": data_profile.legacy_data_version,
             "robot_profile": data_profile.robot_profile,
             "signal_schema": data_profile.signal_schema,
@@ -1865,6 +1873,7 @@ def run_server(
                 for key in ("robot_type", "data_profile", "operation_capabilities", "data_profile_protocol")
             },
             "editable_features": list(info.get("editable_features") or []),
+            "merge_signal_features": info.get("merge_signal_features") or {},
             "data_version": info.get("data_version"),
             "robot_profile": info.get("robot_profile", ""),
             "signal_schema": info.get("signal_schema", ""),

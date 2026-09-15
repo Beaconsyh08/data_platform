@@ -8,10 +8,9 @@ from dataclasses import dataclass
 import numpy as np
 import pyarrow as pa
 
+from lerobot.data_platform.merge_options import DIMENSION_POLICIES as DIMENSION_POLICIES
+from lerobot.data_platform.merge_options import SIGNAL_FIELDS, validate_alignment_options
 from lerobot.data_platform.precompute.preprocess.action_dim import _trim_arrow_type
-
-SIGNAL_FIELDS = ("action", "state", "observation.state")
-DIMENSION_POLICIES = ("strict", "min")
 
 
 @dataclass(frozen=True)
@@ -19,7 +18,8 @@ class SignalProjection:
     field: str
     source_names: tuple[str, ...]
     target_names: tuple[str, ...]
-    indices: tuple[int, ...]
+    indices: tuple[int | None, ...]
+    padding_value: float = 0.0
 
     def summary(self) -> dict:
         return {
@@ -27,6 +27,10 @@ class SignalProjection:
             "target_dim": len(self.target_names),
             "target_names": list(self.target_names),
             "source_indices": list(self.indices),
+            "padded_names": [
+                name for name, index in zip(self.target_names, self.indices, strict=True) if index is None
+            ],
+            "padding_value": self.padding_value,
             "dropped_names": [name for name in self.source_names if name not in self.target_names],
         }
 
@@ -36,7 +40,7 @@ def signal_names(feature: dict, field: str) -> tuple[str, ...]:
     if isinstance(shape, int):
         shape = [shape]
     if not isinstance(shape, (list, tuple)) or len(shape) != 1 or int(shape[0]) < 1:
-        raise ValueError(f"{field}: min merge requires a one-dimensional signal")
+        raise ValueError(f"{field}: aligned merge requires a one-dimensional signal")
     names = feature.get("names")
     while isinstance(names, dict) and len(names) == 1:
         names = next(iter(names.values()))
@@ -47,15 +51,15 @@ def signal_names(feature: dict, field: str) -> tuple[str, ...]:
         or len(set(names)) != len(names)
     ):
         raise ValueError(
-            f"{field}: min merge requires complete, unique dimension names; cannot infer indices"
+            f"{field}: aligned merge requires complete, unique dimension names; cannot infer indices"
         )
     dtype = str(feature.get("dtype") or "")
     if not dtype.startswith(("float", "int", "uint")):
-        raise ValueError(f"{field}: min merge requires a numeric signal, got {dtype!r}")
+        raise ValueError(f"{field}: aligned merge requires a numeric signal, got {dtype!r}")
     return tuple(names)
 
 
-def _project_feature(feature: dict, projection: SignalProjection) -> dict:
+def _project_feature(feature: dict, projection: SignalProjection, unit_defaults: dict) -> dict:
     result = deepcopy(feature)
     result["shape"] = [len(projection.indices)]
     result["names"] = list(projection.target_names)
@@ -65,29 +69,47 @@ def _project_feature(feature: dict, projection: SignalProjection) -> dict:
         if isinstance(value, list):
             if len(value) != len(projection.source_names):
                 raise ValueError(f"{projection.field}: {key} does not match the source dimensions")
-            result[key] = [value[index] for index in projection.indices]
+            result[key] = [
+                value[index] if index is not None else unit_defaults[key][name]
+                for name, index in zip(projection.target_names, projection.indices, strict=True)
+            ]
         elif isinstance(value, dict):
             if set(value) != set(projection.source_names):
                 raise ValueError(f"{projection.field}: {key} must describe every source dimension")
-            result[key] = {name: value[name] for name in projection.target_names}
+            result[key] = {name: unit_defaults[key][name] for name in projection.target_names}
     return result
 
 
 def plan_signal_alignment(
-    infos: list[dict], policy: str
+    infos: list[dict],
+    policy: str,
+    dimension_names: list[dict] | None = None,
+    padding_value: float = 0,
 ) -> tuple[list[dict], list[tuple[SignalProjection, ...]]]:
-    if policy not in DIMENSION_POLICIES:
-        raise ValueError(f"dimension_policy must be one of {DIMENSION_POLICIES}")
+    validate_alignment_options(policy, dimension_names, padding_value, len(infos))
     if policy == "strict":
         return infos, [() for _ in infos]
     aligned_infos = deepcopy(infos)
+    for position, mapping in enumerate(dimension_names or []):
+        for field, names in mapping.items():
+            feature = (aligned_infos[position].get("features") or {}).get(field)
+            if not isinstance(feature, dict):
+                raise ValueError(f"Source {position}: missing mapped field {field}")
+            for key in ("unit", "units"):
+                if isinstance(feature.get(key), dict):
+                    old_names = signal_names(feature, field)
+                    if len(old_names) != len(names) or set(feature[key]) != set(old_names):
+                        raise ValueError(f"{field}: cannot remap per-dimension units")
+                    feature[key] = {new: feature[key][old] for old, new in zip(old_names, names, strict=True)}
+            feature["names"] = names
+            signal_names(feature, field)  # Validate exact dimension count and numeric dtype.
     projections: list[list[SignalProjection]] = [[] for _ in infos]
     for field in SIGNAL_FIELDS:
-        features = [(info.get("features") or {}).get(field) for info in infos]
+        features = [(info.get("features") or {}).get(field) for info in aligned_infos]
         if not any(feature is not None for feature in features):
             continue
         if any(not isinstance(feature, dict) for feature in features):
-            raise ValueError(f"{field}: every source must contain this signal for min merge")
+            raise ValueError(f"{field}: every source must contain this signal for aligned merge")
         try:
             names = [signal_names(feature, field) for feature in features]
         except ValueError as exc:
@@ -95,23 +117,62 @@ def plan_signal_alignment(
                 {key: value for key, value in feature.items() if key != "fps"} for feature in features
             ]
             if all(feature == semantics[0] for feature in semantics[1:]):
-                # Identical schemas need no projection, just as in strict merge.
                 continue
             raise ValueError(
-                f"{exc}. Source schemas differ; provide complete dimension names in "
-                f"meta/info.json features.{field}.names before aligning signals."
+                f"{exc}. Source schemas differ; configure explicit dimension mappings or provide complete "
+                f"dimension names in meta/info.json features.{field}.names before aligning signals."
             ) from exc
-        target = min(names, key=len)  # Ties use the first source's ordering.
+        target = min(names, key=len)
+        if policy == "pad":
+            # Preserve the widest source layout (including trailing shared signals).
+            target = tuple(
+                dict.fromkeys([*max(names, key=len), *(name for source in names for name in source)])
+            )
+        unit_defaults = {}
+        for feature, source_names in zip(features, names, strict=True):
+            for key in ("unit", "units"):
+                value = feature.get(key)
+                if isinstance(value, list):
+                    if len(value) != len(source_names):
+                        raise ValueError(f"{field}: {key} does not match the source dimensions")
+                    values = dict(zip(source_names, value, strict=True))
+                elif isinstance(value, dict):
+                    if set(value) != set(source_names):
+                        raise ValueError(f"{field}: {key} must describe every source dimension")
+                    values = value
+                else:
+                    continue
+                defaults = unit_defaults.setdefault(key, {})
+                for name, unit in values.items():
+                    if name in target and name in defaults and defaults[name] != unit:
+                        raise ValueError(f"{field}: units differ for {name}")
+                    defaults[name] = unit
         target_feature = None
         for position, (feature, source_names) in enumerate(zip(features, names, strict=True)):
             missing = sorted(set(target) - set(source_names))
-            if missing:
+            if missing and policy != "pad":
                 raise ValueError(f"{field}: source {position} is missing target dimensions {missing}")
+            if (
+                missing
+                and str(feature.get("dtype", "")).startswith(("int", "uint"))
+                and int(padding_value) != padding_value
+            ):
+                raise ValueError(f"{field}: integer signals require an integer padding value")
+            if missing:
+                dtype = np.dtype(feature["dtype"])
+                limits = np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)
+                lower = limits.min.item() if isinstance(limits.min, np.generic) else limits.min
+                upper = limits.max.item() if isinstance(limits.max, np.generic) else limits.max
+                if not lower <= padding_value <= upper:
+                    raise ValueError(f"{field}: padding value is outside the {dtype} range")
             projection = SignalProjection(
-                field, source_names, target, tuple(source_names.index(name) for name in target)
+                field,
+                source_names,
+                target,
+                tuple(source_names.index(name) if name in source_names else None for name in target),
+                padding_value,
             )
-            projected = _project_feature(feature, projection)
-            # fps belongs to the physical format (v3 includes it in each feature).
+            projected = _project_feature(feature, projection, unit_defaults)
             semantic_feature = {key: value for key, value in projected.items() if key != "fps"}
             if target_feature is not None and semantic_feature != target_feature:
                 raise ValueError(f"{field}: dtype, units or other feature semantics differ after alignment")
@@ -142,11 +203,18 @@ def project_signals(table: pa.Table, projections: tuple[SignalProjection, ...]) 
             for row in values
         ):
             raise ValueError(f"{name}: actual vector dimensions/nulls do not match feature metadata")
-        projected = [[row[index] for index in projection.indices] for row in values]
+        projected = [
+            [row[index] if index is not None else projection.padding_value for index in projection.indices]
+            for row in values
+        ]
         array = np.asarray(projected, dtype=np.float64)
         if not np.isfinite(array).all():
             raise ValueError(f"{name}: non-finite values in aligned signal")
-        target_type = _trim_arrow_type(field.type, len(projection.indices))
+        target_type = (
+            pa.list_(field.type.value_type, len(projection.indices))
+            if pa.types.is_fixed_size_list(field.type)
+            else _trim_arrow_type(field.type, len(projection.indices))
+        )
         target_field = pa.field(name, target_type, nullable=field.nullable, metadata=field.metadata)
         table = table.set_column(
             table.column_names.index(name), target_field, pa.array(projected, type=target_type)

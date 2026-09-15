@@ -38,7 +38,7 @@ class DatabaseBrowser:
             "control.users": (
                 store.engine,
                 ControlPlaneUser.__table__,
-                ("user_id", "username", "display_name", "role", "active", "created_at", "updated_at"),
+                ("user_id", "username", "role", "active", "created_at", "updated_at"),
             ),
             "control.nodes": (
                 store.engine,

@@ -8,6 +8,7 @@ import hmac
 import re
 import secrets
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (
@@ -22,6 +23,7 @@ from sqlalchemy import (
     create_engine,
     func,
     select,
+    update,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -102,7 +104,6 @@ class ControlPlaneUser(Base):
 
     user_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    display_name: Mapped[str] = mapped_column(String(128))
     password_digest: Mapped[str] = mapped_column(String(256))
     role: Mapped[str] = mapped_column(String(32), index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -172,6 +173,24 @@ class DatasetLocation(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
 
 
+class EpisodeDeletionRequest(Base):
+    __tablename__ = "dp_episode_deletion_requests"
+
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    location_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    requested_by: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    dataset_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    episodes: Mapped[list] = mapped_column(JSON, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class RemoteJob(Base):
     __tablename__ = "dp_jobs"
 
@@ -230,7 +249,10 @@ class ControlPlaneStore:
         if initialize_schema is None:
             initialize_schema = EnvironmentIdentity.from_env() is None
         if initialize_schema:
+            from lerobot.data_platform.account_passwords import migrate_accounts
+
             Base.metadata.create_all(self.engine)
+            migrate_accounts(self.engine)
         from lerobot.data_platform.job_management import JobManager
         from lerobot.data_platform.management_storage import migrate_management
 
@@ -250,7 +272,7 @@ class ControlPlaneStore:
                     continue
                 changed = account in session.new or any(
                     inspect(account).attrs[key].history.has_changes()
-                    for key in ("role", "active", "display_name", "password_digest")
+                    for key in ("role", "active", "password_digest")
                 )
                 if not changed:
                     continue
@@ -284,7 +306,7 @@ class ControlPlaneStore:
         *,
         username: str,
         password: str,
-        display_name: str,
+        display_name: str | None = None,
         bootstrap_token: str,
         expected_token: str,
     ) -> dict:
@@ -295,7 +317,7 @@ class ControlPlaneStore:
         with self.sessions.begin() as session:
             if session.scalar(select(ControlPlaneUser.user_id).limit(1)) is not None:
                 raise ValueError("the first administrator has already been created")
-            user = self._new_user(username, password, display_name, "admin")
+            user = self._new_user(username, password, "admin")
             session.add(user)
         return self._user_dict(user)
 
@@ -304,7 +326,7 @@ class ControlPlaneStore:
         *,
         username: str,
         password: str,
-        display_name: str,
+        display_name: str | None = None,
         role: str = "viewer",
         active: bool = True,
     ) -> dict:
@@ -313,7 +335,7 @@ class ControlPlaneStore:
         with self.sessions.begin() as session:
             if session.scalar(select(ControlPlaneUser.user_id).limit(1)) is None:
                 raise ValueError("bootstrap the first administrator before registering users")
-            user = self._new_user(username, password, display_name, role, active=active)
+            user = self._new_user(username, password, role, active=active)
             if session.scalar(select(ControlPlaneUser).where(ControlPlaneUser.username == user.username)):
                 raise ValueError("username is already registered")
             session.add(user)
@@ -323,18 +345,15 @@ class ControlPlaneStore:
     def _new_user(
         username: str,
         password: str,
-        display_name: str,
         role: str,
         *,
         active: bool = True,
     ) -> ControlPlaneUser:
         now = _utcnow()
         normalized = _normalize_username(username)
-        name = str(display_name or normalized).strip()[:128] or normalized
         return ControlPlaneUser(
             user_id=str(uuid.uuid4()),
             username=normalized,
-            display_name=name,
             password_digest=_password_digest(_validate_password(password)),
             role=role,
             active=bool(active),
@@ -345,6 +364,12 @@ class ControlPlaneStore:
     def authenticate_user(self, username: str, password: str, *, session_days: int = 7) -> tuple[str, dict]:
         normalized = _normalize_username(username)
         with self.sessions.begin() as session:
+            # Serialize login with password replacement so old credentials cannot create a surviving session.
+            session.execute(
+                update(ControlPlaneUser)
+                .where(ControlPlaneUser.username == normalized)
+                .values(updated_at=ControlPlaneUser.updated_at)
+            )
             user = session.scalar(select(ControlPlaneUser).where(ControlPlaneUser.username == normalized))
             if user is None or not _password_matches(user.password_digest, password):
                 raise PermissionError("invalid username or password")
@@ -601,9 +626,10 @@ class ControlPlaneStore:
         idempotency_key: str | None = None,
         reuse_active: bool = False,
         job_id: str | None = None,
+        _session=None,
     ) -> dict:
         now = _utcnow()
-        with self.sessions.begin() as session:
+        with nullcontext(_session) if _session is not None else self.sessions.begin() as session:
             from lerobot.data_platform.job_management import JobConflictError, scheduler_lock
 
             scheduler_lock(session)
@@ -808,7 +834,6 @@ class ControlPlaneStore:
         return {
             "user_id": user.user_id,
             "username": user.username,
-            "display_name": user.display_name,
             "role": user.role,
             "active": bool(user.active),
             "created_at": _iso(user.created_at),

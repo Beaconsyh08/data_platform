@@ -62,6 +62,8 @@ _FORBIDDEN_REMOTE_OPTION_KEYS = {
 _REMOTE_MERGE_OPTION_KEYS = {
     "source_location_ids",
     "dimension_policy",
+    "dimension_names",
+    "padding_value",
     "exclude_episodes",
     "workers",
     "dry_run",
@@ -150,7 +152,12 @@ def register_control_plane_auth_routes(
     register_promotion_routes(app, store)
     register_dev_role_routes(app, store)
     install_usage_audit(app)
+    from lerobot.data_platform.routes.account_passwords import register_account_password_routes
+
+    register_account_password_routes(app, store)
     public_paths = {
+        "/reset-password",
+        "/api/auth/reset-password",
         "/api/auth/bootstrap",
         "/api/auth/login",
         "/api/auth/register",
@@ -187,7 +194,7 @@ def register_control_plane_auth_routes(
                         return jsonify({"error": "job not found"}), 404
             if (
                 request.method not in {"GET", "HEAD", "OPTIONS"}
-                and path not in {"/api/auth/logout", "/api/dev/role-session"}
+                and path not in {"/api/auth/logout", "/api/dev/role-session", "/api/auth/password"}
                 and user.get("role") == "viewer"
             ):
                 return jsonify({"error": "viewer accounts are read-only"}), 403
@@ -257,7 +264,6 @@ def register_control_plane_auth_routes(
             user = store.bootstrap_admin(
                 username=body.get("username"),
                 password=body.get("password"),
-                display_name=body.get("display_name"),
                 bootstrap_token=body.get("bootstrap_token"),
                 expected_token=bootstrap_token,
             )
@@ -279,7 +285,6 @@ def register_control_plane_auth_routes(
             user = store.register_user(
                 username=body.get("username"),
                 password=body.get("password"),
-                display_name=body.get("display_name"),
                 active=False,
             )
         except ValueError as exc:
@@ -339,7 +344,6 @@ def register_control_plane_auth_routes(
             user = store.register_user(
                 username=body.get("username"),
                 password=body.get("password"),
-                display_name=body.get("display_name"),
                 role=str(body.get("role") or "viewer"),
             )
         except ValueError as exc:
@@ -371,6 +375,11 @@ def register_control_plane_routes(
     legacy_mutations_enabled: bool = False,
     task_catalog_store=None,
 ) -> None:
+    from lerobot.data_platform.routes.episode_deletion_requests import (
+        register_episode_deletion_request_routes,
+    )
+
+    register_episode_deletion_request_routes(app, store, mutations_enabled=legacy_mutations_enabled)
     remote_cache_root = Path(remote_cache_root).expanduser().resolve()
     from lerobot.data_platform.admin_management import configure_management
     from lerobot.data_platform.execution import serialize_completion
@@ -909,8 +918,17 @@ def register_control_plane_routes(
                         "error": "source_location_ids must contain at least two distinct locations, starting with the job location"
                     }
                 ), 400
-            if options.get("dimension_policy", "strict") not in ("strict", "min"):
-                return jsonify({"error": "dimension_policy must be strict or min"}), 400
+            from lerobot.data_platform.merge_options import validate_alignment_options
+
+            try:
+                validate_alignment_options(
+                    options.get("dimension_policy", "strict"),
+                    options.get("dimension_names"),
+                    options.get("padding_value", 0),
+                    len(source_ids),
+                )
+            except ValueError as exc:
+                return jsonify(error=str(exc)), 400
             if "dry_run" in options and not isinstance(options["dry_run"], bool):
                 return jsonify({"error": "dry_run must be a boolean"}), 400
             if "workers" in options and (type(options["workers"]) is not int or options["workers"] < 1):
@@ -928,6 +946,12 @@ def register_control_plane_routes(
                 if "preprocess.merge" not in (node.get("capabilities", {}).get("operations") or []):
                     return jsonify(
                         {"error": "this Agent does not support merge; upgrade and restart it first"}
+                    ), 409
+                if (
+                    options.get("dimension_policy") == "pad" or options.get("dimension_names") is not None
+                ) and (node.get("capabilities") or {}).get("merge_alignment_protocol", 0) < 2:
+                    return jsonify(
+                        error="Upgrade this Agent to support explicit dimension mapping and padding (merge alignment protocol 2)"
                     ), 409
                 if str(options.get("out_root") or "").strip():
                     for source_id in source_ids:
