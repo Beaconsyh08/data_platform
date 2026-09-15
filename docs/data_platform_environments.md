@@ -376,6 +376,26 @@ data-platform-update-all --env both --hard --release R2
 
 ## 首次将现有部署接入 prod
 
+本部署已于 2026-09-15 完成首次迁移，生产和开发均运行 R2。不要再次执行 `adopt-legacy`。
+生产保留原业务库、日志库、账号、数据目录及 H100 节点身份；旧服务已停用，改为
+`data-platform-web@prod`、`data-platform-local-worker@prod` 和 H100 的
+`data-platform-agent@prod`，均已启用开机自启。旧程序、配置和迁移备份保留供恢复。
+
+迁移后使用原生产账号重新登录。开发页面显示 `Same release` 时，生产发布按钮禁用是正常行为；
+后续将新版本部署到开发、完成验收并批准后，管理员才能从页面发布该版本到生产。
+
+本次迁移中需要额外处理的旧配置兼容项：
+
+- 旧业务库账号采用 MySQL `auth_socket` 认证，root 升级程序无法直接使用。新增仅对原生产业务库
+  有权限的密码认证账号，并将旧、新 Server 配置中的连接账号同步切换；库名和业务数据未改变，
+  原数据库账号保留。密码仅保存在受权限保护的配置及备份中。
+- 旧 Agent 的 `REQUESTS_CA_BUNDLE` 改用配置解析器支持的 `DATA_PLATFORM_AGENT_CA_BUNDLE`，
+  继续使用原系统 CA 信任链；原配置有备份。
+- 页面发布由 root 服务执行，因此为 root 安装了现有、已信任的 H100 主机公钥，并验证了专用私钥的
+  非交互 SSH 连接。没有关闭主机密钥校验。
+
+以下步骤保留作为其他旧部署首次迁移的教程。
+
 开发验收完成后再操作。准备 `/etc/data-platform/prod/server.env`，保留原控制库、日志库、输出目录和
 远端缓存路径，添加独立 prod UUID、环境配置及生产 Agent 连接信息。
 
