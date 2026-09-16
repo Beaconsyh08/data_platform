@@ -46,6 +46,29 @@ Viewer 使用 `Stage 1/N` 等时间段名称，不将时间等分结果解释为
 
 ## 数据写入与来源追踪
 
+### Viewer display layouts
+
+Viewer display semantics are resolved independently from processing profiles. A dataset containing
+`state/action` vectors can represent either joint angles or end-effector poses:
+
+- Joint vectors use their actual zero-based feature positions for the paired State / Action table
+  and joint groups. Names such as `index_1` are labels, not array offsets. Additional action entries
+  remain visible under Other Signals, with an empty State cell when the dimensions differ.
+- Native UMI pose fields and named vectors from `UMI-GripperBody-Head` / `UMI-Gripper-Head` use the
+  Head / Left / Right end-effector layout. Named vector components such as `left_qw` determine the
+  mapping; vector length alone does not. State curves are solid and Action curves dashed, with
+  source labels in the signal table. Quaternion-only layouts offer Head4 / Left4 / Right4 without
+  synthesizing Euler angles. Packed gripper values retain their recorded scale; native scalar
+  `left_gripper_pos` / `right_gripper_pos` keep their existing display normalization.
+- Existing positional or qualified CSV labels remain readable. Old duplicate labels are qualified
+  on read only when the full field order matches feature metadata. Otherwise the cache must be
+  rebuilt. Source data, cache files, processing profiles, and published versions are not rewritten.
+  If an older manifest omits robot type, a complete named Head/Left/Right XYZ + quaternion +
+  gripper schema can still select end-effector display without assigning a robot identity.
+
+This display fix requires updating Server A and reloading the Viewer. Existing Agent caches can be
+reused when their manifest contains the complete feature metadata; no Agent upgrade is required.
+
 Viewer cache 写入缓存目录，不修改源数据。Split/Merge 才会生成新数据集，默认采用带时间戳的
 兄弟目录；输出存在时拒绝覆盖。dry-run 仅读取元数据和文件信息，不生成临时数据集。
 

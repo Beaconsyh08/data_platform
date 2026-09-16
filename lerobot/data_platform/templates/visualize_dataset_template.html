@@ -644,7 +644,7 @@
 
                     <div class="grid grid-cols-1 2xl:grid-cols-2 auto-rows-fr gap-2 flex-1 min-h-0">
                         <div class="min-h-0 rounded border border-slate-800 p-2 bg-slate-900/30 flex flex-col">
-                            <p class="text-xs font-medium text-gray-300 mb-1" x-text="usesUmiPlotGroups ? 'UMI Pose/Orientation Signals' : (has_body_joints ? 'Arm Joint Groups + Body Joint Group' : 'Left/Right Arm Joint Groups A+B (Combined)')"></p>
+                            <p class="text-xs font-medium text-gray-300 mb-1" x-text="usesUmiPlotGroups ? 'End-effector Pose/Orientation Signals' : (hasBodyJoints ? 'Arm Joint Groups + Body Joint Group' : 'Left/Right Arm Joint Groups A+B (Combined)')"></p>
                             <div id="graph-arm-joints" class="relative flex-1 min-h-0" @mouseleave="() => {
                                 if (dygraphArmJoints) {
                                     dygraphArmJoints.setSelection(dygraphIndex, undefined, true, true);
@@ -684,7 +684,7 @@
 
                 <div class="min-h-0 rounded-lg border border-slate-700 bg-slate-900/40 flex flex-col">
                 <div class="shrink-0 flex items-center justify-between px-3 py-2 border-b border-slate-700">
-                    <p class="text-sm font-semibold" x-text="usesUmiPlotGroups ? 'UMI Signals' : 'State / Action'"></p>
+                    <p class="text-sm font-semibold" x-text="usesUmiPlotGroups ? 'End-effector Signals' : 'State / Action'"></p>
                     <div class="flex gap-1">
                         <button class="text-xs px-2 py-1 rounded border border-slate-500 hover:bg-slate-700" @click="setAllSeries(true)">All</button>
                         <button class="text-xs px-2 py-1 rounded border border-slate-500 hover:bg-slate-700" @click="setAllSeries(false)">None</button>
@@ -818,6 +818,8 @@
                 videoCodecHint: "{{ video_codec_hint }}",
                 dataVersion: {{ data_version | tojson }},
                 signalColumns: {{ signal_columns | default([], true) | tojson }},
+                signalPresentation: {{ signal_presentation | default({}, true) | tojson }},
+                signalMetadata: {},
                 hasBodyJoints: {{ has_body_joints | tojson }},
                 hasLegacyFlag: {{ has_legacy_flag | tojson }},
                 imageKeys: {{ image_keys | tojson }},
@@ -1142,18 +1144,12 @@
                     }
                     const labels = ["timestamp", ...this.columns.flatMap(c => c.value)];
                     this.labelsNoTime = labels.slice(1);
-                    const stateCol = this.columns.find(c => c.key === "state");
-                    const actionCol = this.columns.find(c => c.key === "action");
-                    const stateLabels = stateCol ? stateCol.value : [];
-                    const actionLabels = actionCol ? actionCol.value : [];
-                    const signalByLabel = new Map();
-                    for (const column of (this.signalColumns || [])) {
-                        for (const value of (column.value || [])) {
-                            signalByLabel.set(value, column);
-                        }
-                    }
-
+                    const displaySignals = this.signalPresentation.series || [];
+                    this.signalMetadata = Object.fromEntries(displaySignals.map(s => [s.label, s]));
+                    const stateLabels = displaySignals.filter(s => ['state', 'observation.state'].includes(s.source)).map(s => s.label);
+                    const actionLabels = displaySignals.filter(s => s.source === 'action').map(s => s.label);
                     const getIndexFromLabel = (label) => {
+                        if (this.signalMetadata[label]) return this.signalMetadata[label].index;
                         const match = label.match(/(\d+)$/);
                         if (!match) {
                             return null;
@@ -1194,19 +1190,7 @@
                     this.labelToGroupIds = labelToGroupIds;
                     this.groupTargetById = groupTargetById;
 
-                    const usesUmiSignals = (this.signalColumns || []).some((column) => {
-                        const key = column.key || "";
-                        return [
-                            "head_pose",
-                            "left_arm_pose",
-                            "right_arm_pose",
-                            "head_quaternion_pose",
-                            "left_arm_quaternion_pose",
-                            "right_arm_quaternion_pose",
-                            "left_gripper_pos",
-                            "right_gripper_pos",
-                        ].includes(key);
-                    });
+                    const usesUmiSignals = this.signalPresentation.mode === 'end_effector';
                     this.usesUmiPlotGroups = usesUmiSignals;
 
                     const assignNonUmiByIndex = () => {
@@ -1262,6 +1246,9 @@
                             } else if (gripperFlagIdx.has(idx)) {
                                 gripperFlagSet.add(label);
                                 addToGroup(label, "gripper_flag");
+                            } else {
+                                if (!groupById.other_signals) makeGroup('other_signals', 'Other Signals', 'arm');
+                                addToGroup(label, 'other_signals');
                             }
                         };
 
@@ -1280,32 +1267,34 @@
                         const xyz = new Set(["x", "y", "z"]);
                         const rpy = new Set(["roll", "pitch", "yaw"]);
                         const quat = new Set(["qw", "qx", "qy", "qz"]);
-                        for (const [part, title] of [["head", "Head"], ["left_arm", "Left"], ["right_arm", "Right"]]) {
-                            const eulerGroup = makeGroup(part + "_rpy", title + " XYZ + Roll/Pitch/Yaw", "arm");
-                            const quatGroup = makeGroup(part + "_quat", title + " XYZ + qw/qx/qy/qz", "arm");
-                            eulerGroup.shortLabel = title + "3";
-                            quatGroup.shortLabel = title + "4";
-                            for (const label of labels.slice(1)) {
-                                const key = signalByLabel.get(label)?.key;
-                                const component = label.split(".").pop();
-                                if (key === part + "_pose") {
-                                    if (xyz.has(component)) {
-                                        addToGroup(label, eulerGroup.id);
-                                        addToGroup(label, quatGroup.id);
-                                    } else if (rpy.has(component)) {
-                                        addToGroup(label, eulerGroup.id);
-                                    }
-                                } else if (key === part + "_quaternion_pose" && quat.has(component)) {
-                                    addToGroup(label, quatGroup.id);
+                        for (const [part, title] of [["head", "Head"], ["left", "Left"], ["right", "Right"]]) {
+                            const signals = displaySignals.filter(s => s.part === part && !s.hidden);
+                            const prefix = part === 'head' ? part : part + '_arm';
+                            const hasRpy = signals.some(s => rpy.has(s.component));
+                            const hasQuat = signals.some(s => quat.has(s.component));
+                            const eulerGroup = hasRpy ? makeGroup(prefix + "_rpy", title + " XYZ + Roll/Pitch/Yaw", "arm") : null;
+                            const quatGroup = hasQuat ? makeGroup(prefix + "_quat", title + " XYZ + qw/qx/qy/qz", "arm") : null;
+                            if (eulerGroup) eulerGroup.shortLabel = title + "3";
+                            if (quatGroup) quatGroup.shortLabel = title + "4";
+                            for (const signal of signals) {
+                                if (xyz.has(signal.component)) {
+                                    if (eulerGroup) addToGroup(signal.label, eulerGroup.id);
+                                    if (quatGroup) addToGroup(signal.label, quatGroup.id);
+                                } else if (rpy.has(signal.component) && eulerGroup) {
+                                    addToGroup(signal.label, eulerGroup.id);
+                                } else if (quat.has(signal.component) && quatGroup) {
+                                    addToGroup(signal.label, quatGroup.id);
+                                } else if (signal.component === 'gripper') {
+                                    const id = part + '_gripper';
+                                    if (!groupById[id]) makeGroup(id, title + ' Gripper', 'gripper');
+                                    addToGroup(signal.label, id);
                                 }
                             }
                         }
-                        // Gripper and stage checkboxes remain independent of the six pose groups.
-                        for (const key of ["left_gripper_pos", "right_gripper_pos"]) {
-                            makeGroup(key, key, "gripper");
-                            if (labels.includes(key)) addToGroup(key, key);
+                        makeGroup("gripper_flag", "Stage / Other Signals", "gripper");
+                        for (const signal of displaySignals.filter(s => !s.part && !s.hidden)) {
+                            addToGroup(signal.label, "gripper_flag");
                         }
-                        makeGroup("gripper_flag", "Stage", "gripper");
                     };
 
                     if (usesUmiSignals) {
@@ -2588,23 +2577,19 @@
 
                 // Convert Dygraphs data at time t into the 2D rows used by the HTML table.
                 get stateActionRows() {
-                    if (!this.currentFrameData) {
+                    if (!this.currentFrameData || this.usesUmiPlotGroups) {
                         return [];
                     }
                     const stateByIndex = new Map();
                     const actionByIndex = new Map();
-                    const stateRegex = /^state_(\d+)$/;
-                    const actionRegex = /^action_(\d+)$/;
-
                     for (const cell of this.currentFrameData) {
-                        const stateMatch = cell.label.match(stateRegex);
-                        if (stateMatch) {
-                            stateByIndex.set(parseInt(stateMatch[1], 10), cell);
+                        const signal = this.signalMetadata[cell.label];
+                        if (signal && ['state', 'observation.state'].includes(signal.source)) {
+                            stateByIndex.set(signal.index, cell);
                             continue;
                         }
-                        const actionMatch = cell.label.match(actionRegex);
-                        if (actionMatch) {
-                            actionByIndex.set(parseInt(actionMatch[1], 10), cell);
+                        if (signal?.source === 'action') {
+                            actionByIndex.set(signal.index, cell);
                         }
                     }
 
@@ -2621,18 +2606,18 @@
                     if (!this.currentFrameData) {
                         return [];
                     }
-                    return this.currentFrameData.filter((cell) => (
-                        !/^state_\d+$/.test(cell.label) && !/^action_\d+$/.test(cell.label)
-                        && !/^subtask_state/.test(cell.label)
-                    ));
+                    return this.currentFrameData.filter(cell => {
+                        const signal = this.signalMetadata[cell.label];
+                        if (signal?.hidden || /^subtask_state/.test(cell.label)) return false;
+                        return this.usesUmiPlotGroups || !['state', 'observation.state', 'action'].includes(signal?.source);
+                    });
                 },
                 get auxiliaryGroups() {
                     const groups = new Map();
                     for (const cell of this.auxiliaryRows) {
-                        if (this.usesUmiPlotGroups && /_quaternion_pose\.[xyz]$/.test(cell.label)) continue;
                         const column = this.signalColumns.find(item => item.value.includes(cell.label));
-                        const key = column?.group || 'other';
-                        if (!groups.has(key)) groups.set(key, {key, label: {head: 'Head', left: 'Left', right: 'Right', other: 'Stage'}[key] || key, cells: []});
+                        const key = this.usesUmiPlotGroups ? (this.signalMetadata[cell.label]?.part || 'other') : (column?.group || 'other');
+                        if (!groups.has(key)) groups.set(key, {key, label: {head: 'Head', left: 'Left', right: 'Right', other: 'Other Signals'}[key] || key, cells: []});
                         groups.get(key).cells.push(cell);
                     }
                     if (this.usesUmiPlotGroups) {
@@ -2642,20 +2627,27 @@
                 },
                 signalShortLabel(label) {
                     if (!this.usesUmiPlotGroups) return label;
+                    const signal = this.signalMetadata[label];
+                    if (signal?.component) {
+                        const source = ['state', 'observation.state'].includes(signal.source) ? 'State'
+                            : signal.source === 'action' ? 'Action' : '';
+                        return signal.component + (source ? ` · ${source}` : '');
+                    }
                     if (label.endsWith('_gripper_pos')) return 'gripper';
                     return label.split('.').pop();
                 },
                 umiSignalColor(label) {
-                    const parts = ['head', 'left_arm', 'right_arm'];
+                    const parts = ['head', 'left', 'right'];
                     const components = ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'qw', 'qx', 'qy', 'qz'];
-                    const part = parts.findIndex(prefix => label.startsWith(prefix + '_'));
-                    const component = components.indexOf(label.split('.').pop());
+                    const signal = this.signalMetadata[label];
+                    const part = parts.indexOf(signal?.part);
+                    const component = components.indexOf(signal?.component);
                     if (part >= 0 && component >= 0) {
                         const hue = ((part * 10 + component) * 137.508) % 360;
                         return `hsl(${hue.toFixed(2)}, 78%, 65%)`;
                     }
-                    return label === 'left_gripper_pos' ? '#38bdf8'
-                        : label === 'right_gripper_pos' ? '#fb923c' : '#ab47bc';
+                    return signal?.part === 'left' ? '#38bdf8'
+                        : signal?.part === 'right' ? '#fb923c' : '#ab47bc';
                 },
                 signalDescription(label) {
                     const column = this.signalColumns.find(item => item.value.includes(label));

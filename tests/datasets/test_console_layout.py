@@ -5,7 +5,7 @@ import pytest
 from lerobot.data_platform import viewer
 
 
-@pytest.mark.parametrize("robot", ["umi", "dvt1", "dvt2"])
+@pytest.mark.parametrize("robot", ["umi", "dvt1", "dvt2", "joint_named", "ee_named", "ee_positional"])
 def test_viewer_signal_groups_remain_visible_after_refresh_and_toggles(robot):
     import json
     import re
@@ -13,6 +13,7 @@ def test_viewer_signal_groups_remain_visible_after_refresh_and_toggles(robot):
     import subprocess
 
     from lerobot.data_platform.precompute.signal_columns import signal_columns
+    from lerobot.data_platform.precompute.viewer_signals import viewer_signal_presentation
 
     node = shutil.which("node")
     if node is None:
@@ -30,11 +31,32 @@ def test_viewer_signal_groups_remain_visible_after_refresh_and_toggles(robot):
         features.update(
             {key: {"dtype": "float32", "shape": [1]} for key in ("left_gripper_pos", "right_gripper_pos")}
         )
+    elif robot.startswith("ee_"):
+        names = [
+            f"{part}_{component}"
+            for part in ("left", "right", "head")
+            for component in (
+                ["x", "y", "z", "qw", "qx", "qy", "qz", "gripper"]
+                if part != "head"
+                else ["x", "y", "z", "qw", "qx", "qy", "qz"]
+            )
+        ]
+        features = {key: {"dtype": "float32", "shape": [23], "names": names} for key in ("state", "action")}
+    elif robot == "joint_named":
+        features = {
+            key: {"dtype": "float32", "shape": [dim], "names": [f"index_{i + 1}" for i in range(dim)]}
+            for key, dim in (("state", 19), ("action", 20))
+        }
     else:
         features = {
             key: {"dtype": "float32", "shape": [19 if robot == "dvt2" else 17]} for key in ("state", "action")
         }
     columns = signal_columns(features, qualify=robot == "umi")
+    if robot == "ee_positional":
+        columns = [{"key": key, "value": [f"{key}_{i}" for i in range(23)]} for key in ("state", "action")]
+    presentation = viewer_signal_presentation(
+        features, columns, "UMI-GripperBody-Head" if robot.startswith("ee_") else "h10_w"
+    )
     # Exercise the actual initialization and visibility code, including cache-only CSV labels.
     setup = template.split('                    const labels = ["timestamp",', 1)[1]
     setup = 'const labels = ["timestamp",' + setup.split("                    const syncSelection", 1)[0]
@@ -47,6 +69,7 @@ def test_viewer_signal_groups_remain_visible_after_refresh_and_toggles(robot):
         "auxiliaryGroups",
         "signalShortLabel",
         "umiSignalColor",
+        "stateActionRows",
     ):
         match = re.search(rf"^                (?:get )?{name}\([^\n]*\) \{{", template, re.MULTILINE)
         assert match is not None
@@ -55,11 +78,12 @@ def test_viewer_signal_groups_remain_visible_after_refresh_and_toggles(robot):
         methods.append(template[match.start() : match.end() + end.end()])
     script = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
     script += f"app.signalColumns = {json.dumps(columns)}; const robot = {json.dumps(robot)};\n"
+    script += f"app.signalPresentation = {json.dumps(presentation)};\n"
     script += r"""
 app.columns = app.signalColumns.flatMap(c => c.value.map(label => ({key: label, value: [label]})));
 if (robot !== 'umi') app.columns = app.signalColumns.slice();
 app.columns.push({key: 'stage', value: ['stage']});
-app.hasBodyJoints = robot === 'dvt2';
+app.hasBodyJoints = ['dvt2', 'joint_named'].includes(robot);
 app.hasLegacyFlag = robot === 'dvt1';
 """
     script += "(function() {" + setup + "}).call(app);\n"
@@ -104,6 +128,28 @@ if (robot === 'umi') {
     assert.equal(app.dygraphArmJoints.mask[labels.indexOf('head_pose.x')], false);
     app.toggleGroup('head_rpy');
     app.toggleGroup('head_quat');
+}
+if (robot === 'joint_named') {
+    assert.equal(app.usesUmiPlotGroups, false);
+    assert.equal(app.stateActionRows.length, 20);
+    assert.equal(app.stateActionRows[0].stateCell.label, 'state.index_1');
+    assert.equal(app.stateActionRows[19].stateCell, null);
+    assert.equal(app.stateActionRows[19].actionCell.label, 'index_20');
+    assert.deepEqual(app.labelToGroupIds['state.index_8'], ['gripper_flag']);
+    assert.deepEqual(app.labelToGroupIds['state.index_17'], ['body']);
+    assert.deepEqual(app.labelToGroupIds['index_20'], ['other_signals']);
+    assert.equal(app.auxiliaryRows.length, 1); // Stage; vector entries belong to the paired table.
+}
+if (robot.startsWith('ee_')) {
+    assert.equal(app.usesUmiPlotGroups, true);
+    assert.deepEqual(app.jointGroups.filter(g => g.graph === 'arm').map(g => g.shortLabel), ['Head4', 'Left4', 'Right4']);
+    assert.equal(app.dygraphArmJoints.mask.filter(Boolean).length, 42);
+    assert.equal(app.dygraphGripperFlag.mask.filter(Boolean).length, 5);
+    assert.equal(app.stateActionRows.length, 0);
+    const left = app.auxiliaryGroups.find(g => g.key === 'left');
+    assert.equal(left.cells.length, 16);
+    assert.ok(left.cells.some(c => app.signalShortLabel(c.label) === 'qw · State'));
+    assert.ok(left.cells.some(c => app.signalShortLabel(c.label) === 'qw · Action'));
 }
 for (const group of app.jointGroups) {
     app.toggleGroup(group.id);

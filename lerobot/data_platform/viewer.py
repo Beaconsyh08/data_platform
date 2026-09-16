@@ -237,6 +237,7 @@ from lerobot.data_platform.precompute.viewer_manifest import (
     manifest_task_episode_map,
     write_viewer_manifest,
 )
+from lerobot.data_platform.precompute.viewer_signals import viewer_csv_labels, viewer_signal_presentation
 from lerobot.data_platform.routes import (
     RouteContext,
     register_compare_routes,
@@ -386,7 +387,7 @@ def _get_csv_cache_path(
     return preferred
 
 
-def _columns_from_csv_header(csv_path: Path) -> list[dict]:
+def _columns_from_csv_header(csv_path: Path, features: dict | None = None) -> list[dict]:
     try:
         with csv_path.open("r") as f:
             header_line = f.readline().strip()
@@ -394,7 +395,8 @@ def _columns_from_csv_header(csv_path: Path) -> list[dict]:
         return []
     if not header_line:
         return []
-    fields = [field.strip() for field in header_line.split(",") if field.strip()]
+    fields = viewer_csv_labels(next(csv.reader([header_line])), features)
+    fields = [field.strip() for field in fields if field.strip()]
     if not fields:
         return []
     if fields[0] == "timestamp":
@@ -421,7 +423,7 @@ def _normalize_data_version(value: str | None) -> str:
     return normalized if normalized in {DATA_VERSION_DVT1, DATA_VERSION_DVT2} else None
 
 
-def _serve_csv_stripped(csv_path: Path, data_version: str | None = None):
+def _serve_csv_stripped(csv_path: Path, data_version: str | None = None, features: dict | None = None):
     """Serve a CSV file, stripping subtask_state* and normalizing legacy gripper values."""
     text = csv_path.read_text()
     if not text:
@@ -432,7 +434,9 @@ def _serve_csv_stripped(csv_path: Path, data_version: str | None = None):
     if not rows:
         return Response(text, mimetype="text/csv")
 
-    header_fields = rows[0]
+    header_fields = viewer_csv_labels(rows[0], features)
+    header_changed = header_fields != rows[0]
+    rows[0] = header_fields
     drop_idx = {i for i, field in enumerate(header_fields) if field.strip().startswith("subtask_state")}
     normalize_headers = (
         GRIPPER_NORMALIZE_COLUMNS
@@ -451,7 +455,7 @@ def _serve_csv_stripped(csv_path: Path, data_version: str | None = None):
         for i, field in enumerate(header_fields)
         if scalar_exist_label_alias and field.strip() == "exist_label_0"
     }
-    if not drop_idx and not normalize_idx and not rename_idx:
+    if not drop_idx and not normalize_idx and not rename_idx and not header_changed:
         return send_file(csv_path.resolve(), mimetype="text/csv")
 
     out = StringIO()
@@ -4770,7 +4774,11 @@ def run_server(
             precomputed_only=True,
         )
         columns = (
-            [c for c in _columns_from_csv_header(cached_csv) if c["key"] != "subtask_state"]
+            [
+                c
+                for c in _columns_from_csv_header(cached_csv, manifest.get("features"))
+                if c["key"] != "subtask_state"
+            ]
             if cached_csv
             else []
         )
@@ -4824,11 +4832,15 @@ def run_server(
                 episode_data_csv_str="",
                 csv_url=url_for(
                     "get_episode_csv",
+                    _signal_schema=1,
                     dataset_namespace=dataset_namespace,
                     dataset_name=dataset_name,
                     episode_id=episode_id,
                 ),
                 columns=columns,
+                signal_presentation=viewer_signal_presentation(
+                    manifest.get("features") or {}, columns, str(manifest.get("robot_type") or "")
+                ),
                 signal_columns=manifest.get("signal_columns")
                 or signal_columns(
                     manifest.get("features") or {}, qualify=manifest.get("robot_type") == "UMI"
@@ -5012,7 +5024,11 @@ def run_server(
             server_state["precomputed_only"],
         )
         if server_state["precomputed_only"] and cached_csv and cached_csv.is_file():
-            columns = [c for c in _columns_from_csv_header(cached_csv) if c["key"] != "subtask_state"]
+            columns = [
+                c
+                for c in _columns_from_csv_header(cached_csv, dataset_obj.features)
+                if c["key"] != "subtask_state"
+            ]
             ignored_columns = []
             if not columns:
                 columns, ignored_columns, _ = _viewer_columns_info(dataset_obj, dataset_key)
@@ -5178,11 +5194,15 @@ def run_server(
                 episode_data_csv_str=episode_data_csv_str,
                 csv_url=url_for(
                     "get_episode_csv",
+                    _signal_schema=1,
                     dataset_namespace=dataset_namespace,
                     dataset_name=dataset_name,
                     episode_id=episode_id,
                 ),
                 columns=columns,
+                signal_presentation=viewer_signal_presentation(
+                    dataset_obj.features, columns, str(dataset_obj.meta.info.get("robot_type") or "")
+                ),
                 signal_columns=signal_columns(
                     dataset_obj.features,
                     qualify=str(dataset_obj.meta.info.get("robot_type", "")).lower() == "umi",
@@ -5370,13 +5390,17 @@ def run_server(
                 )
             if server_state["precomputed_only"]:
                 if cache_path and cache_path.is_file():
-                    return _csv_response(_serve_csv_stripped(cache_path, data_version))
+                    return _csv_response(
+                        _serve_csv_stripped(cache_path, data_version, (manifest or {}).get("features"))
+                    )
                 return (
                     "CSV cache not found. Please precompute with python -m lerobot.data_platform --prepare-csv 1.",
                     404,
                 )
             if cache_path and cache_path.is_file():
-                return _csv_response(_serve_csv_stripped(cache_path, data_version))
+                return _csv_response(
+                    _serve_csv_stripped(cache_path, data_version, (manifest or {}).get("features"))
+                )
 
             dataset_obj, ds_static = _get_ctx(dataset_namespace, dataset_name)
             cache_dir = ds_static / "csv"
@@ -5408,7 +5432,7 @@ def run_server(
                 )
                 cache_path = cache_dir / f"episode_{episode_id:06d}_ds{ds}.csv"
                 cache_path.write_text(csv_string)
-            return _csv_response(_serve_csv_stripped(cache_path, data_version))
+            return _csv_response(_serve_csv_stripped(cache_path, data_version, dataset_obj.features))
         except Exception:
             tb = traceback.format_exc()
             print(f"\n=== CSV ERROR episode {episode_id} ===\n{tb}=== END ===\n", flush=True)
