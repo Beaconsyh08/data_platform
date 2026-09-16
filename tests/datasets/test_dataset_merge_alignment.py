@@ -439,3 +439,76 @@ def test_padding_value_must_fit_signal_type(dtype, fill):
     ]
     with pytest.raises(ValueError, match="padding"):
         plan_signal_alignment(infos, "pad", padding_value=fill)
+
+
+@pytest.mark.parametrize("policy", ["min", "pad"])
+@pytest.mark.parametrize("v3", [False, True])
+def test_index_merge_rewrites_data_stats_and_preserves_sources(tmp_path, policy, v3):
+    roots = [tmp_path / "a", tmp_path / "b"]
+    _make_named_dataset(roots[0], ["left", "right"], ["grip"])
+    _make_named_dataset(roots[1], ["left", "body", "right"], ["grip"], offset=100)
+    for root in roots:
+        info = load_json(root / "meta/info.json")
+        info["features"]["action"]["names"] = ["actions"]
+        write_json(root / "meta/info.json", info)
+    if v3:
+        roots[1] = run_convert_v3(roots[1], tmp_path / "v3", workers=1).out_root
+    before = [_snapshot(root) for root in roots]
+    mappings = [
+        {"action": [1] if policy == "min" else [0, None, 1], "state": [0]},
+        {"action": [2] if policy == "min" else [0, 1, 2], "state": [0]},
+    ]
+    output = tmp_path / "merged"
+    preview = run_merge(roots, output, dimension_policy=policy, dimension_indices=mappings, dry_run=True)
+    assert not output.exists()
+    assert (
+        preview.summary["dimension_alignment"][0]["fields"]["action"]["source_indices"]
+        == mappings[0]["action"]
+    )
+    result = run_merge(roots, output, dimension_policy=policy, dimension_indices=mappings, workers=1)
+    info = load_json(output / "meta/info.json")
+    assert info["features"]["action"]["shape"] == [1 if policy == "min" else 3]
+    for episode, expected in (
+        (0, [20] if policy == "min" else [10, 0, 20]),
+        (2, [120] if policy == "min" else [110, 190, 120]),
+    ):
+        table = (
+            read_episode_table(output, V3DatasetMetadata("local/merged", output), episode)
+            if v3
+            else pq.read_table(output / f"data/chunk-000/episode_{episode:06d}.parquet")
+        )
+        assert table["action"].to_pylist()[0] == expected
+        assert table["untouched"].to_pylist()[0] == 42
+    tables = [
+        read_episode_table(output, V3DatasetMetadata("local/merged", output), episode)
+        if v3
+        else pq.read_table(output / f"data/chunk-000/episode_{episode:06d}.parquet")
+        for episode in range(4)
+    ]
+    np.testing.assert_allclose(
+        load_json(output / "meta/stats.json")["action"]["mean"],
+        np.mean([row for table in tables for row in table["action"].to_pylist()], axis=0),
+    )
+    assert result.summary["dimension_indices"] == mappings
+    assert [_snapshot(root) for root in roots] == before
+
+
+@pytest.mark.parametrize(
+    "policy,mappings,error",
+    [
+        ("min", [{"action": [0, 0]}, {"action": [0, 1]}], "duplicates"),
+        ("min", [{"action": [True]}, {"action": [0]}], "integers"),
+        ("min", [{"action": [None]}, {"action": [0]}], "integers"),
+        ("min", [{"action": [2]}, {"action": [0]}], "exceeds"),
+        ("min", [{"action": []}, {"action": []}], "at least one"),
+        ("min", [{"action": [0]}, {"action": [0, 1]}], "same output"),
+        ("pad", [{"action": [0, None]}, {"action": [0, 1]}], "preserve every"),
+        ("pad", [{"action": [0, None, 1]}, {"action": [0, None, 1]}], "real signal"),
+    ],
+)
+def test_index_mapping_rejects_invalid_positions(policy, mappings, error):
+    from lerobot.data_platform.precompute.preprocess.merge_alignment import plan_signal_alignment
+
+    infos = [{"features": {"action": {"dtype": "float32", "shape": [2], "names": ["actions"]}}}] * 2
+    with pytest.raises(ValueError, match=error):
+        plan_signal_alignment(infos, policy, dimension_indices=mappings)

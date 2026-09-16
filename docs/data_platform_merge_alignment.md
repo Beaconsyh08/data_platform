@@ -3,7 +3,51 @@
 维度长度来自每个源数据集的真实 `meta/info.json`，不限定为 17D/20D。
 `action`、`state`、`observation.state` 独立对齐，支持两个以上的源数据集。
 
-## 页面操作
+## 默认操作：填写维度位置
+
+1. 在 **Signal dimensions** 选择 **Remove selected dimensions**（删除维度）或 **Padding**。
+2. 在各个源数据集的 action/state 输入框填写位置，支持 `3,7,17-19`。
+   **删除填写原始编号，Padding 填写输出位置，均从 1 开始；留空保留原样。**
+3. 两个字段布局相同时，可勾选 **Use each dataset's action positions for state too**；
+   否则分别填写，`observation.state` 也支持。
+4. 格子可以点击切换，红色表示删除，蓝色表示 Padding；超过 256 维使用输入框。
+   每行实时显示输入/输出维数及 `输出位置 ← 原始位置`。切换删除/Padding 保留各自独立设置。
+5. 合并后的同一字段维数必须一致，未删除的信号按原始顺序对应。
+   页面和后端均拒绝重复、越界、删除全部、维数不一致和所有源在同一输出位置都只填充的配置。
+   对应位置的含义由用户确认，单位、dtype 和其他语义冲突仍由后端校验。
+
+例如 17D/20D：删除模式在 20D 源填 `17-19`，17D 留空；输出 17D，原第 20 维保留在末尾。
+Padding 模式在 17D 源填 `17-19`，20D 留空；输出 20D，短源末维移动到第 20 维。
+也支持两个源都删除不同位置，或分别在不同位置补齐，不需要任何一个源保持原样。
+
+索引模式生成 `index_1` 等输出维度名称，原始数据及名称不修改，完整索引关系记录在合并摘要。
+Padding 值默认 0。提交状态及后续执行结果沿用原有提示和 Runs 页面。
+
+### 索引 API
+
+页面向本地/远程 Merge 传递 `dimension_indices`，按源选择顺序排列。
+每个字段的数组按输出顺序列出 **0 起始源索引**，`null` 表示 Padding：
+
+```json
+{
+  "dimension_policy": "pad",
+  "dimension_indices": [
+    {"action": [0, null, 1], "state": [0]},
+    {"action": [0, 1, 2], "state": [0]}
+  ],
+  "padding_value": 0
+}
+```
+
+索引映射必须覆盖各源所有 action/state 字段，不可和 `dimension_names` 混用。
+Padding 必须保留所有源维度，删除模式不接受 `null`。源索引必须递增且不重复。
+索引模式要求 Agent `merge_alignment_protocol >= 3`；旧 Agent 会提示升级。
+名称映射保留原 API/CLI，协议版本至少为 2。
+
+## 高级操作：按名称对齐
+
+在 **Advanced: alignment method** 中选择元数据名称或显式名称映射。
+
 
 1. 勾选合并源，在 **Signal dimensions** 选择模式：
 

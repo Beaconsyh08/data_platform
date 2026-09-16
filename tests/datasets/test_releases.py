@@ -488,3 +488,45 @@ def test_build_rejects_non_https_index_before_creating_artifacts(tmp_path, monke
     with pytest.raises(ValueError, match="HTTPS"):
         releases.build_release(tmp_path, "candidate", index_url="http://mirror.test/simple")
     assert not releases.RELEASE_ROOT.exists()
+
+
+@pytest.mark.parametrize("active,symlinked", [(False, False), (True, False), (False, True)])
+def test_incomplete_installation_is_preserved_before_retry(release, tmp_path, monkeypatch, active, symlinked):
+    monkeypatch.setattr(Deployment, "root", property(lambda self: tmp_path / "installed"))
+    deployment = Deployment("dev")
+    target = deployment.root / "releases/candidate"
+    target.mkdir(parents=True)
+    if symlinked:
+        target.rmdir()
+        actual = tmp_path / "external"
+        actual.mkdir()
+        target.symlink_to(actual, target_is_directory=True)
+    (target / "partial.txt").write_text("interrupted dependency install")
+    old = deployment.root / "releases/old"
+    old.mkdir()
+    current = deployment.root / "current"
+    current.symlink_to(target if active else old)
+    manifest = json.loads((release / "release.json").read_text())
+    manifest["agent_manifest_sha256"] = "a" * 64
+    releases.atomic_json(release / "release.json", manifest)
+    calls = []
+    monkeypatch.setattr(releases, "extract_archive", lambda archive, destination: None)
+    monkeypatch.setattr(releases, "run", lambda argv, **kwargs: calls.append(argv))
+    if active or symlinked:
+        with pytest.raises(RuntimeError, match="active or symlinked"):
+            releases.prepare_server(deployment, "candidate")
+        assert (target / "partial.txt").is_file()
+        assert not calls
+        assert not list(target.parent.glob(".incomplete-*"))
+    else:
+        assert releases.prepare_server(deployment, "candidate") == target
+        backups = list(target.parent.glob(".incomplete-candidate-*/installation/partial.txt"))
+        assert len(backups) == 1
+        assert backups[0].read_text() == "interrupted dependency install"
+        assert not (target / "partial.txt").exists()
+        assert (target / "manifest.sha256").read_text().strip() == releases.digest(release / "release.json")
+        assert current.resolve() == old
+        assert calls
+        count = len(calls)
+        assert releases.prepare_server(deployment, "candidate") == target
+        assert len(calls) == count

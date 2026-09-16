@@ -2188,18 +2188,53 @@
                             <select class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
                                     x-model="preprocess.merge_dimension_policy">
                                 <option value="strict">Strict: same dimensions and order</option>
-                                <option value="min">Minimum: keep the smallest named layout</option>
-                                <option value="pad">Padding: keep the union of dimensions</option>
+                                <option value="min" x-text="preprocess.merge_mapping_mode === 'indices' ? 'Remove selected dimensions' : 'Minimum: keep the smallest named layout'"></option>
+                                <option value="pad">Padding: insert missing dimensions</option>
                             </select>
-                            <span class="mt-1 block text-[11px] text-slate-500">Minimum drops extra mapped dimensions. Padding fills missing dimensions and preserves the widest source ordering. Map each signal explicitly when its metadata lacks dimension names. Source data is unchanged.</span>
+                            <span class="mt-1 block text-[11px] text-slate-500">Remove selected source dimensions or insert padding at output positions. Source datasets stay unchanged. Advanced settings also support alignment by name.</span>
                         </label>
                         <div class="space-y-3 rounded border border-slate-700 p-3" x-show="preprocess.merge_dimension_policy !== 'strict'">
-                            <label class="block">Dimension correspondence
+                            <details>
+                                <summary class="cursor-pointer text-xs text-slate-400">Advanced: alignment method</summary>
+                            <label class="mt-2 block">Dimension correspondence
                                 <select class="ml-2 rounded bg-slate-950 p-2" x-model="preprocess.merge_mapping_mode">
+                                    <option value="indices">Enter dimension positions</option>
                                     <option value="names">Use names from dataset metadata</option>
                                     <option value="explicit">Explicit mapping (source index → shared name)</option>
                                 </select>
                             </label>
+                            </details>
+                            <div class="space-y-3" x-show="preprocess.merge_mapping_mode === 'indices'">
+                                <p class="text-xs text-slate-300" x-text="preprocess.merge_dimension_policy === 'pad' ? 'Enter padding positions in the OUTPUT, starting at 1. Example: 17-19 inserts three values before the old final dimension of a 17D signal.' : 'Enter ORIGINAL source dimensions to remove, starting at 1. Example: 17-19 removes those three dimensions and keeps dimension 20.'"></p>
+                                <p class="text-xs text-slate-400">Use commas or ranges: 3,7,17-19. Leave blank to keep this source unchanged. Remaining dimensions align in order; check that their meanings match.</p>
+                                <p class="text-xs text-slate-400">Click cells to toggle positions: red = deleted, blue = padding. Cells show the first 256 positions; use the input for larger signals.</p>
+                                <label class="flex gap-2 text-xs"><input type="checkbox" x-model="preprocess.merge_index_shared">Use each dataset's action positions for state too</label>
+                                <template x-for="row in mergeMappingRows()" :key="`indices-${row.id}`">
+                                    <div class="rounded border border-slate-800 p-2 space-y-2">
+                                        <label class="block text-xs">
+                                            <span x-text="`${mergeDatasetLabel(row.key)} · ${row.field} · ${row.dimension}D input`"></span>
+                                            <input class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2 font-mono disabled:opacity-50"
+                                                   :aria-label="`${mergeDatasetLabel(row.key)} ${row.field} dimension positions`"
+                                                   :disabled="mergeIndexUsesAction(row)"
+                                                   :value="mergeIndexText(row)" @input="setMergeIndexText(row, $event.target.value)"
+                                                   :placeholder="preprocess.merge_dimension_policy === 'pad' ? 'Padding output positions, e.g. 17-19; blank = unchanged' : 'Delete source positions, e.g. 17-19; blank = unchanged'">
+                                        </label>
+                                        <p class="text-xs text-amber-200" x-show="mergeIndexRowError(row)" x-text="mergeIndexRowError(row)"></p>
+                                        <p class="text-xs text-slate-400" x-text="mergeIndexSummary(row)"></p>
+                                        <details class="text-xs text-slate-400"><summary class="cursor-pointer">Show index mapping</summary><p class="mt-1 break-words font-mono" x-text="mergeIndexSummary(row, true)"></p></details>
+                                        <div class="flex flex-wrap gap-1" role="group" :aria-label="`${row.field} dimension positions`">
+                                            <template x-for="cell in mergeIndexCells(row)" :key="cell.position">
+                                                <button type="button" class="rounded border px-2 py-1 text-xs font-mono"
+                                                        :disabled="mergeIndexUsesAction(row)" :aria-pressed="cell.selected"
+                                                        :title="cell.label" :aria-label="cell.label"
+                                                        :class="cell.selected ? (preprocess.merge_dimension_policy === 'pad' ? 'border-sky-500 bg-sky-950 text-sky-200' : 'border-red-500 bg-red-950 text-red-200') : 'border-slate-700 text-slate-300'"
+                                                        @click="toggleMergeIndex(row, cell.position)" x-text="cell.position"></button>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                                <p class="text-xs text-amber-200" x-show="mergeIndexError()" x-text="mergeIndexError()"></p>
+                            </div>
                             <div class="space-y-3" x-show="preprocess.merge_mapping_mode === 'explicit'">
                                 <p class="text-xs text-amber-200">Only use shared names for dimensions you know have the same meaning and units. All dimension numbers below start at 1. This mapping applies only to the new output.</p>
                                 <div class="flex flex-wrap items-center gap-2">
@@ -2225,7 +2260,7 @@
                             <label class="block" x-show="preprocess.merge_dimension_policy === 'pad'">Padding value
                                 <input type="number" step="any" class="ml-2 w-28 rounded bg-slate-950 p-2" x-model.number="preprocess.merge_padding_value">
                             </label>
-                            <div class="space-y-2 text-xs" aria-live="polite">
+                            <div class="space-y-2 text-xs" aria-live="polite" x-show="preprocess.merge_mapping_mode !== 'indices'">
                                 <p class="font-semibold">Mapping preview (output dimension ← source dimension)</p>
                                 <template x-for="row in mergeAlignmentPreview()" :key="row.id">
                                     <p class="break-words font-mono" x-text="row.text"></p>
@@ -3367,7 +3402,9 @@
                     merge_out_root: '',
                     merge_workers: 8,
                     merge_dimension_policy: 'strict',
-                    merge_mapping_mode: 'names',
+                    merge_mapping_mode: 'indices',
+                    merge_index_positions: {min: {}, pad: {}},
+                    merge_index_shared: false,
                     merge_dimension_names: {},
                     merge_prefix_dims: 0,
                     merge_tail_dims: 0,
@@ -5590,6 +5627,88 @@
                         });
                     });
                 },
+                mergeIndexUsesAction(row) {
+                    return this.preprocess.merge_index_shared && row.field !== 'action'
+                        && this.mergeMappingRows().some(item => item.key === row.key && item.field === 'action');
+                },
+                mergeIndexText(row) {
+                    const field = this.mergeIndexUsesAction(row) ? 'action' : row.field;
+                    return this.preprocess.merge_index_positions?.[this.preprocess.merge_dimension_policy]?.[`${row.key}:${field}`] || '';
+                },
+                setMergeIndexText(row, text) {
+                    this.preprocess.merge_index_positions[this.preprocess.merge_dimension_policy][row.id] = text;
+                },
+                parseMergeIndexPositions(text) {
+                    if (!String(text).trim()) return [];
+                    const result = new Set();
+                    for (const token of String(text).split(',')) {
+                        const match = token.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+                        if (!match) throw new Error('Use dimension numbers or ranges, e.g. 3,7,17-19.');
+                        const start = Number(match[1]), end = Number(match[2] || match[1]);
+                        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end - start + 1 > 10000) throw new Error('Use increasing ranges starting at 1 (at most 10000 positions per range).');
+                        for (let i = start; i <= end; i++) {
+                            if (result.has(i)) throw new Error(`Dimension ${i} is listed more than once.`);
+                            result.add(i);
+                        }
+                    }
+                    return [...result].sort((a, b) => a - b);
+                },
+                mergeIndexProjection(row) {
+                    if (!Number.isSafeInteger(row.dimension) || row.dimension < 1) throw new Error('Signal dimension metadata is unavailable.');
+                    const positions = this.parseMergeIndexPositions(this.mergeIndexText(row));
+                    const pad = this.preprocess.merge_dimension_policy === 'pad';
+                    const size = row.dimension + (pad ? positions.length : 0);
+                    if (positions.some(position => position > size)) throw new Error(`Position exceeds ${size} ${pad ? 'output' : 'source'} dimensions.`);
+                    const selected = new Set(positions);
+                    let source = 0;
+                    const indices = pad
+                        ? Array.from({length: size}, (_, i) => selected.has(i + 1) ? null : source++)
+                        : Array.from({length: size}, (_, i) => i).filter(i => !selected.has(i + 1));
+                    if (!indices.length) throw new Error('Keep at least one dimension.');
+                    return indices;
+                },
+                mergeIndexRowError(row) {
+                    try { this.mergeIndexProjection(row); return ''; } catch (err) { return err.message; }
+                },
+                mergeIndexSummary(row, detailed = false) {
+                    try {
+                        const indices = this.mergeIndexProjection(row);
+                        const positions = this.parseMergeIndexPositions(this.mergeIndexText(row));
+                        const verb = this.preprocess.merge_dimension_policy === 'pad' ? 'pad output positions' : 'delete source dimensions';
+                        const summary = `${row.dimension}D → ${indices.length}D; ${positions.length ? `${verb} ${positions.join(', ')}` : 'unchanged'}`;
+                        return detailed ? `${summary}; output ← source: ${indices.map((index, i) => `${i + 1}←${index === null ? `fill(${this.preprocess.merge_padding_value})` : index + 1}`).join(', ')}` : summary;
+                    } catch (err) { return err.message; }
+                },
+                mergeIndexMappings() {
+                    const rows = this.mergeMappingRows();
+                    const mappings = this.preprocess.merge_src_keys.map(key => {
+                        const selected = rows.filter(row => row.key === key);
+                        if (!selected.length) throw new Error('Signal metadata is unavailable; refresh the selected datasets.');
+                        return Object.fromEntries(selected.map(row => [row.field, this.mergeIndexProjection(row)]));
+                    });
+                    for (const field of new Set(rows.map(row => row.field))) {
+                        const group = mappings.map(mapping => mapping[field]);
+                        if (group.some(indices => !indices) || new Set(group.map(indices => indices.length)).size !== 1) throw new Error(`${field}: all sources must have the same output dimension count.`);
+                        if (group[0].some((_, i) => group.every(indices => indices[i] === null))) throw new Error(`${field}: at least one source must provide a real signal at every output position.`);
+                    }
+                    return mappings;
+                },
+                mergeIndexError() {
+                    try { this.mergeIndexMappings(); return ''; } catch (err) { return err.message; }
+                },
+                mergeIndexCells(row) {
+                    let positions;
+                    try { positions = this.parseMergeIndexPositions(this.mergeIndexText(row)); } catch { return []; }
+                    const pad = this.preprocess.merge_dimension_policy === 'pad';
+                    const size = pad ? Math.max(row.dimension + positions.length + 1, ...this.mergeMappingRows().filter(item => item.field === row.field).map(item => item.dimension)) : row.dimension;
+                    // Large signals remain editable through the text input without rendering thousands of buttons.
+                    return Array.from({length: Math.min(size, 256)}, (_, i) => ({position: i + 1, selected: positions.includes(i + 1), label: `${pad ? 'Toggle padding at output' : 'Toggle deletion of source'} dimension ${i + 1}`}));
+                },
+                toggleMergeIndex(row, position) {
+                    const selected = new Set(this.parseMergeIndexPositions(this.mergeIndexText(row)));
+                    if (selected.has(position)) selected.delete(position); else selected.add(position);
+                    this.setMergeIndexText(row, [...selected].sort((a, b) => a - b).join(', '));
+                },
                 setMergeDimensionNames(key, field, value) {
                     this.preprocess.merge_dimension_names[key] = {...this.preprocess.merge_dimension_names[key], [field]: value};
                 },
@@ -5624,6 +5743,7 @@
                         if (value === '' || !Number.isFinite(Number(value))) throw new Error('Padding value must be a finite number.');
                         options.padding_value = Number(value);
                     }
+                    if (this.preprocess.merge_mapping_mode === 'indices') options.dimension_indices = this.mergeIndexMappings();
                     if (this.preprocess.merge_mapping_mode === 'explicit') {
                         if (!rows.length) throw new Error('Signal metadata is unavailable; refresh the selected datasets.');
                         if (this.preprocess.merge_mapping_confirmation !== this.mergeMappingSignature()) throw new Error('Review and confirm the explicit dimension correspondence.');
@@ -5640,6 +5760,7 @@
                     return options;
                 },
                 mergeAlignmentPreview() {
+                    if (this.preprocess.merge_mapping_mode === 'indices') return this.mergeMappingRows().map(row => ({id: row.id, text: `${this.mergeDatasetLabel(row.key)} · ${row.field}: ${this.mergeIndexSummary(row)}`}));
                     const rows = this.mergeMappingRows();
                     const result = [];
                     for (const field of ['action', 'state', 'observation.state']) {
@@ -5681,7 +5802,8 @@
                 splitMergeDisabledReason() {
                     const op = this.preprocess.split_merge_op;
                     if (op === 'merge' && this.mergeOutputError()) return this.mergeOutputError();
-                    if (op === 'merge' && this.preprocess.merge_dimension_policy !== 'strict' && (this.preprocess.merge_dimension_policy === 'pad' || this.preprocess.merge_mapping_mode === 'explicit')) {
+                    if (op === 'merge' && this.preprocess.merge_dimension_policy !== 'strict' && (this.preprocess.merge_dimension_policy === 'pad' || ['explicit', 'indices'].includes(this.preprocess.merge_mapping_mode))) {
+                        if (this.selectedDataset?.remote && this.preprocess.merge_mapping_mode === 'indices' && (this.selectedRemoteNode()?.capabilities?.merge_alignment_protocol || 0) < 3) return 'Upgrade this Agent to use dimension positions (alignment protocol 3).';
                         if (this.selectedDataset?.remote && (this.selectedRemoteNode()?.capabilities?.merge_alignment_protocol || 0) < 2) return 'Upgrade this Agent for explicit dimension mapping and padding (alignment protocol 2).';
                         try { this.mergeAlignmentOptions(); } catch (err) { return err.message; }
                     }

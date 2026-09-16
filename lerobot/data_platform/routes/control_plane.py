@@ -63,6 +63,7 @@ _REMOTE_MERGE_OPTION_KEYS = {
     "source_location_ids",
     "dimension_policy",
     "dimension_names",
+    "dimension_indices",
     "padding_value",
     "exclude_episodes",
     "workers",
@@ -926,6 +927,7 @@ def register_control_plane_routes(
                     options.get("dimension_names"),
                     options.get("padding_value", 0),
                     len(source_ids),
+                    options.get("dimension_indices"),
                 )
             except ValueError as exc:
                 return jsonify(error=str(exc)), 400
@@ -946,6 +948,13 @@ def register_control_plane_routes(
                 if "preprocess.merge" not in (node.get("capabilities", {}).get("operations") or []):
                     return jsonify(
                         {"error": "this Agent does not support merge; upgrade and restart it first"}
+                    ), 409
+                if (
+                    options.get("dimension_indices") is not None
+                    and (node.get("capabilities") or {}).get("merge_alignment_protocol", 0) < 3
+                ):
+                    return jsonify(
+                        error="Upgrade this Agent to support index mapping (merge alignment protocol 3)"
                     ), 409
                 if (
                     options.get("dimension_policy") == "pad" or options.get("dimension_names") is not None

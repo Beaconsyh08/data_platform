@@ -73,6 +73,7 @@ _MERGE_OPTION_KEYS = {
     "_source_locations",
     "dimension_policy",
     "dimension_names",
+    "dimension_indices",
     "padding_value",
     "exclude_episodes",
     "workers",
@@ -625,7 +626,7 @@ class DataPlatformAgent:
             "disk": disk,
             "data_profile_protocol": DATA_PROFILE_PROTOCOL,
             "operations": operations,
-            "merge_alignment_protocol": 2,
+            "merge_alignment_protocol": 3,
             "source_mutations_enabled": self.allow_source_mutations,
             "task_config_protocol": TASK_CONFIG_PROTOCOL,
         }
@@ -1026,6 +1027,7 @@ class DataPlatformAgent:
             roots,
             dimension_policy=options.get("dimension_policy", "strict"),
             dimension_names=options.get("dimension_names"),
+            dimension_indices=options.get("dimension_indices"),
             padding_value=options.get("padding_value", 0),
         )
         excluded = options.get("exclude_episodes")

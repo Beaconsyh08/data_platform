@@ -514,3 +514,114 @@ def test_merge_output_prefill_and_path_validation():
     assert.equal(app.mergeOutputError(), '');
     """
     subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
+
+
+def test_index_position_form_builds_mappings_and_previews():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the homepage behavior check")
+    template = (
+        Path(__file__).parents[2] / "lerobot/data_platform/templates/visualize_dataset_homepage.html"
+    ).read_text()
+    methods = []
+    for name in (
+        "mergeMappingRows",
+        "mergeIndexUsesAction",
+        "mergeIndexText",
+        "setMergeIndexText",
+        "parseMergeIndexPositions",
+        "mergeIndexProjection",
+        "mergeIndexRowError",
+        "mergeIndexSummary",
+        "mergeIndexMappings",
+        "mergeIndexError",
+        "mergeIndexCells",
+        "toggleMergeIndex",
+        "mergeAlignmentOptions",
+    ):
+        match = re.search(rf"^                {name}\([^\n]*\) \{{", template, re.MULTILINE)
+        assert match
+        end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
+        methods.append(template[match.start() : match.end() + end.end()])
+    script = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
+    script += r"""
+    const feature = n => ({action: {shape: [n]}, state: {shape: [n]}});
+    Object.assign(app, {
+        mergeCandidates: () => [{key: 'short', features: feature(17)}, {key: 'wide', features: feature(20)}],
+        preprocess: {merge_src_keys: ['wide', 'short'], merge_mapping_mode: 'indices', merge_dimension_policy: 'min',
+            merge_index_positions: {min: {}, pad: {}}, merge_index_shared: true, merge_padding_value: 0}
+    });
+    const wide = app.mergeMappingRows()[0];
+    const short = app.mergeMappingRows()[2];
+    assert.match(app.mergeIndexError(), /same output/);
+    app.setMergeIndexText(wide, '17-19');
+    assert.equal(app.mergeIndexError(), '');
+    let options = app.mergeAlignmentOptions();
+    assert.deepEqual(options.dimension_indices[0].action, [...Array(16).keys(), 19]);
+    assert.deepEqual(options.dimension_indices[0].state, options.dimension_indices[0].action);
+    assert.match(app.mergeIndexSummary(wide, true), /20D → 17D.*17←20/);
+    app.preprocess.merge_dimension_policy = 'pad';
+    assert.equal(app.mergeIndexText(wide), '');
+    app.setMergeIndexText(short, '17-19');
+    options = app.mergeAlignmentOptions();
+    assert.deepEqual(options.dimension_indices[1].action, [...Array(16).keys(), null, null, null, 16]);
+    assert.match(app.mergeIndexSummary(short, true), /20←17/);
+    assert.equal(app.mergeIndexCells(short).filter(c => c.selected).length, 3);
+    app.toggleMergeIndex(short, 18);
+    assert.equal(app.mergeIndexText(short), '17, 19');
+    assert.match(app.mergeIndexError(), /same output/);
+    app.setMergeIndexText(short, '17-19,18');
+    assert.match(app.mergeIndexRowError(short), /more than once/);
+    app.setMergeIndexText(short, '99');
+    assert.match(app.mergeIndexRowError(short), /exceeds/);
+    for (const bad of ['0', '-1', '3-1', '1.5', '1,', '1-999999999']) assert.throws(() => app.parseMergeIndexPositions(bad));
+    app.mergeCandidates = () => [{key: 'short', features: feature(5)}, {key: 'wide', features: feature(8)}];
+    app.setMergeIndexText(short, '4-6');
+    options = app.mergeAlignmentOptions();
+    assert.deepEqual(options.dimension_indices[1].action, [0, 1, 2, null, null, null, 3, 4]);
+    app.preprocess.merge_index_shared = false;
+    assert.match(app.mergeIndexError(), /state/);
+    app.preprocess.merge_dimension_policy = 'strict';
+    assert.deepEqual(app.mergeAlignmentOptions(), {});
+    """
+    subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
+
+
+@pytest.mark.parametrize("protocol", [2, 3])
+def test_remote_index_merge_is_gated_and_executed(tmp_path, protocol):
+    from lerobot.data_platform.control_plane import ControlPlaneNode
+
+    store, client, agent, locations, roots = _remote_setup(tmp_path)
+    with store.sessions.begin() as session:
+        node = session.get(ControlPlaneNode, agent.state.node_id)
+        node.capabilities = {**node.capabilities, "merge_alignment_protocol": protocol}
+    mappings = [{"action": [0, None, 1], "state": [0]}, {"action": [0, 1, 2], "state": [0]}]
+    response = client.post(
+        f"/api/control/locations/{locations[0]['location_id']}/preprocess-jobs",
+        json={
+            "op": "merge",
+            "options": {
+                "source_location_ids": [item["location_id"] for item in locations],
+                "dimension_policy": "pad",
+                "dimension_indices": mappings,
+                "workers": 1,
+                "out_root": str(tmp_path / "datasets/output"),
+            },
+        },
+    )
+    if protocol == 2:
+        assert response.status_code == 409
+        assert "protocol 3" in response.get_json()["error"]
+        assert store.list_jobs() == []
+        return
+    assert response.status_code == 202
+    agent.client = _HttpClient(client, agent.state.node_token)
+    claimed = client.post("/api/agents/jobs/claim", headers=agent.client.headers, json={}).get_json()["job"]
+    before = [_snapshot(root) for root in roots]
+    result = agent.execute_job(claimed)
+    assert (
+        result["preprocess"]["summary"]["dimension_alignment"][0]["fields"]["action"]["source_indices"]
+        == mappings[0]["action"]
+    )
+    assert [_snapshot(root) for root in roots] == before
+    assert agent.client.uploads

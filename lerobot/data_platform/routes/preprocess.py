@@ -1929,6 +1929,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             return jsonify({"error": f"dataset is not registered: {missing[0]}"}), 404
         dry_run = ctx.bool_option(options, "dry_run", False)
         dimension_policy = options.get("dimension_policy", "strict")
+        dimension_indices = options.get("dimension_indices")
         dimension_names = options.get("dimension_names")
         padding_value = options.get("padding_value", 0)
         try:
@@ -1956,6 +1957,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 [Path(ctx.datasets_index[key]["root"]).expanduser() for key in keys],
                 dimension_policy=dimension_policy,
                 dimension_names=dimension_names,
+                dimension_indices=dimension_indices,
                 padding_value=padding_value,
             )
         except FileNotFoundError as exc:
@@ -2028,6 +2030,7 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                     workers=workers,
                     dimension_policy=dimension_policy,
                     dimension_names=dimension_names,
+                    dimension_indices=dimension_indices,
                     padding_value=padding_value,
                     exclude_episodes=[delete_by_key.get(key) for key in keys],
                     progress_callback=_step_progress(job, 0, 75, "Merge")

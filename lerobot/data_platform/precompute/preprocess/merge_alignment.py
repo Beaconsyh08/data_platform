@@ -80,15 +80,60 @@ def _project_feature(feature: dict, projection: SignalProjection, unit_defaults:
     return result
 
 
+def _index_dimension_names(
+    infos: list[dict], mappings: list[dict], policy: str
+) -> tuple[list[dict], dict[str, tuple[str, ...]]]:
+    """Translate user-selected positions into names for the shared projection/units checks."""
+    names = [{} for _ in infos]
+    targets = {}
+    for position, (info, mapping) in enumerate(zip(infos, mappings, strict=True)):
+        fields = set(info.get("features", {})) & set(SIGNAL_FIELDS)
+        if set(mapping) != fields:
+            raise ValueError(f"Source {position}: index mappings must cover every action/state field")
+    for field in SIGNAL_FIELDS:
+        groups = [mapping[field] for mapping in mappings if field in mapping]
+        if not groups:
+            continue
+        if len(groups) != len(infos) or len({len(indices) for indices in groups}) != 1:
+            raise ValueError(f"{field}: every source must have the same output dimension count")
+        target = tuple(f"index_{i + 1}" for i in range(len(groups[0])))
+        if any(all(indices[i] is None for indices in groups) for i in range(len(target))):
+            raise ValueError(f"{field}: each output position must have a real signal in at least one source")
+        targets[field] = target
+        for position, (info, indices) in enumerate(zip(infos, groups, strict=True)):
+            feature = info["features"][field]
+            shape = feature.get("shape")
+            if isinstance(shape, int):
+                shape = [shape]
+            if not isinstance(shape, (list, tuple)) or len(shape) != 1 or int(shape[0]) < 1:
+                raise ValueError(f"{field}: index mapping requires a one-dimensional signal")
+            dimension = int(shape[0])
+            used = [index for index in indices if index is not None]
+            if any(index >= dimension for index in used):
+                raise ValueError(f"{field}: source index exceeds {dimension} dimensions")
+            if policy == "pad" and used != list(range(dimension)):
+                raise ValueError(f"{field}: padding must preserve every source dimension")
+            source_names = [f"dropped_{position}_{i}" for i in range(dimension)]
+            for name, index in zip(target, indices, strict=True):
+                if index is not None:
+                    source_names[index] = name
+            names[position][field] = source_names
+    return names, targets
+
+
 def plan_signal_alignment(
     infos: list[dict],
     policy: str,
     dimension_names: list[dict] | None = None,
     padding_value: float = 0,
+    dimension_indices: list[dict] | None = None,
 ) -> tuple[list[dict], list[tuple[SignalProjection, ...]]]:
-    validate_alignment_options(policy, dimension_names, padding_value, len(infos))
+    validate_alignment_options(policy, dimension_names, padding_value, len(infos), dimension_indices)
     if policy == "strict":
         return infos, [() for _ in infos]
+    index_targets = {}
+    if dimension_indices is not None:
+        dimension_names, index_targets = _index_dimension_names(infos, dimension_indices, policy)
     aligned_infos = deepcopy(infos)
     for position, mapping in enumerate(dimension_names or []):
         for field, names in mapping.items():
@@ -128,6 +173,8 @@ def plan_signal_alignment(
             target = tuple(
                 dict.fromkeys([*max(names, key=len), *(name for source in names for name in source)])
             )
+        if field in index_targets:
+            target = index_targets[field]
         unit_defaults = {}
         for feature, source_names in zip(features, names, strict=True):
             for key in ("unit", "units"):

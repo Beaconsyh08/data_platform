@@ -306,9 +306,16 @@ def prepare_server(
     root, manifest = verify_release(version, production=deployment.environment == "prod" and not hard)
     target = deployment.root / "releases" / version
     if target.exists():
-        if (target / "manifest.sha256").read_text().strip() != digest(root / "release.json"):
-            raise ValueError("Installed version has a different manifest")
-        return target
+        receipt = target / "manifest.sha256"
+        if receipt.is_file():
+            if receipt.read_text().strip() != digest(root / "release.json"):
+                raise ValueError("Installed version has a different manifest")
+            return target
+        if target.is_symlink() or (deployment.root / "current").resolve() == target.resolve():
+            raise RuntimeError("Incomplete installation is active or symlinked; inspect it before recovery")
+        backup = Path(tempfile.mkdtemp(prefix=f".incomplete-{version}-", dir=target.parent))
+        target.rename(backup / "installation")
+        print(f"Preserved incomplete installation at {backup / 'installation'}; preparing release again")
     target.mkdir(parents=True)
     try:
         extract_archive(root / "server.tar.gz", target)

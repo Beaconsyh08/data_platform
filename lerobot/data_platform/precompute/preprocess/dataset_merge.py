@@ -167,13 +167,16 @@ def validate_merge_sources(
     dimension_policy: str = "strict",
     dimension_names: list[dict] | None = None,
     padding_value: float = 0,
+    dimension_indices: list[dict] | None = None,
 ) -> None:
     """Validate metadata and dimension mappings before launching a merge worker."""
     roots = [validate_dataset_root(root) for root in src_roots]
     if len(roots) < 2:
         raise ValueError("merge requires at least two source datasets")
     infos = [load_json(root / "meta" / "info.json") for root in roots]
-    aligned_infos, _ = plan_signal_alignment(infos, dimension_policy, dimension_names, padding_value)
+    aligned_infos, _ = plan_signal_alignment(
+        infos, dimension_policy, dimension_names, padding_value, dimension_indices
+    )
     _validate_compatible(roots, aligned_infos, source_infos=infos if dimension_policy != "strict" else None)
     if any(uses_native_images(info) for info in infos):
         if not all(uses_native_images(info) for info in infos):
@@ -776,6 +779,7 @@ def run_merge(
     dimension_policy: str = "strict",
     dimension_names: list[dict] | None = None,
     padding_value: float = 0,
+    dimension_indices: list[dict] | None = None,
 ) -> PreprocessResult:
     roots = [validate_dataset_root(root) for root in src_roots]
     if not roots:
@@ -785,7 +789,7 @@ def run_merge(
     out_root = ensure_output_root(out_root or default_preprocess_path(roots[0], _default_op), dry_run)
     infos = [load_json(root / "meta" / "info.json") for root in roots]
     aligned_infos, projections = plan_signal_alignment(
-        infos, dimension_policy, dimension_names, padding_value
+        infos, dimension_policy, dimension_names, padding_value, dimension_indices
     )
     output_profile = _validate_compatible(
         roots, aligned_infos, source_infos=infos if dimension_policy != "strict" else None
@@ -850,6 +854,7 @@ def run_merge(
                 _default_op=_default_op,
                 _summary_extra=_summary_extra,
                 dimension_policy=dimension_policy,
+                dimension_indices=dimension_indices,
                 dimension_names=dimension_names,
                 padding_value=padding_value,
             )
@@ -917,6 +922,7 @@ def run_merge(
             },
             **(_summary_extra or {}),
             "dimension_policy": dimension_policy,
+            "dimension_indices": dimension_indices,
             "dimension_names": dimension_names,
             "padding_value": padding_value,
             **(
