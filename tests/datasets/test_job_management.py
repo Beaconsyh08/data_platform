@@ -57,6 +57,41 @@ def command(store, job, actor, action, **extra):
     )
 
 
+def test_owner_job_listing_sorts_ids_without_large_json(setup):
+    from sqlalchemy import event
+    from sqlalchemy.exc import OperationalError
+
+    store, admin, owner, _, _, create = setup
+    first, other, last = create(), create(admin), create()
+    payload = {"details": "x" * (512 * 1024)}
+    with store.sessions.begin() as session:
+        for index, job in enumerate((first, other, last)):
+            row = session.get(RemoteJob, job["job_id"])
+            row.created_at = _utcnow() + timedelta(seconds=index)
+            row.options = payload
+            row.result = payload
+
+    def reject_json_sort(connection, cursor, statement, parameters, context, executemany):
+        sql = statement.lower()
+        if "order by" in sql and ("options_json" in sql or "result_json" in sql):
+            raise OperationalError(statement, parameters, Exception(1038, "Out of sort memory"))
+
+    event.listen(store.engine, "before_cursor_execute", reject_json_sort)
+    try:
+        own_jobs = store.list_jobs(actor=owner)
+        assert [j["job_id"] for j in own_jobs] == [last["job_id"], first["job_id"]]
+        assert all(j["options"] == payload and j["result"] == payload for j in own_jobs)
+        assert [j["job_id"] for j in store.list_jobs(actor=owner, limit=1)] == [last["job_id"]]
+        assert [j["job_id"] for j in store.list_jobs(actor=admin)] == [
+            last["job_id"],
+            other["job_id"],
+            first["job_id"],
+        ]
+        assert store.list_jobs(actor={"role": "operator", "user_id": "missing"}) == []
+    finally:
+        event.remove(store.engine, "before_cursor_execute", reject_json_sort)
+
+
 def test_cancel_queue_and_retry_keep_identity(setup):
     store, _, owner, node, _, create = setup
     job = create()

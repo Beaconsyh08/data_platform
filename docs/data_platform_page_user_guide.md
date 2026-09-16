@@ -833,6 +833,11 @@ Manage users。复用现有登录与权限，不需要第二套管理员账号�
 概览及任务筛选基于当前接口加载的近期任务，不代表平台历史总量。页签可通过 URL 中的
 `#jobs`、`#users` 等直接打开；小屏幕下页签和宽表格可横向滚动。
 
+Node, dataset, and task lists load independently. A task-list failure does not hide available
+nodes or datasets. Failed requests preserve the last loaded list and show a labeled error
+(Nodes, Datasets, Tasks, or Users); a successful refresh clears the error. Operator accounts
+can see registered nodes, while task listings remain limited to their own submissions.
+
 ### 自己的任务与管理员任务控制
 
 Jobs 抽屉和 Pipeline Runs 页面共用任务控制：operator/admin 可重试自己已结束且支持重试的任务，

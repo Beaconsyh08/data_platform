@@ -388,10 +388,14 @@
                     try {
                         const requests = [this.request('/api/control/nodes'), this.request('/api/control/locations'), this.request('/api/control/jobs')];
                         if (this.isAdmin) requests.push(this.request('/api/auth/users'));
-                        const responses = await Promise.all(requests);
-                        this.nodes = responses[0].nodes; this.locations = responses[1].locations; this.jobs = responses[2].jobs;
-                        if (this.isAdmin) this.users = responses[3].users;
-                        this.error = '';
+                        const responses = await Promise.allSettled(requests);
+                        const keys = ['nodes', 'locations', 'jobs', 'users'];
+                        responses.forEach((result, index) => {
+                            if (result.status === 'fulfilled') this[keys[index]] = result.value[keys[index]] || [];
+                        });
+                        this.error = responses.flatMap((result, index) => result.status === 'rejected'
+                            ? [`${['Nodes', 'Datasets', 'Tasks', 'Users'][index]}: ${result.reason?.message || 'Request failed'}`]
+                            : []).join('; ');
                         if (this.selectedNodeId && !this.nodes.some(node => node.node_id === this.selectedNodeId)) this.selectedNodeId = '';
                         this.clampLocationPage();
                         this.jobPage = Math.min(this.jobPage, this.jobPageCount());

@@ -5,6 +5,66 @@ import pytest
 from lerobot.data_platform import viewer
 
 
+@pytest.mark.parametrize("page", ["visualize_dataset_homepage.html", "data_platform_control_plane.html"])
+def test_remote_lists_load_independently_when_jobs_fail(page):
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the page behavior check")
+    template = (Path(viewer.__file__).parent / "templates" / page).read_text()
+    method = "loadRemoteSources" if page.startswith("visualize") else "load"
+    match = re.search(rf"^                async {method}\(\) \{{", template, re.MULTILINE)
+    assert match is not None
+    end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
+    assert end is not None
+    source = template[match.start() : match.end() + end.end()]
+    script = "const assert = require('node:assert/strict'); const app = {" + source + "};\n"
+    script += f"const method = '{method}';\n"
+    script += r"""
+(async () => {
+    Object.assign(app, {controlPlaneEnabled: true, isAdmin: false, refreshing: false,
+        remoteJobs: [{job_id: 'old', events: ['saved']}], jobs: [{job_id: 'old'}],
+        controlPlaneNodes: [], nodes: [], remoteLocations: [], locations: [],
+        selectedRemoteLocation: null, selectedDataset: null, selectedNodeId: '', jobPage: 1,
+        loadDeletionRequests: async () => {}, syncRemoteViewerJob: () => {},
+        mergeRemoteJobsIntoRuns: () => {}, clampLocationPage: () => {}, jobPageCount: () => 1});
+    let failing = 'jobs';
+    app.requestJson = app.request = async url => {
+        if (failing && url.includes(failing)) throw new Error('HTTP 500: task database unavailable');
+        return url.includes('nodes') ? {nodes: [{node_id: 'h100-05'}]}
+            : url.includes('locations') ? {locations: [{location_id: 'dataset'}]}
+            : {jobs: [{job_id: 'old', status: 'done'}]};
+    };
+    const homepage = method === 'loadRemoteSources';
+    const nodesKey = homepage ? 'controlPlaneNodes' : 'nodes';
+    const locationsKey = homepage ? 'remoteLocations' : 'locations';
+    const jobsKey = homepage ? 'remoteJobs' : 'jobs';
+    const errorKey = homepage ? 'remoteError' : 'error';
+    await app[method]();
+    assert.equal(app[nodesKey][0].node_id, 'h100-05');
+    assert.equal(app[locationsKey][0].location_id, 'dataset');
+    assert.equal(app[jobsKey][0].job_id, 'old');
+    assert.match(app[errorKey], /Tasks:.*HTTP 500/);
+    failing = '';
+    await app[method]();
+    assert.equal(app[jobsKey][0].status, 'done');
+    if (homepage) assert.deepEqual(app.remoteJobs[0].events, ['saved']);
+    assert.equal(app[errorKey], '');
+    failing = 'nodes';
+    await app[method]();
+    assert.equal(app[nodesKey][0].node_id, 'h100-05');
+    assert.equal(app[locationsKey][0].location_id, 'dataset');
+    assert.match(app[errorKey], /Nodes:/);
+    assert.equal(app.refreshing, false);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize("robot", ["umi", "dvt1", "dvt2", "joint_named", "ee_named", "ee_positional"])
 def test_viewer_signal_groups_remain_visible_after_refresh_and_toggles(robot):
     import json

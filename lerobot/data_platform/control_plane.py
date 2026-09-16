@@ -780,13 +780,23 @@ class ControlPlaneStore:
     def list_jobs(self, *, limit: int = 200, actor: dict | None = None) -> list[dict]:
         self.job_manager.reap_expired()
         with self.sessions() as session:
-            query = select(RemoteJob)
+            # Sort identifiers only: MySQL filesort can otherwise copy large JSON
+            # options/results into the sort buffer for owner-filtered queries.
+            query = select(RemoteJob.job_id)
             if actor is not None and actor.get("role") != "admin":
                 query = query.where(RemoteJob.requested_by == actor.get("user_id", ""))
-            jobs = session.scalars(
-                query.order_by(RemoteJob.created_at.desc()).limit(max(1, min(1000, limit)))
+            job_ids = session.scalars(
+                query.order_by(RemoteJob.created_at.desc(), RemoteJob.job_id.desc()).limit(
+                    max(1, min(1000, limit))
+                )
             ).all()
-            return [self._job_dict(job) for job in jobs]
+            if not job_ids:
+                return []
+            details = select(RemoteJob).where(RemoteJob.job_id.in_(job_ids))
+            if actor is not None and actor.get("role") != "admin":
+                details = details.where(RemoteJob.requested_by == actor.get("user_id", ""))
+            jobs = {job.job_id: job for job in session.scalars(details).all()}
+            return [self._job_dict(jobs[job_id]) for job_id in job_ids if job_id in jobs]
 
     def get_job(self, job_id: str) -> dict:
         with self.sessions() as session:

@@ -4129,7 +4129,7 @@
                             try {
                                 data = JSON.parse(text);
                             } catch (err) {
-                                throw new Error(`invalid JSON response from ${url}`);
+                                throw new Error(`Invalid JSON response from ${url} (HTTP ${response.status})`);
                             }
                         }
                         if (!response.ok) {
@@ -4768,18 +4768,19 @@
                 async loadRemoteSources() {
                     if (!this.controlPlaneEnabled) return;
                     try {
-                        const [nodesData, locationsData, jobsData] = await Promise.all([
+                        const results = await Promise.allSettled([
                             this.requestJson('/api/control/nodes'),
                             this.requestJson('/api/control/locations'),
                             this.requestJson('/api/control/jobs?limit=200')
                         ]);
+                        const [nodesResult, locationsResult, jobsResult] = results;
                         this.loadDeletionRequests().catch(err => { this.error = err.message; });
-                        this.controlPlaneNodes = nodesData.nodes || [];
-                        this.remoteLocations = locationsData.locations || [];
+                        if (nodesResult.status === 'fulfilled') this.controlPlaneNodes = nodesResult.value.nodes || [];
+                        if (locationsResult.status === 'fulfilled') this.remoteLocations = locationsResult.value.locations || [];
                         const previousById = new Map(
                             this.remoteJobs.map(job => [job.job_id, job])
                         );
-                        this.remoteJobs = (jobsData.jobs || []).map(job => {
+                        if (jobsResult.status === 'fulfilled') this.remoteJobs = (jobsResult.value.jobs || []).map(job => {
                             const previous = previousById.get(job.job_id);
                             return previous?.events ? {...job, events: previous.events} : job;
                         });
@@ -4793,7 +4794,9 @@
                         }
                         this.syncRemoteViewerJob();
                         this.mergeRemoteJobsIntoRuns();
-                        this.remoteError = '';
+                        this.remoteError = results.flatMap((result, index) => result.status === 'rejected'
+                            ? [`${['Nodes', 'Datasets', 'Tasks'][index]}: ${result.reason?.message || 'Request failed'}`]
+                            : []).join('; ');
                     } catch (err) {
                         this.remoteError = err.message;
                     }
