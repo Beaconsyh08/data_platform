@@ -248,6 +248,7 @@ from lerobot.data_platform.routes import (
     register_remote_analysis_routes,
     register_tagging_routes,
     register_task_routes,
+    register_temporal_caption_routes,
 )
 from lerobot.data_platform.task_catalog import TaskConfigSnapshot
 from lerobot.data_platform.task_text import cached_subtask_names, generate_subtask_text
@@ -559,6 +560,7 @@ _CONSOLE_GROUP_DEFS = [
                 "label": "Annotation",
                 "tabs": [
                     {"key": "stage_subtask", "label": "Stage & Subtask"},
+                    {"key": "temporal_caption", "label": "Temporal Caption"},
                     {"key": "labeling", "label": "Object Labeling"},
                     {"key": "tagging", "label": "Auto-tagging"},
                 ],
@@ -595,6 +597,7 @@ _CONSOLE_MODE_ALLOWED_TABS = {
         "cache",
         "explore_overview",
         "stage_subtask",
+        "temporal_caption",
         "quality_flags",
         "data_modification",
         "standardize",
@@ -2255,7 +2258,8 @@ def run_server(
         name = view_args.get("dataset_name") or view_args.get("name")
         if namespace and name:
             keys.append(f"{namespace}/{name}")
-        for source in (body, options):
+        target = body.get("target") if isinstance(body.get("target"), dict) else {}
+        for source in (body, options, target):
             for field in (
                 "dataset_key",
                 "repo_id",
@@ -2721,7 +2725,11 @@ def run_server(
         try:
             response_payload = response.get_json(silent=True) if response.is_json else None
             job_payload = response_payload.get("job") if isinstance(response_payload, dict) else None
-            job_id = job_payload.get("id") if isinstance(job_payload, dict) else None
+            job_id = (
+                (job_payload.get("id") or job_payload.get("job_id"))
+                if isinstance(job_payload, dict)
+                else None
+            )
             audit_context = {
                 "actor": audit["actor"],
                 "client": audit["client"],
@@ -4469,6 +4477,12 @@ def run_server(
             legacy_mutations_enabled=legacy_mutations_enabled,
             task_catalog_store=_lifecycle_store().tasks,
         )
+    if console_mode == CONSOLE_MODE_FULL:
+        from lerobot.data_platform.routes.curation import register_curation_routes
+
+        register_curation_routes(app, route_context)
+    if _tab_enabled("temporal_caption"):
+        register_temporal_caption_routes(app, route_context)
     if any(_tab_enabled(tab) for tab in ("versions", "curation_manifest")):
         register_lifecycle_routes(app, route_context)
         register_task_routes(app, route_context)

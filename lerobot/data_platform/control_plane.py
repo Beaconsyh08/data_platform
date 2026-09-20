@@ -530,7 +530,22 @@ class ControlPlaneStore:
             node.updated_at = now
             if capabilities is not None:
                 node.capabilities = dict(capabilities)
-        return self._node_dict(node)
+            return self._node_dict(node)
+
+    def configure_local_execution_roots(
+        self, node_id: str, allowed_roots: list[str], writable_roots: list[str]
+    ) -> None:
+        """Keep the registered local executor consistent with its server-generated configuration."""
+        with self.sessions.begin() as session:
+            node = session.get(ControlPlaneNode, node_id)
+            if (
+                node is None
+                or not node.name.startswith("local-")
+                or not node.capabilities.get("local_requests")
+            ):
+                raise ValueError("Expected the registered local executor")
+            node.allowed_roots = list(allowed_roots)
+            node.writable_roots = list(writable_roots)
 
     def sync_locations(self, node_id: str, locations: list[dict]) -> list[dict]:
         now = _utcnow()

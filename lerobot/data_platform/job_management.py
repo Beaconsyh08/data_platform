@@ -13,6 +13,7 @@ from pathlib import PurePosixPath
 
 from sqlalchemy import func, select, update
 
+from lerobot.data_platform.curation import OPERATIONS as CURATION_OPERATIONS
 from lerobot.data_platform.management_storage import (
     JobAttempt,
     JobCommand,
@@ -25,6 +26,8 @@ from lerobot.data_platform.operation_log import build_operation_event, sanitize_
 JOB_PROTOCOL = 2
 ACTIVE_STATES = {"running", "cancel_requested", "interrupted"}
 SAFE_OPERATIONS = {
+    *CURATION_OPERATIONS,
+    "caption.annotate",
     "viewer.prepare",
     "preprocess.convert_action",
     "preprocess.convert_v3",
@@ -173,6 +176,11 @@ class JobManager:
                 location = session.get(DatasetLocation, job.location_id)
                 if location is None:
                     continue
+                if (
+                    job.operation.startswith("curation.")
+                    and (node.capabilities or {}).get("curation_protocol") != 1
+                ):
+                    continue
                 required = required_data_profile_protocol(location.details or {})
                 if job.operation == "viewer.prepare" and job.options.get("force_recompute_stage"):
                     required = DATA_PROFILE_PROTOCOL
@@ -201,7 +209,10 @@ class JobManager:
                 control.attempt_id, control.phase = attempt.attempt_id, "executing"
                 control.stop_confirmed, control.stop_mode = False, None
                 control.revision += 1
-                if job.operation.startswith("preprocess.") and not control.final_output:
+                if (
+                    job.operation.startswith("preprocess.")
+                    or job.operation in {"curation.materialize", "curation.construction"}
+                ) and not control.final_output:
                     source = PurePosixPath(location.root)
                     control.final_output = job.options.get("out_root") or str(
                         source.parent / f"{source.name}_{job.operation.split('.')[-1]}_{job.job_id}"

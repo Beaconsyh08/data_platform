@@ -510,7 +510,7 @@ def test_explore_overview_surfaces_visualizations_and_preparation_paths():
     assert ".filter(item => this.openLinkEnabled(item.key))" in template
 
 
-def test_remote_dataset_can_open_curation_explore_without_exposing_unsupported_tools():
+def test_local_and_remote_datasets_use_the_shared_curation_workspace():
     template = (
         Path(__file__).parents[2]
         / "lerobot"
@@ -519,11 +519,12 @@ def test_remote_dataset_can_open_curation_explore_without_exposing_unsupported_t
         / "visualize_dataset_homepage.html"
     ).read_text()
 
-    assert "workspace.pages.filter(page => page.key === 'explore')" in template
-    assert "page.tabs.filter(tab => tab.key === 'explore_overview')" in template
+    assert "window.location.assign(this.curationUrl(pageKey))" in template
+    assert "['explore', 'quality', 'annotation', 'dataset_build'].includes(pageKey)" in template
+    assert "params.set('location_id', this.selectedDataset.remote_location_id)" in template
     assert "items.filter(item => ['viewer', 'analysis'].includes(item.key))" in template
     assert "await this.prepareRemoteViewer(this.selectedRemoteLocation)" in template
-    assert "'runs', 'explore'].includes(pageKey)" in template
+    assert "'annotation', 'quality', 'dataset_build'].includes(pageKey)" in template
     assert "'dataset_ops', 'explore_overview'" in template
 
 

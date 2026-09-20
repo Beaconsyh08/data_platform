@@ -1402,6 +1402,14 @@
                         </button>
                     </div>
                 </div>
+                <div class="space-y-4 px-4 py-4" x-show="activeTab === 'temporal_caption'">
+                    <div class="dp-card p-5">
+                        <h3 class="text-lg font-semibold text-slate-100">Temporal Caption</h3>
+                        <p class="mt-2 text-sm text-slate-400">Review a single episode with synchronized cameras, semantic segments, and captions. Compare Multi-view Semantics, Video + Events, and Fusion + Review, with separate episode and result selection.</p>
+                        <p class="mt-2 text-xs text-slate-500">Import existing results or submit a single-episode annotation task on a configured Agent. Review is available before preparing a full Viewer cache.</p>
+                        <a class="dp-btn dp-btn-primary dp-btn-inline mt-4" :href="temporalCaptionUrl()" x-show="selectedDataset">Open caption review</a>
+                    </div>
+                </div>
                 <div class="space-y-4 px-4 py-4" x-show="activeTab === 'stage_subtask'">
                     <div class="rounded-lg border border-amber-900/60 bg-amber-950/20 px-4 py-3 text-xs text-amber-200">
                         <div class="font-semibold">Write behavior</div>
@@ -3741,11 +3749,17 @@
                     const workspace = this.currentWorkspace();
                     return workspace ? workspace.label : 'Workspace';
                 },
+                temporalCaptionUrl() {
+                    if (!this.selectedDataset) return '';
+                    return this.selectedDataset.remote
+                        ? `/remote/${encodeURIComponent(this.selectedDataset.remote_location_id)}/temporal-caption`
+                        : `/${this.selectedDatasetKey}/temporal-caption`;
+                },
                 currentPages() {
                     const workspace = this.currentWorkspace();
                     if (!workspace) return [];
                     if (this.selectedDataset?.remote && workspace.key === 'data_curation') {
-                        return workspace.pages.filter(page => page.key === 'explore');
+                        return workspace.pages;
                     }
                     return workspace.pages;
                 },
@@ -3771,7 +3785,10 @@
                     const page = this.currentPage();
                     if (!page) return [];
                     if (this.selectedDataset?.remote && page.key === 'explore') {
-                        return page.tabs.filter(tab => tab.key === 'explore_overview');
+                        return page.tabs;
+                    }
+                    if (this.selectedDataset?.remote && page.key === 'annotation') {
+                        return page.tabs;
                     }
                     return page.tabs;
                 },
@@ -3963,10 +3980,20 @@
                     this.activeWorkspace = group.key;
                     await this.selectPage(group.pages[0].key, updateUrl);
                 },
+                curationUrl(pageKey = 'annotation') {
+                    const params = new URLSearchParams({page: pageKey});
+                    if (this.selectedDataset?.remote) params.set('location_id', this.selectedDataset.remote_location_id);
+                    else if (this.selectedDatasetKey) params.set('dataset_key', this.selectedDatasetKey);
+                    return `/curation?${params}`;
+                },
                 async selectPage(pageKey, updateUrl = true) {
+                    if (this.controlPlaneEnabled && this.selectedDataset && ['explore', 'quality', 'annotation', 'dataset_build'].includes(pageKey)) {
+                        window.location.assign(this.curationUrl(pageKey));
+                        return;
+                    }
                     if (
                         this.selectedDataset?.remote
-                        && !['datasets', 'preprocessing', 'admin_operations', 'runs', 'explore'].includes(pageKey)
+                        && !['datasets', 'preprocessing', 'admin_operations', 'runs', 'explore', 'annotation', 'quality', 'dataset_build'].includes(pageKey)
                     ) {
                         this.error = 'This Agent dataset currently supports preprocessing, Admin source mutations, Viewer, and Runs.';
                         return;
@@ -3975,7 +4002,7 @@
                     if (!found) return;
                     this.activeWorkspace = found.group.key;
                     this.activePage = found.page.key;
-                    const tabs = found.page.tabs;
+                    const tabs = this.currentSubTabs();
                     if (tabs.length && !tabs.some(tab => tab.key === this.activeTab)) {
                         await this.selectTab(tabs[0].key, false);
                     } else if (!tabs.length) {
@@ -4031,7 +4058,7 @@
                         this.selectedDataset?.remote
                         && ![
                             'cache', 'standardize', 'transform', 'split_merge', 'data_modification',
-                            'dataset_ops', 'explore_overview'
+                            'dataset_ops', 'explore_overview', 'temporal_caption'
                         ].includes(tab)
                     ) {
                         this.error = `This Agent dataset does not support the ${tab} workflow yet.`;

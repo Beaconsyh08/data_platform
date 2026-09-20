@@ -70,7 +70,13 @@ _REMOTE_MERGE_OPTION_KEYS = {
     "dry_run",
     "out_root",
 }
-_DERIVED_VIEWER_OPERATIONS = {"preprocess.standardize", "preprocess.merge", "preprocess.split"}
+_DERIVED_VIEWER_OPERATIONS = {
+    "preprocess.standardize",
+    "preprocess.merge",
+    "preprocess.split",
+    "curation.materialize",
+    "curation.construction",
+}
 
 
 def _normalize_remote_path(value: object, label: str) -> PurePosixPath:
@@ -724,6 +730,16 @@ def register_control_plane_routes(
                         cache_root=str(cache_output_dir),
                     )
                     result["viewer_url"] = viewer_url
+            if status == "done" and current["operation"] == "caption.annotate":
+                complete_caption = app.extensions.get("data_platform_complete_caption")
+                if complete_caption is None:
+                    raise ValueError("Caption completion handler is unavailable")
+                result = complete_caption(current, result)
+            if status == "done" and current["operation"].startswith("curation."):
+                complete_curation = app.extensions.get("data_platform_complete_curation")
+                if complete_curation is None:
+                    raise ValueError("Curation completion handler is unavailable")
+                result = complete_curation(current, result)
             derived = result.get("dataset_location")
             if status == "done" and isinstance(derived, dict):
                 synced_location = store.sync_locations(node["node_id"], [derived])[0]
@@ -772,6 +788,10 @@ def register_control_plane_routes(
                 error=body.get("error"),
                 **_execution_credentials(),
             )
+            if current["operation"] == "caption.annotate":
+                cleanup_caption = app.extensions.get("data_platform_cleanup_caption")
+                if cleanup_caption is not None:
+                    cleanup_caption(current)
         except KeyError:
             return jsonify({"error": "job not found for this node"}), 404
         except JobConflictError:
