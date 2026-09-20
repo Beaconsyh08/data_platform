@@ -519,9 +519,10 @@ def test_local_and_remote_datasets_use_the_shared_curation_workspace():
         / "visualize_dataset_homepage.html"
     ).read_text()
 
-    assert "window.location.assign(this.curationUrl(pageKey))" in template
-    assert "['explore', 'quality', 'annotation', 'dataset_build'].includes(pageKey)" in template
-    assert "params.set('location_id', this.selectedDataset.remote_location_id)" in template
+    assert "window.location.assign(this.curationUrl(pageKey))" not in template
+    assert "window.syncCurationWorkspace($refs.curationWorkspace" in template
+    assert "['explore', 'quality', 'annotation', 'dataset_build'].includes(this.activePage)" in template
+    assert "{location_id: this.selectedDataset.remote_location_id}" in template
     assert "items.filter(item => ['viewer', 'analysis'].includes(item.key))" in template
     assert "await this.prepareRemoteViewer(this.selectedRemoteLocation)" in template
     assert "'annotation', 'quality', 'dataset_build'].includes(pageKey)" in template
@@ -598,5 +599,62 @@ def test_processing_defaults_and_umi_stage_form_behavior():
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
     )
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+def test_curation_tabs_stay_in_console_and_skip_legacy_local_loaders():
+    import json
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the navigation behavior check")
+    template = (Path(viewer.__file__).parent / "templates/visualize_dataset_homepage.html").read_text()
+    methods = []
+    for name in ["unifiedCurationActive", "curationTarget", "selectTab", "selectPage"]:
+        match = re.search(
+            rf"^                (?:async )?{name}\(.*?^                \}},", template, re.M | re.S
+        )
+        assert match is not None
+        methods.append(match.group())
+    groups = viewer._console_groups_for_tabs(
+        viewer._CONSOLE_MODE_ALLOWED_TABS["full"],
+        allowed_open_links=viewer._CONSOLE_MODE_ALLOWED_OPEN_LINKS["full"],
+    )
+    script = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
+    script += "const groups = " + json.dumps(groups) + ";\n"
+    script += r"""
+(async () => {
+    const group = groups.find(g => g.key === 'data_curation');
+    Object.assign(app, {controlPlaneEnabled: true, consoleMode: 'full', activeTab: '',
+        tabEnabled: () => true, updateHomeUrl() { this.urlUpdates = (this.urlUpdates || 0) + 1; },
+        findPage: key => ({group, page: group.pages.find(p => p.key === key)}),
+        pageForTab: key => ({group, page: group.pages.find(p => p.tabs.some(t => t.key === key))}),
+        currentSubTabs() { return this.findPage(this.activePage).page.tabs; },
+        syncSchemaOpForTab() { throw Error('Unexpected legacy loader'); }});
+    for (const remote of [true, false]) {
+        app.selectedDataset = {remote, remote_location_id: 'node-location'};
+        app.selectedDatasetKey = remote ? 'remote:node-location' : 'local/source';
+        assert.deepEqual(app.curationTarget(), remote ? {location_id: 'node-location'} : {dataset_key: 'local/source'});
+        for (const page of group.pages) {
+            for (const tab of page.tabs.filter(t => t.key !== 'explore_overview')) {
+                await app.selectTab(tab.key);
+                assert.equal(app.activeTab, tab.key);
+                assert.equal(app.activePage, page.key);
+                assert.equal(app.activeWorkspace, 'data_curation');
+                assert.equal(app.unifiedCurationActive(), true);
+                await app.selectPage(page.key);
+                assert.equal(app.activeTab, tab.key);
+            }
+        }
+    }
+    app.selectedDataset = null;
+    assert.equal(app.unifiedCurationActive(), false);
+    assert.equal(app.curationTarget(), null);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr

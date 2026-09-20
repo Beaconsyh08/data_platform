@@ -12,8 +12,9 @@ from dataclasses import replace
 from functools import wraps
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
-from flask import abort, jsonify, render_template, request, send_file
+from flask import abort, jsonify, redirect, request, send_file
 
 from lerobot.data_platform.curation import (
     CURATION_PROTOCOL,
@@ -404,7 +405,11 @@ def register_curation_routes(app, ctx):
     @checked
     def curation_page():
         target, _, _, _, _ = resolve(request.args.to_dict())
-        return render_template("visualize_dataset_curation.html", target=target.to_dict())
+        page = request.args.get("page", "annotation")
+        if page not in {"explore", "quality", "annotation", "dataset_build"}:
+            page = "annotation"
+        selection = f"remote:{target.location_id}" if target.location_id else target.dataset_key
+        return redirect("/?" + urlencode({"select": selection, "page": page}))
 
     @app.post("/api/curation/drafts")
     @checked

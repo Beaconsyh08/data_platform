@@ -1,8 +1,9 @@
 /* Shared Curation client: execution location is a property of the selected target. */
-(() => {
+window.createCurationWorkspace = (root, initialTarget) => {
   'use strict';
-  const $ = id => document.getElementById(id);
-  const target = {...window.curationTarget};
+  const $ = id => root.querySelector(`[data-curation-id="${id}"]`);
+  const target = {...initialTarget};
+  let destroyed = false;
   let context = null, result = null, busy = false, jobs = [], page = new URLSearchParams(location.search).get('page') || 'annotation';
   let inputRuns = new Set(), captionRuns = [], timer = null, reviewRevision = null;
   const pending = JSON.parse(sessionStorage.getItem('curation-deliveries') || '{}');
@@ -49,6 +50,7 @@
     try { response = await fetch(url, {method, headers, body: body ? JSON.stringify(body) : undefined}); }
     catch (error) { throw new Error(mutation ? 'Submission could not be confirmed. Check Tasks before retrying; retrying the same request keeps its delivery key.' : 'Connection unavailable. Refresh to reconnect.'); }
     const data = await response.json();
+    if (destroyed) throw new Error('Dataset selection changed.');
     if (mutation) { delete pending[signature]; sessionStorage.setItem('curation-deliveries', JSON.stringify(pending)); }
     if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
     return data;
@@ -69,7 +71,7 @@
   }
   function buttons() {
     if (!context) return;
-    document.querySelectorAll('[data-command]').forEach(button => {
+    root.querySelectorAll('[data-command]').forEach(button => {
       const capability = context.operations[`curation.${button.dataset.command}`];
       let blocked = capability?.reason || '';
       if (button.dataset.command === 'labeling' && !blocked) {
@@ -91,14 +93,14 @@
     $('sync').title = context.operations['curation.snapshot']?.reason || '';
     $('draft-state').textContent = draft() ? `${draft().status} · revision ${draft().revision}` : 'Select or create a draft';
   }
-  function selectPage(value) {
+  function selectPage(value, tab) {
     page = ['explore','quality','annotation','dataset_build'].includes(value) ? value : 'annotation';
-    document.querySelectorAll('[data-section]').forEach(item => { item.hidden = item.dataset.section !== page; });
-    document.querySelectorAll('[data-page]').forEach(item => item.setAttribute('aria-selected', item.dataset.page === page));
-    const url = new URL(location.href); url.searchParams.set('page', page); history.replaceState(null, '', url);
+    root.querySelectorAll('[data-section]').forEach(item => { item.hidden = item.dataset.section !== page; });
+    root.querySelectorAll('[data-page]').forEach(item => item.setAttribute('aria-selected', item.dataset.page === page));
+    root.querySelectorAll('[data-curation-tab]').forEach(item => { item.hidden = item.dataset.curationTab !== tab; });
   }
   function drawForms() {
-    document.querySelectorAll('[data-operation]').forEach(container => {
+    root.querySelectorAll('[data-operation]').forEach(container => {
       const operation = container.dataset.operation, form = document.createElement('form'), grid = document.createElement('div'); grid.className = 'fields';
       for (const [key,label,type,initial] of fields[operation]) {
         const field = text('label',label), input = document.createElement(type === 'select' ? 'select' : 'input'); input.name = key;
@@ -107,7 +109,7 @@
         if (type === 'episodes') input.placeholder = 'All episodes, or 3,7,17-19';
         field.append(input); grid.append(field);
       }
-      if (operation === 'construction') { const label = text('label','Examples per scenario'); const rows = document.createElement('div'); rows.id = 'construction-counts'; label.append(rows); grid.append(label); }
+      if (operation === 'construction') { const label = text('label','Examples per scenario'); const rows = document.createElement('div'); rows.dataset.curationId = 'construction-counts'; label.append(rows); grid.append(label); }
       const row = document.createElement('div'); row.className = 'row'; const button = text('button', operationNames[operation]); button.type = 'submit'; button.dataset.command = operation; row.append(button, text('small','','operation-reason')); form.append(grid,row); container.append(form);
       if (operation === 'labeling') form.elements.backend.onchange = buttons;
       form.addEventListener('submit', event => { event.preventDefault(); action(async () => {
@@ -237,10 +239,10 @@
     }
     const active = jobs.some(job => ['queued','running','cancel_requested','interrupted'].includes(job.status));
     if (oldActive && !active) { delete target.dataset_version_id; await refresh(); }
-    clearTimeout(timer); if (active) timer = setTimeout(() => refreshJobs().catch(error => { notice(error.message,true); timer=setTimeout(refreshJobs,10000); }),4000);
+    clearTimeout(timer); if (active && !destroyed) timer = setTimeout(() => refreshJobs().catch(error => { notice(error.message,true); if (!destroyed) timer=setTimeout(() => refreshJobs().catch(error => notice(error.message,true)),10000); }),4000);
   }
   function bind() {
-    document.querySelectorAll('[data-page]').forEach(button => { button.onclick = () => selectPage(button.dataset.page); });
+    root.querySelectorAll('[data-page]').forEach(button => { button.onclick = () => selectPage(button.dataset.page); });
     $('refresh').onclick = () => action(async () => { delete target.dataset_version_id; await refresh(); await refreshJobs(); notice('Updated. Unsaved episode fields have been kept.'); });
     $('sync').onclick = () => action(() => submit('snapshot'));
     $('import-sidecars').onclick = () => action(async () => { await api(`/api/curation/drafts/${draft().workspace_id}/import-sidecars`,{target,expected_revision:draft().revision}); await refresh(); loadReview(); notice('Existing review imported without changing source files.'); });
@@ -290,6 +292,28 @@
     $('load-caption-runs').onclick = () => action(async () => { const data = await api(captionApi()); captionRuns = data.runs || []; options($('caption-run'),captionRuns,item => `${item.run}:${item.variant}`,item => `Episode ${item.episode_index} · ${item.variant} · ${item.run}`,'Select a caption result'); notice('Caption results loaded.'); });
     $('accept-caption').onclick = () => action(async () => { const value = captionRuns.find(item => `${item.run}:${item.variant}` === $('caption-run').value); if (!value) throw new Error('Select a caption result.'); await api(`/api/curation/drafts/${draft().workspace_id}/caption-evidence`,{target,expected_revision:draft().revision,run:value.run,variant:value.variant}); await refresh(); notice('Caption evidence saved in the draft.'); });
   }
-  drawForms(); bind(); selectPage(page);
+  drawForms(); bind();
   refresh().then(refreshJobs).catch(error => notice(error.message,true));
+  return {selectPage, destroy() { destroyed = true; clearTimeout(timer); }};
+};
+
+// Keep one controller per dataset, preserving unsaved fields when switching tabs.
+window.syncCurationWorkspace = (() => {
+  const mounted = new WeakMap();
+  return (host, target, page, tab, enabled) => {
+    const key = JSON.stringify(target);
+    let state = mounted.get(host);
+    if (state && state.key !== key) {
+      state.controller.destroy(); host.replaceChildren(); mounted.delete(host); state = null;
+    }
+    if (!enabled) return;
+    if (!state) {
+      const root = document.createElement('div');
+      root.append(document.getElementById('curation-workspace-template').content.cloneNode(true));
+      host.replaceChildren(root);
+      state = {key, controller: window.createCurationWorkspace(root, target)};
+      mounted.set(host, state);
+    }
+    state.controller.selectPage(page, tab);
+  };
 })();

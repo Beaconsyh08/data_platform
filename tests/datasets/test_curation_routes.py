@@ -473,3 +473,16 @@ def test_signal_operations_execute_without_mutating_source(remote, operation, pa
         )
         assert response.status_code == 200, response.get_json()
         assert response.get_json()["workspace"]["annotation_patches"][0]["fields"]["subtask_transitions"]
+
+
+@pytest.mark.parametrize("page", ["explore", "quality", "annotation", "dataset_build"])
+def test_curation_bookmark_redirects_into_console(remote, page):
+    from urllib.parse import parse_qs, urlsplit
+
+    response = remote.client.get(
+        "/curation", query_string={"location_id": remote.location["location_id"], "page": page}
+    )
+    assert response.status_code == 302
+    url = urlsplit(response.headers["Location"])
+    assert url.path == "/"
+    assert parse_qs(url.query) == {"select": [f"remote:{remote.location['location_id']}"], "page": [page]}

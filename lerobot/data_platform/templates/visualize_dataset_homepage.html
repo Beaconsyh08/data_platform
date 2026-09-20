@@ -247,6 +247,14 @@
                 padding-right: 1rem;
             }
         }
+        @media (max-width: 640px) {
+            .dp-header-grid {
+                grid-template-areas: "brand" "workspace" "dataset" "jobs";
+                grid-template-columns: minmax(0, 1fr);
+            }
+            .dp-header-utilities { flex-wrap: wrap; justify-content: flex-start; }
+        }
+        {% include "curation.css" %}
     </style>
 </head>
 <body class="min-h-screen text-sm text-slate-200 antialiased"
@@ -863,6 +871,9 @@
                     <p class="mt-1 max-w-md text-xs text-slate-500">This page needs a working dataset context so outputs, jobs, and lineage stay traceable.</p>
                     <button class="dp-btn dp-btn-primary dp-btn-inline mt-4" @click="selectPage('datasets')">Go to Datasets</button>
                 </div>
+                <div class="curation-workspace" x-ref="curationWorkspace" x-show="unifiedCurationActive()"
+                     x-effect="window.syncCurationWorkspace($refs.curationWorkspace, curationTarget(), activePage, activeTab, unifiedCurationActive())"></div>
+                <div x-show="!unifiedCurationActive()">
                 <div class="mx-4 mt-4 rounded border border-emerald-900/60 bg-emerald-950/20 px-3 py-2 text-xs text-emerald-200"
                      x-show="activeTab === 'explore_overview' && selectedDatasetIsV3()">
                     v3.0 viewer support uses a read-only adapter in this environment. Run Prepare video + CSV once,
@@ -1601,7 +1612,7 @@
                         <div class="mt-1 leading-5" x-text="preprocessPanelDescription()"></div>
                         <div class="mt-2 text-amber-300" x-show="!operationAvailable(preprocess.schema_op)" x-text="operationReason(preprocess.schema_op)"></div>
                         <div class="mt-2 text-amber-300" x-show="preprocessCapabilities && !preprocessCapabilities.available"
-                             x-text="preprocessCapabilities.error || 'Preprocess dependencies unavailable.'"></div>
+                             x-text="preprocessCapabilities?.error || 'Preprocess dependencies unavailable.'"></div>
                     </div>
 
                     <div class="rounded border border-sky-900/60 bg-sky-950/20 px-3 py-2 text-xs text-sky-200"
@@ -2356,7 +2367,7 @@
                     <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
                         <div class="font-semibold text-slate-200">Labeling status</div>
                         <div class="mt-1" x-show="selectedDataset && selectedDataset.labeling">
-                            <span x-text="selectedDataset ? `labels ${selectedDataset.labeling.labels_count || 0}, reviewed ${selectedDataset.labeling.reviewed_count || 0}` : ''"></span>
+                            <span x-text="selectedDataset ? `labels ${selectedDataset.labeling?.labels_count || 0}, reviewed ${selectedDataset.labeling?.reviewed_count || 0}` : ''"></span>
                         </div>
                         <div class="mt-1 text-slate-500" x-show="!selectedDataset || !selectedDataset.labeling">No labeling result has been loaded for this dataset.</div>
                     </div>
@@ -2641,13 +2652,13 @@
                     <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
                         <div class="font-semibold text-slate-200">Tagging status</div>
                         <div class="mt-2" x-show="selectedDataset && selectedDataset.tagging"
-                             x-text="selectedDataset ? `tags ${selectedDataset.tagging.tags_count || 0}, reviewed ${selectedDataset.tagging.reviewed_count || 0}` : ''"></div>
+                             x-text="selectedDataset ? `tags ${selectedDataset.tagging?.tags_count || 0}, reviewed ${selectedDataset.tagging?.reviewed_count || 0}` : ''"></div>
                         <div class="mt-1 text-slate-500" x-show="!selectedDataset || !selectedDataset.tagging">No tag result has been loaded for this dataset.</div>
                     </div>
                     <div class="rounded border border-amber-800 bg-amber-950/30 px-3 py-3 text-xs text-amber-200"
                          x-show="taggingCapabilities && !taggingCapabilities.available">
                         Selected VLM backend is unavailable. Rule/geometric tags can still run.
-                        <span x-show="taggingCapabilities && taggingCapabilities.error" x-text="` ${taggingCapabilities.error}`"></span>
+                        <span x-show="taggingCapabilities && taggingCapabilities.error" x-text="` ${taggingCapabilities?.error || ''}`"></span>
                     </div>
                     <div class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs">
                         <div class="mb-2 text-slate-400">VLM backend</div>
@@ -2771,7 +2782,7 @@
                     <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
                         <div class="font-semibold text-slate-200">Embedding status</div>
                         <div class="mt-2" x-show="selectedDataset && selectedDataset.embedding"
-                             x-text="selectedDataset ? `points ${selectedDataset.embedding.points_count || 0}` : ''"></div>
+                             x-text="selectedDataset ? `points ${selectedDataset.embedding?.points_count || 0}` : ''"></div>
                         <div class="mt-1 text-slate-500" x-show="!selectedDataset || !selectedDataset.embedding">No embedding result has been loaded for this dataset.</div>
                     </div>
                     <label class="block">
@@ -2841,6 +2852,7 @@
                         <button class="dp-btn dp-btn-primary dp-full"
                                 @click="startCompare()" :disabled="!canStartCompare() || busy">Build compare cache</button>
                     </div>
+                </div>
                 </div>
                 </div>
             </section>
@@ -3211,6 +3223,8 @@
         </section>
     </div>
 
+    <template id="curation-workspace-template">{% include "visualize_dataset_curation.html" %}</template>
+    <script>{% include "curation.js" %}</script>
     <script>
         function precomputeConsole() {
             return {
@@ -3980,17 +3994,18 @@
                     this.activeWorkspace = group.key;
                     await this.selectPage(group.pages[0].key, updateUrl);
                 },
-                curationUrl(pageKey = 'annotation') {
-                    const params = new URLSearchParams({page: pageKey});
-                    if (this.selectedDataset?.remote) params.set('location_id', this.selectedDataset.remote_location_id);
-                    else if (this.selectedDatasetKey) params.set('dataset_key', this.selectedDatasetKey);
-                    return `/curation?${params}`;
+                unifiedCurationActive() {
+                    return this.controlPlaneEnabled && this.consoleMode === 'full' && Boolean(this.selectedDataset)
+                        && ['explore', 'quality', 'annotation', 'dataset_build'].includes(this.activePage)
+                        && this.activeTab !== 'explore_overview';
+                },
+                curationTarget() {
+                    if (!this.selectedDataset) return null;
+                    return this.selectedDataset.remote
+                        ? {location_id: this.selectedDataset.remote_location_id}
+                        : {dataset_key: this.selectedDatasetKey};
                 },
                 async selectPage(pageKey, updateUrl = true) {
-                    if (this.controlPlaneEnabled && this.selectedDataset && ['explore', 'quality', 'annotation', 'dataset_build'].includes(pageKey)) {
-                        window.location.assign(this.curationUrl(pageKey));
-                        return;
-                    }
                     if (
                         this.selectedDataset?.remote
                         && !['datasets', 'preprocessing', 'admin_operations', 'runs', 'explore', 'annotation', 'quality', 'dataset_build'].includes(pageKey)
@@ -4056,6 +4071,7 @@
                     if (tab === 'schema') tab = this.consoleMode === 'visualize' ? 'dataset_ops' : 'transform';
                     if (
                         this.selectedDataset?.remote
+                        && this.pageForTab(tab)?.group.key !== 'data_curation'
                         && ![
                             'cache', 'standardize', 'transform', 'split_merge', 'data_modification',
                             'dataset_ops', 'explore_overview', 'temporal_caption'
@@ -4070,6 +4086,10 @@
                     this.activeTab = tab;
                     this.activeWorkspace = found.group.key;
                     this.activePage = found.page.key;
+                    if (this.unifiedCurationActive()) {
+                        if (updateUrl) this.updateHomeUrl();
+                        return;
+                    }
                     this.syncSchemaOpForTab(tab);
                     if (['quality_flags', 'standardize', 'transform', 'dataset_ops', 'split_merge'].includes(tab)) await this.loadPreprocessCapabilities();
                     if (tab === 'quality_flags' && this.adminModeEnabled) {
@@ -4935,9 +4955,7 @@
                     this.prefillMergeOutput();
                     this.storeDatasetKey(this.selectedDataset.key);
                     this.syncSchemaOpForTab(this.activeTab);
-                    if (this.activePage === 'explore' && this.activeTab !== 'explore_overview') {
-                        await this.selectTab('explore_overview', false);
-                    } else if (!['datasets', 'preprocessing', 'admin_operations', 'runs', 'explore'].includes(this.activePage)) {
+                    if (!['datasets', 'preprocessing', 'admin_operations', 'runs', 'explore', 'quality', 'annotation', 'dataset_build'].includes(this.activePage)) {
                         await this.selectPage('preprocessing', false);
                     }
                     this.remoteViewerJob = this.latestRemoteJob(location);
@@ -5849,7 +5867,7 @@
                         if (op !== 'split') return 'This operation is unavailable on remote datasets.';
                         if (!this.selectedRemoteLocation) return 'Select an available Agent dataset.';
                     } else if (this.preprocessCapabilities && !this.preprocessCapabilities.available) {
-                        return this.preprocessCapabilities.error || 'Local preprocessing dependencies are unavailable.';
+                        return this.preprocessCapabilities?.error || 'Local preprocessing dependencies are unavailable.';
                     }
                     if (op === 'split' && !(this.preprocess.episode_range.trim() || this.preprocess.task_filter.trim())) return 'Enter an episode range or task filter.';
                     if (op === 'subtract' && !(this.preprocess.subtract_src_keys || []).length) return 'Select at least one dataset to subtract.';
@@ -6626,8 +6644,8 @@
                     this.error = '';
                     this.busy = true;
                     try {
-                        const url = (this.selectedDataset.tagging && this.selectedDataset.tagging.merge_url)
-                            ? this.selectedDataset.tagging.merge_url
+                        const url = (this.selectedDataset.tagging && this.selectedDataset.tagging?.merge_url)
+                            ? this.selectedDataset.tagging?.merge_url
                             : `/api/tagging/${datasetKey}/merge`;
                         await this.requestJson(url, null, 'POST');
                         if (this.selectedDatasetKey !== datasetKey) return;
@@ -7434,7 +7452,7 @@
                     return Boolean(
                         this.selectedDataset &&
                         this.selectedDataset.labeling &&
-                        this.selectedDataset.labeling.labels_count > 0
+                        this.selectedDataset.labeling?.labels_count > 0
                     ) || Boolean(
                         this.activeJob &&
                         this.activeJob.job_type === 'labeling' &&
@@ -7447,7 +7465,7 @@
                     return Boolean(
                         this.selectedDataset &&
                         this.selectedDataset.labeling &&
-                        this.selectedDataset.labeling.reviewed_count > 0 &&
+                        this.selectedDataset.labeling?.reviewed_count > 0 &&
                         this.labeling.annotate
                     );
                 },
@@ -7605,13 +7623,13 @@
                     if (this.activeJob && this.activeJob.job_type === 'tagging' && this.activeJob.review_url && this.activeJob.dataset_key === this.selectedDataset.key) {
                         return this.activeJob.review_url;
                     }
-                    if (this.selectedDataset.tagging && this.selectedDataset.tagging.tags_count > 0) {
-                        return this.selectedDataset.tagging.review_url;
+                    if (this.selectedDataset.tagging && this.selectedDataset.tagging?.tags_count > 0) {
+                        return this.selectedDataset.tagging?.review_url;
                     }
                     return '';
                 },
                 canMergeTags() {
-                    return Boolean(this.selectedDataset && this.selectedDataset.tagging && this.selectedDataset.tagging.tags_count > 0);
+                    return Boolean(this.selectedDataset && this.selectedDataset.tagging && this.selectedDataset.tagging?.tags_count > 0);
                 },
                 canStartEmbedding() {
                     if (!this.operationAvailable('embedding')) return false;
@@ -7622,8 +7640,8 @@
                     if (this.activeJob && this.activeJob.job_type === 'embedding' && this.activeJob.review_url && this.activeJob.dataset_key === this.selectedDataset.key) {
                         return this.activeJob.review_url;
                     }
-                    if (this.selectedDataset.embedding && this.selectedDataset.embedding.points_count > 0) {
-                        return this.selectedDataset.embedding.scatter_url;
+                    if (this.selectedDataset.embedding && this.selectedDataset.embedding?.points_count > 0) {
+                        return this.selectedDataset.embedding?.scatter_url;
                     }
                     return '';
                 },
@@ -7737,7 +7755,7 @@
                 reviewUrl() {
                     if (!this.selectedDataset) return '';
                     if (this.activeJob && this.activeJob.review_url && this.activeJob.dataset_key === this.selectedDataset.key) return this.activeJob.review_url;
-                    if (this.selectedDataset.labeling && this.selectedDataset.labeling.review_url) return this.selectedDataset.labeling.review_url;
+                    if (this.selectedDataset.labeling && this.selectedDataset.labeling?.review_url) return this.selectedDataset.labeling?.review_url;
                     if (this.selectedDataset.cache_only) return '';
                     return `/${this.selectedDataset.key}/labeling`;
                 },

@@ -7,7 +7,10 @@ these changes until a new Server/Agent release is installed.
 ## Workflow
 
 In the central console, select a local or Agent dataset and open **Data Curation**. Both
-use `/curation` with the same Explore, Quality, Annotation, and Dataset Build sections.
+use the existing console header, dataset picker, and Explore, Quality, Annotation, and Dataset Build
+navigation. Each operation opens in its original subtab without leaving the console. Switching
+tabs preserves unsaved review fields; changing datasets opens that dataset’s own workspace.
+Legacy `/curation` links redirect into the console with the selected dataset and page.
 The standalone console without a control plane keeps its existing local workflows.
 
 1. **Synchronize version** scans the source on its owning node. Immutable episode identities,
