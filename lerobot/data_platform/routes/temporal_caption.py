@@ -6,11 +6,12 @@ import json
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlencode
 
 from flask import abort, jsonify, render_template, send_file
 
 from lerobot.data_platform.temporal_caption import artifact_key, validate_result
-from lerobot.data_platform.temporal_caption_demo import review_context, scheme_info
+from lerobot.data_platform.temporal_caption_demo import SCHEMES, review_context, scheme_info
 
 
 def register_temporal_caption_routes(app, ctx) -> None:
@@ -25,7 +26,9 @@ def register_temporal_caption_routes(app, ctx) -> None:
             key = location["dataset_key"]
             name = Path(location["root"]).name
             api = f"/api/control/locations/{location_id}/temporal-caption"
-            home = f"/?remote_location_id={location_id}&page=annotation&tab=temporal_caption"
+            home = "/?" + urlencode(
+                {"select": f"remote:{location_id}", "page": "annotation", "tab": "temporal_caption"}
+            )
         else:
             key = f"{dataset_namespace}/{dataset_name}"
             if ctx.static_dir_for_key(ctx.repo_key(key)) is None:
@@ -70,7 +73,8 @@ def register_temporal_caption_routes(app, ctx) -> None:
             "visualize_dataset_temporal_caption.html",
             page_kind="Data Curation / Annotation",
             page_title=name,
-            page_subtitle="Temporal Caption · single-episode experiment",
+            page_subtitle="Temporal Caption · reusable annotation methods",
+            caption_schemes=list(SCHEMES.values()),
             api_base=api,
             home_url=home,
             remote_caption=ctx.control_plane_store is not None,
@@ -104,7 +108,7 @@ def register_temporal_caption_routes(app, ctx) -> None:
                             },
                         }
                     )
-        return jsonify(runs=runs)
+        return jsonify(runs=runs, schemes=list(SCHEMES.values()))
 
     @app.get("/api/temporal-caption/<dataset_namespace>/<dataset_name>/<run>/<variant>")
     @app.get("/api/control/locations/<location_id>/temporal-caption/<run>/<variant>")

@@ -2,7 +2,7 @@
 
 `Data Curation → Annotation → Temporal Caption` is a parallel annotation review surface with remote single-episode jobs.
 It does not replace Stage & Subtask or Object Labeling, and does not apply labels to source data.
-Remote datasets expose this review tab alongside Explore; other unsupported curation tabs stay hidden.
+Local and Agent datasets expose this review tab under the same Data Curation navigation.
 Local and remote review use the same template, result selector, synchronized camera video, segment
 navigation, active caption highlighting, and optional segment loop.
 
@@ -76,19 +76,26 @@ files. Model result JSON includes the registered dataset key; mismatched keys ar
 The remote route resolves the registered location, then reads only the central result artifact. It never
 opens a client-provided remote path or queues Viewer generation. The normal console login guard applies;
 viewer accounts may read results and seek videos using HTTP Range requests. Full console mode is required.
-There is no upload, annotation approval, source writeback, or remote inference submission API in this trial.
-This adds remote result review, not a full remote curation execution workflow.
+Operators and administrators can submit single-episode annotation jobs; administrators can import existing
+review ZIPs. Results remain review evidence and do not write back to source datasets.
 
 Deploy through the existing immutable dev/prod release workflow. A local preview is not a production
-release. This read-only result interface needs a Server A update; extraction remains an explicit one-episode
-CLI operation on the data host.
+release. Update Server A and the Agent together to expose supported annotation methods.
 
-## Two named schemes, one review UI
+## Three reusable annotation methods, one review UI
 
 The shared page follows the caption demo layout: synchronized camera video, colored semantic timeline,
 gripper event markers, measured gripper/speed curves, bilingual captions, scene and task-quality panels.
-The **Scheme** selector is separate from **Episode / result**. Switching schemes keeps the same episode
-when available; episode identity remains visible when only another episode has a result.
+The **Annotation method** selector always offers Multi-view Semantics, Video + Events, and Fusion + Review,
+including when the dataset has no saved annotations. It is synchronized with the new-task method selector
+and remembers the choice in this browser; an explicit `?scheme=` link takes precedence.
+
+Choose a method, then a **Saved episode / result** to review an earlier run. Switching methods keeps the
+same episode when available and prefers `refined`, `caption`, or `fusion_reviewed`; intermediate results
+remain selectable. If no result exists, the old video and annotations are cleared. To reuse the method,
+enter a new episode index and select **Annotate one episode**. Each job retains its method ID and saves
+separate artifacts; it does not overwrite earlier trials. Completed jobs refresh the saved-result list.
+Executor readiness is reported per method, including unsupported Agent versions and read-only roles.
 
 - **Multi-view Semantics** (`multiview_semantics`): the independent image/pose workflow described above,
   with `coarse` and `refined` results. Scene labels, phase labels and instruction success are not fabricated

@@ -316,3 +316,49 @@ def test_fusion_requires_agent_scheme_capability(remote):
         node["node_id"], capabilities={**current["capabilities"], "caption_schemes": ["fusion_review"]}
     )
     assert client.post(url, json=options, headers={"Idempotency-Key": "fusion"}).status_code == 202
+
+
+def test_methods_are_listed_without_results_and_have_executor_readiness(remote):
+    client, store, node, _, location, _ = remote
+    api = f"/api/control/locations/{location['location_id']}/temporal-caption"
+    catalog = client.get(api).get_json()
+    assert catalog["runs"] == []
+    assert {item["id"] for item in catalog["schemes"]} == {
+        "multiview_semantics",
+        "video_events",
+        "fusion_review",
+    }
+    methods = {item["id"]: item for item in client.get(api + "/jobs").get_json()["schemes"]}
+    assert methods["multiview_semantics"]["can_submit"]
+    assert methods["video_events"]["can_submit"]
+    assert not methods["fusion_review"]["can_submit"]
+    assert "Upgrade" in methods["fusion_review"]["unavailable_reason"]
+    current = next(n for n in store.list_nodes() if n["node_id"] == node["node_id"])
+    store.heartbeat(
+        node["node_id"], capabilities={**current["capabilities"], "caption_schemes": ["video_events"]}
+    )
+    response = client.post(
+        api + "/jobs",
+        json={"episode_index": 0, "scheme": "multiview_semantics"},
+        headers={"Idempotency-Key": "unsupported-method"},
+    )
+    assert response.status_code == 409
+    assert not store.list_jobs()
+
+
+def test_all_three_methods_can_be_reused_in_new_jobs(remote):
+    client, store, node, _, location, _ = remote
+    api = f"/api/control/locations/{location['location_id']}/temporal-caption"
+    schemes = ["multiview_semantics", "video_events", "fusion_review"]
+    current = next(n for n in store.list_nodes() if n["node_id"] == node["node_id"])
+    store.heartbeat(node["node_id"], capabilities={**current["capabilities"], "caption_schemes": schemes})
+    assert all(item["can_submit"] for item in client.get(api + "/jobs").get_json()["schemes"])
+    for index, scheme in enumerate(schemes):
+        response = client.post(
+            api + "/jobs",
+            json={"episode_index": index, "scheme": scheme},
+            headers={"Idempotency-Key": "reuse-method"},
+        )
+        assert response.status_code == 202
+        assert response.get_json()["job"]["options"] == {"episode_index": index, "scheme": scheme}
+    assert len(store.list_jobs()) == 3

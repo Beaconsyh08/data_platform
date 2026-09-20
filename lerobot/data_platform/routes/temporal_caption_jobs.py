@@ -13,6 +13,7 @@ from pathlib import Path
 from flask import abort, jsonify, request
 
 from lerobot.data_platform.routes.control_plane import _current_user, _role_denied
+from lerobot.data_platform.temporal_caption_demo import SCHEMES
 from lerobot.data_platform.temporal_caption_jobs import (
     FILES,
     OPERATION,
@@ -21,6 +22,22 @@ from lerobot.data_platform.temporal_caption_jobs import (
     validate_options,
     validate_source,
 )
+
+
+def caption_scheme_status(capabilities, reason, user):
+    # Caption protocol 1 originally supported these two schemes without advertising a list.
+    supported = capabilities.get("caption_schemes", ["multiview_semantics", "video_events"])
+    allowed = bool(user and user["role"] in {"operator", "admin"})
+    return [
+        {
+            **scheme,
+            "can_submit": allowed and reason is None and scheme_id in supported,
+            "unavailable_reason": reason
+            or (f"Upgrade the executor to support {scheme['name']}" if scheme_id not in supported else None)
+            or ("Read-only account." if not allowed else None),
+        }
+        for scheme_id, scheme in SCHEMES.items()
+    ]
 
 
 def register_caption_job_routes(app, ctx, resolve):
@@ -57,7 +74,9 @@ def register_caption_job_routes(app, ctx, resolve):
         user = _current_user()
         location = store.get_location(location_id)
         reason = readiness(location)
+        node = next((n for n in store.list_nodes() if n["node_id"] == location["node_id"]), {})
         return jsonify(
+            schemes=caption_scheme_status(node.get("capabilities") or {}, reason, user),
             can_import=bool(user and user["role"] == "admin"),
             can_submit=bool(user and user["role"] in {"operator", "admin"} and reason is None),
             unavailable_reason=reason,
@@ -98,12 +117,13 @@ def register_caption_job_routes(app, ctx, resolve):
             location = store.get_location(location_id)
             reason = readiness(location)
             node = next(n for n in store.list_nodes() if n["node_id"] == location["node_id"])
-            if options["scheme"] == "fusion_review" and "fusion_review" not in node.get(
-                "capabilities", {}
-            ).get("caption_schemes", []):
-                return jsonify(error="Upgrade the Agent to support Fusion + Review"), 409
-            if reason:
-                return jsonify(error=reason), 409
+            selected = next(
+                item
+                for item in caption_scheme_status(node.get("capabilities") or {}, reason, _current_user())
+                if item["id"] == options["scheme"]
+            )
+            if not selected["can_submit"]:
+                return jsonify(error=selected["unavailable_reason"]), 409
             user = _current_user()
             # Scope idempotency to the owner, dataset, and exact requested operation.
             delivery = request.headers.get("Idempotency-Key")
@@ -181,7 +201,8 @@ def register_caption_job_routes(app, ctx, resolve):
         try:
             dataset, _ = ctx.ensure_dataset_loaded(ctx.repo_key(key))
             validate_source(json.loads((Path(dataset.root) / "meta" / "info.json").read_text()))
-            ready = agent_capabilities_for_local().get("caption_configured", False)
+            capabilities = agent_capabilities_for_local()
+            ready = capabilities.get("caption_configured", False)
             user = _current_user()
             if request.method == "GET":
                 locations = {
@@ -190,6 +211,11 @@ def register_caption_job_routes(app, ctx, resolve):
                     if item["dataset_key"] == key and (item.get("metadata") or {}).get("local_execution")
                 }
                 return jsonify(
+                    schemes=caption_scheme_status(
+                        capabilities,
+                        None if ready else "Configure the model credential in the local executor environment",
+                        user,
+                    ),
                     can_import=False,
                     can_submit=bool(user and user["role"] in {"operator", "admin"} and ready),
                     unavailable_reason=None
