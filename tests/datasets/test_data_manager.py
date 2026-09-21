@@ -270,3 +270,67 @@ def test_existing_grants_stay_restricted_when_scope_table_is_added(tmp_path):
     }
     other = store.sync_locations(node["node_id"], [{"dataset_key": "node/new", "root": "/datasets/new"}])[0]
     assert other["location_id"] not in reopened.mutation_location_ids(user["user_id"])
+
+
+@pytest.mark.parametrize("role", ["viewer", "operator"])
+def test_viewer_operator_dataset_scopes(tmp_path, role):
+    store, admin, client, user, node, location, token = setup_requests(tmp_path)
+    store.update_user(user["user_id"], role=role)
+    endpoint = f"/api/auth/users/{user['user_id']}/data-scopes"
+    assert client.get(endpoint).json["all_locations"] is True
+    assert len(client.get("/api/control/locations").json["locations"]) == 1
+    assert admin.put(endpoint, json={"location_ids": []}).status_code == 200
+    assert client.get("/api/control/locations").json["locations"] == []
+    assert client.put(endpoint, json={"location_ids": [], "all_locations": True}).status_code == 403
+    url = f"/api/control/locations/{location['location_id']}/viewer-jobs"
+    assert client.post(url, json={}).status_code == 403
+    assert admin.put(endpoint, json={"location_ids": [location["location_id"]]}).status_code == 200
+    assert client.get("/api/control/locations").json["locations"][0]["source_mutation_allowed"] is False
+    assert client.post(url, json={}).status_code == (202 if role == "operator" else 403)
+    if role == "operator":
+        assert admin.put(endpoint, json={"location_ids": []}).status_code == 200
+        assert store.claim_job(node["node_id"]) is None
+        with pytest.raises(PermissionError):
+            store.create_job(
+                location_id=location["location_id"], requested_by=user["user_id"], operation="viewer.prepare"
+            )
+    assert admin.put(endpoint, json={"location_ids": [], "all_locations": True}).status_code == 200
+    assert len(client.get("/api/control/locations").json["locations"]) == 1
+
+
+def test_operator_scope_checks_all_merge_sources_and_current_roots(tmp_path):
+    store, admin, client, user, node, location, token = setup_requests(tmp_path)
+    other = store.sync_locations(node["node_id"], [{"dataset_key": "node/other", "root": "/datasets/other"}])[
+        0
+    ]
+    endpoint = f"/api/auth/users/{user['user_id']}/data-scopes"
+    # Default all includes future registrations.
+    assert len(client.get("/api/control/locations").json["locations"]) == 2
+    assert admin.put(endpoint, json={"location_ids": [location["location_id"]]}).status_code == 200
+    options = {"source_location_ids": [location["location_id"], other["location_id"]]}
+    response = client.post(
+        f"/api/control/locations/{location['location_id']}/preprocess-jobs",
+        json={"op": "merge", "options": options},
+    )
+    assert response.status_code == 403
+    with pytest.raises(PermissionError):
+        store.create_job(
+            location_id=location["location_id"],
+            requested_by=user["user_id"],
+            operation="preprocess.merge",
+            options=options,
+        )
+    assert admin.put(endpoint, json={"location_ids": options["source_location_ids"]}).status_code == 200
+    job = store.create_job(
+        location_id=location["location_id"],
+        requested_by=user["user_id"],
+        operation="preprocess.merge",
+        options=options,
+    )
+    assert admin.put(endpoint, json={"location_ids": [location["location_id"]]}).status_code == 200
+    assert store.claim_job(node["node_id"]) is None
+    assert client.get(f"/api/control/jobs/{job['job_id']}").status_code == 403
+    assert client.get("/api/control/jobs").json["jobs"] == []
+    with store.sessions.begin() as session:
+        session.get(DatasetLocation, location["location_id"]).root = "/datasets/replaced"
+    assert client.get("/api/control/locations").json["locations"] == []

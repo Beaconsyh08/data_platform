@@ -304,3 +304,28 @@ const assert = require('node:assert/strict');
 })().catch(err => {console.error(err);process.exit(1);});
 """
     subprocess.run(["node"], input=script + checks, check=True, capture_output=True, text=True, timeout=10)
+
+
+@pytest.mark.parametrize("role", ["viewer", "operator"])
+def test_restricted_accounts_cannot_read_viewer_cache(cached_viewer, role):
+    client, store, static = cached_viewer
+    actor = store.list_users()[0]
+    user = store.register_user(username="scoped-reader", password="password-123", role=role)
+    location = store.list_locations()[0]
+    store.set_mutation_locations(user["user_id"], [], actor=actor)
+    client.post("/api/auth/logout", json={})
+    client.post("/api/auth/login", json={"username": "scoped-reader", "password": "password-123"})
+    urls = [
+        "/remote/test/episode_0?direct=1",
+        "/remote/test/episode_0/data.csv",
+        f"/assets/remote/test/csv/{next((static / 'csv').glob('*.csv')).name}",
+        "/api/datasets/remote/test",
+        "/api/dataset-results/status?dataset_key=remote/test",
+        f"/api/control/locations/{location['location_id']}/flagged-episodes",
+    ]
+    for url in urls:
+        assert client.get(url).status_code == 403, url
+    assert client.get("/api/datasets").json["datasets"] == []
+    store.set_mutation_locations(user["user_id"], [location["location_id"]], actor=actor)
+    assert client.get(urls[0]).status_code == 200
+    assert client.get(urls[2]).status_code == 200

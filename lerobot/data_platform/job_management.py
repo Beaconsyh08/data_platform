@@ -170,6 +170,14 @@ class JobManager:
                     or submitter.role not in {"admin", "data_manager", "operator"}
                 ):
                     continue
+                source_ids = [job.location_id, *(job.options or {}).get("source_location_ids", [])]
+                if any(
+                    not self.store.dataset_access_allowed(
+                        session, submitter, session.get(DatasetLocation, key)
+                    )
+                    for key in source_ids
+                ):
+                    continue
                 if job.operation.startswith("mutation.") and submitter.role != "admin":
                     from lerobot.data_platform.episode_deletion_requests import has_approved_deletion
 

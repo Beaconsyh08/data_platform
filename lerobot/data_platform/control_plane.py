@@ -346,9 +346,56 @@ class ControlPlaneStore:
         with self.sessions() as session:
             user = session.get(ControlPlaneUser, user_id)
             all_locations = bool(
-                user and user.role == "data_manager" and self.all_mutation_locations(session, user_id)
+                user
+                and user.role in {"data_manager", "viewer", "operator"}
+                and self.all_mutation_locations(session, user_id)
             )
         return {"all_locations": all_locations, "location_ids": self.granted_mutation_location_ids(user_id)}
+
+    @staticmethod
+    def dataset_access_allowed(session, user, location) -> bool:
+        if user is None or not user.active:
+            return False
+        if user.role not in {"viewer", "operator"}:
+            return True
+        if ControlPlaneStore.all_mutation_locations(session, user.user_id):
+            return True
+        if location is None:
+            return False
+        grant = session.get(DataMutationGrant, (user.user_id, location.location_id))
+        return bool(grant and grant.node_id == location.node_id and grant.root == location.root)
+
+    def accessible_locations(self, user_id: str) -> list[dict]:
+        with self.sessions() as session:
+            user = session.get(ControlPlaneUser, user_id)
+            allowed = {
+                location.location_id
+                for location in session.scalars(select(DatasetLocation))
+                if self.dataset_access_allowed(session, user, location)
+            }
+        return [location for location in self.list_locations() if location["location_id"] in allowed]
+
+    def restricted_dataset_keys(self, user_id: str) -> set[str] | None:
+        """None means unrestricted; an empty set deliberately denies every dataset."""
+        with self.sessions() as session:
+            user = session.get(ControlPlaneUser, user_id)
+            if (
+                user
+                and user.active
+                and (user.role not in {"viewer", "operator"} or self.all_mutation_locations(session, user_id))
+            ):
+                return None
+        keys = set()
+        for location in self.accessible_locations(user_id):
+            keys.add(location["dataset_key"])
+            keys.add("remote:" + location["location_id"])
+            keys.add("remote/" + location["location_id"])
+            # Published Viewer caches can have a different key from the Agent source.
+            viewer_url = str((location.get("metadata") or {}).get("viewer_url") or "")
+            parts = viewer_url.strip("/").split("/")
+            if len(parts) >= 2:
+                keys.add("/".join(parts[:2]))
+        return keys
 
     @staticmethod
     def source_mutation_allowed(
@@ -417,8 +464,8 @@ class ControlPlaneStore:
             user = session.get(ControlPlaneUser, user_id)
             if user is None:
                 raise KeyError(user_id)
-            if user.role != "data_manager":
-                raise ValueError("Source mutation scopes can only be assigned to data_manager accounts")
+            if user.role not in {"data_manager", "viewer", "operator"}:
+                raise ValueError("Data scopes require a data_manager, viewer or operator account")
             locations = [session.get(DatasetLocation, key) for key in sorted(set(location_ids))]
             if any(location is None or location.state != "available" for location in locations):
                 raise ValueError("Every scope must reference an available registered dataset location")
@@ -820,6 +867,13 @@ class ControlPlaneStore:
             if location is None:
                 raise KeyError(location_id)
             submitter = session.get(ControlPlaneUser, requested_by)
+            if submitter is not None and not self.dataset_access_allowed(session, submitter, location):
+                raise PermissionError("Dataset access is outside this account's data permissions")
+            for source_id in (options or {}).get("source_location_ids", []):
+                if not self.dataset_access_allowed(
+                    session, submitter, session.get(DatasetLocation, source_id)
+                ):
+                    raise PermissionError("A source dataset is outside this account's data permissions")
             if (
                 submitter is not None
                 and submitter.role == "data_manager"
@@ -835,6 +889,14 @@ class ControlPlaneStore:
                     select(RemoteJob).where(RemoteJob.idempotency_key == str(idempotency_key))
                 )
                 if existing is not None:
+                    if submitter is not None and any(
+                        not self.dataset_access_allowed(session, submitter, session.get(DatasetLocation, key))
+                        for key in [
+                            existing.location_id,
+                            *(existing.options or {}).get("source_location_ids", []),
+                        ]
+                    ):
+                        raise PermissionError("Existing job is outside this account's data permissions")
                     if operation.startswith("mutation.") and (
                         existing.requested_by != requested_by
                         or existing.location_id != location_id
@@ -992,7 +1054,22 @@ class ControlPlaneStore:
             if actor is not None and actor.get("role") != "admin":
                 details = details.where(RemoteJob.requested_by == actor.get("user_id", ""))
             jobs = {job.job_id: job for job in session.scalars(details).all()}
-            return [self._job_dict(jobs[job_id]) for job_id in job_ids if job_id in jobs]
+            user = session.get(ControlPlaneUser, actor["user_id"]) if actor else None
+            return [
+                self._job_dict(jobs[job_id])
+                for job_id in job_ids
+                if job_id in jobs
+                and (
+                    actor is None
+                    or all(
+                        self.dataset_access_allowed(session, user, session.get(DatasetLocation, key))
+                        for key in [
+                            jobs[job_id].location_id,
+                            *(jobs[job_id].options or {}).get("source_location_ids", []),
+                        ]
+                    )
+                )
+            ]
 
     def get_job(self, job_id: str) -> dict:
         with self.sessions() as session:

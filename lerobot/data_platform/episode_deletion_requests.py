@@ -70,7 +70,12 @@ def list_requests(store, actor):
     if actor["role"] != "admin":
         query = query.where(EpisodeDeletionRequest.requested_by == actor["user_id"])
     with store.sessions() as session:
-        return [_serialize(row) for row in session.scalars(query)]
+        user = session.get(ControlPlaneUser, actor["user_id"])
+        return [
+            _serialize(row)
+            for row in session.scalars(query)
+            if store.dataset_access_allowed(session, user, session.get(DatasetLocation, row.location_id))
+        ]
 
 
 def create_request(store, location_id, actor, body):

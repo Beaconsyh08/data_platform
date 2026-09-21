@@ -423,8 +423,10 @@ sudo journalctl -u mysql -n 100 --no-pager -l
 - `data_manager`：继承 operator 能力；在 admin 授权的数据集位置内，可直接修改源数据、删除指定 episodes，无需申请审批。
 - `admin`：管理账号和数据权限，并拥有全局数据管理权限。
 
-管理员在 `/control-plane` → “Users & access” 将角色设为 Data manager，再点击 “Data permissions”。
-默认允许所有现有及未来注册数据集的数据操作，也可切换为“Selected datasets only”限定范围。
+管理员在 `/control-plane` → “Users & access” 为 viewer、operator 或 data_manager 点击 “Data permissions”。
+默认选择所有现有及未来注册数据集，也可切换为“Selected datasets only”限定范围。
+viewer/operator 的范围控制数据集可见性和使用权；data_manager 的范围仍控制源数据修改权。
+选定范围模式下，未授权的 Viewer、缓存文件、任务提交和排队执行均会被拦截；不会提升原角色的操作权限。
 Data permissions 支持按数据集名称、Agent、路径搜索，搜索不会清除已选范围；这不授予整目录删除、用户管理、
 跨用户任务控制或审批他人删除申请的权限。源数据修改仍需服务端和 Agent 开关、操作确认及文件系统权限。
 授权撤销后，未开始的源数据修改任务无法领取；已开始的任务继续走现有执行和恢复流程。

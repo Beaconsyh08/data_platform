@@ -3247,6 +3247,7 @@
                 legacyMutationsEnabled: {{ legacy_mutations_enabled|tojson }},
                 remoteSourceMutationsEnabled: {{ remote_source_mutations_enabled|default(false)|tojson }},
                 controlPlaneEnabled: {{ control_plane_enabled|tojson }},
+                datasetAccessRestricted: {{ dataset_access_restricted|default(false)|tojson }},
                 controlPlaneUser: {{ control_plane_user|tojson }},
                 adminModeEnabled: {{ admin_authenticated|tojson }},
                 adminPasswordConfigured: false,
@@ -4230,7 +4231,7 @@
                     }
                 },
                 async loadLifecycle() {
-                    if (!this.selectedDatasetKey || !this.tabEnabled('versions')) {
+                    if (this.datasetAccessRestricted || !this.selectedDatasetKey || !this.tabEnabled('versions')) {
                         this.lifecycleVersions = [];
                         this.lifecycleProfiles = [];
                         this.lifecycleQuarantine = [];
@@ -4644,6 +4645,7 @@
                     }
                 },
                 async loadDatasetRoots() {
+                    if (this.datasetAccessRestricted) { await this.loadDatasets(); return; }
                     this.error = '';
                     this.scanBusy = true;
                     try {
@@ -6791,6 +6793,7 @@
                     }
                 },
                 async loadOperationLogs() {
+                    if (this.datasetAccessRestricted) { this.operationLogs = []; return; }
                     this.operationLogsLoading = true;
                     try {
                         const params = new URLSearchParams({limit: '200'});

@@ -2505,10 +2505,15 @@ def run_server(
             )
 
     def _visible_dataset_keys() -> list[tuple[str, str]]:
+        from flask import has_request_context
+
+        user = getattr(g, "control_plane_user", None) if has_request_context() else None
+        allowed = control_plane_store.restricted_dataset_keys(user["user_id"]) if user else None
         return [
             dataset_key
             for dataset_key in sorted(datasets_index)
-            if not _is_internal_remote_cache_entry(datasets_index[dataset_key])
+            if (allowed is None or _repo_id_from_key(dataset_key) in allowed)
+            and not _is_internal_remote_cache_entry(datasets_index[dataset_key])
             and (
                 _is_dataset_root(Path(datasets_index[dataset_key]["root"]).expanduser())
                 or _root_has_cache_manifest(
@@ -3006,6 +3011,10 @@ def run_server(
             legacy_mutations_enabled=True,
             admin_authenticated=_admin_authenticated(),
             remote_source_mutations_enabled=legacy_mutations_enabled,
+            dataset_access_restricted=bool(
+                control_plane_store is not None
+                and control_plane_store.restricted_dataset_keys(g.control_plane_user["user_id"]) is not None
+            ),
             control_plane_enabled=control_plane_store is not None,
             control_plane_user=getattr(g, "control_plane_user", None),
         )

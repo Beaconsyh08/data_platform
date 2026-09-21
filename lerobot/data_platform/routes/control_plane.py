@@ -192,6 +192,11 @@ def register_control_plane_auth_routes(
             return jsonify({"error": str(exc)}), 403
         if user is not None:
             g.control_plane_user = user
+            from lerobot.data_platform.routes.dataset_access import check_dataset_access
+
+            denied = check_dataset_access(store, user)
+            if denied is not None:
+                return denied
             if request.method in {"GET", "HEAD"} and user.get("role") != "admin":
                 job_path = re.fullmatch(r"/api/(?:control/)?jobs/([^/]+)(?:/.*)?", path)
                 if job_path:
@@ -867,7 +872,7 @@ def register_control_plane_routes(
             {
                 "locations": [
                     {**location, "source_mutation_allowed": location["location_id"] in allowed}
-                    for location in store.list_locations()
+                    for location in store.accessible_locations(_current_user()["user_id"])
                 ]
             }
         )

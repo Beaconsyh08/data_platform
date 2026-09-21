@@ -70,3 +70,19 @@ Disabled split/merge controls display their missing prerequisite beside the butt
 Merge checks the datasets selected in its source list. An unrelated Working dataset with an
 unsupported signal layout does not disable merging supported sources; an unsupported selected
 source is reported by name.
+
+## Dataset scopes
+
+Admins can edit **Data permissions** for viewers, operators and data managers in Users & access.
+Viewer/operator accounts default to all current and future registered datasets. Selected-only mode
+limits their dataset visibility, direct Viewer/cache access and task inputs, including every Merge
+source. An empty selection grants no dataset access. Only admins may change scopes; role capabilities
+remain unchanged. Data-manager scopes continue to govern source mutations rather than read access.
+
+Queued tasks recheck current access before Agent claim. Scope revocation does not interrupt a task
+already running. Newly produced datasets need an explicit grant in selected-only mode. Restricted
+accounts cannot browse or register arbitrary server filesystem datasets or read the global operation
+log; administrators register and grant the required locations. Source-local datasets without a
+registered control-plane location cannot be selected. Existing explicit grants are preserved.
+Lifecycle/curation APIs use version/workspace IDs without registered-location scope mapping; they
+require unrestricted access until that mapping exists, rather than exposing out-of-scope artifacts.
