@@ -267,6 +267,18 @@ all of these conditions are true:
 4. The dataset itself is below both that Agent's allowed and writable roots.
 5. The Admin accepts the warning and types `MUTATE <dataset_key>` exactly.
 
+In the console, select the Agent dataset and open Runs to enter episode indices and a deletion
+reason. Admin accounts can submit deletion directly; operators submit a request for administrator
+review. The form shows which server/Agent mutation switch blocks submission. Admin accounts can
+also use DEL in the cached Viewer, confirm the episode and reason, and follow the submitted task
+in Runs. Deletion does not require turning EDIT on. A submitted task is not a completed deletion.
+The Registered list's `unregister` action only removes a local registration; it does not delete files.
+
+Cached Viewer EDIT supports Stage and Trim annotations for admin/operator accounts without
+loading the remote source dataset. These edits save to the current Viewer cache; they do not apply
+trim or stage changes to the Agent source. Viewer accounts remain read-only. Re-preparing the cache
+may replace these annotations, so preserve them before rebuilding it.
+
 Apply configuration changes with:
 
 ```bash

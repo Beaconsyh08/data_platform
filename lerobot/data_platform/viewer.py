@@ -2989,6 +2989,7 @@ def run_server(
             allowed_open_links=sorted(allowed_open_links),
             legacy_mutations_enabled=True,
             admin_authenticated=_admin_authenticated(),
+            remote_source_mutations_enabled=legacy_mutations_enabled,
             control_plane_enabled=control_plane_store is not None,
             control_plane_user=getattr(g, "control_plane_user", None),
         )
@@ -4772,6 +4773,18 @@ def run_server(
         static_dir: Path,
     ):
         repo_id = f"{dataset_namespace}/{dataset_name}"
+        remote_location = None
+        if control_plane_store is not None and _admin_authenticated():
+            remote_location = next(
+                (
+                    item
+                    for item in control_plane_store.list_locations()
+                    if item["dataset_key"] == repo_id
+                    and Path(str((item.get("metadata") or {}).get("cache_root") or "")) / "static"
+                    == Path(static_dir)
+                ),
+                None,
+            )
         episode_ids = manifest_episode_ids(manifest)
         if episode_id not in episode_ids:
             abort(404)
@@ -4876,7 +4889,11 @@ def run_server(
                     dataset_name=dataset_name,
                 ),
                 subtask_merge_url="",
-                annotate_toggle_url="",
+                annotate_toggle_url=url_for(
+                    "toggle_annotate",
+                    dataset_namespace=dataset_namespace,
+                    dataset_name=dataset_name,
+                ),
                 trim_url=url_for(
                     "get_trim_annotations",
                     dataset_namespace=dataset_namespace,
@@ -4884,14 +4901,24 @@ def run_server(
                 ),
                 trim_merge_url="",
                 delete_episode_url="",
-                annotate_enabled=False,
+                remote_delete_url=(
+                    f"/api/control/locations/{remote_location['location_id']}/mutation-jobs"
+                    if remote_location is not None
+                    else ""
+                ),
+                remote_dataset_key=repo_id,
+                annotate_enabled=server_state["annotate"],
+                annotation_editable=(
+                    control_plane_store is None
+                    or (getattr(g, "control_plane_user", None) or {}).get("role") in {"admin", "operator"}
+                ),
                 legacy_mutations_enabled=False,
                 data_version=data_version,
                 has_body_joints=has_body_joint_dimensions(manifest.get("features") or {}),
                 has_legacy_flag=has_legacy_flag_dimension(manifest.get("features") or {}),
                 issue_episodes=[],
                 current_issue_episode=current_issue_episode,
-                stage_edit_enabled=False,
+                stage_edit_enabled=server_state["annotate"] or current_issue_episode,
                 task_episode_map=task_episode_map,
                 tag_episode_map=tag_episode_map,
                 task_map_url=url_for(
@@ -5263,6 +5290,10 @@ def run_server(
                     dataset_name=dataset_name,
                 ),
                 annotate_enabled=server_state["annotate"],
+                annotation_editable=(
+                    control_plane_store is None
+                    or (getattr(g, "control_plane_user", None) or {}).get("role") in {"admin", "operator"}
+                ),
                 legacy_mutations_enabled=(_admin_authenticated() and not _dataset_is_protected(dataset_key)),
                 data_version=data_version,
                 has_body_joints=has_body_joint_dimensions(dataset_obj.features),
@@ -6158,12 +6189,22 @@ def run_server(
 
     @app.route("/<string:dataset_namespace>/<string:dataset_name>/subtask_annotations", methods=["POST"])
     def save_subtask_annotation(dataset_namespace, dataset_name):
-        _, ds_static = _get_ctx(dataset_namespace, dataset_name)
+        dataset_obj, ds_static, manifest, _ = _static_context_for_key((dataset_namespace, dataset_name))
         body = request.get_json(silent=True) or {}
         episode_id = body.get("episode_id")
         if episode_id is None:
             return jsonify({"error": "episode_id required"}), 400
-        episode_id = int(episode_id)
+        try:
+            episode_id = int(episode_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "episode_id must be an integer"}), 400
+        episode_ids = (
+            manifest_episode_ids(manifest)
+            if manifest is not None
+            else _dataset_episode_ids(dataset_obj, (dataset_namespace, dataset_name))
+        )
+        if episode_id not in episode_ids:
+            return jsonify({"error": "episode not found"}), 404
         denied = _check_edit_permission(ds_static, episode_id)
         if denied:
             return denied
@@ -6178,12 +6219,18 @@ def run_server(
         # Optionally update precomputed CSV subtask columns
         if update_csv:
             try:
-                ds = downsample if downsample and downsample > 1 else 1
-                csv_path = ds_static / "csv" / f"episode_{episode_id:06d}_ds{ds}.csv"
-                if _update_cached_csv_subtask_columns(csv_path, transitions, include_hidden_state=True):
+                csv_path = _get_csv_cache_path(
+                    ds_static / "csv", episode_id, server_state["downsample"], precomputed_only=True
+                )
+                if csv_path and _update_cached_csv_subtask_columns(
+                    csv_path, transitions, include_hidden_state=True
+                ):
                     logging.info("Updated subtask_state and stage in CSV for episode %s", episode_id)
             except Exception:
                 logging.exception("Failed to update subtask columns in CSV for episode %s", episode_id)
+                return jsonify(
+                    {"error": "Annotation saved, but updating the Viewer CSV failed. Retry saving."}
+                ), 500
 
         _append_operation_log(
             ds_static,
@@ -6362,12 +6409,22 @@ def run_server(
 
     @app.route("/<string:dataset_namespace>/<string:dataset_name>/trim_annotations", methods=["POST"])
     def save_trim_annotation(dataset_namespace, dataset_name):
-        _, ds_static = _get_ctx(dataset_namespace, dataset_name)
+        dataset_obj, ds_static, manifest, _ = _static_context_for_key((dataset_namespace, dataset_name))
         body = request.get_json(silent=True) or {}
         episode_id = body.get("episode_id")
         if episode_id is None:
             return jsonify({"error": "episode_id required"}), 400
-        episode_id = int(episode_id)
+        try:
+            episode_id = int(episode_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "episode_id must be an integer"}), 400
+        episode_ids = (
+            manifest_episode_ids(manifest)
+            if manifest is not None
+            else _dataset_episode_ids(dataset_obj, (dataset_namespace, dataset_name))
+        )
+        if episode_id not in episode_ids:
+            return jsonify({"error": "episode not found"}), 404
         denied = _check_edit_permission(ds_static, episode_id)
         if denied:
             return denied
@@ -6965,9 +7022,6 @@ def run_server(
         if len(reason) > 500:
             return jsonify({"error": "reason must be 500 characters or fewer"}), 400
         episode_id = int(episode_id)
-        denied = _check_edit_permission(ds_static, episode_id)
-        if denied:
-            return denied
 
         if ds is None:
             return jsonify({"status": "no_dataset"}), 400
