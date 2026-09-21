@@ -257,7 +257,7 @@ annotation, and construction actions remain hidden.
 
 ### Optional Admin source mutations
 
-Remote in-place value edits, v3 video timestamp repair, and episode deletion remain locked unless
+Remote in-place value edits, v3 video timestamp repair, episode trimming, and episode deletion remain locked unless
 all of these conditions are true:
 
 1. The Server A account is `admin`.
@@ -278,6 +278,17 @@ Cached Viewer EDIT supports Stage and Trim annotations for admin/operator accoun
 loading the remote source dataset. These edits save to the current Viewer cache; they do not apply
 trim or stage changes to the Agent source. Viewer accounts remain read-only. Re-preparing the cache
 may replace these annotations, so preserve them before rebuilding it.
+
+For Admin accounts, Trim Apply submits the displayed inclusive frame range to the Agent as a
+`mutation.trim_episode` task, with confirmation, a reason, and the same persistent source backup.
+Both Server A and the Agent must support this operation; an older Agent is rejected with an
+upgrade message. Follow the task in Runs and prepare Viewer again after the source changes.
+Saving trim markers alone still changes only the Viewer cache.
+
+Chart group buttons and field checkboxes share visibility state. Position fields shared by Head3
+and Head4 remain selected while either group uses them. Drag to zoom, use Focus current time to
+narrow the time window, and Reset zoom to return to the full range. The two charts share the time
+window; video duration updates preserve both the CSV timestamps and the selected zoom.
 
 Apply configuration changes with:
 

@@ -369,8 +369,8 @@
                                    class="w-16 px-0.5 py-0 text-xs bg-slate-800 border border-slate-600 rounded font-mono text-center text-orange-300">
                         </label>
                         <span class="text-[10px] text-slate-500" title="Use arrow Left/Right to nudge selected handle">&#x2194;</span>
-                        {% if legacy_mutations_enabled %}
-                        <button x-show="adminModeEnabled" @click="applyTrim()"
+                        {% if legacy_mutations_enabled or remote_delete_url %}
+                        <button x-show="adminModeEnabled || remoteDeleteUrl" @click="applyTrim()" :disabled="trimApplying"
                                 class="px-2 py-0.5 text-xs font-semibold rounded bg-red-700/80 text-red-100 select-none cursor-pointer"
                                 title="Apply trim (permanently removes frames outside range)">Apply</button>
                         {% endif %}
@@ -612,6 +612,11 @@
                     <div class="mb-2 flex flex-wrap items-center gap-2">
                         <span class="rounded border border-slate-700 bg-slate-950/60 px-3 py-2 text-xs font-semibold text-slate-300"
                               x-text="graphLoading ? 'Loading charts...' : ((dygraphArmJoints || dygraphGripperFlag) ? 'Charts ready' : 'Preparing charts...')"></span>
+                        <button type="button" class="rounded border border-slate-500 px-2 py-1 text-xs"
+                                @click="focusChart()" :disabled="!dygraphArmJoints && !dygraphGripperFlag">Focus current time</button>
+                        <button type="button" class="rounded border border-slate-500 px-2 py-1 text-xs"
+                                @click="resetChartZoom()" :disabled="!dygraphArmJoints && !dygraphGripperFlag">Reset zoom</button>
+                        <span class="text-xs text-slate-400">Drag to zoom · Shift-drag to pan</span>
                         <div x-show="usesUmiPlotGroups" class="flex flex-wrap items-center gap-1.5" role="group" aria-label="UMI pose groups">
                             <template x-for="group in jointGroups.filter(g => g.graph === 'arm')" :key="group.id">
                                 <button type="button"
@@ -1429,12 +1434,15 @@
                         labelsKMB: false,
                         strokeWidth: 1.5,
                         series: seriesOptions,
+                        zoomCallback: (min, max) => this.setChartWindow(min, max),
                         pointClickCallback: (event, point) => {
+                            if (!Number.isFinite(point.xval)) return;
                             this.dygraphTime = point.xval;
                             this.updateTableValues(this.dygraphTime);
                             syncSelection(point.row);
                         },
                         highlightCallback: (event, x, points, row, seriesName) => {
+                            if (!Number.isFinite(x) || !Number.isInteger(row) || row < 0) return;
                             this.dygraphTime = x;
                             this.updateTableValues(this.dygraphTime);
                             syncSelection(row);
@@ -1471,6 +1479,11 @@
                                         this._updateStageInChart();
                                     }
                                 }, 0);
+                            } else if (!this._syncingChartWindow) {
+                                const range = dygraph.xAxisRange();
+                                const differs = [this.dygraphArmJoints, this.dygraphGripperFlag].some(graph =>
+                                    graph && range.some((value, index) => Math.abs(value - graph.xAxisRange()[index]) > 1e-9));
+                                if (differs) this.setChartWindow(...range);
                             }
                         },
                     };
@@ -3017,6 +3030,16 @@
                     }
                     const labels = this.getSeriesLabels();
                     this.checked = labels.map(label => checkedByLabel[label] ?? true);
+                    for (const group of this.jointGroups) {
+                        const cells = this.currentFrameData.filter(c => (this.labelToGroupIds[c.label] || []).includes(group.id));
+                        if (cells.length && !cells.some(c => c.checked)) group.enabled = false;
+                    }
+                    for (const cell of this.currentFrameData.filter(c => c.checked)) {
+                        const ids = this.labelToGroupIds[cell.label] || [];
+                        if (!this.jointGroups.some(g => ids.includes(g.id) && g.enabled)) {
+                            this.jointGroups.filter(g => ids.includes(g.id)).forEach(g => { g.enabled = true; });
+                        }
+                    }
                     this.applyVisibility();
                 },
 
@@ -3026,7 +3049,49 @@
                         return;
                     }
                     group.enabled = !group.enabled;
+                    for (const cell of this.currentFrameData || []) {
+                        const ids = this.labelToGroupIds[cell.label] || [];
+                        if (ids.includes(groupId)) {
+                            cell.checked = this.jointGroups.some(g => g.enabled && ids.includes(g.id));
+                        }
+                    }
+                    const checkedByLabel = Object.fromEntries((this.currentFrameData || []).map(c => [c.label, c.checked]));
+                    this.checked = this.getSeriesLabels().map(label => checkedByLabel[label] ?? true);
                     this.applyVisibility();
+                },
+
+                setChartWindow(start, end, zoomed = true) {
+                    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || this._syncingChartWindow) return;
+                    this.chartZoomed = zoomed;
+                    this._syncingChartWindow = true;
+                    try {
+                        for (const graph of [this.dygraphArmJoints, this.dygraphGripperFlag]) {
+                            if (graph) graph.updateOptions({dateWindow: [start, end]});
+                        }
+                    } finally {
+                        this._syncingChartWindow = false;
+                    }
+                },
+
+                focusChart() {
+                    const graph = this.dygraphArmJoints || this.dygraphGripperFlag;
+                    if (!graph) return;
+                    const full = this.chartFullRange || graph.xAxisExtremes();
+                    const current = graph.xAxisRange();
+                    const width = Math.min(full[1] - full[0], Math.max(2 / (this.fps || 30), (current[1] - current[0]) / 2));
+                    const center = Math.max(full[0], Math.min(full[1], Number(this.dygraphTime) || 0));
+                    const start = Math.max(full[0], Math.min(full[1] - width, center - width / 2));
+                    this.setChartWindow(start, start + width);
+                },
+
+                resetChartZoom() {
+                    const graph = this.dygraphArmJoints || this.dygraphGripperFlag;
+                    if (!graph) return;
+                    const range = this.chartFullRange || graph.xAxisExtremes();
+                    for (const item of [this.dygraphArmJoints, this.dygraphGripperFlag]) {
+                        if (item) item.updateOptions({valueRange: null});
+                    }
+                    this.setChartWindow(...range, false);
                 },
 
                 extendGraphToDuration(duration) {
@@ -3044,16 +3109,10 @@
                     if (!firstRow || firstRow.length === 0 || !lastRow || lastRow.length === 0) {
                         return;
                     }
-                    const nRows = this.baseGraphData.length;
-                    const step = nRows > 1 ? (targetDuration / (nRows - 1)) : 0;
-                    const data = this.baseGraphData.map((row, idx) => [step * idx, ...row.slice(1)]);
-                    const update = (graph) => {
-                        if (graph) {
-                            graph.updateOptions({ file: data, dateWindow: [0, targetDuration] });
-                        }
-                    };
-                    update(this.dygraphArmJoints);
-                    update(this.dygraphGripperFlag);
+                    const end = Math.max(targetDuration, Number(lastRow[0]));
+                    this.chartFullRange = [Number(firstRow[0]), end];
+                    // Duration events must neither resample timestamps nor reset a user's zoom.
+                    if (!this.chartZoomed) this.setChartWindow(...this.chartFullRange, false);
                 },
 
                 _syncFlaggedToWindow() {
@@ -3573,7 +3632,7 @@
 
                 async saveTrimAnnotation() {
                     try {
-                        await fetch(this.trimUrl, {
+                        const response = await fetch(this.trimUrl, {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
@@ -3584,13 +3643,20 @@
                                 trim_end: this.trimEnd !== null ? this.frameToTime(this.trimEnd) : null,
                             }),
                         });
+                        if (!response.ok) {
+                            const data = await response.json();
+                            throw new Error(data.error || `HTTP ${response.status}`);
+                        }
+                        return true;
                     } catch (e) {
-                        console.warn('Failed to save trim annotation:', e);
+                        alert('Failed to save trim annotation: ' + e.message);
+                        return false;
                     }
                 },
 
                 async applyTrim() {
-                    if (!this.adminModeEnabled) {
+                    if (this.trimApplying) return;
+                    if (!this.adminModeEnabled && !this.remoteDeleteUrl) {
                         alert('Admin Mode is not active. Enable it from the Data Platform home page first.');
                         return;
                     }
@@ -3600,6 +3666,11 @@
                     const endFrame = this.trimEnd === null ? this.maxTrimFrame() : Number(this.trimEnd);
                     const keptFrames = Math.max(0, endFrame - startFrame + 1);
                     const removedFrames = Math.max(0, totalFrames - keptFrames);
+                    if (!Number.isInteger(startFrame) || !Number.isInteger(endFrame) || startFrame < 0 || endFrame >= totalFrames || endFrame < startFrame) {
+                        alert('Choose a valid frame range.');
+                        return;
+                    }
+                    if (!removedFrames) { alert('The selected range keeps every frame.'); return; }
                     const reason = String(prompt(`Reason for permanently removing ${removedFrames} frames:`) || '').trim();
                     if (!reason) return;
                     if (!confirm(
@@ -3613,10 +3684,26 @@
                     this.trimProgressTotal = 7;
                     this.trimProgressMsg = 'Starting...';
                     try {
+                        if (this.remoteDeleteUrl) {
+                            const response = await fetch(this.remoteDeleteUrl, {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({
+                                    op: 'trim_episode',
+                                    options: {episode_id: this.currentEpisodeId, start_frame: startFrame, end_frame: endFrame, reason},
+                                    confirmation: `MUTATE ${this.remoteDatasetKey}`,
+                                }),
+                            });
+                            const data = await response.json();
+                            if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+                            alert('Trim task submitted. Follow its progress in Runs; prepare Viewer again after completion.');
+                            window.location.href = '/?page=runs';
+                            return;
+                        }
                         const resp = await fetch(this.trimMergeUrl, {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({ episode_id: this.currentEpisodeId, reason }),
+                            body: JSON.stringify({ episode_id: this.currentEpisodeId, reason, trim_start_frame: startFrame, trim_end_frame: endFrame }),
                         });
                         const ct = resp.headers.get('content-type') || '';
                         if (ct.includes('text/event-stream')) {

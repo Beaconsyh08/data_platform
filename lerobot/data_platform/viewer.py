@@ -6478,6 +6478,11 @@ def run_server(
 
         annotations = _load_trim_annotations(ds_static)
         trim_info = annotations.get(str(episode_id))
+        if "trim_start_frame" in body or "trim_end_frame" in body:
+            start, end = body.get("trim_start_frame"), body.get("trim_end_frame")
+            if type(start) is not int or type(end) is not int or start < 0 or end < start:
+                return jsonify({"error": "A valid inclusive integer frame range is required"}), 400
+            trim_info = body
         if not trim_info:
             return jsonify({"status": "no_annotation"})
 
