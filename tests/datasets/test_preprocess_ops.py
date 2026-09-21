@@ -1341,11 +1341,13 @@ def test_v3_delete_episode_rebuilds_shards_and_reindexes(tmp_path: Path):
     ]
 
 
+@pytest.mark.parametrize("annotate", [False, True])
 @pytest.mark.parametrize("dataset_format_version", ["v2.1", "v3.0"])
 def test_viewer_single_episode_delete_refreshes_registered_episode_state(
     tmp_path: Path,
     monkeypatch,
     dataset_format_version: str,
+    annotate: bool,
 ):
     from flask import Flask
 
@@ -1377,7 +1379,7 @@ def test_viewer_single_episode_delete_refreshes_registered_episode_state(
         port=0,
         static_folder=console_static,
         template_folder=Path(viewer_module.__file__).parent / "templates",
-        annotate=True,
+        annotate=annotate,
         legacy_mutations_enabled=True,
         datasets_root=tmp_path,
     )

@@ -76,8 +76,9 @@ The bootstrap token is only needed until the first administrator is created. The
 token is needed whenever a new node enrolls. `DATA_PLATFORM_ALLOW_REGISTRATION=1` allows later users
 to request read-only viewer accounts. Requested accounts stay inactive until an administrator
 approves them from the control-plane page. Approved accounts start as `viewer`, cannot modify or
-delete data, and may later be promoted to `operator`. Only the `admin` role unlocks legacy in-place
-and delete operations; central deployments do not use a second Admin Mode password. With
+delete data, and may later be promoted to `operator` or `data_manager`. Admins manage global access;
+data managers may mutate explicitly authorized Agent dataset locations without approval. Central
+deployments do not use a second Admin Mode password. With
 registration disabled, administrators can create accounts with `POST /api/auth/users`.
 The example enables `DATA_PLATFORM_TRUST_PROXY=1` because Gunicorn only accepts traffic from the
 local Nginx proxy; do not enable it when an untrusted client can connect directly to Gunicorn.
@@ -255,17 +256,50 @@ while the Agent is offline. Update the Agent and sync datasets to include episod
 (`analysis_metadata_version=1`); older reports still show available totals and tasks. Embedding,
 annotation, and construction actions remain hidden.
 
-### Optional Admin source mutations
+### Optional source mutations and data manager scopes
 
 Remote in-place value edits, v3 video timestamp repair, and episode deletion remain locked unless
 all of these conditions are true:
 
-1. The Server A account is `admin`.
+1. The Server A account is `admin`, or an active `data_manager` with a grant for this dataset location.
 2. `/etc/data-platform/server.env` contains `DATA_PLATFORM_ENABLE_LEGACY_MUTATIONS=1`.
 3. The selected Agent has `DATA_PLATFORM_AGENT_ALLOW_SOURCE_MUTATIONS=1` in
    `/etc/data-platform/agent.env`.
 4. The dataset itself is below both that Agent's allowed and writable roots.
-5. The Admin accepts the warning and types `MUTATE <dataset_key>` exactly.
+5. The user accepts the warning and types `MUTATE <dataset_key>` exactly.
+
+In the console, select the Agent dataset and open Runs to enter episode indices and a deletion
+reason. Admins and authorized data managers submit deletion directly; operators submit a request for administrator
+review. The form shows which server/Agent mutation switch blocks submission. Admins and authorized data managers can
+also use DEL in the cached Viewer, confirm the episode and reason, and follow the submitted task
+in Runs. Deletion does not require turning EDIT on. A submitted task is not a completed deletion.
+The Registered list's `unregister` action only removes a local registration; it does not delete files.
+
+Admins configure grants in **Platform management → Users & access → Data permissions** after assigning
+`data_manager`. Select registered locations and save; an empty selection grants no source-write access.
+Each grant is bound to the location ID, Agent, and source root, not a dataset name or arbitrary path prefix.
+Newly registered locations are not automatically included. A grant permits the three operations above;
+it does not permit deleting whole dataset directories, managing users, approving deletion requests, or
+controlling other users' jobs. Existing ordinary operator capabilities and dataset visibility are retained.
+Local legacy mutation endpoints remain administrator-only; data managers use registered Agent locations.
+
+`GET /api/auth/users/<user_id>/data-scopes` returns `location_ids` (admin or the account itself).
+Admin-only `PUT` replaces that list atomically using `{"location_ids": ["<registered-location-id>"]}`.
+Changes are recorded in the existing audit outbox. Removing the data_manager role clears its grants.
+Submission and Agent job claim both check current authorization. Revoking a grant, disabling the account,
+or changing the registered root prevents unstarted tasks from being claimed; already claimed tasks use
+the existing execution/recovery flow. A revoked task remains queued and may run if access is restored;
+cancel it through task management if it must never run.
+
+The `dp_data_mutation_grants` table is created through the existing control-plane schema initialization
+used by release migrations. Deploy using the normal Server A release migration before serving this code;
+no automatic production schema writes are added to web requests.
+
+
+Cached Viewer EDIT supports Stage and Trim annotations for admin/data_manager/operator accounts without
+loading the remote source dataset. These edits save to the current Viewer cache; they do not apply
+trim or stage changes to the Agent source. Viewer accounts remain read-only. Re-preparing the cache
+may replace these annotations, so preserve them before rebuilding it.
 
 Apply configuration changes with:
 

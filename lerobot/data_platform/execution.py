@@ -161,8 +161,60 @@ def replace_paths(value, replacements):
     return value
 
 
+def publish_viewer_cache(cache: Path, target: Path, source: Path) -> None:
+    """Promote one attempt's cache, retaining the previous cache and supporting replay."""
+    cache, target, source = Path(cache), Path(target), Path(source).resolve()
+    if cache.is_symlink() or target.is_symlink():
+        raise ValueError("Viewer cache publication does not accept symbolic links")
+    if (
+        target.resolve() == source
+        or target.resolve().is_relative_to(source)
+        or source.is_relative_to(target.resolve())
+    ):
+        raise ValueError("Viewer cache must be separate from the source dataset")
+    if cache.resolve() == target.resolve() or cache.resolve().is_relative_to(target.resolve()):
+        raise ValueError("Viewer cache staging must be separate from the publication target")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_dir = target.parent / ".publication-locks"
+    lock_dir.mkdir(exist_ok=True)
+    identity = {"staging": str(cache), "target": str(target), "source": str(source)}
+    receipt_name = ".viewer-publication.json"
+
+    def validate(directory):
+        manifest = json.loads((directory / "static" / "viewer_manifest.json").read_text())
+        if Path(manifest["root"]).resolve() != source:
+            raise ValueError("Viewer cache manifest does not match the source dataset")
+
+    with (lock_dir / hashlib.sha256(target.name.encode()).hexdigest()).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not cache.exists():
+            receipt = target / receipt_name
+            if not receipt.is_file() or json.loads(receipt.read_text()) != identity:
+                raise FileNotFoundError("Execution produced no viewer cache owned by this attempt")
+            validate(target)
+            return
+        validate(cache)
+        backup = cache.parent / "previous-cache"
+        if target.exists():
+            validate(target)
+            if backup.exists():
+                raise FileExistsError("Previous viewer cache backup already exists")
+            from lerobot.data_platform.dataset_results import preserve_results
+
+            preserve_results(target, cache)
+        atomic_json(cache / receipt_name, identity)
+        if target.exists():
+            os.replace(target, backup)
+        try:
+            os.replace(cache, target)
+        except OSError:
+            if backup.exists() and not target.exists():
+                os.replace(backup, target)
+            raise
+
+
 class SpoolingClient:
-    """Compute never makes network requests; telemetry and artifact references are durable."""
+    """Compute spools control-plane telemetry/artifacts; provider clients may make inference calls."""
 
     def __init__(self, server_url, work, *, server_identity=None):
         self.server_url, self.work = server_url, Path(work)
@@ -199,12 +251,28 @@ class SpoolingClient:
             )
         )
 
-    def upload_artifact(self, state, job_id, relative_path, path, *, derived=False):
+    def upload_artifact(
+        self, state, job_id, relative_path, path, *, derived=False, caption=False, curation=False
+    ):
         self.check_stop()
-        key = hashlib.sha256(f"{derived}:{relative_path}".encode()).hexdigest()
+        if caption or curation:
+            retained = (
+                self.work / ("curation-artifacts" if curation else "caption-artifacts") / Path(relative_path)
+            )
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, retained)
+            path = retained
+        identity = f"{curation}:{caption}:{derived}:{relative_path}"
+        key = hashlib.sha256(identity.encode()).hexdigest()
         atomic_json(
             self.work / "uploads" / f"{key}.json",
-            {"relative_path": str(relative_path), "path": str(path), "derived": derived},
+            {
+                "relative_path": str(relative_path),
+                "path": str(path),
+                "derived": derived,
+                "caption": caption,
+                "curation": curation,
+            },
         )
 
 
@@ -293,6 +361,22 @@ class ExecutionSupervisor:
         work = self.root / execution["attempt_id"]
         work.mkdir(mode=0o700)
         job_copy = copy.deepcopy(job)
+        if job["operation"].startswith("curation."):
+            from lerobot.data_platform.curation import artifact_path
+
+            inputs = work / "curation-inputs"
+            input_files = job["options"].get("input_files", {})
+            for index, (name, expected) in enumerate(input_files.items()):
+                agent.client.event(
+                    agent.state,
+                    job["job_id"],
+                    "Preparing selected result inputs",
+                    {"phase": "preparing", "current": index, "total": len(input_files)},
+                )
+                agent.client.download_curation_input(
+                    agent.state, job, name, artifact_path(inputs, name), expected
+                )
+            job_copy["options"]["input_root"] = str(inputs)
         source = _require_within(Path(job["location"]["root"]), agent.allowed_roots, "dataset root")
         roots = [str(source)] + [item["root"] for item in job["options"].get("source_locations", [])]
         roots = [str(_require_within(Path(root), agent.allowed_roots, "input dataset")) for root in roots]
@@ -305,6 +389,8 @@ class ExecutionSupervisor:
             if final.exists():
                 raise FileExistsError("Final output already exists; reconcile it before retrying")
             staging = final.parent / f".dp-{job['job_id']}-{execution['attempt_id']}"
+        elif job["operation"] == "caption.annotate":
+            staging = work / "staging"
         else:
             output = _require_within(
                 Path(job["location"]["output_dir"]), agent.writable_roots, "viewer cache"
@@ -473,6 +559,8 @@ class ExecutionSupervisor:
                     Path(upload["relative_path"]),
                     Path(upload["path"]),
                     derived=upload["derived"],
+                    **({"caption": True} if upload.get("caption") else {}),
+                    **({"curation": True} if upload.get("curation") else {}),
                 )
         agent.client.complete(
             agent.state,
@@ -492,6 +580,14 @@ class ExecutionSupervisor:
 
         staging = Path(marker["staging"])
         replacements = {}
+        if marker["job"].get("operation") == "viewer.prepare":
+            from lerobot.data_platform.agent import _require_safe_output
+
+            location = marker["job"]["location"]
+            source = Path(location["root"])
+            target = _require_safe_output(Path(location["output_dir"]), source, self.agent.writable_roots)
+            publish_viewer_cache(staging / "cache", target, source)
+            replacements[str(staging / "cache")] = str(target)
         if marker["final"] and not marker["job"].get("options", {}).get("dry_run"):
             new = Path(marker["final"])
             old = staging / new.name
@@ -523,7 +619,7 @@ class ExecutionSupervisor:
         for path in (Path(marker["work"]) / "uploads").glob("*.json"):
             record = json.loads(path.read_text())
             artifact = Path(record["path"])
-            if artifact.name == "viewer_manifest.json":
+            if artifact.name == "viewer_manifest.json" and not record.get("curation"):
                 atomic_json(artifact, replace_paths(json.loads(artifact.read_text()), replacements))
         return payload
 

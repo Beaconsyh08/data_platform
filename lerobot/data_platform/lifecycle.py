@@ -299,6 +299,8 @@ class DatasetReplica:
     status: str
     created_at: str
     dataset_key: str | None = None
+    node_id: str | None = None
+    location_id: str | None = None
     schema_version: int = LIFECYCLE_SCHEMA_VERSION
 
     def to_dict(self) -> dict:
@@ -1440,13 +1442,15 @@ class LifecycleStore:
         if payload is None:
             raise KeyError(f"dataset version not found: {version_id}")
         version = DatasetVersion.from_dict(payload)
+        if self.curation_snapshot(version.version_id) is not None:
+            return version
         if Path(version.root).is_dir():
             return version
         replica = next(
             (
                 item
                 for item in self.list_replicas(dataset_version_id=version.version_id)
-                if Path(item.root).is_dir()
+                if item.node_id is None and Path(item.root).is_dir()
             ),
             None,
         )
@@ -1686,17 +1690,29 @@ class LifecycleStore:
             task = None
         return [task] if task else []
 
+    def curation_snapshot(self, version_id: str) -> dict | None:
+        return self._get_record("curation_snapshots", version_id)
+
+    def task_config_for_version(self, version: DatasetVersion) -> dict:
+        snapshot = self.curation_snapshot(version.version_id)
+        return snapshot["task_config"] if snapshot else self.tasks.snapshot(version.dataset_key).to_dict()
+
+    def version_info(self, version: DatasetVersion) -> dict:
+        snapshot = self.curation_snapshot(version.version_id)
+        return snapshot["info"] if snapshot else load_json(Path(version.root) / "meta" / "info.json")
+
     def _episode_metadata_by_uid(
         self,
         version: DatasetVersion,
         task_config: dict | None = None,
     ) -> dict[str, dict]:
-        records = {
-            int(item["episode_index"]): dict(item) for item in load_episode_records(Path(version.root))
-        }
+        source = self.curation_snapshot(version.version_id)
+        episode_rows = source["episodes"] if source else load_episode_records(Path(version.root))
+        task_rows = source["tasks"] if source else load_task_records(Path(version.root))
+        records = {int(item["episode_index"]): dict(item) for item in episode_rows}
         tasks_by_index = {
             int(item["task_index"]): str(item.get("task") or "")
-            for item in load_task_records(Path(version.root))
+            for item in task_rows
             if item.get("task_index") is not None
         }
         snapshot = (
@@ -1725,8 +1741,8 @@ class LifecycleStore:
     ) -> DatasetProfileVersion:
         version = self.get_version(dataset_version_id)
         self.assert_version_current(version)
-        info = load_json(Path(version.root) / "meta" / "info.json")
-        task_config = task_config or self.tasks.snapshot(version.dataset_key).to_dict()
+        info = self.version_info(version)
+        task_config = task_config or self.task_config_for_version(version)
         episode_metadata = self._episode_metadata_by_uid(version, task_config)
         task_counts = Counter(
             task for item in episode_metadata.values() for task in item.get("tasks") or ["unassigned"]
@@ -1925,7 +1941,7 @@ class LifecycleStore:
         if isinstance(task_terms, str):
             task_terms = [task_terms]
         task_terms = [str(item).lower() for item in task_terms if str(item).strip()]
-        task_config = task_config or self.tasks.snapshot(version.dataset_key).to_dict()
+        task_config = task_config or self.task_config_for_version(version)
         metadata_by_uid = self._episode_metadata_by_uid(version, task_config)
         resolved = []
         for item in sorted(version.episode_refs, key=lambda value: int(value["episode_index"])):
@@ -2065,9 +2081,7 @@ class LifecycleStore:
         if {item["episode_uid"] for item in include_refs} & {item["episode_uid"] for item in exclude_refs}:
             raise ValueError("recipe cannot include and exclude the same episode")
         snapshot = dict(cohort_query_snapshot or {})
-        task_config = (
-            task_config or snapshot.get("task_config") or self.tasks.snapshot(base.dataset_key).to_dict()
-        )
+        task_config = task_config or snapshot.get("task_config") or self.task_config_for_version(base)
         TaskConfigSnapshot.from_dict(task_config)
         if snapshot.get("task_config") and snapshot["task_config"] != task_config:
             raise ValueError("recipe and cohort task configuration mismatch")
@@ -2394,6 +2408,10 @@ class LifecycleStore:
         return updated
 
     def assert_version_current(self, version: DatasetVersion) -> None:
+        # Draft operations validate the immutable snapshot. Publication and execution
+        # additionally require a fresh fingerprint from the owning worker.
+        if self.curation_snapshot(version.version_id) is not None:
+            return
         root = Path(version.root)
         if not root.is_dir():
             raise ValueError(f"dataset version root is unavailable: {root}")
@@ -2560,7 +2578,7 @@ class LifecycleStore:
     ) -> CurationWorkspace:
         base = self.get_version(base_dataset_version_id)
         rule_versions = dict(rule_versions or {})
-        rule_versions.setdefault("task_config", self.tasks.snapshot(base.dataset_key).to_dict())
+        rule_versions.setdefault("task_config", self.task_config_for_version(base))
         TaskConfigSnapshot.from_dict(rule_versions["task_config"])
         workspace = CurationWorkspace(
             workspace_id=f"cw_{uuid.uuid4().hex}",
@@ -2659,6 +2677,20 @@ class LifecycleStore:
         return self._validate_workspace_payload(workspace)
 
     def update_workspace(
+        self, workspace_id: str, *, expected_revision: int, changes: dict
+    ) -> CurationWorkspace:
+        owner = f"edit:{os.getpid()}:{threading.get_ident()}"
+        lease = f"workspace-publish:{workspace_id}"
+        if not self.repository.claim_job(lease, "workspace_publish", owner=owner, lease_seconds=120):
+            raise ValueError("workspace revision conflict; publication or another edit is in progress")
+        try:
+            return self._update_workspace_unlocked(
+                workspace_id, expected_revision=expected_revision, changes=changes
+            )
+        finally:
+            self.repository.release_job(lease, owner=owner)
+
+    def _update_workspace_unlocked(
         self,
         workspace_id: str,
         *,
@@ -2704,7 +2736,7 @@ class LifecycleStore:
         expected_revision: int,
     ) -> dict:
         lease_owner = f"pid:{os.getpid()}:{threading.get_ident()}"
-        lease_id = f"workspace-rebase:{workspace_id}"
+        lease_id = f"workspace-publish:{workspace_id}"
         if not self.repository.claim_job(
             lease_id,
             "workspace_rebase",
@@ -2779,6 +2811,7 @@ class LifecycleStore:
         expected_revision: int,
         reviewer: str,
         reason: str | None = None,
+        source_fingerprint: str | None = None,
     ) -> CurationManifestVersion:
         lease_owner = f"pid:{os.getpid()}:{threading.get_ident()}"
         lease_id = f"workspace-publish:{workspace_id}"
@@ -2841,6 +2874,7 @@ class LifecycleStore:
                         manifest.manifest_id,
                         MANIFEST_PUBLISHED,
                         reviewer=reviewer,
+                        source_fingerprint=source_fingerprint,
                     )
             payload = workspace.to_dict()
             payload.update(
@@ -2871,7 +2905,7 @@ class LifecycleStore:
     ) -> CurationManifestVersion:
         base = self.get_version(base_dataset_version_id)
         rule_versions = dict(rule_versions or {})
-        rule_versions.setdefault("task_config", self.tasks.snapshot(base.dataset_key).to_dict())
+        rule_versions.setdefault("task_config", self.task_config_for_version(base))
         TaskConfigSnapshot.from_dict(rule_versions["task_config"])
         supersedes = self.get_manifest(supersedes_manifest_id) if supersedes_manifest_id else None
         if supersedes and supersedes.base_dataset_version_id != base.version_id:
@@ -2993,7 +3027,7 @@ class LifecycleStore:
         normalized = []
         edit_targets = set()
         trim_targets = set()
-        features = load_json(Path(base.root) / "meta" / "info.json").get("features") or {}
+        features = self.version_info(base).get("features") or {}
         for recipe in recipes:
             if not isinstance(recipe, dict):
                 raise ValueError("repair recipe must be an object")
@@ -3090,6 +3124,7 @@ class LifecycleStore:
         target_status: str,
         *,
         reviewer: str | None = None,
+        source_fingerprint: str | None = None,
     ) -> CurationManifestVersion:
         target_status = str(target_status).strip().lower()
         if target_status not in MANIFEST_STATES - {MANIFEST_MATERIALIZED}:
@@ -3108,6 +3143,11 @@ class LifecycleStore:
                 raise ValueError("reviewer is required to approve or publish a manifest")
             if target_status == MANIFEST_PUBLISHED:
                 base = self.get_version(manifest.base_dataset_version_id)
+                if (
+                    self.curation_snapshot(base.version_id) is not None
+                    and source_fingerprint != base.fingerprint
+                ):
+                    raise ValueError("Remote publication requires fresh source validation")
                 self.assert_version_current(base)
             updated = manifest.to_dict()
             updated.update(
@@ -3311,6 +3351,9 @@ def execute_preprocessing_profile(
 ) -> tuple[DatasetVersion, dict]:
     """Execute one immutable Raw-to-Standard profile and register explicit lineage."""
     base = store.get_version(base_dataset_version_id)
+    if store.curation_snapshot(base.version_id) is not None:
+        # A node path in synchronized metadata is not a Server A filesystem grant.
+        raise ValueError("Synchronized versions must execute on their owning node")
     store.assert_version_current(base)
     profile = store.get_profile(profile_id, kind=PROFILE_PREPROCESSING)
     options = dict(execution_options or {})
@@ -3732,6 +3775,8 @@ def materialize_manifest(
         else store.default_materialization_profile()
     )
     base = store.get_version(manifest.base_dataset_version_id)
+    if store.curation_snapshot(base.version_id) is not None:
+        raise ValueError("Snapshot materialization must run on its owning execution node")
     if base.fingerprint != manifest.base_fingerprint:
         raise ValueError("manifest base fingerprint does not match its dataset version")
     store.assert_version_current(base)

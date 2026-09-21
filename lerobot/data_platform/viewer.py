@@ -248,6 +248,7 @@ from lerobot.data_platform.routes import (
     register_remote_analysis_routes,
     register_tagging_routes,
     register_task_routes,
+    register_temporal_caption_routes,
 )
 from lerobot.data_platform.task_catalog import TaskConfigSnapshot
 from lerobot.data_platform.task_text import cached_subtask_names, generate_subtask_text
@@ -559,6 +560,7 @@ _CONSOLE_GROUP_DEFS = [
                 "label": "Annotation",
                 "tabs": [
                     {"key": "stage_subtask", "label": "Stage & Subtask"},
+                    {"key": "temporal_caption", "label": "Temporal Caption"},
                     {"key": "labeling", "label": "Object Labeling"},
                     {"key": "tagging", "label": "Auto-tagging"},
                 ],
@@ -595,6 +597,7 @@ _CONSOLE_MODE_ALLOWED_TABS = {
         "cache",
         "explore_overview",
         "stage_subtask",
+        "temporal_caption",
         "quality_flags",
         "data_modification",
         "standardize",
@@ -1177,6 +1180,12 @@ def run_server(
         if manifest is None:
             raise FileNotFoundError(cache_output_dir / "static" / "viewer_manifest.json")
         placeholder_root = cache_output_dir / "remote_source"
+        previous_key = _repo_key(str(location["dataset_key"]))
+        if (datasets_index.get(previous_key) or {}).get("internal_remote_cache"):
+            datasets_index[previous_key]["root"] = str(placeholder_root)
+            datasets_registry.pop(previous_key, None)
+            episodes_by_key.pop(previous_key, None)
+            _clear_episode_dependent_caches(previous_key)
         dataset_key = _upsert_dataset_index(
             str(location["dataset_key"]),
             placeholder_root,
@@ -1197,6 +1206,16 @@ def run_server(
             if not metadata.get("viewer_ready") or not cache_root:
                 continue
             try:
+                from lerobot.data_platform.dataset_results import migrate_cache
+
+                cache_base = (
+                    Path(remote_cache_root).expanduser()
+                    if remote_cache_root is not None
+                    else Path(registry_state["path"]).parent.parent / "remote_cache"
+                ).resolve()
+                if not Path(cache_root).resolve().is_relative_to(cache_base):
+                    raise ValueError("Registered cache is outside the configured cache root")
+                cache_root = str(migrate_cache(Path(cache_root), cache_base / location["location_id"]))
                 viewer_url = _register_remote_cache(location, Path(cache_root))
             except FileNotFoundError:
                 logging.warning(
@@ -1210,7 +1229,7 @@ def run_server(
                     location.get("dataset_key") or location.get("location_id"),
                 )
             else:
-                if viewer_url != metadata.get("viewer_url"):
+                if viewer_url != metadata.get("viewer_url") or cache_root != metadata.get("cache_root"):
                     control_plane_store.mark_viewer_ready(
                         location["location_id"],
                         viewer_url=viewer_url,
@@ -2255,7 +2274,8 @@ def run_server(
         name = view_args.get("dataset_name") or view_args.get("name")
         if namespace and name:
             keys.append(f"{namespace}/{name}")
-        for source in (body, options):
+        target = body.get("target") if isinstance(body.get("target"), dict) else {}
+        for source in (body, options, target):
             for field in (
                 "dataset_key",
                 "repo_id",
@@ -2721,7 +2741,11 @@ def run_server(
         try:
             response_payload = response.get_json(silent=True) if response.is_json else None
             job_payload = response_payload.get("job") if isinstance(response_payload, dict) else None
-            job_id = job_payload.get("id") if isinstance(job_payload, dict) else None
+            job_id = (
+                (job_payload.get("id") or job_payload.get("job_id"))
+                if isinstance(job_payload, dict)
+                else None
+            )
             audit_context = {
                 "actor": audit["actor"],
                 "client": audit["client"],
@@ -2981,6 +3005,7 @@ def run_server(
             allowed_open_links=sorted(allowed_open_links),
             legacy_mutations_enabled=True,
             admin_authenticated=_admin_authenticated(),
+            remote_source_mutations_enabled=legacy_mutations_enabled,
             control_plane_enabled=control_plane_store is not None,
             control_plane_user=getattr(g, "control_plane_user", None),
         )
@@ -4469,6 +4494,12 @@ def run_server(
             legacy_mutations_enabled=legacy_mutations_enabled,
             task_catalog_store=_lifecycle_store().tasks,
         )
+    if console_mode == CONSOLE_MODE_FULL:
+        from lerobot.data_platform.routes.curation import register_curation_routes
+
+        register_curation_routes(app, route_context)
+    if _tab_enabled("temporal_caption"):
+        register_temporal_caption_routes(app, route_context)
     if any(_tab_enabled(tab) for tab in ("versions", "curation_manifest")):
         register_lifecycle_routes(app, route_context)
         register_task_routes(app, route_context)
@@ -4758,6 +4789,32 @@ def run_server(
         static_dir: Path,
     ):
         repo_id = f"{dataset_namespace}/{dataset_name}"
+        remote_location = None
+        result_sync_enabled = False
+        if control_plane_store is not None:
+            remote_locations = control_plane_store.list_locations()
+            result_sync_enabled = any(
+                item["dataset_key"] == repo_id
+                and Path(str((item.get("metadata") or {}).get("cache_root") or "")) / "static"
+                == Path(static_dir)
+                for item in remote_locations
+            )
+            mutation_locations = set(
+                control_plane_store.mutation_location_ids(
+                    (getattr(g, "control_plane_user", None) or {}).get("user_id", "")
+                )
+            )
+            remote_location = next(
+                (
+                    item
+                    for item in remote_locations
+                    if item["dataset_key"] == repo_id
+                    and item["location_id"] in mutation_locations
+                    and Path(str((item.get("metadata") or {}).get("cache_root") or "")) / "static"
+                    == Path(static_dir)
+                ),
+                None,
+            )
         episode_ids = manifest_episode_ids(manifest)
         if episode_id not in episode_ids:
             abort(404)
@@ -4862,7 +4919,11 @@ def run_server(
                     dataset_name=dataset_name,
                 ),
                 subtask_merge_url="",
-                annotate_toggle_url="",
+                annotate_toggle_url=url_for(
+                    "toggle_annotate",
+                    dataset_namespace=dataset_namespace,
+                    dataset_name=dataset_name,
+                ),
                 trim_url=url_for(
                     "get_trim_annotations",
                     dataset_namespace=dataset_namespace,
@@ -4870,14 +4931,26 @@ def run_server(
                 ),
                 trim_merge_url="",
                 delete_episode_url="",
-                annotate_enabled=False,
+                remote_delete_url=(
+                    f"/api/control/locations/{remote_location['location_id']}/mutation-jobs"
+                    if remote_location is not None
+                    else ""
+                ),
+                remote_dataset_key=repo_id,
+                result_sync_enabled=result_sync_enabled,
+                annotate_enabled=server_state["annotate"],
+                annotation_editable=(
+                    control_plane_store is None
+                    or (getattr(g, "control_plane_user", None) or {}).get("role")
+                    in {"admin", "data_manager", "operator"}
+                ),
                 legacy_mutations_enabled=False,
                 data_version=data_version,
                 has_body_joints=has_body_joint_dimensions(manifest.get("features") or {}),
                 has_legacy_flag=has_legacy_flag_dimension(manifest.get("features") or {}),
                 issue_episodes=[],
                 current_issue_episode=current_issue_episode,
-                stage_edit_enabled=False,
+                stage_edit_enabled=server_state["annotate"] or current_issue_episode,
                 task_episode_map=task_episode_map,
                 tag_episode_map=tag_episode_map,
                 task_map_url=url_for(
@@ -5249,6 +5322,11 @@ def run_server(
                     dataset_name=dataset_name,
                 ),
                 annotate_enabled=server_state["annotate"],
+                annotation_editable=(
+                    control_plane_store is None
+                    or (getattr(g, "control_plane_user", None) or {}).get("role")
+                    in {"admin", "data_manager", "operator"}
+                ),
                 legacy_mutations_enabled=(_admin_authenticated() and not _dataset_is_protected(dataset_key)),
                 data_version=data_version,
                 has_body_joints=has_body_joint_dimensions(dataset_obj.features),
@@ -6144,12 +6222,22 @@ def run_server(
 
     @app.route("/<string:dataset_namespace>/<string:dataset_name>/subtask_annotations", methods=["POST"])
     def save_subtask_annotation(dataset_namespace, dataset_name):
-        _, ds_static = _get_ctx(dataset_namespace, dataset_name)
+        dataset_obj, ds_static, manifest, _ = _static_context_for_key((dataset_namespace, dataset_name))
         body = request.get_json(silent=True) or {}
         episode_id = body.get("episode_id")
         if episode_id is None:
             return jsonify({"error": "episode_id required"}), 400
-        episode_id = int(episode_id)
+        try:
+            episode_id = int(episode_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "episode_id must be an integer"}), 400
+        episode_ids = (
+            manifest_episode_ids(manifest)
+            if manifest is not None
+            else _dataset_episode_ids(dataset_obj, (dataset_namespace, dataset_name))
+        )
+        if episode_id not in episode_ids:
+            return jsonify({"error": "episode not found"}), 404
         denied = _check_edit_permission(ds_static, episode_id)
         if denied:
             return denied
@@ -6164,12 +6252,21 @@ def run_server(
         # Optionally update precomputed CSV subtask columns
         if update_csv:
             try:
-                ds = downsample if downsample and downsample > 1 else 1
-                csv_path = ds_static / "csv" / f"episode_{episode_id:06d}_ds{ds}.csv"
-                if _update_cached_csv_subtask_columns(csv_path, transitions, include_hidden_state=True):
+                csv_path = _get_csv_cache_path(
+                    ds_static / "csv", episode_id, server_state["downsample"], precomputed_only=True
+                )
+                if csv_path and _update_cached_csv_subtask_columns(
+                    csv_path, transitions, include_hidden_state=True
+                ):
+                    from lerobot.data_platform.dataset_results import mark_edited_csv
+
+                    mark_edited_csv(Path(ds_static).parent, episode_id)
                     logging.info("Updated subtask_state and stage in CSV for episode %s", episode_id)
             except Exception:
                 logging.exception("Failed to update subtask columns in CSV for episode %s", episode_id)
+                return jsonify(
+                    {"error": "Annotation saved, but updating the Viewer CSV failed. Retry saving."}
+                ), 500
 
         _append_operation_log(
             ds_static,
@@ -6348,12 +6445,22 @@ def run_server(
 
     @app.route("/<string:dataset_namespace>/<string:dataset_name>/trim_annotations", methods=["POST"])
     def save_trim_annotation(dataset_namespace, dataset_name):
-        _, ds_static = _get_ctx(dataset_namespace, dataset_name)
+        dataset_obj, ds_static, manifest, _ = _static_context_for_key((dataset_namespace, dataset_name))
         body = request.get_json(silent=True) or {}
         episode_id = body.get("episode_id")
         if episode_id is None:
             return jsonify({"error": "episode_id required"}), 400
-        episode_id = int(episode_id)
+        try:
+            episode_id = int(episode_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "episode_id must be an integer"}), 400
+        episode_ids = (
+            manifest_episode_ids(manifest)
+            if manifest is not None
+            else _dataset_episode_ids(dataset_obj, (dataset_namespace, dataset_name))
+        )
+        if episode_id not in episode_ids:
+            return jsonify({"error": "episode not found"}), 404
         denied = _check_edit_permission(ds_static, episode_id)
         if denied:
             return denied
@@ -6951,9 +7058,6 @@ def run_server(
         if len(reason) > 500:
             return jsonify({"error": "reason must be 500 characters or fewer"}), 400
         episode_id = int(episode_id)
-        denied = _check_edit_permission(ds_static, episode_id)
-        if denied:
-            return denied
 
         if ds is None:
             return jsonify({"status": "no_dataset"}), 400

@@ -419,7 +419,13 @@ sudo journalctl -u mysql -n 100 --no-pager -l
 
 - `viewer`：默认角色，只读，不能修改或删除数据。
 - `operator`：可以运行允许的查看准备和衍生预处理任务，不能删除或原地修改。
-- `admin`：登录后自动拥有管理权限，可以审批用户；只有该角色能使用删除和原地修改功能。
+- `data_manager`：继承 operator 能力；在 admin 授权的数据集位置内，可直接修改源数据、删除指定 episodes，无需申请审批。
+- `admin`：管理账号和数据权限，并拥有全局数据管理权限。
+
+管理员在 `/control-plane` → “Users & access” 将角色设为 Data manager，再点击 “Data permissions”
+勾选允许修改的数据集并保存。默认无授权，新数据集不自动继承；这不授予整目录删除、用户管理、
+跨用户任务控制或审批他人删除申请的权限。源数据修改仍需服务端和 Agent 开关、操作确认及文件系统权限。
+授权撤销后，未开始的源数据修改任务无法领取；已开始的任务继续走现有执行和恢复流程。
 
 Bootstrap token 只用于数据库中没有任何用户时创建首位管理员。普通登录和注册不需要该
 token。不要把 Bootstrap token、Agent enrollment token 或密码写入 README、命令历史或日志。
@@ -489,7 +495,9 @@ Agent 上的绝对路径。自定义路径必须位于该 Agent 配置的 `writa
 Viewer cache，无需再单独执行 Prepare viewer。**Jobs** 抽屉和 **Pipeline Runs** 页面使用同一份
 任务信息，统一显示服务器、进度、耗时、日志、结果摘要和输出数据集；完成后可直接切换到输出
 数据集。输出尚无 Viewer cache 时，Job 卡片可直接启动 **Prepare viewer**，完成后同一位置切换为
-**Open viewer**。选择 Agent 数据集后也可进入 **Data Curation > Explore** 查看 Episode Viewer；
+**Open viewer**。本地与 Agent 数据集统一进入 **Data Curation**，包含 Explore、Quality、Annotation 和 Dataset Build；
+计算在数据所在节点执行，草稿、审核与结果保存在中心服务。详见[统一 Curation 工作流](docs/data_platform_unified_curation.md)。
+在 **Explore** 可查看 Episode Viewer；
 Dataset Analysis 可直接使用 Agent 上报的元数据，无需先准备 Viewer cache。Embedding、标注和构造入口仍不显示。
 
 远程原地修改默认关闭。确实需要 Admin 执行原地值修改、v3 时间戳修复或 episode 删除时，必须
@@ -829,3 +837,11 @@ Agent 文件权限、任务提交反馈及 operator 删除 episode 的审批流�
 日常更新先在开发环境验收候选包，再执行 `data-platform-update-all --env prod --release RELEASE`。
 工具保留环境配置，维护期间备份并更新 Server、本地执行器和对应 Agent，最后校验节点心跳。
 首次环境初始化、旧生产接入和回退步骤见 [双环境部署指南](docs/data_platform_environments.md)。
+
+### 单条数据分段与 Caption 实验
+
+在 `Data Curation → Annotation → Temporal Caption` 平行查看三视角视频和分段 caption，
+切换 Multi-view Semantics（多视角语义分段）、Video + Events（视频事件分段）与 Fusion + Review（融合及独立复核），
+按 episode 查看双语 caption、运动曲线和各自结果版本。支持导入现有结果、提交远程单条标注任务及查看进度，不依赖完整 Viewer 缓存；
+不覆盖现有标注，不回写源数据。运行步骤、范围和结果复核限制见
+[Temporal Caption 实验](docs/temporal_caption_trial.md)。

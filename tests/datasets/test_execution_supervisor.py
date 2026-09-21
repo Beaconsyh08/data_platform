@@ -335,3 +335,61 @@ def test_agent_ca_bundle_keeps_explicit_tls_options(monkeypatch):
     assert AgentClient("https://example.invalid").verify == "/etc/ssl/certs/ca-certificates.crt"
     assert AgentClient("https://example.invalid", verify=False).verify is False
     assert AgentClient("https://example.invalid", verify="/custom/ca.pem").verify == "/custom/ca.pem"
+
+
+def test_curation_worker_retains_checksummed_bundle_through_publication(tmp_path, monkeypatch):
+    import shutil
+
+    from lerobot.data_platform.curation import scan_snapshot, validate_bundle
+    from tests.datasets.test_lifecycle import _make_dataset as make_source
+    from tests.datasets.test_lifecycle import _snapshot
+
+    monkeypatch.setenv("DATA_PLATFORM_REQUIRE_CGROUP", "0")
+    source = tmp_path / "source"
+    make_source(source)
+    before = _snapshot(source)
+    snapshot = scan_snapshot(source, "local/source", "ds_test")
+    target = {
+        "dataset_key": "local/source",
+        "location_id": "location",
+        "dataset_version_id": snapshot.version["version_id"],
+    }
+    client = Client()
+    received = tmp_path / "received"
+
+    def upload(state, job_id, relative, path, **flags):
+        assert flags.get("curation")
+        destination = received / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, destination)
+
+    client.upload_artifact = upload
+    supervisor = ExecutionSupervisor(fake_agent(tmp_path, client))
+    job = {
+        "job_id": "job",
+        "operation": "curation.stage",
+        "location_id": "location",
+        "location": {
+            "root": str(source),
+            "dataset_key": "local/source",
+            "output_dir": str(tmp_path / "cache"),
+        },
+        "options": {
+            "target": target,
+            "snapshot": snapshot.to_dict(),
+            "task_config": snapshot.task_config,
+            "parameters": {"prepare_workers": 1},
+        },
+        "execution": {
+            "attempt_id": "attempt",
+            "credential": "test-credential",
+            "worker_instance_id": "worker",
+            "protocol": 2,
+            "final_output": None,
+        },
+    }
+    supervisor.start(job)
+    assert client.completions[-1]["status"] == "done", client.completions
+    validate_bundle(received, "curation.stage", target)
+    assert (received / "static/viewer_manifest.json").is_file()
+    assert before == _snapshot(source)

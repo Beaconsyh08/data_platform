@@ -25,7 +25,7 @@ def render_page(role):
         )
 
 
-@pytest.mark.parametrize("role", ["admin", "operator", "viewer"])
+@pytest.mark.parametrize("role", ["admin", "data_manager", "operator", "viewer"])
 def test_management_navigation_and_filters(role):
     if not shutil.which("node"):
         pytest.skip("Node.js required")
@@ -123,5 +123,84 @@ const assert = require('node:assert/strict');
  app.jobs=[own]; app.remoteJobs=[{job_id:'job', operation:'local.request.preprocess'}];
  app.mergeRemoteJobsIntoRuns(); assert.equal(app.jobs.length,1);
 })().catch(error=>{console.error(error);process.exit(1)});
+"""
+    subprocess.run(["node"], input=script + checks, check=True, capture_output=True, text=True, timeout=10)
+
+
+def test_admin_data_scope_editor_saves_selected_locations():
+    if not shutil.which("node"):
+        pytest.skip("Node.js required")
+    html = render_page("admin")
+    assert 'value="data_manager"' in html
+    assert 'x-model="scopeLocationIds"' in html
+    script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    checks = """
+const assert = require('node:assert/strict');
+(async () => {
+ const app = controlPlane();
+ const calls = [];
+ app.request = async (url, options = {}) => {
+   calls.push({url, ...options}); return {location_ids: ['existing']};
+ };
+ let refreshed = false;
+ app.load = async () => { refreshed = true; };
+ await app.editDataScopes({user_id: 'manager', username: 'alice'});
+ assert.deepEqual(app.scopeLocationIds, ['existing']);
+ app.scopeLocationIds = ['new'];
+ await app.saveDataScopes();
+ assert.equal(calls[1].url, '/api/auth/users/manager/data-scopes');
+ assert.equal(calls[1].method, 'PUT');
+ assert.deepEqual(JSON.parse(calls[1].body), {location_ids:['new']});
+ assert.equal(app.scopeAccount, null);
+ assert(refreshed);
+ assert.equal(app.scopeBusy, false);
+ assert.equal(app.error, '');
+})().catch(err => { console.error(err); process.exit(1); });
+"""
+    subprocess.run(["node"], input=script + checks, check=True, capture_output=True, text=True, timeout=10)
+
+
+def test_data_manager_source_navigation_and_scoped_buttons():
+    if not shutil.which("node"):
+        pytest.skip("Node.js required")
+    from lerobot.data_platform.viewer import _console_groups_for_tabs
+
+    app = Flask(__name__, template_folder=str(TEMPLATES))
+    tabs = {"data_modification", "dataset_ops", "transform"}
+    with app.test_request_context():
+        html = render_template(
+            "visualize_dataset_homepage.html",
+            console_mode="full",
+            legacy_mutations_enabled=True,
+            remote_source_mutations_enabled=True,
+            control_plane_enabled=True,
+            control_plane_user={"user_id": "owner", "username": "alice", "role": "data_manager"},
+            admin_authenticated=False,
+            allowed_tabs=list(tabs),
+            allowed_open_links=[],
+            console_groups=_console_groups_for_tabs(tabs, legacy_mutations_enabled=True),
+            datasets_root="",
+            initial_page="",
+            initial_selected_dataset="",
+            initial_tab="",
+        )
+    script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    checks = """
+const assert = require('node:assert/strict');
+const app = precomputeConsole();
+assert(app.availableGroups().some(group => group.label === 'Data management'));
+assert(app.validTabs().includes('data_modification'));
+Object.defineProperty(app, 'selectedDataset', {get: () => ({remote: true})});
+app.selectedRemoteNode = () => ({capabilities:{source_mutations_enabled:true}});
+app.selectedRemoteLocation = {location_id: 'authorized', source_mutation_allowed: true};
+assert(app.remoteSourceMutationsAvailable());
+assert(app.canStartLegacyMutation());
+assert(!app.canRequestEpisodeDeletion());
+app.selectedRemoteLocation = {location_id: 'other', source_mutation_allowed: false};
+assert(!app.remoteSourceMutationsAvailable());
+assert(app.remoteMutationDisabledReason().includes('permission'));
+app.controlPlaneUser.role = 'operator';
+assert(!app.availableGroups().some(group => group.key === 'legacy_admin'));
+assert(app.canRequestEpisodeDeletion());
 """
     subprocess.run(["node"], input=script + checks, check=True, capture_output=True, text=True, timeout=10)

@@ -21,13 +21,19 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    delete,
     func,
     select,
     update,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-USER_ROLES = {"admin", "operator", "viewer"}
+USER_ROLES = {"admin", "data_manager", "operator", "viewer"}
+SCOPED_SOURCE_OPERATIONS = {
+    "mutation.value_edit",
+    "mutation.delete_episodes",
+    "mutation.repair_v3_video_timestamps",
+}
 JOB_STATES = {"queued", "running", "done", "error", "cancelled", "cancel_requested", "interrupted"}
 _PASSWORD_ITERATIONS = 310_000
 _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
@@ -109,6 +115,21 @@ class ControlPlaneUser(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class DataMutationGrant(Base):
+    """Explicit source-write grants tied to one registered dataset location."""
+
+    __tablename__ = "dp_data_mutation_grants"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("dp_users.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    location_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("dp_dataset_locations.location_id", ondelete="CASCADE"), primary_key=True
+    )
+    node_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    root: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class ControlPlaneSession(Base):
@@ -297,6 +318,102 @@ class ControlPlaneStore:
 
         event.listen(self.sessions, "before_flush", audit_accounts)
 
+    @staticmethod
+    def source_mutation_allowed(
+        session, user: ControlPlaneUser | None, location: DatasetLocation | None
+    ) -> bool:
+        if user is None or not user.active or location is None or location.state != "available":
+            return False
+        if user.role == "admin":
+            return True
+        if user.role != "data_manager":
+            return False
+        grant = session.get(DataMutationGrant, (user.user_id, location.location_id))
+        return bool(grant and grant.node_id == location.node_id and grant.root == location.root)
+
+    def granted_mutation_location_ids(self, user_id: str) -> list[str]:
+        """Return saved scopes for administration, including disabled accounts."""
+        with self.sessions() as session:
+            return list(
+                session.scalars(
+                    select(DataMutationGrant.location_id)
+                    .where(DataMutationGrant.user_id == user_id)
+                    .order_by(DataMutationGrant.location_id)
+                )
+            )
+
+    def mutation_location_ids(self, user_id: str) -> list[str]:
+        with self.sessions() as session:
+            user = session.get(ControlPlaneUser, user_id)
+            if user is None or not user.active or user.role not in {"admin", "data_manager"}:
+                return []
+            query = select(DatasetLocation.location_id).where(DatasetLocation.state == "available")
+            if user.role == "data_manager":
+                query = query.join(
+                    DataMutationGrant, DataMutationGrant.location_id == DatasetLocation.location_id
+                ).where(
+                    DataMutationGrant.user_id == user_id,
+                    DataMutationGrant.node_id == DatasetLocation.node_id,
+                    DataMutationGrant.root == DatasetLocation.root,
+                )
+            return list(session.scalars(query))
+
+    def set_mutation_locations(self, user_id: str, location_ids: list[str], *, actor: dict) -> list[str]:
+        from lerobot.data_platform.job_management import scheduler_lock
+        from lerobot.data_platform.management_storage import enqueue_event
+        from lerobot.data_platform.operation_log import build_operation_event
+
+        if (
+            not isinstance(location_ids, list)
+            or len(location_ids) > 1000
+            or any(not isinstance(value, str) or not value for value in location_ids)
+        ):
+            raise ValueError("location_ids must be an array of at most 1000 registered location IDs")
+        with self.sessions.begin() as session:
+            scheduler_lock(session)
+            administrator = session.get(ControlPlaneUser, actor["user_id"])
+            if administrator is None or not administrator.active or administrator.role != "admin":
+                raise PermissionError("Administrator role required")
+            user = session.get(ControlPlaneUser, user_id)
+            if user is None:
+                raise KeyError(user_id)
+            if user.role != "data_manager":
+                raise ValueError("Source mutation scopes can only be assigned to data_manager accounts")
+            locations = [session.get(DatasetLocation, key) for key in sorted(set(location_ids))]
+            if any(location is None or location.state != "available" for location in locations):
+                raise ValueError("Every scope must reference an available registered dataset location")
+            previous = list(
+                session.scalars(
+                    select(DataMutationGrant.location_id).where(DataMutationGrant.user_id == user_id)
+                )
+            )
+            session.execute(delete(DataMutationGrant).where(DataMutationGrant.user_id == user_id))
+            for location in locations:
+                session.add(
+                    DataMutationGrant(
+                        user_id=user_id,
+                        location_id=location.location_id,
+                        node_id=location.node_id,
+                        root=location.root,
+                    )
+                )
+            selected = [location.location_id for location in locations]
+            enqueue_event(
+                session,
+                build_operation_event(
+                    "account.data_scopes.updated",
+                    status="success",
+                    actor=actor,
+                    source="control-plane",
+                    details={
+                        "target_user_id": user_id,
+                        "previous_location_ids": previous,
+                        "location_ids": selected,
+                    },
+                ),
+            )
+        return selected
+
     def user_count(self) -> int:
         with self.sessions() as session:
             return len(session.scalars(select(ControlPlaneUser.user_id)).all())
@@ -456,6 +573,8 @@ class ControlPlaneStore:
                 if int(active_admins or 0) <= 1:
                     raise ValueError("the last active administrator cannot be demoted or deactivated")
             if role is not None:
+                if user.role == "data_manager" and role != "data_manager":
+                    session.execute(delete(DataMutationGrant).where(DataMutationGrant.user_id == user_id))
                 user.role = role
             if active is not None:
                 user.active = bool(active)
@@ -530,7 +649,22 @@ class ControlPlaneStore:
             node.updated_at = now
             if capabilities is not None:
                 node.capabilities = dict(capabilities)
-        return self._node_dict(node)
+            return self._node_dict(node)
+
+    def configure_local_execution_roots(
+        self, node_id: str, allowed_roots: list[str], writable_roots: list[str]
+    ) -> None:
+        """Keep the registered local executor consistent with its server-generated configuration."""
+        with self.sessions.begin() as session:
+            node = session.get(ControlPlaneNode, node_id)
+            if (
+                node is None
+                or not node.name.startswith("local-")
+                or not node.capabilities.get("local_requests")
+            ):
+                raise ValueError("Expected the registered local executor")
+            node.allowed_roots = list(allowed_roots)
+            node.writable_roots = list(writable_roots)
 
     def sync_locations(self, node_id: str, locations: list[dict]) -> list[dict]:
         now = _utcnow()
@@ -640,11 +774,28 @@ class ControlPlaneStore:
             location = session.get(DatasetLocation, str(location_id))
             if location is None:
                 raise KeyError(location_id)
+            submitter = session.get(ControlPlaneUser, requested_by)
+            if (
+                submitter is not None
+                and submitter.role == "data_manager"
+                and operation.startswith("mutation.")
+                and (
+                    operation not in SCOPED_SOURCE_OPERATIONS
+                    or not self.source_mutation_allowed(session, submitter, location)
+                )
+            ):
+                raise PermissionError("Source mutation permission is required for this dataset location")
             if idempotency_key:
                 existing = session.scalar(
                     select(RemoteJob).where(RemoteJob.idempotency_key == str(idempotency_key))
                 )
                 if existing is not None:
+                    if operation.startswith("mutation.") and (
+                        existing.requested_by != requested_by
+                        or existing.location_id != location_id
+                        or existing.operation != operation
+                    ):
+                        raise JobConflictError("Idempotency key belongs to a different mutation request")
                     return self._job_dict(existing)
             if reuse_active:
                 active_jobs = session.scalars(

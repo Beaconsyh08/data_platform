@@ -633,7 +633,7 @@ def test_convert_v3_homepage_wiring():
     assert "/api/preprocess/repair_v3_video_timestamps/start" in template
     assert "Videos are not re-encoded." in template
     assert "224×224" not in template
-    assert "selectedJob().output_root" in template
+    assert 'x-text="selectedJob()?.output_root"' in template
     assert "Dataset is already v3.0; no conversion is needed." in template
     assert "selectedDatasetIsV3()" in template
     assert "v3.0 viewer support uses a read-only adapter in this environment." in template

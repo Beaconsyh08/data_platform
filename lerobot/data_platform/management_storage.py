@@ -104,6 +104,8 @@ def migrate_management(engine) -> None:
                 conn.execute(SchemaMigration.__table__.insert().values(version=1))
             if conn.scalar(select(SchemaMigration.version).where(SchemaMigration.version == 2)) is None:
                 conn.execute(SchemaMigration.__table__.insert().values(version=2))
+            if conn.scalar(select(SchemaMigration.version).where(SchemaMigration.version == 3)) is None:
+                conn.execute(SchemaMigration.__table__.insert().values(version=3))
             conn.commit()
         finally:
             if mysql:

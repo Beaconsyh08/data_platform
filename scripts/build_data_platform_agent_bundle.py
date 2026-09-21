@@ -80,6 +80,13 @@ def build_bundle(output_dir: Path, *, version: str) -> tuple[Path, Path]:
         with zipfile.ZipFile(wheel) as wheel_zip:
             required_modules = {
                 "lerobot/data_platform/agent.py",
+                "lerobot/data_platform/dataset_results.py",
+                "lerobot/data_platform/curation.py",
+                "lerobot/data_platform/curation_execution.py",
+                "lerobot/data_platform/routes/curation.py",
+                "lerobot/data_platform/templates/curation.js",
+                "lerobot/data_platform/templates/curation.css",
+                "lerobot/data_platform/templates/visualize_dataset_curation.html",
                 "lerobot/data_platform/environment.py",
                 "lerobot/data_platform/deployment.py",
                 "lerobot/data_platform/agent_install.py",

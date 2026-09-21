@@ -417,12 +417,26 @@ class AgentClient:
             server_url=self.server_url,
         )
 
-    def heartbeat(self, state: AgentState, capabilities: dict) -> None:
-        self._request(
+    def heartbeat(self, state: AgentState, capabilities: dict) -> dict:
+        return self._request(
             "POST",
             "/api/agents/heartbeat",
             token=state.node_token,
             json={"capabilities": capabilities},
+        )
+
+    def result_locations(self, state: AgentState) -> list[dict]:
+        return self._request("GET", "/api/agents/dataset-results", token=state.node_token)["locations"]
+
+    def result_bundle(self, state: AgentState, location_id: str) -> dict:
+        return self._request("GET", f"/api/agents/locations/{location_id}/results", token=state.node_token)
+
+    def ack_results(self, state: AgentState, location_id: str, revision: str, *, error: bool = False) -> dict:
+        return self._request(
+            "POST",
+            f"/api/agents/locations/{location_id}/results/ack",
+            token=state.node_token,
+            json={"revision": revision, "error": error},
         )
 
     def sync_locations(self, state: AgentState, locations: list[dict]) -> list[dict]:
@@ -471,8 +485,14 @@ class AgentClient:
         path: Path,
         *,
         derived: bool = False,
+        caption: bool = False,
+        curation: bool = False,
     ) -> None:
-        endpoint = "derived-artifacts" if derived else "artifacts"
+        endpoint = (
+            "curation-artifacts"
+            if curation
+            else ("caption-artifacts" if caption else ("derived-artifacts" if derived else "artifacts"))
+        )
         with Path(path).open("rb") as handle:
             self._request(
                 "PUT",
@@ -482,6 +502,50 @@ class AgentClient:
                 headers={"Content-Type": "application/octet-stream"},
                 timeout=(10, 3600),
             )
+
+    def download_curation_input(self, state, job, name, destination, expected):
+        import hashlib
+        from urllib.parse import quote
+
+        execution = job["execution"]
+        headers = {
+            "Authorization": f"Bearer {state.node_token}",
+            "X-Job-Attempt": execution["attempt_id"],
+            "X-Job-Credential": execution["credential"],
+        }
+        url = f"{self.server_url}/api/agents/jobs/{job['job_id']}/curation-inputs/{quote(name, safe='/')}"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        digest, count = hashlib.sha256(), 0
+        renewed_at = 0.0
+
+        def renew():
+            nonlocal renewed_at
+            if time.monotonic() - renewed_at < 20:
+                return
+            response = self.control_heartbeat(state, job["job_id"], lease_seconds=120)
+            if response.get("stop_mode"):
+                from lerobot.data_platform.execution import StopRequestedError
+
+                raise StopRequestedError("Curation input download cancelled")
+            if not response.get("renewed"):
+                raise RuntimeError("Lost execution lease while downloading Curation input")
+            renewed_at = time.monotonic()
+
+        renew()
+        with self.session.get(
+            url, headers=headers, stream=True, timeout=(10, 30), verify=self.verify
+        ) as response:
+            response.raise_for_status()
+            with destination.open("wb") as handle:
+                for chunk in response.iter_content(1024 * 1024):
+                    renew()
+                    count += len(chunk)
+                    if count > expected["size"]:
+                        raise ValueError("Curation input exceeds declared size")
+                    digest.update(chunk)
+                    handle.write(chunk)
+        if count != expected["size"] or digest.hexdigest() != expected["sha256"]:
+            raise ValueError("Curation input checksum mismatch")
 
     def complete(
         self,
@@ -605,6 +669,8 @@ class DataPlatformAgent:
             temporary.unlink(missing_ok=True)
 
     def capabilities(self) -> dict:
+        from lerobot.data_platform.curation_execution import worker_capabilities
+
         disk = {}
         for root in self.allowed_roots:
             try:
@@ -612,10 +678,19 @@ class DataPlatformAgent:
                 disk[str(root)] = {"total": usage.total, "free": usage.free}
             except OSError:
                 continue
-        operations = ["viewer.prepare", *[f"preprocess.{op}" for op in sorted(_PREPROCESS_OPS)]]
+        operations = [
+            *worker_capabilities()["curation_operations"],
+            "caption.annotate",
+            "viewer.prepare",
+            *[f"preprocess.{op}" for op in sorted(_PREPROCESS_OPS)],
+        ]
         if self.allow_source_mutations:
             operations.extend(f"mutation.{op}" for op in sorted(_SOURCE_MUTATION_OPS))
         return {
+            **worker_capabilities(),
+            "caption_protocol": 1,
+            "caption_schemes": ["multiview_semantics", "video_events", "fusion_review"],
+            "caption_configured": bool(os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_DASHSCOPE_API_KEY")),
             "job_protocol": 2,
             "environment": os.environ.get("DATA_PLATFORM_ENV", "legacy"),
             "instance_id": os.environ.get("DATA_PLATFORM_INSTANCE_ID", ""),
@@ -629,6 +704,7 @@ class DataPlatformAgent:
             "merge_alignment_protocol": 3,
             "source_mutations_enabled": self.allow_source_mutations,
             "task_config_protocol": TASK_CONFIG_PROTOCOL,
+            "result_sync_protocol": 1,
         }
 
     def sync_locations(self) -> list[dict]:
@@ -636,15 +712,27 @@ class DataPlatformAgent:
         return self.client.sync_locations(self.state, discovered)
 
     def run_once(self, *, sync: bool = True) -> bool:
-        self.client.heartbeat(self.state, self.capabilities())
+        heartbeat = self.client.heartbeat(self.state, self.capabilities()) or {}
         if isinstance(self.client, AgentClient):
-            from lerobot.data_platform.execution import ExecutionSupervisor
+            from lerobot.data_platform.execution import ExecutionSupervisor, StopRequestedError
 
             supervisor = ExecutionSupervisor(self)
             if supervisor.reconcile():
                 return True
         if sync:
             self.sync_locations()
+        if (
+            heartbeat.get("result_sync_protocol") == 1
+            and time.monotonic() - getattr(self, "_last_result_sync_at", 0) >= 10
+        ):
+            from lerobot.data_platform.dataset_results import sync_agent_results
+
+            try:
+                sync_agent_results(self)
+            except Exception:
+                logging.exception("Dataset result synchronization will retry on the next sync poll")
+            finally:
+                self._last_result_sync_at = time.monotonic()
         job = self.client.claim(self.state, lease_seconds=self.lease_seconds)
         if job is None:
             return False
@@ -656,7 +744,12 @@ class DataPlatformAgent:
                 logging.exception("Execution requires reconciliation for job %s", job_id)
                 marker = supervisor.root / job["execution"]["attempt_id"] / "marker.json"
                 if not marker.exists():
-                    self.client.complete(self.state, job_id, status="error", error=str(exc))
+                    self.client.complete(
+                        self.state,
+                        job_id,
+                        status="cancelled" if isinstance(exc, StopRequestedError) else "error",
+                        error=str(exc),
+                    )
             return True
         stop_heartbeat = threading.Event()
         heartbeat_thread = threading.Thread(
@@ -708,6 +801,14 @@ class DataPlatformAgent:
         require_dataset_operation(
             source_root, operation, data_version_override=(job.get("options") or {}).get("data_version")
         )
+        if operation.startswith("curation."):
+            from lerobot.data_platform.curation_execution import execute_curation_job
+
+            return execute_curation_job(self, job, source_root, location)
+        if operation == "caption.annotate":
+            from lerobot.data_platform.temporal_caption_jobs import execute_caption_job
+
+            return execute_caption_job(self, job, source_root, location)
         if operation == "viewer.prepare":
             return self._prepare_viewer(job, source_root, location)
         if operation.startswith("preprocess."):

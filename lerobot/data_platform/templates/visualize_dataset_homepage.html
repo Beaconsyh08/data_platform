@@ -247,6 +247,14 @@
                 padding-right: 1rem;
             }
         }
+        @media (max-width: 640px) {
+            .dp-header-grid {
+                grid-template-areas: "brand" "workspace" "dataset" "jobs";
+                grid-template-columns: minmax(0, 1fr);
+            }
+            .dp-header-utilities { flex-wrap: wrap; justify-content: flex-start; }
+        }
+        {% include "curation.css" %}
     </style>
 </head>
 <body class="min-h-screen text-sm text-slate-200 antialiased"
@@ -842,7 +850,7 @@
                              x-show="selectedDataset && selectedDataset.remote">
                             Operations run on <strong x-text="selectedDataset ? selectedDataset.server_name : ''"></strong> against
                             <span class="dp-mono break-all" x-text="selectedDataset ? selectedDataset.root : ''"></span>.
-                            Normal preprocessing creates a timestamped sibling automatically. Source mutations require Admin,
+                            Normal preprocessing creates a timestamped sibling automatically. Source mutations require Admin or a Data manager authorized for this dataset,
                             both legacy-mutation switches, typed confirmation, and a persistent Agent-side backup.
                         </div>
                         <div class="flex flex-wrap gap-1.5 border-t border-slate-800 pt-3 text-xs"
@@ -863,6 +871,9 @@
                     <p class="mt-1 max-w-md text-xs text-slate-500">This page needs a working dataset context so outputs, jobs, and lineage stay traceable.</p>
                     <button class="dp-btn dp-btn-primary dp-btn-inline mt-4" @click="selectPage('datasets')">Go to Datasets</button>
                 </div>
+                <div class="curation-workspace" x-ref="curationWorkspace" x-show="unifiedCurationActive()"
+                     x-effect="window.syncCurationWorkspace($refs.curationWorkspace, curationTarget(), activePage, activeTab, unifiedCurationActive())"></div>
+                <div x-show="!unifiedCurationActive()">
                 <div class="mx-4 mt-4 rounded border border-emerald-900/60 bg-emerald-950/20 px-3 py-2 text-xs text-emerald-200"
                      x-show="activeTab === 'explore_overview' && selectedDatasetIsV3()">
                     v3.0 viewer support uses a read-only adapter in this environment. Run Prepare video + CSV once,
@@ -1402,6 +1413,14 @@
                         </button>
                     </div>
                 </div>
+                <div class="space-y-4 px-4 py-4" x-show="activeTab === 'temporal_caption'">
+                    <div class="dp-card p-5">
+                        <h3 class="text-lg font-semibold text-slate-100">Temporal Caption</h3>
+                        <p class="mt-2 text-sm text-slate-400">Review a single episode with synchronized cameras, semantic segments, and captions. Compare Multi-view Semantics, Video + Events, and Fusion + Review, with separate episode and result selection.</p>
+                        <p class="mt-2 text-xs text-slate-500">Import existing results or submit a single-episode annotation task on a configured Agent. Review is available before preparing a full Viewer cache.</p>
+                        <a class="dp-btn dp-btn-primary dp-btn-inline mt-4" :href="temporalCaptionUrl()" x-show="selectedDataset">Open caption review</a>
+                    </div>
+                </div>
                 <div class="space-y-4 px-4 py-4" x-show="activeTab === 'stage_subtask'">
                     <div class="rounded-lg border border-amber-900/60 bg-amber-950/20 px-4 py-3 text-xs text-amber-200">
                         <div class="font-semibold">Write behavior</div>
@@ -1593,7 +1612,7 @@
                         <div class="mt-1 leading-5" x-text="preprocessPanelDescription()"></div>
                         <div class="mt-2 text-amber-300" x-show="!operationAvailable(preprocess.schema_op)" x-text="operationReason(preprocess.schema_op)"></div>
                         <div class="mt-2 text-amber-300" x-show="preprocessCapabilities && !preprocessCapabilities.available"
-                             x-text="preprocessCapabilities.error || 'Preprocess dependencies unavailable.'"></div>
+                             x-text="preprocessCapabilities?.error || 'Preprocess dependencies unavailable.'"></div>
                     </div>
 
                     <div class="rounded border border-sky-900/60 bg-sky-950/20 px-3 py-2 text-xs text-sky-200"
@@ -1606,7 +1625,7 @@
                     <div class="rounded border border-amber-900/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200"
                          x-show="selectedDataset?.remote && schemaOperationMutatesSource() && !remoteSourceMutationsAvailable() && !canRequestEpisodeDeletion()">
                         Remote source mutation is locked. It must be enabled on Server A and on this Agent, and the
-                        signed-in account must be Admin.
+                        signed-in account must have source mutation permission for this dataset.
                     </div>
                     <label class="block rounded border border-amber-900/60 bg-amber-950/15 px-3 py-2"
                            x-show="selectedDataset?.remote && (preprocess.schema_op === 'repair_v3_video_timestamps' || (preprocess.schema_op === 'value_edit' && preprocess.value_output_mode === 'in_place'))">
@@ -2348,7 +2367,7 @@
                     <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
                         <div class="font-semibold text-slate-200">Labeling status</div>
                         <div class="mt-1" x-show="selectedDataset && selectedDataset.labeling">
-                            <span x-text="selectedDataset ? `labels ${selectedDataset.labeling.labels_count || 0}, reviewed ${selectedDataset.labeling.reviewed_count || 0}` : ''"></span>
+                            <span x-text="selectedDataset ? `labels ${selectedDataset.labeling?.labels_count || 0}, reviewed ${selectedDataset.labeling?.reviewed_count || 0}` : ''"></span>
                         </div>
                         <div class="mt-1 text-slate-500" x-show="!selectedDataset || !selectedDataset.labeling">No labeling result has been loaded for this dataset.</div>
                     </div>
@@ -2633,13 +2652,13 @@
                     <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
                         <div class="font-semibold text-slate-200">Tagging status</div>
                         <div class="mt-2" x-show="selectedDataset && selectedDataset.tagging"
-                             x-text="selectedDataset ? `tags ${selectedDataset.tagging.tags_count || 0}, reviewed ${selectedDataset.tagging.reviewed_count || 0}` : ''"></div>
+                             x-text="selectedDataset ? `tags ${selectedDataset.tagging?.tags_count || 0}, reviewed ${selectedDataset.tagging?.reviewed_count || 0}` : ''"></div>
                         <div class="mt-1 text-slate-500" x-show="!selectedDataset || !selectedDataset.tagging">No tag result has been loaded for this dataset.</div>
                     </div>
                     <div class="rounded border border-amber-800 bg-amber-950/30 px-3 py-3 text-xs text-amber-200"
                          x-show="taggingCapabilities && !taggingCapabilities.available">
                         Selected VLM backend is unavailable. Rule/geometric tags can still run.
-                        <span x-show="taggingCapabilities && taggingCapabilities.error" x-text="` ${taggingCapabilities.error}`"></span>
+                        <span x-show="taggingCapabilities && taggingCapabilities.error" x-text="` ${taggingCapabilities?.error || ''}`"></span>
                     </div>
                     <div class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs">
                         <div class="mb-2 text-slate-400">VLM backend</div>
@@ -2763,7 +2782,7 @@
                     <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
                         <div class="font-semibold text-slate-200">Embedding status</div>
                         <div class="mt-2" x-show="selectedDataset && selectedDataset.embedding"
-                             x-text="selectedDataset ? `points ${selectedDataset.embedding.points_count || 0}` : ''"></div>
+                             x-text="selectedDataset ? `points ${selectedDataset.embedding?.points_count || 0}` : ''"></div>
                         <div class="mt-1 text-slate-500" x-show="!selectedDataset || !selectedDataset.embedding">No embedding result has been loaded for this dataset.</div>
                     </div>
                     <label class="block">
@@ -2835,6 +2854,7 @@
                     </div>
                 </div>
                 </div>
+                </div>
             </section>
 
             <section class="dp-page-surface"
@@ -2844,14 +2864,16 @@
                         <h3 class="font-semibold">Episode deletion requests</h3>
                         <button class="text-xs underline" @click="loadDeletionRequests().catch(err => { error = err.message; })">Refresh</button>
                     </div>
-                    <div class="mt-3 space-y-2" x-show="canRequestEpisodeDeletion()">
+                    <div class="mt-3 space-y-2" x-show="canRequestEpisodeDeletion() || (['admin', 'data_manager'].includes(controlPlaneUser?.role) && selectedDataset?.remote)">
                         <p class="text-xs" x-text="`Request episode deletion from: ${selectedDataset?.repo_id || selectedDataset?.key || ''}`"></p>
                         <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2" aria-label="Episode indices to request deletion"
                                x-model="preprocess.delete_episode_ids" placeholder="Episodes, e.g. 1,3-5">
                         <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2" aria-label="Deletion request reason"
                                x-model="preprocess.delete_reason" maxlength="500" placeholder="Why should these episodes be deleted?">
-                        <button class="dp-btn dp-btn-primary" :disabled="busy || !parsedDeleteEpisodeIds().length || !preprocess.delete_reason.trim()"
-                                @click="startRemoteMutation('delete_episodes', {episodes: parsedDeleteEpisodeIds(), reason: preprocess.delete_reason.trim()}, '')">Request episode deletion</button>
+                        <button class="dp-btn dp-btn-primary" :disabled="busy || !parsedDeleteEpisodeIds().length || !preprocess.delete_reason.trim() || (!canRequestEpisodeDeletion() && !remoteSourceMutationsAvailable())"
+                                @click="startRemoteMutation('delete_episodes', {episodes: parsedDeleteEpisodeIds(), reason: preprocess.delete_reason.trim()}, 'Delete selected episodes from the Agent dataset.')"
+                                x-text="canRequestEpisodeDeletion() ? 'Request episode deletion' : 'Delete episodes'"></button>
+                        <p class="text-xs text-amber-200" x-show="!canRequestEpisodeDeletion() && !remoteSourceMutationsAvailable()" x-text="remoteMutationDisabledReason()"></p>
                     </div>
                     <p class="mt-2 text-xs text-slate-400" x-show="controlPlaneUser?.role === 'operator' && !canRequestEpisodeDeletion()">Select an Agent dataset in Datasets to request episode deletion.</p>
                     <p class="mt-2 text-xs text-slate-400" x-show="!deletionRequests.length">No deletion requests.</p>
@@ -3203,6 +3225,8 @@
         </section>
     </div>
 
+    <template id="curation-workspace-template">{% include "visualize_dataset_curation.html" %}</template>
+    <script>{% include "curation.js" %}</script>
     <script>
         function precomputeConsole() {
             return {
@@ -3218,6 +3242,7 @@
                 activeTab: '',
                 consoleMode: {{ console_mode|tojson }},
                 legacyMutationsEnabled: {{ legacy_mutations_enabled|tojson }},
+                remoteSourceMutationsEnabled: {{ remote_source_mutations_enabled|default(false)|tojson }},
                 controlPlaneEnabled: {{ control_plane_enabled|tojson }},
                 controlPlaneUser: {{ control_plane_user|tojson }},
                 adminModeEnabled: {{ admin_authenticated|tojson }},
@@ -3579,9 +3604,13 @@
                     }
                 },
                 availableGroups() {
+                    const dataManager = this.controlPlaneUser?.role === 'data_manager';
                     return this.groups.filter(
-                        group => group.key !== 'legacy_admin' || this.adminModeEnabled
-                    );
+                        group => group.key !== 'legacy_admin' || this.adminModeEnabled || dataManager
+                    ).map(group => group.key === 'legacy_admin' && dataManager ? {
+                        ...group, label: 'Data management',
+                        pages: group.pages.map(page => ({...page, label: 'Source data'}))
+                    } : group);
                 },
                 async loadAdminStatus() {
                     if (this.controlPlaneEnabled) {
@@ -3741,11 +3770,17 @@
                     const workspace = this.currentWorkspace();
                     return workspace ? workspace.label : 'Workspace';
                 },
+                temporalCaptionUrl() {
+                    if (!this.selectedDataset) return '';
+                    return this.selectedDataset.remote
+                        ? `/remote/${encodeURIComponent(this.selectedDataset.remote_location_id)}/temporal-caption`
+                        : `/${this.selectedDatasetKey}/temporal-caption`;
+                },
                 currentPages() {
                     const workspace = this.currentWorkspace();
                     if (!workspace) return [];
                     if (this.selectedDataset?.remote && workspace.key === 'data_curation') {
-                        return workspace.pages.filter(page => page.key === 'explore');
+                        return workspace.pages;
                     }
                     return workspace.pages;
                 },
@@ -3771,7 +3806,10 @@
                     const page = this.currentPage();
                     if (!page) return [];
                     if (this.selectedDataset?.remote && page.key === 'explore') {
-                        return page.tabs.filter(tab => tab.key === 'explore_overview');
+                        return page.tabs;
+                    }
+                    if (this.selectedDataset?.remote && page.key === 'annotation') {
+                        return page.tabs;
                     }
                     return page.tabs;
                 },
@@ -3963,19 +4001,30 @@
                     this.activeWorkspace = group.key;
                     await this.selectPage(group.pages[0].key, updateUrl);
                 },
+                unifiedCurationActive() {
+                    return this.controlPlaneEnabled && this.consoleMode === 'full' && Boolean(this.selectedDataset)
+                        && ['explore', 'quality', 'annotation', 'dataset_build'].includes(this.activePage)
+                        && this.activeTab !== 'explore_overview';
+                },
+                curationTarget() {
+                    if (!this.selectedDataset) return null;
+                    return this.selectedDataset.remote
+                        ? {location_id: this.selectedDataset.remote_location_id}
+                        : {dataset_key: this.selectedDatasetKey};
+                },
                 async selectPage(pageKey, updateUrl = true) {
                     if (
                         this.selectedDataset?.remote
-                        && !['datasets', 'preprocessing', 'admin_operations', 'runs', 'explore'].includes(pageKey)
+                        && !['datasets', 'preprocessing', 'admin_operations', 'runs', 'explore', 'annotation', 'quality', 'dataset_build'].includes(pageKey)
                     ) {
-                        this.error = 'This Agent dataset currently supports preprocessing, Admin source mutations, Viewer, and Runs.';
+                        this.error = 'This Agent dataset currently supports preprocessing, authorized source mutations, Viewer, and Runs.';
                         return;
                     }
                     const found = this.findPage(pageKey);
                     if (!found) return;
                     this.activeWorkspace = found.group.key;
                     this.activePage = found.page.key;
-                    const tabs = found.page.tabs;
+                    const tabs = this.currentSubTabs();
                     if (tabs.length && !tabs.some(tab => tab.key === this.activeTab)) {
                         await this.selectTab(tabs[0].key, false);
                     } else if (!tabs.length) {
@@ -4029,9 +4078,10 @@
                     if (tab === 'schema') tab = this.consoleMode === 'visualize' ? 'dataset_ops' : 'transform';
                     if (
                         this.selectedDataset?.remote
+                        && this.pageForTab(tab)?.group.key !== 'data_curation'
                         && ![
                             'cache', 'standardize', 'transform', 'split_merge', 'data_modification',
-                            'dataset_ops', 'explore_overview'
+                            'dataset_ops', 'explore_overview', 'temporal_caption'
                         ].includes(tab)
                     ) {
                         this.error = `This Agent dataset does not support the ${tab} workflow yet.`;
@@ -4043,6 +4093,10 @@
                     this.activeTab = tab;
                     this.activeWorkspace = found.group.key;
                     this.activePage = found.page.key;
+                    if (this.unifiedCurationActive()) {
+                        if (updateUrl) this.updateHomeUrl();
+                        return;
+                    }
                     this.syncSchemaOpForTab(tab);
                     if (['quality_flags', 'standardize', 'transform', 'dataset_ops', 'split_merge'].includes(tab)) await this.loadPreprocessCapabilities();
                     if (tab === 'quality_flags' && this.adminModeEnabled) {
@@ -4639,7 +4693,7 @@
                 canOperateRemote() {
                     return Boolean(
                         this.controlPlaneUser
-                        && ['admin', 'operator'].includes(this.controlPlaneUser.role)
+                        && ['admin', 'data_manager', 'operator'].includes(this.controlPlaneUser.role)
                     );
                 },
                 selectedRemoteNode() {
@@ -4653,10 +4707,16 @@
                 remoteSourceMutationsAvailable() {
                     return Boolean(
                         this.selectedDataset?.remote
-                        && this.legacyMutationsEnabled
-                        && this.adminModeEnabled
+                        && this.remoteSourceMutationsEnabled
+                        && this.selectedRemoteLocation?.source_mutation_allowed
                         && this.selectedRemoteNode()?.capabilities?.source_mutations_enabled
                     );
+                },
+                remoteMutationDisabledReason() {
+                    if (!this.selectedRemoteLocation?.source_mutation_allowed) return 'Source mutation permission is required for this dataset. Ask an administrator to configure Data permissions.';
+                    if (!this.remoteSourceMutationsEnabled) return 'Source deletion is disabled on Server A. Enable --enable-legacy-mutations 1 in the server configuration.';
+                    if (!this.selectedRemoteNode()?.capabilities?.source_mutations_enabled) return 'Source deletion is disabled on this Agent. Enable --allow-source-mutations in its configuration.';
+                    return '';
                 },
                 selectedServerNode() {
                     return this.controlPlaneNodes.find(
@@ -4908,9 +4968,7 @@
                     this.prefillMergeOutput();
                     this.storeDatasetKey(this.selectedDataset.key);
                     this.syncSchemaOpForTab(this.activeTab);
-                    if (this.activePage === 'explore' && this.activeTab !== 'explore_overview') {
-                        await this.selectTab('explore_overview', false);
-                    } else if (!['datasets', 'preprocessing', 'admin_operations', 'runs', 'explore'].includes(this.activePage)) {
+                    if (!['datasets', 'preprocessing', 'admin_operations', 'runs', 'explore', 'quality', 'annotation', 'dataset_build'].includes(this.activePage)) {
                         await this.selectPage('preprocessing', false);
                     }
                     this.remoteViewerJob = this.latestRemoteJob(location);
@@ -5822,7 +5880,7 @@
                         if (op !== 'split') return 'This operation is unavailable on remote datasets.';
                         if (!this.selectedRemoteLocation) return 'Select an available Agent dataset.';
                     } else if (this.preprocessCapabilities && !this.preprocessCapabilities.available) {
-                        return this.preprocessCapabilities.error || 'Local preprocessing dependencies are unavailable.';
+                        return this.preprocessCapabilities?.error || 'Local preprocessing dependencies are unavailable.';
                     }
                     if (op === 'split' && !(this.preprocess.episode_range.trim() || this.preprocess.task_filter.trim())) return 'Enter an episode range or task filter.';
                     if (op === 'subtract' && !(this.preprocess.subtract_src_keys || []).length) return 'Select at least one dataset to subtract.';
@@ -6599,8 +6657,8 @@
                     this.error = '';
                     this.busy = true;
                     try {
-                        const url = (this.selectedDataset.tagging && this.selectedDataset.tagging.merge_url)
-                            ? this.selectedDataset.tagging.merge_url
+                        const url = (this.selectedDataset.tagging && this.selectedDataset.tagging?.merge_url)
+                            ? this.selectedDataset.tagging?.merge_url
                             : `/api/tagging/${datasetKey}/merge`;
                         await this.requestJson(url, null, 'POST');
                         if (this.selectedDatasetKey !== datasetKey) return;
@@ -6663,7 +6721,7 @@
                 },
                 ownsRun(job) {
                     return !!(this.controlPlaneEnabled && this.controlPlaneUser?.user_id
-                        && ['operator', 'admin'].includes(this.controlPlaneUser.role)
+                        && ['operator', 'data_manager', 'admin'].includes(this.controlPlaneUser.role)
                         && job?.requested_by === this.controlPlaneUser.user_id);
                 },
                 canControlRun(job, action) {
@@ -7305,7 +7363,7 @@
                     if (!this.controlPlaneEnabled) return true;
                     return Boolean(
                         this.controlPlaneUser
-                        && ['admin', 'operator'].includes(this.controlPlaneUser.role)
+                        && ['admin', 'data_manager', 'operator'].includes(this.controlPlaneUser.role)
                     );
                 },
                 hasMutationTask() {
@@ -7407,7 +7465,7 @@
                     return Boolean(
                         this.selectedDataset &&
                         this.selectedDataset.labeling &&
-                        this.selectedDataset.labeling.labels_count > 0
+                        this.selectedDataset.labeling?.labels_count > 0
                     ) || Boolean(
                         this.activeJob &&
                         this.activeJob.job_type === 'labeling' &&
@@ -7420,7 +7478,7 @@
                     return Boolean(
                         this.selectedDataset &&
                         this.selectedDataset.labeling &&
-                        this.selectedDataset.labeling.reviewed_count > 0 &&
+                        this.selectedDataset.labeling?.reviewed_count > 0 &&
                         this.labeling.annotate
                     );
                 },
@@ -7578,13 +7636,13 @@
                     if (this.activeJob && this.activeJob.job_type === 'tagging' && this.activeJob.review_url && this.activeJob.dataset_key === this.selectedDataset.key) {
                         return this.activeJob.review_url;
                     }
-                    if (this.selectedDataset.tagging && this.selectedDataset.tagging.tags_count > 0) {
-                        return this.selectedDataset.tagging.review_url;
+                    if (this.selectedDataset.tagging && this.selectedDataset.tagging?.tags_count > 0) {
+                        return this.selectedDataset.tagging?.review_url;
                     }
                     return '';
                 },
                 canMergeTags() {
-                    return Boolean(this.selectedDataset && this.selectedDataset.tagging && this.selectedDataset.tagging.tags_count > 0);
+                    return Boolean(this.selectedDataset && this.selectedDataset.tagging && this.selectedDataset.tagging?.tags_count > 0);
                 },
                 canStartEmbedding() {
                     if (!this.operationAvailable('embedding')) return false;
@@ -7595,8 +7653,8 @@
                     if (this.activeJob && this.activeJob.job_type === 'embedding' && this.activeJob.review_url && this.activeJob.dataset_key === this.selectedDataset.key) {
                         return this.activeJob.review_url;
                     }
-                    if (this.selectedDataset.embedding && this.selectedDataset.embedding.points_count > 0) {
-                        return this.selectedDataset.embedding.scatter_url;
+                    if (this.selectedDataset.embedding && this.selectedDataset.embedding?.points_count > 0) {
+                        return this.selectedDataset.embedding?.scatter_url;
                     }
                     return '';
                 },
@@ -7710,7 +7768,7 @@
                 reviewUrl() {
                     if (!this.selectedDataset) return '';
                     if (this.activeJob && this.activeJob.review_url && this.activeJob.dataset_key === this.selectedDataset.key) return this.activeJob.review_url;
-                    if (this.selectedDataset.labeling && this.selectedDataset.labeling.review_url) return this.selectedDataset.labeling.review_url;
+                    if (this.selectedDataset.labeling && this.selectedDataset.labeling?.review_url) return this.selectedDataset.labeling?.review_url;
                     if (this.selectedDataset.cache_only) return '';
                     return `/${this.selectedDataset.key}/labeling`;
                 },

@@ -1,0 +1,37 @@
+/* Scoped to the embedded workspace; use the console's slate/sky palette. */
+.curation-workspace { --accent: #38bdf8; color: #e2e8f0; padding: 0 1.25rem 1.25rem; min-width: 0; }
+.curation-workspace .card { padding: 1rem; margin-top: 1rem; border: 1px solid #1e293b; border-radius: .625rem; background: rgba(2,6,23,.48); }
+.curation-workspace .row { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.curation-workspace .curation-toolbar { justify-content: space-between; padding-top: 1rem; }
+.curation-workspace h2 { margin: 0 0 .75rem; font-size: .875rem; font-weight: 600; color: #f1f5f9; }
+.curation-workspace h3 { margin: .75rem 0; font-weight: 600; }
+.curation-workspace p { margin: .5rem 0; }
+.curation-workspace .muted, .curation-workspace small { color: #94a3b8; font-size: .75rem; }
+.curation-workspace a { color: #7dd3fc; }
+.curation-workspace a:hover { color: #bae6fd; }
+.curation-workspace label { display: flex; flex-direction: column; gap: .375rem; color: #94a3b8; font-size: .75rem; min-width: 0; }
+.curation-workspace input, .curation-workspace select, .curation-workspace textarea { max-width: 100%; min-width: 0; padding: .5rem .75rem; border: 1px solid #334155; border-radius: .25rem; background: #020617; color: #e2e8f0; font: inherit; }
+.curation-workspace button { padding: .5rem .75rem; border: 1px solid #334155; border-radius: .5rem; background: #0f172a; color: #e2e8f0; font-size: .75rem; font-weight: 500; cursor: pointer; }
+.curation-workspace button:hover { border-color: #0369a1; background: #1e293b; }
+.curation-workspace button[type=submit], .curation-workspace button.primary { border-color: #0369a1; background: #0c4a6e; color: #e0f2fe; }
+.curation-workspace button:disabled { opacity: .45; cursor: not-allowed; }
+.curation-workspace input[type=checkbox] { width: auto; accent-color: #0ea5e9; }
+.curation-workspace .fields { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(220px,100%),1fr)); gap: .875rem; }
+.curation-workspace form .row { margin-top: .875rem; }
+.curation-workspace details { margin: .75rem 0; }
+.curation-workspace summary { cursor: pointer; color: #cbd5e1; }
+.curation-workspace table { width: 100%; border-collapse: collapse; font-size: .75rem; }
+.curation-workspace th, .curation-workspace td { padding: .625rem; text-align: left; border-bottom: 1px solid #1e293b; vertical-align: top; }
+.curation-workspace th { color: #94a3b8; font-weight: 500; }
+.curation-workspace .scroll { overflow: auto; max-height: 400px; }
+.curation-workspace .result-media { max-width: 100%; max-height: 450px; }
+.curation-workspace pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.curation-workspace svg { width: 100%; height: 320px; border: 1px solid #1e293b; }
+.curation-workspace [hidden] { display: none !important; }
+.curation-workspace .tag-row { display: flex; gap: .5rem; margin: .5rem 0; }
+.curation-workspace .tag-row input { flex: 1; width: 0; }
+.curation-workspace .progress { height: 6px; background: #1e293b; border-radius: 4px; overflow: hidden; }
+.curation-workspace .progress span { display: block; height: 100%; background: #0ea5e9; }
+.curation-workspace [data-curation-id=notice] { padding: .75rem; border: 1px solid #075985; border-radius: .5rem; background: #082f49; color: #bae6fd; }
+.curation-workspace [data-curation-id=notice].error { border-color: #991b1b; background: #450a0a; color: #fecaca; }
+@media (max-width: 640px) { .curation-workspace { padding: 0 .75rem .75rem; } }

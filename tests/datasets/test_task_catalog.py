@@ -571,7 +571,7 @@ def test_remote_mapping_upgrade_protocol_and_late_cache_completion(tmp_path):
         )
         assert complete.status_code == 200
     assert len(promoted) == 1
-    assert promoted[0] == tmp_path / "remote-cache" / ".jobs" / second_job["job_id"]
+    assert promoted[0] == tmp_path / "remote-cache" / location["location_id"]
     assert control.get_job(first_job["job_id"])["result"]["task_config_stale"]
     assert (
         client.get("/api/task-mappings?dataset_key=node-test/doors").get_json()["tasks"][0]["family"]

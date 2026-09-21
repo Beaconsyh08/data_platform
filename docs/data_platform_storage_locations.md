@@ -118,6 +118,29 @@ MySQL 的物理数据目录是 Server A 的 `/var/lib/mysql/`，库目录分别�
 | Agent 允许写入的输出父目录 | `/data1/huggingface` | `/srv/data-platform-dev` |
 | Viewer 预处理缓存位置 | 由具体数据集位置记录指定 | 已有开发任务使用 `/srv/data-platform-dev/datasets/vis` |
 
+Agent 的 `viewer.prepare` 执行期间先写入 `vis/.dp-<job_id>-<attempt_id>/cache`，
+成功后发布到数据集登记的 `output_dir`（默认 `vis/local_vis_<dataset_name>`），再上传缓存。
+若该位置已有缓存，旧目录保留在本次 `.dp-…/previous-cache` 中，便于恢复已有标注等文件；
+不会合并或删除旧缓存。发布支持中断后重试，并同步更新上传记录和结果中的路径。
+此行为需要安装包含该修复的 Agent 版本；旧版本完成的任务可能仍将缓存留在隐藏目录中。
+
+网页端也按数据集位置归档：`remote-cache/<location_id>/static/` 是该位置的固定结果目录。
+`.jobs/<job_id>/<attempt_id>/` 只用于上传中的文件，不再作为已完成 Viewer 的长期目录。
+启动 Web 时会迁移仍登记在 `.jobs` 下的旧缓存，更新登记，并保留旧路径的兼容链接；
+被替换的缓存保留备份。重建 Viewer 时保留人工 Flag、阶段、裁剪、待应用 prompt 和 reviewed 标注。
+若 episode 布局或阶段配置发生变化，不会把不兼容的旧标注套到新结果上，旧副本仍在备份中。
+任务配置已过期的完成结果归档到 `.history/<location_id>/<job_id>/<attempt_id>/`，不覆盖当前结果。
+
+网页是这些标注结果的主副本。Agent 在空闲时约每 10 秒检查有变化的 JSON/JSONL 结果文件，
+校验数据集与文件摘要后写到其登记的 `output_dir/static/`（默认上述 `vis/local_vis_…/static/`）。
+只有 Agent 确认写入成功后，Viewer 才显示“Results synced”；离线、权限不足或网络失败会保持待同步
+或显示失败，随后自动重试。旧 Agent 会提示需要升级。回传不修改源 Parquet、视频或 `meta/`；
+将标注应用到源数据仍是独立操作。已同步文件被删除时只删除对应受同步管理的文件，覆盖前保留备份。
+视频和完整 CSV 缓存不重复回传；结果同步覆盖顶层 JSON/JSONL，以及 labeling、tagging、analysis、
+annotations 下的 JSON/JSONL（不含审计日志），并包含网页阶段编辑实际修改过的 CSV 和阶段编码文件。
+单个数据集的结果文件合计上限 64 MiB；超限显示同步异常，不会误报成功。
+Server A 和 Agent 都需安装包含此协议的版本，按先 Server A、后 Agent 的顺序更新。
+
 之前复制过来的开发副本，例如 UMI 样本，位于：
 
 ```text

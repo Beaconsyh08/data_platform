@@ -20,6 +20,49 @@
     {% set page_title = dataset_info.repo_id %}
     {% set page_subtitle = "Episode " ~ episode_id %}
     {% include "visualize_dataset_topbar.html" %}
+    {% if result_sync_enabled | default(false) %}
+    <div id="dataset-result-sync" role="status" class="border-b border-slate-700 px-4 py-1 text-xs text-amber-300">
+        Checking result synchronization…
+    </div>
+    <script>
+        (() => {
+            const banner = document.getElementById('dataset-result-sync');
+            const key = {{ remote_dataset_key | tojson }};
+            const messages = {
+                pending: 'Results saved on the web server. Waiting to sync to the dataset server.',
+                synced: 'Results synced to the dataset server.',
+                error: 'Result sync failed. Saved results are retained; the Agent will retry.',
+                unsupported: 'Results saved on the web server. Upgrade the Agent to enable synchronization.'
+            };
+            let lastUpdate = 0;
+            const show = (state) => {
+                if (!state || (state.updated_at && state.updated_at < lastUpdate)) return;
+                lastUpdate = state.updated_at || lastUpdate;
+                banner.hidden = state.state === 'local';
+                banner.textContent = messages[state.state] || 'Result synchronization status unavailable.';
+                banner.classList.toggle('text-amber-300', state.state !== 'synced');
+                banner.classList.toggle('text-emerald-300', state.state === 'synced');
+            };
+            window.__showDatasetResultSync = show;
+            const refresh = async () => {
+                try {
+                    const response = await fetch(`/api/dataset-results/status?dataset_key=${encodeURIComponent(key)}`, {cache: 'no-store'});
+                    if (!response.ok) throw new Error('Status unavailable');
+                    const state = await response.json();
+                    show(state);
+                } catch (_) {
+                    banner.hidden = false;
+                    banner.textContent = 'Cannot confirm result synchronization. Retrying…';
+                    banner.classList.add('text-amber-300');
+                    banner.classList.remove('text-emerald-300');
+                }
+            };
+            refresh();
+            const timer = setInterval(refresh, 10000);
+            window.addEventListener('pagehide', () => clearInterval(timer), {once: true});
+        })();
+    </script>
+    {% endif %}
     <div x-show="flagDialogOpen"
          x-cloak
          class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4"
@@ -325,6 +368,7 @@
                       :title="currentFlagReasonDetails()"
                       class="max-w-[520px] truncate rounded border border-red-500/30 bg-red-950/50 px-2 py-0.5 text-xs text-red-100"></span>
                 <button @click="toggleAnnotateMode()"
+                        :disabled="!annotationEditable"
                         class="px-2 py-0.5 text-xs font-semibold rounded select-none cursor-pointer"
                         :class="annotateEnabled ? 'bg-yellow-600/80 text-yellow-100' : 'bg-slate-700/60 text-slate-400'"
                         x-text="annotateEnabled ? 'EDIT ON' : 'EDIT OFF'"
@@ -338,10 +382,15 @@
                 {% if legacy_mutations_enabled %}
                 <span x-show="adminModeEnabled"
                       class="rounded border border-red-700 bg-red-950/70 px-2 py-0.5 text-xs font-semibold text-red-100">ADMIN</span>
-                <button x-show="stageEditEnabled && adminModeEnabled"
+                <button x-show="adminModeEnabled"
                         @click="deleteEpisode()"
                         class="px-2 py-0.5 text-xs font-semibold rounded bg-red-900/70 text-red-300 hover:bg-red-800 select-none cursor-pointer"
                         title="Delete this entire episode (irreversible)">DEL</button>
+                {% endif %}
+                {% if remote_delete_url %}
+                <button @click="deleteEpisode()" :disabled="trimApplying"
+                        class="px-2 py-0.5 text-xs font-semibold rounded bg-red-900/70 text-red-300 hover:bg-red-800"
+                        title="Submit deletion of this episode to its Agent">DEL</button>
                 {% endif %}
                 <template x-if="trimEnabled && (trimStart !== null || trimEnd !== null)">
                     <div class="flex items-center gap-1">
@@ -383,7 +432,7 @@
                           : 'bg-gray-700/50 text-gray-400',
                         stageEditEnabled ? 'cursor-pointer' : 'cursor-default']"
                       @click="stageEditEnabled && advanceSubtask()"
-                      :title="stageEditEnabled ? `Click or press N to advance subtask state (resets after ${_maxSubtaskState()})` : 'Read-only (use --annotate 1 to enable editing)'"></span>
+                      :title="stageEditEnabled ? `Click or press N to advance subtask state (resets after ${_maxSubtaskState()})` : (annotationEditable ? 'Click EDIT OFF to enable editing' : 'Viewer accounts are read-only')"></span>
                 <template x-if="stageEditEnabled">
                     <div class="flex items-center gap-1">
                         <button @click="saveStageEdits()"
@@ -972,7 +1021,8 @@
                 annotateEnabled: {{ 'true' if annotate_enabled else 'false' }},
                 legacyMutationsEnabled: {{ 'true' if legacy_mutations_enabled else 'false' }},
                 adminModeEnabled: {{ 'true' if legacy_mutations_enabled else 'false' }},
-                stageEditEnabled: {{ 'true' if stage_edit_enabled else 'false' }},
+                annotationEditable: {{ 'true' if annotation_editable else 'false' }},
+                stageEditEnabled: {{ 'true' if stage_edit_enabled and annotation_editable else 'false' }},
                 currentEpisodeHasIssue: {{ 'true' if current_issue_episode else 'false' }},
                 _dragState: null,
                 _rafId: null,
@@ -983,6 +1033,8 @@
                 trimUrl: "{{ trim_url }}",
                 trimMergeUrl: "{{ trim_merge_url }}",
                 deleteEpisodeUrl: "{{ delete_episode_url }}",
+                remoteDeleteUrl: {{ remote_delete_url|default('')|tojson }},
+                remoteDatasetKey: {{ remote_dataset_key|default('')|tojson }},
                 _trimDragState: null,
                 _trimRafId: null,
                 _trimActiveHandle: null,
@@ -1850,6 +1902,7 @@
                 },
 
                 _setFlagState(data) {
+                    window.__showDatasetResultSync?.(data.result_sync);
                     this.flaggedEpisodes = new Set(data.flagged_episodes || []);
                     this.saveFlaggedEpisodeCache();
                     if (this.flaggedEpisodes.size === 0) {
@@ -3187,6 +3240,7 @@
                 },
 
                 async toggleAnnotateMode() {
+                    if (!this.annotationEditable) return;
                     try {
                         const newVal = !this.annotateEnabled;
                         const resp = await fetch(this.annotateToggleUrl, {
@@ -3195,6 +3249,7 @@
                             body: JSON.stringify({ annotate: newVal }),
                         });
                         const data = await resp.json();
+                        if (!resp.ok) throw new Error(data.error || data.status || `HTTP ${resp.status}`);
                         this.annotateEnabled = data.annotate;
                         this.stageEditEnabled = data.annotate || this.currentEpisodeHasIssue;
                         window.__stageEditEnabled = this.stageEditEnabled;
@@ -3203,7 +3258,7 @@
                         }
                         this._updateStageInChart();
                     } catch (e) {
-                        console.warn('Failed to toggle annotate mode:', e);
+                        alert('Failed to toggle editing: ' + e.message);
                     }
                 },
 
@@ -3381,6 +3436,7 @@
                         if (!resp.ok) {
                             throw new Error(`save failed: ${resp.status}`);
                         }
+                        window.__showDatasetResultSync?.((await resp.json()).result_sync);
                         return true;
                     } catch (e) {
                         console.warn('Failed to save subtask annotation:', e);
@@ -3562,7 +3618,7 @@
 
                 async saveTrimAnnotation() {
                     try {
-                        await fetch(this.trimUrl, {
+                        const resp = await fetch(this.trimUrl, {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
@@ -3573,6 +3629,8 @@
                                 trim_end: this.trimEnd !== null ? this.frameToTime(this.trimEnd) : null,
                             }),
                         });
+                        if (!resp.ok) throw new Error(`save failed: ${resp.status}`);
+                        window.__showDatasetResultSync?.((await resp.json()).result_sync);
                     } catch (e) {
                         console.warn('Failed to save trim annotation:', e);
                     }
@@ -3671,7 +3729,7 @@
                 },
 
                 async deleteEpisode() {
-                    if (!this.adminModeEnabled) {
+                    if (!this.adminModeEnabled && !this.remoteDeleteUrl) {
                         alert('Admin Mode is not active. Enable it from the Data Platform home page first.');
                         return;
                     }
@@ -3688,6 +3746,22 @@
                     this.trimProgressTotal = 7;
                     this.trimProgressMsg = 'Starting deletion...';
                     try {
+                        if (this.remoteDeleteUrl) {
+                            const response = await fetch(this.remoteDeleteUrl, {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({
+                                    op: 'delete_episodes',
+                                    options: {episodes: [this.currentEpisodeId], reason},
+                                    confirmation: `MUTATE ${this.remoteDatasetKey}`,
+                                }),
+                            });
+                            const data = await response.json();
+                            if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+                            alert('Deletion task submitted. Follow its progress in Runs.');
+                            window.location.href = '/?page=runs';
+                            return;
+                        }
                         const resp = await fetch(this.deleteEpisodeUrl, {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
@@ -4131,7 +4205,7 @@
     </script>
 
     <script>
-        window.__stageEditEnabled = {{ 'true' if stage_edit_enabled else 'false' }};
+        window.__stageEditEnabled = {{ 'true' if stage_edit_enabled and annotation_editable else 'false' }};
         window.addEventListener('keydown', (e) => {
             // Use the space bar to play and pause, instead of default action (e.g. scrolling)
             const { keyCode, key } = e;

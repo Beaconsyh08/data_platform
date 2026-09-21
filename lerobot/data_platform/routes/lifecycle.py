@@ -7,7 +7,7 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 
-from flask import jsonify, request
+from flask import g, jsonify, request
 
 from lerobot.data_platform.cli import get_default_output_dir, run_precompute
 from lerobot.data_platform.lifecycle import (
@@ -22,6 +22,10 @@ from lerobot.data_platform.local_execution import launch_background
 
 
 def register_lifecycle_routes(app, ctx) -> None:
+    def actor(body, field):
+        user = getattr(g, "control_plane_user", None)
+        return user["username"] if user else str(body.get(field) or "local-user")
+
     def _store() -> LifecycleStore:
         provider = getattr(ctx, "lifecycle_store", None)
         if provider is None:
@@ -258,7 +262,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                     else None
                 ),
                 metadata=dict(body.get("metadata") or {}),
-                created_by=str(body.get("created_by") or "local-user"),
+                created_by=actor(body, "created_by"),
             )
             return jsonify({"source_batch": batch.to_dict()})
         except Exception as exc:
@@ -286,7 +290,7 @@ def register_lifecycle_routes(app, ctx) -> None:
             profile = _store().create_dataset_profile(
                 str(body.get("dataset_version_id") or ""),
                 distributions=dict(body.get("distributions") or {}),
-                created_by=str(body.get("created_by") or "local-user"),
+                created_by=actor(body, "created_by"),
                 task_config=body.get("task_config"),
             )
             return jsonify({"dataset_profile": profile.to_dict()})
@@ -329,7 +333,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                 quality_constraints=dict(body.get("quality_constraints") or {}),
                 composition_constraints=dict(body.get("composition_constraints") or {}),
                 reason=body.get("reason"),
-                created_by=str(body.get("created_by") or "local-user"),
+                created_by=actor(body, "created_by"),
             )
             return jsonify({"requirement": requirement.to_dict()})
         except Exception as exc:
@@ -364,7 +368,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                 composition=dict(body.get("composition") or {}),
                 deduplication=dict(body.get("deduplication") or {}),
                 random_seed=int(body.get("random_seed") or 0),
-                created_by=str(body.get("created_by") or "local-user"),
+                created_by=actor(body, "created_by"),
                 task_config=body.get("task_config"),
             )
             return jsonify({"recipe": recipe.to_dict()})
@@ -379,7 +383,7 @@ def register_lifecycle_routes(app, ctx) -> None:
         try:
             workspace = _store().compile_recipe(
                 recipe_id,
-                owner=str(body.get("owner") or "local-user"),
+                owner=actor(body, "owner"),
             )
             return jsonify({"workspace": workspace.to_dict()})
         except KeyError as exc:
@@ -435,7 +439,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                 str(body.get("name") or ""),
                 steps=list(body.get("steps") or []),
                 content_options=dict(body.get("content_options") or {}),
-                created_by=str(body.get("created_by") or "local-user"),
+                created_by=actor(body, "created_by"),
             )
             return jsonify({"profile": profile.to_dict()})
         except Exception as exc:
@@ -548,7 +552,7 @@ def register_lifecycle_routes(app, ctx) -> None:
             )
             workspace = store.create_workspace(
                 base.version_id,
-                owner=str(body.get("owner") or "local-user"),
+                owner=actor(body, "owner"),
                 decisions=decisions,
                 annotation_patches=patches,
                 repair_recipes=_normalize_repairs(base, list(body.get("repair_recipes") or [])),
@@ -677,7 +681,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                 evidence=evidence,
                 rule_versions=dict(body.get("rule_versions") or {}),
                 model_versions=dict(body.get("model_versions") or {}),
-                created_by=str(body.get("created_by") or "local-user"),
+                created_by=actor(body, "created_by"),
                 reason=body.get("reason"),
                 supersedes_manifest_id=body.get("supersedes_manifest_id"),
             )
@@ -824,7 +828,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                 failures=failures,
                 coverage_gaps=list(body.get("coverage_gaps") or []),
                 collection_brief=dict(body.get("collection_brief") or {}),
-                created_by=str(body.get("created_by") or "local-user"),
+                created_by=actor(body, "created_by"),
                 manifest_id=body.get("manifest_id"),
             )
             return jsonify({"feedback": report.to_dict()})

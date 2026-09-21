@@ -53,12 +53,12 @@ def launch_background(*, target, name, daemon=True, thread_factory=None):
     return None
 
 
-def enqueue_local(app, ctx, job, *, continuation=None):
+def enqueue_local(app, ctx, job, *, continuation=None, command=None, idempotency_key=None):
     from lerobot.data_platform.environment import EnvironmentIdentity, verify_directory
 
     store = ctx.control_plane_store
     user = getattr(g, "control_plane_user", None)
-    if not user or user["role"] not in {"admin", "operator"}:
+    if not user or user["role"] not in {"admin", "data_manager", "operator"}:
         raise PermissionError("Authenticated operator required for local job submission")
     root = Path(app.static_folder).parent / "management"
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -156,6 +156,7 @@ def enqueue_local(app, ctx, job, *, continuation=None):
                 "allow_source_mutations": app.config.get("DATA_PLATFORM_LEGACY_MUTATIONS", False),
             },
         )
+        store.configure_local_execution_roots(state["node_id"], allowed, sorted(writable))
         location = store.sync_locations(
             state["node_id"],
             [
@@ -179,15 +180,23 @@ def enqueue_local(app, ctx, job, *, continuation=None):
             },
             "continuation": continuation,
         }
+        if command is not None:
+            from lerobot.data_platform.curation_execution import worker_capabilities
+
+            capabilities = {**agent_capabilities_for_local(), **worker_capabilities()}
+            store.heartbeat(state["node_id"], capabilities=capabilities)
+            options = command["options"]
         persisted = store.create_job(
             location_id=location["location_id"],
             requested_by=user["user_id"],
-            operation=f"local.request.{request.endpoint}",
+            operation=command["operation"] if command else f"local.request.{request.endpoint}",
             options=options,
             job_id=job["id"],
+            idempotency_key=idempotency_key,
         )
         job["persistent_job_id"] = persisted["job_id"]
         job["message"] = "Queued for the local executor"
+        return persisted
 
 
 def local_job_payload(store, persistent):
@@ -329,7 +338,7 @@ def internal_execution_user(store):
         return None
     with store.sessions() as session:
         actor = session.get(ControlPlaneUser, config["job"]["requested_by"])
-        if actor is None or not actor.active or actor.role not in {"admin", "operator"}:
+        if actor is None or not actor.active or actor.role not in {"admin", "data_manager", "operator"}:
             raise PermissionError("Submitting account is no longer permitted to execute")
         return store._user_dict(actor)
 
@@ -368,6 +377,25 @@ def main():
         except Exception:
             logging.exception("Local executor will retry reconciliation")
         time.sleep(3)
+
+
+def agent_capabilities_for_local():
+    from lerobot.data_platform.curation_execution import worker_capabilities
+
+    return {
+        **worker_capabilities(),
+        "job_protocol": 2,
+        "data_profile_protocol": 100,
+        "local_requests": True,
+        "environment": os.environ.get("DATA_PLATFORM_ENV", "legacy"),
+        "instance_id": os.environ.get("DATA_PLATFORM_INSTANCE_ID", ""),
+        "release": os.environ.get("DATA_PLATFORM_RELEASE", "legacy"),
+        "caption_protocol": 1,
+        "caption_schemes": ["multiview_semantics", "video_events", "fusion_review"],
+        "caption_configured": bool(
+            os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_DASHSCOPE_API_KEY")
+        ),
+    }
 
 
 if __name__ == "__main__":

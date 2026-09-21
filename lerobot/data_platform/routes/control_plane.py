@@ -70,7 +70,13 @@ _REMOTE_MERGE_OPTION_KEYS = {
     "dry_run",
     "out_root",
 }
-_DERIVED_VIEWER_OPERATIONS = {"preprocess.standardize", "preprocess.merge", "preprocess.split"}
+_DERIVED_VIEWER_OPERATIONS = {
+    "preprocess.standardize",
+    "preprocess.merge",
+    "preprocess.split",
+    "curation.materialize",
+    "curation.construction",
+}
 
 
 def _normalize_remote_path(value: object, label: str) -> PurePosixPath:
@@ -365,6 +371,28 @@ def register_control_plane_auth_routes(
             return jsonify({"error": str(exc)}), 400
         return jsonify({"user": user})
 
+    @app.route("/api/auth/users/<string:user_id>/data-scopes", methods=["GET", "PUT"])
+    def control_plane_data_scopes(user_id: str):
+        actor = _current_user()
+        if request.method == "PUT" or not actor or actor["user_id"] != user_id:
+            denied = _role_denied("admin")
+            if denied:
+                return denied
+        if request.method == "GET":
+            return jsonify(location_ids=store.granted_mutation_location_ids(user_id))
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or "location_ids" not in body:
+            return jsonify(error="location_ids array required"), 400
+        try:
+            selected = store.set_mutation_locations(user_id, body["location_ids"], actor=actor)
+        except PermissionError as exc:
+            return jsonify(error=str(exc)), 403
+        except KeyError:
+            return jsonify(error="user not found"), 404
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        return jsonify(location_ids=selected)
+
 
 def register_control_plane_routes(
     app: Flask,
@@ -383,7 +411,7 @@ def register_control_plane_routes(
     register_episode_deletion_request_routes(app, store, mutations_enabled=legacy_mutations_enabled)
     remote_cache_root = Path(remote_cache_root).expanduser().resolve()
     from lerobot.data_platform.admin_management import configure_management
-    from lerobot.data_platform.execution import serialize_completion
+    from lerobot.data_platform.execution import atomic_json, serialize_completion
     from lerobot.data_platform.job_management import JobConflictError
     from lerobot.data_platform.routes.management import register_management_routes
 
@@ -391,6 +419,9 @@ def register_control_plane_routes(
         app, store, remote_cache_root.parent, getattr(task_catalog_store, "repository", None)
     )
     register_management_routes(app, store)
+    from lerobot.data_platform.routes.dataset_results import register_dataset_result_routes
+
+    register_dataset_result_routes(app, store, remote_cache_root)
 
     def _execution_credentials():
         return {
@@ -527,7 +558,7 @@ def register_control_plane_routes(
             refreshed = store.heartbeat(node["node_id"], capabilities=body.get("capabilities"))
         except KeyError:
             return jsonify({"error": "node not found"}), 404
-        return jsonify({"node": refreshed})
+        return jsonify({"node": refreshed, "result_sync_protocol": 1})
 
     @app.route("/api/agents/locations/sync", methods=["POST"])
     def agent_sync_locations():
@@ -603,13 +634,8 @@ def register_control_plane_routes(
             return jsonify({"error": "job does not accept viewer artifacts"}), 403
         if job["status"] != "running":
             return jsonify({"error": "job is not running"}), 409
-        versioned_cache = bool((job.get("options") or {}).get("task_config"))
         attempt = request.headers.get("X-Job-Attempt")
-        cache_key = (
-            Path(".jobs") / job_id / attempt
-            if attempt
-            else (Path(".jobs") / job_id if derived or versioned_cache else Path(job["location_id"]))
-        )
+        cache_key = Path(".jobs") / job_id / attempt if attempt else Path(".jobs") / job_id
         base = (remote_cache_root / cache_key / "static").resolve()
         target = (base / filename).resolve()
         try:
@@ -638,18 +664,35 @@ def register_control_plane_routes(
     def agent_upload_derived_artifact(job_id: str, filename: str):
         return _store_agent_artifact(job_id, filename, derived=True)
 
-    def _promote_derived_cache(job_id: str, location: dict) -> tuple[Path, str]:
-        staged_cache = remote_cache_root / ".jobs" / job_id
-        if request.headers.get("X-Job-Attempt"):
-            staged_cache /= request.headers["X-Job-Attempt"]
+    def _promote_derived_cache(
+        job_id: str, location: dict, *, staged_cache: Path | None = None
+    ) -> tuple[Path, str]:
+        from lerobot.data_platform.dataset_results import result_lock
+
+        cache_output_dir = remote_cache_root / location["location_id"]
+        with result_lock(cache_output_dir):
+            return _promote_locked_cache(job_id, location, staged_cache=staged_cache)
+
+    def _promote_locked_cache(job_id: str, location: dict, *, staged_cache: Path | None) -> tuple[Path, str]:
+        from lerobot.data_platform.dataset_results import preserve_results
+
+        if staged_cache is None:
+            staged_cache = remote_cache_root / ".jobs" / job_id
+            if request.headers.get("X-Job-Attempt"):
+                staged_cache /= request.headers["X-Job-Attempt"]
         manifest = staged_cache / "static" / "viewer_manifest.json"
         cache_output_dir = remote_cache_root / location["location_id"]
         owner = {"job_id": job_id, "attempt_id": request.headers.get("X-Job-Attempt")}
-        if not manifest.is_file():
+        if staged_cache == cache_output_dir or not manifest.is_file():
             receipt = cache_output_dir / ".execution-owner.json"
             if receipt.is_file() and json.loads(receipt.read_text()) == owner:
                 return cache_output_dir, register_remote_cache(location, cache_output_dir)
             raise ValueError("job did not upload viewer_manifest.json")
+        previous = Path((location.get("metadata") or {}).get("cache_root") or cache_output_dir)
+        if previous.resolve() != staged_cache.resolve():
+            if not previous.resolve().is_relative_to(remote_cache_root):
+                raise ValueError("Registered cache is outside the configured cache root")
+            preserve_results(previous, staged_cache)
         (staged_cache / ".execution-owner.json").write_text(json.dumps(owner))
         backup = cache_output_dir.with_name(f".{cache_output_dir.name}.backup-{uuid.uuid4().hex}")
         if cache_output_dir.exists():
@@ -663,8 +706,6 @@ def register_control_plane_routes(
             if backup.exists():
                 os.replace(backup, cache_output_dir)
             raise
-        else:
-            shutil.rmtree(backup, ignore_errors=True)
         return cache_output_dir, viewer_url
 
     @app.route("/api/agents/jobs/<string:job_id>/complete", methods=["POST"])
@@ -690,16 +731,24 @@ def register_control_plane_routes(
                 )
             if status == "done" and current["operation"] == "viewer.prepare":
                 task_config = (current.get("options") or {}).get("task_config")
-                cache_output_dir = (
-                    remote_cache_root / ".jobs" / job_id
-                    if task_config
-                    else remote_cache_root / current["location_id"]
-                )
+                location = store.get_location(current["location_id"])
+                cache_output_dir = remote_cache_root / ".jobs" / job_id
                 if request.headers.get("X-Job-Attempt"):
                     cache_output_dir = remote_cache_root / ".jobs" / job_id / request.headers["X-Job-Attempt"]
+                archive = remote_cache_root / ".history" / location["location_id"] / job_id
+                if request.headers.get("X-Job-Attempt"):
+                    archive /= request.headers["X-Job-Attempt"]
+                owner = {"job_id": job_id, "attempt_id": request.headers.get("X-Job-Attempt")}
                 manifest = cache_output_dir / "static" / "viewer_manifest.json"
                 if not manifest.is_file():
-                    raise ValueError("viewer job did not upload viewer_manifest.json")
+                    for published in (remote_cache_root / current["location_id"], archive):
+                        receipt = published / ".execution-owner.json"
+                        if receipt.is_file() and json.loads(receipt.read_text()) == owner:
+                            cache_output_dir = published
+                            manifest = published / "static" / "viewer_manifest.json"
+                            break
+                    if not manifest.is_file():
+                        raise ValueError("viewer job did not upload viewer_manifest.json")
                 if task_config:
                     from lerobot.data_platform.task_catalog import TaskConfigSnapshot
 
@@ -708,7 +757,6 @@ def register_control_plane_routes(
                     )
                     if recorded.to_dict()["digest"] != task_config["digest"]:
                         raise ValueError("Agent cache task configuration does not match the queued job")
-                location = store.get_location(current["location_id"])
                 desired = (
                     task_catalog_store.snapshot(location["dataset_key"]).to_dict()
                     if task_catalog_store
@@ -716,14 +764,34 @@ def register_control_plane_routes(
                 )
                 if task_config and desired and task_config["digest"] != desired["digest"]:
                     result["task_config_stale"] = True
+                    if cache_output_dir not in {archive, remote_cache_root / location["location_id"]}:
+                        archive.parent.mkdir(parents=True, exist_ok=True)
+                        if archive.exists():
+                            raise ValueError("Archived viewer result already exists")
+                        atomic_json(cache_output_dir / ".execution-owner.json", owner)
+                        os.replace(cache_output_dir, archive)
+                        cache_output_dir = archive
+                    result["cache_root"] = str(cache_output_dir)
                 else:
-                    viewer_url = register_remote_cache(location, cache_output_dir)
+                    cache_output_dir, viewer_url = _promote_derived_cache(
+                        job_id, location, staged_cache=cache_output_dir
+                    )
                     store.mark_viewer_ready(
                         current["location_id"],
                         viewer_url=viewer_url,
                         cache_root=str(cache_output_dir),
                     )
                     result["viewer_url"] = viewer_url
+            if status == "done" and current["operation"] == "caption.annotate":
+                complete_caption = app.extensions.get("data_platform_complete_caption")
+                if complete_caption is None:
+                    raise ValueError("Caption completion handler is unavailable")
+                result = complete_caption(current, result)
+            if status == "done" and current["operation"].startswith("curation."):
+                complete_curation = app.extensions.get("data_platform_complete_curation")
+                if complete_curation is None:
+                    raise ValueError("Curation completion handler is unavailable")
+                result = complete_curation(current, result)
             derived = result.get("dataset_location")
             if status == "done" and isinstance(derived, dict):
                 synced_location = store.sync_locations(node["node_id"], [derived])[0]
@@ -772,6 +840,10 @@ def register_control_plane_routes(
                 error=body.get("error"),
                 **_execution_credentials(),
             )
+            if current["operation"] == "caption.annotate":
+                cleanup_caption = app.extensions.get("data_platform_cleanup_caption")
+                if cleanup_caption is not None:
+                    cleanup_caption(current)
         except KeyError:
             return jsonify({"error": "job not found for this node"}), 404
         except JobConflictError:
@@ -786,7 +858,15 @@ def register_control_plane_routes(
 
     @app.route("/api/control/locations")
     def control_locations():
-        return jsonify({"locations": store.list_locations()})
+        allowed = set(store.mutation_location_ids(_current_user()["user_id"]))
+        return jsonify(
+            {
+                "locations": [
+                    {**location, "source_mutation_allowed": location["location_id"] in allowed}
+                    for location in store.list_locations()
+                ]
+            }
+        )
 
     @app.route("/api/control/jobs")
     def control_jobs():
@@ -810,7 +890,7 @@ def register_control_plane_routes(
 
     @app.route("/api/control/locations/<string:location_id>/viewer-jobs", methods=["POST"])
     def control_create_viewer_job(location_id: str):
-        denied = _role_denied("admin", "operator")
+        denied = _role_denied("admin", "data_manager", "operator")
         if denied:
             return denied
         body = request.get_json(silent=True) or {}
@@ -858,7 +938,7 @@ def register_control_plane_routes(
 
     @app.route("/api/control/locations/<string:location_id>/preprocess-jobs", methods=["POST"])
     def control_create_preprocess_job(location_id: str):
-        denied = _role_denied("admin", "operator")
+        denied = _role_denied("admin", "data_manager", "operator")
         if denied:
             return denied
         body = request.get_json(silent=True) or {}
@@ -1008,7 +1088,7 @@ def register_control_plane_routes(
 
     @app.route("/api/control/locations/<string:location_id>/mutation-jobs", methods=["POST"])
     def control_create_mutation_job(location_id: str):
-        denied = _role_denied("admin")
+        denied = _role_denied("admin", "data_manager")
         if denied:
             return denied
         if not legacy_mutations_enabled:
@@ -1027,6 +1107,10 @@ def register_control_plane_routes(
             location = store.get_location(location_id)
         except KeyError:
             return jsonify({"error": "dataset location not found"}), 404
+        if location_id not in store.mutation_location_ids(_current_user()["user_id"]):
+            return jsonify(error="Source mutation permission is required for this dataset location"), 403
+        if location["state"] != "available":
+            return jsonify(error="Dataset location is not available"), 409
         node = next(
             (item for item in store.list_nodes() if item["node_id"] == location["node_id"]),
             None,
@@ -1041,8 +1125,14 @@ def register_control_plane_routes(
             return jsonify({"error": "reason is required for remote source mutations"}), 400
         if len(reason) > 500:
             return jsonify({"error": "reason must be 500 characters or fewer"}), 400
-        if op == "delete_episodes" and not options.get("episodes"):
-            return jsonify({"error": "episodes are required"}), 400
+        if op == "delete_episodes":
+            episodes = options.get("episodes")
+            if (
+                not isinstance(episodes, list)
+                or not 1 <= len(episodes) <= 10000
+                or any(type(value) is not int or value < 0 for value in episodes)
+            ):
+                return jsonify(error="Select 1-10000 explicit non-negative episode indices"), 400
         if op == "value_edit" and not isinstance(options.get("edits"), list):
             return jsonify({"error": "edits must be an array"}), 400
         job_options = dict(options)
@@ -1058,6 +1148,8 @@ def register_control_plane_routes(
                 options=job_options,
                 idempotency_key=request.headers.get("Idempotency-Key"),
             )
+        except PermissionError as exc:
+            return jsonify(error=str(exc)), 403
         except KeyError:
             return jsonify({"error": "dataset location not found"}), 404
         return jsonify({"job": job}), 202

@@ -83,7 +83,7 @@
                                 <td class="px-4 py-3">
                                     <select class="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm"
                                             :value="account.role" @change="updateUser(account, {role: $event.target.value})">
-                                        <option value="viewer">Viewer</option><option value="operator">Operator</option><option value="admin">Admin</option>
+                                        <option value="viewer">Viewer</option><option value="operator">Operator</option><option value="data_manager">Data manager</option><option value="admin">Admin</option>
                                     </select>
                                 </td>
                                 <td class="px-4 py-3"><span :class="account.active ? 'text-emerald-300' : 'text-amber-300'" x-text="account.active ? 'Approved' : 'Pending / disabled'"></span></td>
@@ -93,11 +93,30 @@
                                     <button class="rounded-lg border border-red-900 bg-red-950/40 px-3 py-1.5 text-red-200"
                                             x-show="account.active && account.user_id !== currentUserId" @click="updateUser(account, {active: false})">Disable</button>
                                     <button class="rounded-lg border border-slate-700 px-3 py-1.5" @click="resetPassword(account)">Reset password</button>
+                                    <button x-show="account.role === 'data_manager'" class="rounded-lg border border-slate-700 px-3 py-1.5" @click="editDataScopes(account)">Data permissions</button>
                                 </td>
                             </tr>
                         </template>
                     </tbody>
                 </table>
+            </div>
+            <div x-show="scopeAccount" x-cloak class="border-t border-slate-800 p-4">
+                <h3 class="font-medium" x-text="'Data permissions · ' + (scopeAccount?.username || '')"></h3>
+                <p class="my-2 text-sm text-slate-400">Selected datasets allow direct source edits and episode deletion without approval. Confirmation and recovery backups still apply. New datasets are not included automatically. Whole-dataset deletion is not granted.</p>
+                <p class="text-sm text-slate-400" x-show="!locations.length">No registered datasets are available.</p>
+                <div class="max-h-72 overflow-y-auto space-y-2">
+                    <template x-for="location in locations" :key="location.location_id">
+                        <label class="flex items-center gap-2 text-sm">
+                            <input type="checkbox" :value="location.location_id" x-model="scopeLocationIds" :disabled="scopeBusy || (location.state !== 'available' && !scopeLocationIds.includes(location.location_id))">
+                            <span x-text="locationName(location)"></span>
+                            <span class="text-xs text-slate-400" x-text="(location.node_name || '') + ' · ' + location.root"></span>
+                        </label>
+                    </template>
+                </div>
+                <p class="my-2 text-xs text-amber-200" x-show="!scopeLocationIds.length">No source mutation permission. Select datasets to grant access.</p>
+                <button :disabled="scopeBusy" @click="saveDataScopes()" class="mt-3 rounded bg-sky-800 px-3 py-2">Save data permissions</button>
+                <button :disabled="scopeBusy" @click="scopeLocationIds = []" class="ml-2 rounded border border-slate-700 px-3 py-2">Clear selection</button>
+                <button :disabled="scopeBusy" @click="scopeAccount = null" class="ml-2 rounded border border-slate-700 px-3 py-2">Close</button>
             </div>
         </section>
         {% endif %}
@@ -299,6 +318,7 @@
     <script>
         function controlPlane() {
             return {
+                scopeAccount: null, scopeLocationIds: [], scopeBusy: false,
                 nodes: [], locations: [], jobs: [], users: [], selectedNodeId: '', error: '', timer: null,
                 myJobsOnly: false, busyJob: null, jobHistory: null,
                 section: 'overview', refreshing: false, lastUpdated: null,
@@ -368,7 +388,7 @@
                 databaseTables: [], databaseTable: '', databaseRows: [], databaseField: '', databaseValue: '', databaseOffset: 0, databaseMore: false, databaseError: '',
                 locationSearch: '', locationStatusFilter: '', locationPage: 1, locationPageSize: 20,
                 isAdmin: {{ (user.role == "admin")|tojson }},
-                canOperate: {{ (user.role in ["admin", "operator"])|tojson }},
+                canOperate: {{ (user.role in ["admin", "data_manager", "operator"])|tojson }},
                 currentUserId: {{ user.user_id|tojson }},
                 currentUsername: {{ user.username|tojson }},
                 async request(url, options = {}) {
@@ -501,6 +521,30 @@
                 async prepareViewer(location) {
                     try { await this.request(`/api/control/locations/${location.location_id}/viewer-jobs`, {method: 'POST', body: '{}'}); await this.load(); this.openJobs('queued'); }
                     catch (error) { this.error = error.message; }
+                },
+                async editDataScopes(account) {
+                    this.error = '';
+                    this.scopeAccount = null;
+                    this.scopeBusy = true;
+                    try {
+                        const data = await this.request(`/api/auth/users/${account.user_id}/data-scopes`);
+                        this.scopeLocationIds = data.location_ids || [];
+                        this.scopeAccount = account;
+                    } catch (err) { this.error = err.message; }
+                    finally { this.scopeBusy = false; }
+                },
+                async saveDataScopes() {
+                    if (!this.scopeAccount || this.scopeBusy) return;
+                    this.error = '';
+                    this.scopeBusy = true;
+                    try {
+                        await this.request(`/api/auth/users/${this.scopeAccount.user_id}/data-scopes`, {
+                            method: 'PUT', body: JSON.stringify({location_ids: this.scopeLocationIds})
+                        });
+                        this.scopeAccount = null;
+                        await this.load();
+                    } catch (err) { this.error = err.message; }
+                    finally { this.scopeBusy = false; }
                 },
                 async resetPassword(account) {
                     if (!confirm(`Generate a 15-minute password reset link for ${account.username}? Previous links will expire.`)) return;
