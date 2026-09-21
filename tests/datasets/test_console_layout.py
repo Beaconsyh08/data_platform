@@ -525,7 +525,7 @@ def test_local_and_remote_datasets_use_the_shared_curation_workspace():
     assert "window.syncCurationWorkspace($refs.curationWorkspace" in template
     assert "['explore', 'quality', 'annotation', 'dataset_build'].includes(this.activePage)" in template
     assert "{location_id: this.selectedDataset.remote_location_id}" in template
-    assert "items.filter(item => ['viewer', 'analysis'].includes(item.key))" in template
+    assert "items.filter(item => ['viewer', 'analysis', 'temporal_caption'].includes(item.key))" in template
     assert "await this.prepareRemoteViewer(this.selectedRemoteLocation)" in template
     assert "'annotation', 'quality', 'dataset_build'].includes(pageKey)" in template
     assert "'dataset_ops', 'explore_overview'" in template

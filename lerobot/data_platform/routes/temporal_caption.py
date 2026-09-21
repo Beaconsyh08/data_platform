@@ -65,20 +65,36 @@ def register_temporal_caption_routes(app, ctx) -> None:
             abort(422, description="Invalid temporal caption artifact")
         return artifact
 
-    @app.get("/<dataset_namespace>/<dataset_name>/temporal-caption")
-    @app.get("/remote/<location_id>/temporal-caption")
-    def temporal_caption_page(**kwargs):
+    def caption_page(review=False, **kwargs):
         _, name, _, api, home = resolve(**kwargs)
+        base = (
+            f"/remote/{kwargs['location_id']}/temporal-caption"
+            if kwargs.get("location_id")
+            else f"/{kwargs['dataset_namespace']}/{kwargs['dataset_name']}/temporal-caption"
+        )
         return render_template(
-            "visualize_dataset_temporal_caption.html",
-            page_kind="Data Curation / Annotation",
+            "visualize_dataset_temporal_caption.html"
+            if review
+            else "visualize_dataset_temporal_caption_annotation.html",
+            page_kind="Temporal Caption Review" if review else "Data Curation / Annotation",
             page_title=name,
-            page_subtitle="Temporal Caption · reusable annotation methods",
             caption_schemes=list(SCHEMES.values()),
             api_base=api,
             home_url=home,
+            annotation_url=base,
+            review_url=base + "/review",
             remote_caption=ctx.control_plane_store is not None,
         )
+
+    @app.get("/<dataset_namespace>/<dataset_name>/temporal-caption")
+    @app.get("/remote/<location_id>/temporal-caption")
+    def temporal_caption_page(**kwargs):
+        return caption_page(**kwargs)
+
+    @app.get("/<dataset_namespace>/<dataset_name>/temporal-caption/review")
+    @app.get("/remote/<location_id>/temporal-caption/review")
+    def temporal_caption_review_page(**kwargs):
+        return caption_page(review=True, **kwargs)
 
     @app.get("/api/temporal-caption/<dataset_namespace>/<dataset_name>")
     @app.get("/api/control/locations/<location_id>/temporal-caption")

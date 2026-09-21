@@ -192,3 +192,16 @@ The current runner supports short episodes (about 53 seconds at 30 fps for the g
 CLI inference can resume completed stage receipts only when dataset identity, source digest, model,
 pipeline version and each stage's prompt/sampling signature match. A remote job retry may still repeat
 inference because it starts a fresh isolated execution. No API keys are stored in receipts.
+
+## Annotation and review pages
+
+`/<namespace>/<dataset>/temporal-caption` and `/remote/<location_id>/temporal-caption`
+are task pages: select one of the three methods, enter an episode, then start annotation.
+They retain executor readiness, task progress, cancellation, retry, and authorized ZIP import.
+Standalone previews show all three methods but cannot submit work without an executor.
+
+Append `/review` for the separate video, timeline, caption, and model-review page.
+The task page links to review; completed jobs link directly to their result. The dataset
+Explore tools include Temporal Caption Review alongside Viewer, Analysis, and Label Review,
+including for remote datasets before Viewer preparation. Review remains inspection of model
+outputs; it does not record human approval or alter the dataset.

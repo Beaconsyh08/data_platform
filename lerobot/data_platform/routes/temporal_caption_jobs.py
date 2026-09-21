@@ -106,7 +106,7 @@ def register_caption_job_routes(app, ctx, resolve):
             runs = import_archive(uploaded.stream, dataset_root.parent, key, name)
         except (ValueError, KeyError, TypeError, OSError, zipfile.BadZipFile) as exc:
             return jsonify(error=f"Invalid or conflicting caption import: {type(exc).__name__}"), 400
-        return jsonify(runs=runs, review_url=f"/remote/{location_id}/temporal-caption"), 201
+        return jsonify(runs=runs, review_url=f"/remote/{location_id}/temporal-caption/review"), 201
 
     @app.post("/api/control/locations/<location_id>/temporal-caption/jobs")
     def queue_caption(location_id):
@@ -189,7 +189,7 @@ def register_caption_job_routes(app, ctx, resolve):
         return {
             "episode_index": job["options"]["episode_index"],
             "scheme": job["options"]["scheme"],
-            "review_url": f"/remote/{job['location_id']}/temporal-caption"
+            "review_url": f"/remote/{job['location_id']}/temporal-caption/review"
             f"?scheme={job['options']['scheme']}&episode={job['options']['episode_index']}"
             f"&run={job['job_id']}",
             "run": job["job_id"],

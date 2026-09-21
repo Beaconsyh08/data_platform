@@ -1418,7 +1418,8 @@
                         <h3 class="text-lg font-semibold text-slate-100">Temporal Caption</h3>
                         <p class="mt-2 text-sm text-slate-400">Review a single episode with synchronized cameras, semantic segments, and captions. Compare Multi-view Semantics, Video + Events, and Fusion + Review, with separate episode and result selection.</p>
                         <p class="mt-2 text-xs text-slate-500">Import existing results or submit a single-episode annotation task on a configured Agent. Review is available before preparing a full Viewer cache.</p>
-                        <a class="dp-btn dp-btn-primary dp-btn-inline mt-4" :href="temporalCaptionUrl()" x-show="selectedDataset">Open caption review</a>
+                        <a class="dp-btn dp-btn-primary dp-btn-inline mt-4" :href="temporalCaptionUrl()" x-show="selectedDataset">Create annotation task</a>
+                        <a class="dp-btn dp-btn-inline mt-4" :href="temporalCaptionUrl() + '/review'" x-show="selectedDataset">Temporal Caption Review →</a>
                     </div>
                 </div>
                 <div class="space-y-4 px-4 py-4" x-show="activeTab === 'stage_subtask'">
@@ -3886,6 +3887,13 @@
                             setupLabel: 'Run object labeling', missingStatus: 'Not generated'
                         },
                         {
+                            key: 'temporal_caption', group: 'review', icon: 'TC', label: 'Temporal Caption Review',
+                            output: 'Video · segments · captions',
+                            description: 'Review temporal captions, compare annotation methods, and inspect automatic review findings.',
+                            ready: Boolean(this.temporalCaptionUrl()), href: this.temporalCaptionUrl() + '/review', openLabel: 'Open caption review',
+                            setupLabel: 'Create caption task', missingStatus: 'Select dataset'
+                        },
+                        {
                             key: 'tagging', group: 'review', icon: 'TG', label: 'Tag Review',
                             output: 'Trajectory · grasp heatmap',
                             description: 'Review semantic tags, XY trajectories, grasp points, and generated heatmaps before merge.',
@@ -3923,7 +3931,7 @@
                         }
                     ];
                     const supportedItems = this.selectedDataset.remote
-                        ? items.filter(item => ['viewer', 'analysis'].includes(item.key))
+                        ? items.filter(item => ['viewer', 'analysis', 'temporal_caption'].includes(item.key))
                         : items;
                     return supportedItems
                         .filter(item => this.openLinkEnabled(item.key))

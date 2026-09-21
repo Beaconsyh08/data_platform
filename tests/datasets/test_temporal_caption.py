@@ -163,7 +163,15 @@ def test_remote_review_without_viewer_requires_auth_and_is_scoped(tmp_path, monk
         ).status_code
         == 200
     )
-    assert client.get(f"/remote/{location['location_id']}/temporal-caption").status_code == 200
+    page = f"/remote/{location['location_id']}/temporal-caption"
+    annotation = client.get(page).get_data(as_text=True)
+    review = client.get(page + "/review").get_data(as_text=True)
+    assert 'id="caption-job-form"' in annotation
+    assert 'id="video"' not in annotation
+    assert 'id="job-scheme"' in annotation and 'value="fusion_review"' in annotation
+    assert f'href="{page}/review"' in annotation
+    assert 'id="video"' in review and 'id="caption-job-form"' not in review
+    assert f'href="{page}"' in review
     assert client.get(url).get_json()["runs"][0]["variant"] == "refined"
     assert client.get(url + "/trial/refined").get_json()["result"] == result()
     response = client.get(url + "/trial/refined/video", headers={"Range": "bytes=0-3"})
@@ -200,6 +208,7 @@ def test_remote_caption_registration_respects_console_mode(tmp_path, monkeypatch
     client = app.test_client()
     assert _bootstrap(client).status_code == 200
     assert client.get(f"/remote/{location['location_id']}/temporal-caption").status_code == status
+    assert client.get(f"/remote/{location['location_id']}/temporal-caption/review").status_code == status
 
 
 def test_player_boundary_rounding_and_loop_use_episode_frames():

@@ -266,7 +266,7 @@ def main():
             dataset_keys=[location["dataset_key"]],
             details={"runs": runs, "location_id": args.location_id},
         )
-        print(json.dumps({"runs": runs, "review_url": f"/remote/{args.location_id}/temporal-caption"}))
+        print(json.dumps({"runs": runs, "review_url": f"/remote/{args.location_id}/temporal-caption/review"}))
 
 
 if __name__ == "__main__":
