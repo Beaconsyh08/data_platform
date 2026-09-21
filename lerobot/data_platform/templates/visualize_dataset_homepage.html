@@ -2076,6 +2076,9 @@
                         <span>Dry run only</span>
                     </label>
 
+                    <p class="text-xs text-amber-200" role="status"
+                       x-show="preprocess.schema_op === 'delete_episodes' && deleteEpisodesDisabledReason()"
+                       x-text="preprocess.schema_op === 'delete_episodes' ? deleteEpisodesDisabledReason() : ''"></p>
                     <div class="dp-action-row">
                         <button class="dp-btn dp-btn-primary dp-full"
                                 @click="startSchemaFix()"
@@ -4713,8 +4716,10 @@
                     );
                 },
                 remoteMutationDisabledReason() {
+                    if (!this.selectedRemoteLocation) return 'Select an Agent dataset first.';
                     if (!this.selectedRemoteLocation?.source_mutation_allowed) return 'Source mutation permission is required for this dataset. Ask an administrator to configure Data permissions.';
                     if (!this.remoteSourceMutationsEnabled) return 'Source deletion is disabled on Server A. Enable --enable-legacy-mutations 1 in the server configuration.';
+                    if (!this.selectedRemoteNode()) return 'Agent information is unavailable. Refresh the dataset list.';
                     if (!this.selectedRemoteNode()?.capabilities?.source_mutations_enabled) return 'Source deletion is disabled on this Agent. Enable --allow-source-mutations in its configuration.';
                     return '';
                 },
@@ -5551,20 +5556,30 @@
                         value: Number(edit.value)
                     }));
                 },
+                deleteEpisodesDisabledReason() {
+                    if (!this.selectedDataset) return 'Select a dataset first.';
+                    if (this.busy) return 'Wait for the current request to finish.';
+                    if (!this.operationAvailable('delete_episodes')) return this.operationReason('delete_episodes') || 'Episode deletion is unavailable for this dataset.';
+                    if (!this.canRequestEpisodeDeletion()) {
+                        if (this.selectedDataset?.remote) {
+                            const reason = this.remoteMutationDisabledReason();
+                            if (reason) return reason;
+                        } else if (!this.canStartLegacyMutation()) {
+                            return 'Source deletion requires Admin Mode and an unprotected dataset.';
+                        }
+                        if (this.selectedDataset.source_protected) return 'This source dataset is protected from deletion.';
+                    }
+                    if (this.deleteFlagReasonLoading) return 'Wait for flag types to finish loading.';
+                    if (!this.parsedDeleteEpisodeIds().length) return 'Select a flag type with matching episodes or enter valid episode IDs.';
+                    if (!this.preprocess.delete_reason.trim()) return 'Enter a deletion reason.';
+                    return '';
+                },
                 canStartSchemaFix() {
+                    if (this.preprocess.schema_op === 'delete_episodes') return !this.deleteEpisodesDisabledReason();
                     if (!this.operationAvailable(this.preprocess.schema_op)) return false;
                     if (!this.selectedDataset || this.busy) return false;
-                    if (this.canRequestEpisodeDeletion() && this.preprocess.schema_op === 'delete_episodes') {
-                        return Boolean(this.parsedDeleteEpisodeIds().length && this.preprocess.delete_reason.trim());
-                    }
                     if (this.schemaOperationMutatesSource() && !this.canStartLegacyMutation()) return false;
                     if (this.selectedDataset.source_protected && this.schemaOperationMutatesSource()) return false;
-                    if (this.preprocess.schema_op === 'delete_episodes') {
-                        return Boolean(
-                            this.parsedDeleteEpisodeIds().length
-                            && this.preprocess.delete_reason.trim()
-                        );
-                    }
                     if (this.preprocessCapabilities && !this.preprocessCapabilities.available) return false;
                     if (this.preprocess.schema_op === 'value_edit') {
                         if (
@@ -5947,7 +5962,7 @@
                         + 'The Agent creates a persistent recovery backup before writing.'
                     );
                     if (!accepted) return null;
-                    return window.prompt(`Type exactly to confirm:\n${expected}`) === expected ? expected : null;
+                    return window.prompt('Type exactly to confirm:\nMUTATE') === 'MUTATE' ? expected : null;
                 },
                 async startRemoteMutation(op, options, description) {
                     if (op === 'delete_episodes' && this.canRequestEpisodeDeletion()) {

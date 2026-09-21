@@ -160,6 +160,8 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 
 删除 Episode 或在 Viewer 原地裁剪帧时，页面会先显示影响数量，要求填写删除原因，并要求输入带数量的确认文本；删除原因、Episode 范围和任务结果会进入现有 Audit Log。`source protected` 数据集即使处于 Admin Mode 也会被服务器拒绝原地删除。
 
+Datasets 页对远程数据源执行原地修改（包括 Delete by flag type 删除 Episodes）时，确认弹窗只需输入 `MUTATE`，无需附加数据集名称。删除原因仍为必填，原有权限检查和恢复备份继续生效。
+
 ## 5. 两个 Workspace 的主要功能
 
 ### 5.1 Data Platform — Cache

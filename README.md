@@ -193,7 +193,8 @@ and materialization create sibling outputs. The normal startup command also prov
 protected Admin Mode in the browser. On first entry, set the local administrator password for that
 dataset root; later entries require the same password. The password is stored only as a salted hash,
 and Admin Mode remains active until explicitly exited or the browser session ends. Episode deletion
-requires an impact confirmation and a reason recorded in the operation audit log.
+requires an impact confirmation and a reason recorded in the operation audit log. Remote source
+mutation confirmation on the Datasets page requires typing only `MUTATE`.
 
 To mark one or more read-only source zones at startup, repeat `--protected-source-root`. The console
 also exposes the same policy on the Datasets page. Protected datasets can be reviewed and used to

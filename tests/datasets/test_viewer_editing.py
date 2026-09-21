@@ -230,7 +230,7 @@ def test_delete_by_flag_type_frontend_uses_remote_location(cached_viewer):
     client, _, _ = cached_viewer
     html = client.get("/").get_data(as_text=True)
     script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
-    checks = """
+    checks = r"""
 const assert = require('node:assert/strict');
 (async () => {
  const app = precomputeConsole();
@@ -247,6 +247,60 @@ const assert = require('node:assert/strict');
  app.preprocess.delete_flag_reason = 'motion_jump';
  app.applyDeleteFlagReasonSelection();
  assert.equal(app.preprocess.delete_episode_ids, '3');
+ app.controlPlaneUser = {role:'data_manager'};
+ app.remoteSourceMutationsEnabled = true;
+ app.selectedRemoteLocation = {location_id:'location-one', source_mutation_allowed:true};
+ const node = {capabilities:{source_mutations_enabled:true}};
+ app.selectedRemoteNode = () => node;
+ app.preprocess.schema_op = 'delete_episodes';
+ app.preprocess.delete_reason = 'Remove invalid demonstration';
+ assert.equal(app.deleteEpisodesDisabledReason(), '');
+ assert(app.canStartSchemaFix());
+ app.selectedRemoteLocation.dataset_key = 'node/data';
+ let submitted;
+ app.submitRemoteJob = async (url, body) => {submitted = {url, body};};
+ global.window = {confirm: () => true, prompt: message => {
+   assert.equal(message, 'Type exactly to confirm:\nMUTATE');
+   return 'MUTATE';
+ }};
+ await app.startRemoteSchemaFix();
+ assert.equal(submitted.url, '/api/control/locations/location-one/mutation-jobs');
+ assert.equal(submitted.body.confirmation, 'MUTATE node/data');
+ assert.deepEqual(submitted.body.options.episodes, [3]);
+ for (const answer of [null, '', 'mutate', 'MUTATE node/data']) {
+   submitted = null;
+   window.prompt = () => answer;
+   await app.startRemoteSchemaFix();
+   assert.equal(submitted, null);
+ }
+ window.confirm = () => false;
+ window.prompt = () => {throw new Error('Cancelled confirmation must stop');};
+ await app.startRemoteSchemaFix();
+ assert.equal(submitted, null);
+ app.remoteSourceMutationsEnabled = false;
+ assert(!app.canStartSchemaFix());
+ assert.match(app.deleteEpisodesDisabledReason(), /Server A/);
+ app.remoteSourceMutationsEnabled = true;
+ node.capabilities.source_mutations_enabled = false;
+ assert(!app.canStartSchemaFix());
+ assert.match(app.deleteEpisodesDisabledReason(), /this Agent/);
+ node.capabilities.source_mutations_enabled = true;
+ app.selectedRemoteLocation.source_mutation_allowed = false;
+ assert(!app.canStartSchemaFix());
+ assert.match(app.deleteEpisodesDisabledReason(), /permission/);
+ app.selectedRemoteLocation.source_mutation_allowed = true;
+ app.preprocess.delete_episode_ids = '';
+ assert.match(app.deleteEpisodesDisabledReason(), /episode IDs/);
+ app.preprocess.delete_episode_ids = '3';
+ app.preprocess.delete_reason = '  ';
+ assert.match(app.deleteEpisodesDisabledReason(), /deletion reason/);
+ app.preprocess.delete_reason = 'Remove invalid demonstration';
+ app.deleteFlagReasonLoading = true;
+ assert(!app.canStartSchemaFix());
+ app.deleteFlagReasonLoading = false;
+ app.controlPlaneUser.role = 'operator';
+ app.remoteSourceMutationsEnabled = false;
+ assert(app.canStartSchemaFix()); // Operator submits a request, not a direct deletion.
 })().catch(err => {console.error(err);process.exit(1);});
 """
     subprocess.run(["node"], input=script + checks, check=True, capture_output=True, text=True, timeout=10)
