@@ -102,20 +102,25 @@
             </div>
             <div x-show="scopeAccount" x-cloak class="border-t border-slate-800 p-4">
                 <h3 class="font-medium" x-text="'Data permissions · ' + (scopeAccount?.username || '')"></h3>
-                <p class="my-2 text-sm text-slate-400">Selected datasets allow direct source edits and episode deletion without approval. Confirmation and recovery backups still apply. New datasets are not included automatically. Whole-dataset deletion is not granted.</p>
+                <p class="my-2 text-sm text-slate-400">Data managers default to all current and future registered datasets. Choose selected datasets to limit direct source edits and episode deletion. Confirmation and recovery backups still apply.</p>
+                <label class="mr-4 text-sm"><input type="radio" x-model="scopeMode" value="all" :disabled="scopeBusy"> All datasets, including future datasets</label>
+                <label class="text-sm"><input type="radio" x-model="scopeMode" value="selected" :disabled="scopeBusy"> Selected datasets only</label>
+                <input type="search" aria-label="Search data permissions" x-model="scopeSearch" placeholder="Search dataset, Agent or path" class="my-3 block w-full rounded border border-slate-700 bg-slate-950 px-3 py-2">
+                <p class="mb-2 text-xs text-slate-400" x-text="filteredScopeLocations().length + ' matching datasets'"></p>
                 <p class="text-sm text-slate-400" x-show="!locations.length">No registered datasets are available.</p>
                 <div class="max-h-72 overflow-y-auto space-y-2">
-                    <template x-for="location in locations" :key="location.location_id">
+                    <template x-for="location in filteredScopeLocations()" :key="location.location_id">
                         <label class="flex items-center gap-2 text-sm">
-                            <input type="checkbox" :value="location.location_id" x-model="scopeLocationIds" :disabled="scopeBusy || (location.state !== 'available' && !scopeLocationIds.includes(location.location_id))">
+                            <input type="checkbox" x-show="scopeMode === 'selected'" :value="location.location_id" x-model="scopeLocationIds" :disabled="scopeBusy || scopeMode === 'all' || (location.state !== 'available' && !scopeLocationIds.includes(location.location_id))">
+                            <span x-show="scopeMode === 'all'" class="text-xs text-emerald-300">Allowed</span>
                             <span x-text="locationName(location)"></span>
                             <span class="text-xs text-slate-400" x-text="(location.node_name || '') + ' · ' + location.root"></span>
                         </label>
                     </template>
                 </div>
-                <p class="my-2 text-xs text-amber-200" x-show="!scopeLocationIds.length">No source mutation permission. Select datasets to grant access.</p>
+                <p class="my-2 text-xs text-amber-200" x-show="scopeMode === 'selected' && !scopeLocationIds.length">No source mutation permission. Select datasets to grant access.</p>
                 <button :disabled="scopeBusy" @click="saveDataScopes()" class="mt-3 rounded bg-sky-800 px-3 py-2">Save data permissions</button>
-                <button :disabled="scopeBusy" @click="scopeLocationIds = []" class="ml-2 rounded border border-slate-700 px-3 py-2">Clear selection</button>
+                <button :disabled="scopeBusy" @click="scopeMode = 'selected'; scopeLocationIds = []" class="ml-2 rounded border border-slate-700 px-3 py-2">Clear selection</button>
                 <button :disabled="scopeBusy" @click="scopeAccount = null" class="ml-2 rounded border border-slate-700 px-3 py-2">Close</button>
             </div>
         </section>
@@ -318,7 +323,7 @@
     <script>
         function controlPlane() {
             return {
-                scopeAccount: null, scopeLocationIds: [], scopeBusy: false,
+                scopeAccount: null, scopeLocationIds: [], scopeBusy: false, scopeMode: 'all', scopeSearch: '',
                 nodes: [], locations: [], jobs: [], users: [], selectedNodeId: '', error: '', timer: null,
                 myJobsOnly: false, busyJob: null, jobHistory: null,
                 section: 'overview', refreshing: false, lastUpdated: null,
@@ -522,12 +527,22 @@
                     try { await this.request(`/api/control/locations/${location.location_id}/viewer-jobs`, {method: 'POST', body: '{}'}); await this.load(); this.openJobs('queued'); }
                     catch (error) { this.error = error.message; }
                 },
+                filteredScopeLocations() {
+                    const tokens = this.scopeSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
+                    return this.locations.filter(location => {
+                        const text = [this.locationName(location), location.dataset_key, location.node_name,
+                            location.node_hostname, location.root].filter(Boolean).join(' ').toLowerCase();
+                        return tokens.every(token => text.includes(token));
+                    });
+                },
                 async editDataScopes(account) {
                     this.error = '';
                     this.scopeAccount = null;
                     this.scopeBusy = true;
                     try {
                         const data = await this.request(`/api/auth/users/${account.user_id}/data-scopes`);
+                        this.scopeMode = data.all_locations ? 'all' : 'selected';
+                        this.scopeSearch = '';
                         this.scopeLocationIds = data.location_ids || [];
                         this.scopeAccount = account;
                     } catch (err) { this.error = err.message; }
@@ -539,7 +554,10 @@
                     this.scopeBusy = true;
                     try {
                         await this.request(`/api/auth/users/${this.scopeAccount.user_id}/data-scopes`, {
-                            method: 'PUT', body: JSON.stringify({location_ids: this.scopeLocationIds})
+                            method: 'PUT', body: JSON.stringify({
+                                all_locations: this.scopeMode === 'all',
+                                location_ids: this.scopeMode === 'all' ? [] : this.scopeLocationIds
+                            })
                         });
                         this.scopeAccount = null;
                         await this.load();

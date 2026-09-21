@@ -117,6 +117,17 @@ class ControlPlaneUser(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class DataMutationScope(Base):
+    """An explicit scope overrides the default of all registered datasets."""
+
+    __tablename__ = "dp_data_mutation_scopes"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("dp_users.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    all_locations: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+
 class DataMutationGrant(Base):
     """Explicit source-write grants tied to one registered dataset location."""
 
@@ -319,6 +330,27 @@ class ControlPlaneStore:
         event.listen(self.sessions, "before_flush", audit_accounts)
 
     @staticmethod
+    def all_mutation_locations(session, user_id: str) -> bool:
+        scope = session.get(DataMutationScope, user_id)
+        if scope is not None:
+            return scope.all_locations
+        # Preserve explicit grants saved before scope modes existed.
+        return (
+            session.scalar(
+                select(DataMutationGrant.user_id).where(DataMutationGrant.user_id == user_id).limit(1)
+            )
+            is None
+        )
+
+    def mutation_scope(self, user_id: str) -> dict:
+        with self.sessions() as session:
+            user = session.get(ControlPlaneUser, user_id)
+            all_locations = bool(
+                user and user.role == "data_manager" and self.all_mutation_locations(session, user_id)
+            )
+        return {"all_locations": all_locations, "location_ids": self.granted_mutation_location_ids(user_id)}
+
+    @staticmethod
     def source_mutation_allowed(
         session, user: ControlPlaneUser | None, location: DatasetLocation | None
     ) -> bool:
@@ -328,6 +360,8 @@ class ControlPlaneStore:
             return True
         if user.role != "data_manager":
             return False
+        if ControlPlaneStore.all_mutation_locations(session, user.user_id):
+            return True
         grant = session.get(DataMutationGrant, (user.user_id, location.location_id))
         return bool(grant and grant.node_id == location.node_id and grant.root == location.root)
 
@@ -348,7 +382,7 @@ class ControlPlaneStore:
             if user is None or not user.active or user.role not in {"admin", "data_manager"}:
                 return []
             query = select(DatasetLocation.location_id).where(DatasetLocation.state == "available")
-            if user.role == "data_manager":
+            if user.role == "data_manager" and not self.all_mutation_locations(session, user_id):
                 query = query.join(
                     DataMutationGrant, DataMutationGrant.location_id == DatasetLocation.location_id
                 ).where(
@@ -358,11 +392,17 @@ class ControlPlaneStore:
                 )
             return list(session.scalars(query))
 
-    def set_mutation_locations(self, user_id: str, location_ids: list[str], *, actor: dict) -> list[str]:
+    def set_mutation_locations(
+        self, user_id: str, location_ids: list[str], *, actor: dict, all_locations: bool = False
+    ) -> list[str]:
         from lerobot.data_platform.job_management import scheduler_lock
         from lerobot.data_platform.management_storage import enqueue_event
         from lerobot.data_platform.operation_log import build_operation_event
 
+        if type(all_locations) is not bool:
+            raise ValueError("all_locations must be a boolean")
+        if all_locations and location_ids:
+            raise ValueError("All-dataset scope must not include selected location IDs")
         if (
             not isinstance(location_ids, list)
             or len(location_ids) > 1000
@@ -387,6 +427,8 @@ class ControlPlaneStore:
                     select(DataMutationGrant.location_id).where(DataMutationGrant.user_id == user_id)
                 )
             )
+            previous_all = self.all_mutation_locations(session, user_id)
+            session.merge(DataMutationScope(user_id=user_id, all_locations=all_locations))
             session.execute(delete(DataMutationGrant).where(DataMutationGrant.user_id == user_id))
             for location in locations:
                 session.add(
@@ -408,6 +450,8 @@ class ControlPlaneStore:
                     details={
                         "target_user_id": user_id,
                         "previous_location_ids": previous,
+                        "previous_all_locations": previous_all,
+                        "all_locations": all_locations,
                         "location_ids": selected,
                     },
                 ),
@@ -574,6 +618,7 @@ class ControlPlaneStore:
                     raise ValueError("the last active administrator cannot be demoted or deactivated")
             if role is not None:
                 if user.role == "data_manager" and role != "data_manager":
+                    session.merge(DataMutationScope(user_id=user_id, all_locations=False))
                     session.execute(delete(DataMutationGrant).where(DataMutationGrant.user_id == user_id))
                 user.role = role
             if active is not None:

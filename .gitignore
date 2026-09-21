@@ -188,4 +188,5 @@ urdf
 
 # Local Codex and scratch files
 /.codex
+/.claude/worktrees/
 AGENTS.md

@@ -5909,6 +5909,36 @@ def run_server(
             payload["flag_reasons"] = _load_flag_reasons(static_dir, flagged, dataset_root, only_episodes)
         return payload
 
+    @app.get("/api/control/locations/<string:location_id>/flagged-episodes")
+    def remote_flagged_episodes(location_id):
+        if control_plane_store is None:
+            return jsonify(error="Remote datasets are unavailable"), 404
+        try:
+            location = control_plane_store.get_location(location_id)
+        except KeyError:
+            return jsonify(error="Dataset location not found"), 404
+        metadata = location.get("metadata") or {}
+        cache_root = metadata.get("cache_root")
+        if not metadata.get("viewer_ready") or not cache_root:
+            return jsonify(error="Prepare viewer for this Agent dataset before reading flag types"), 409
+        cache_base = (
+            Path(remote_cache_root).expanduser()
+            if remote_cache_root is not None
+            else Path(registry_state["path"]).parent.parent / "remote_cache"
+        ).resolve()
+        ds_static = (Path(cache_root) / "static").resolve()
+        if not ds_static.is_relative_to(cache_base):
+            return jsonify(error="Viewer cache is outside the configured cache root"), 409
+        if not (ds_static / "viewer_manifest.json").is_file():
+            return jsonify(
+                error="Viewer cache is missing; prepare viewer again before reading flag types"
+            ), 409
+        try:
+            return jsonify(_flagged_payload(ds_static))
+        except (OSError, ValueError, TypeError, AttributeError):
+            logging.exception("Failed to read remote flag types for location %s", location_id)
+            return jsonify(error="Could not read flag files from the Viewer cache; prepare viewer again"), 409
+
     @app.route("/<string:dataset_namespace>/<string:dataset_name>/flagged_episodes", methods=["GET"])
     def get_flagged_episodes(dataset_namespace, dataset_name):
         dataset_key = (dataset_namespace, dataset_name)

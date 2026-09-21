@@ -16,7 +16,7 @@ from pathlib import Path
 from lerobot.data_platform.deployment import Deployment, agent_targets, load_environment, server_unit
 
 RELEASE_ROOT = Path("/var/lib/data-platform-releases")
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 VALIDATION_TESTS = [
     "tests/datasets/test_data_manager.py",
     "tests/datasets/test_curation.py",

@@ -381,19 +381,21 @@ def register_control_plane_auth_routes(
             if denied:
                 return denied
         if request.method == "GET":
-            return jsonify(location_ids=store.granted_mutation_location_ids(user_id))
+            return jsonify(store.mutation_scope(user_id))
         body = request.get_json(silent=True)
         if not isinstance(body, dict) or "location_ids" not in body:
             return jsonify(error="location_ids array required"), 400
         try:
-            selected = store.set_mutation_locations(user_id, body["location_ids"], actor=actor)
+            selected = store.set_mutation_locations(
+                user_id, body["location_ids"], actor=actor, all_locations=body.get("all_locations", False)
+            )
         except PermissionError as exc:
             return jsonify(error=str(exc)), 403
         except KeyError:
             return jsonify(error="user not found"), 404
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
-        return jsonify(location_ids=selected)
+        return jsonify(location_ids=selected, all_locations=body.get("all_locations", False))
 
 
 def register_control_plane_routes(

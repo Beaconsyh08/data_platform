@@ -29,9 +29,10 @@ def mutate(client, location, *, op="delete_episodes", options=None):
 
 def test_manager_direct_mutation_needs_scope_and_no_approval(tmp_path):
     store, admin, client, user, node, location, token, endpoint = setup_manager(tmp_path)
+    assert admin.put(endpoint, json={"location_ids": []}).status_code == 200
     assert mutate(client, location).status_code == 403
     assert store.list_jobs() == []
-    assert client.get(endpoint).get_json() == {"location_ids": []}
+    assert client.get(endpoint).get_json() == {"location_ids": [], "all_locations": False}
     result = admin.put(endpoint, json={"location_ids": [location["location_id"]]})
     assert result.status_code == 200
     assert client.get(endpoint).get_json() == result.get_json()
@@ -110,7 +111,10 @@ def test_scopes_are_specific_and_only_admin_can_change_them(tmp_path):
     assert admin.put(endpoint, json={}).status_code == 400
     other_user = store.register_user(username="other-manager", password="password-123", role="data_manager")
     assert client.get(f"/api/auth/users/{other_user['user_id']}/data-scopes").status_code == 403
-    assert store.mutation_location_ids(other_user["user_id"]) == []
+    assert set(store.mutation_location_ids(other_user["user_id"])) == {
+        location["location_id"],
+        other["location_id"],
+    }
     assert mutate(client, location, op="delete_dataset").status_code == 400
 
 
@@ -152,7 +156,7 @@ def test_schema_upgrade_creates_grants_without_changing_existing_users(tmp_path)
     assert reopened.list_users() == before
     with reopened.sessions() as session:
         assert session.get(SchemaMigration, 3) is not None
-    assert reopened.mutation_location_ids(user["user_id"]) == []
+    assert reopened.mutation_location_ids(user["user_id"]) == [location["location_id"]]
 
 
 @pytest.mark.parametrize("guard", ["agent", "confirmation", "reason"])
@@ -231,3 +235,38 @@ def test_manager_keeps_owner_only_job_controls_and_cannot_approve_deletion(tmp_p
         ).status_code
         == 403
     )
+
+
+def test_default_all_scope_includes_new_locations_and_can_be_restricted(tmp_path):
+    store, admin, client, user, node, location, token, endpoint = setup_manager(tmp_path)
+    assert client.get(endpoint).get_json() == {"all_locations": True, "location_ids": []}
+    assert mutate(client, location).status_code == 202
+    other = store.sync_locations(node["node_id"], [{"dataset_key": "node/new", "root": "/datasets/new"}])[0]
+    assert mutate(client, other).status_code == 202
+    assert admin.put(endpoint, json={"all_locations": False, "location_ids": []}).status_code == 200
+    assert store.claim_job(node["node_id"]) is None
+    assert mutate(client, other).status_code == 403
+    assert admin.put(endpoint, json={"all_locations": True, "location_ids": []}).status_code == 200
+    assert store.claim_job(node["node_id"]) is not None
+    assert client.put(endpoint, json={"all_locations": True, "location_ids": []}).status_code == 403
+    assert admin.put(endpoint, json={"all_locations": "false", "location_ids": []}).status_code == 400
+
+
+def test_existing_grants_stay_restricted_when_scope_table_is_added(tmp_path):
+    from sqlalchemy import delete
+
+    from lerobot.data_platform.control_plane import DataMutationScope
+    from lerobot.data_platform.management_storage import SchemaMigration
+
+    store, admin, client, user, node, location, token, endpoint = setup_manager(tmp_path)
+    admin.put(endpoint, json={"location_ids": [location["location_id"]]})
+    DataMutationScope.__table__.drop(store.engine)
+    with store.sessions.begin() as session:
+        session.execute(delete(SchemaMigration).where(SchemaMigration.version == 4))
+    reopened = ControlPlaneStore(str(store.engine.url), initialize_schema=True)
+    assert reopened.mutation_scope(user["user_id"]) == {
+        "all_locations": False,
+        "location_ids": [location["location_id"]],
+    }
+    other = store.sync_locations(node["node_id"], [{"dataset_key": "node/new", "root": "/datasets/new"}])[0]
+    assert other["location_id"] not in reopened.mutation_location_ids(user["user_id"])

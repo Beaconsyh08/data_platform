@@ -276,22 +276,25 @@ in Runs. Deletion does not require turning EDIT on. A submitted task is not a co
 The Registered list's `unregister` action only removes a local registration; it does not delete files.
 
 Admins configure grants in **Platform management → Users & access → Data permissions** after assigning
-`data_manager`. Select registered locations and save; an empty selection grants no source-write access.
+`data_manager`. The default is all current and future registered dataset locations. Select **Selected datasets only**
+to restrict access; an empty selection in that mode grants no source-write access. Search by dataset, Agent, or
+path without losing selections hidden by the search. Existing explicit location grants are preserved.
 Each grant is bound to the location ID, Agent, and source root, not a dataset name or arbitrary path prefix.
-Newly registered locations are not automatically included. A grant permits the three operations above;
+New locations are included in all-dataset mode only. A grant permits the three operations above;
 it does not permit deleting whole dataset directories, managing users, approving deletion requests, or
 controlling other users' jobs. Existing ordinary operator capabilities and dataset visibility are retained.
 Local legacy mutation endpoints remain administrator-only; data managers use registered Agent locations.
 
-`GET /api/auth/users/<user_id>/data-scopes` returns `location_ids` (admin or the account itself).
-Admin-only `PUT` replaces that list atomically using `{"location_ids": ["<registered-location-id>"]}`.
+`GET /api/auth/users/<user_id>/data-scopes` returns `all_locations` and `location_ids` (admin or the account itself).
+Admin-only `PUT` replaces the scope atomically using `{"all_locations": false, "location_ids": ["<registered-location-id>"]}`
+or `{"all_locations": true, "location_ids": []}` for all datasets. Omitting `all_locations` retains the selected-list API behavior.
 Changes are recorded in the existing audit outbox. Removing the data_manager role clears its grants.
 Submission and Agent job claim both check current authorization. Revoking a grant, disabling the account,
 or changing the registered root prevents unstarted tasks from being claimed; already claimed tasks use
 the existing execution/recovery flow. A revoked task remains queued and may run if access is restored;
 cancel it through task management if it must never run.
 
-The `dp_data_mutation_grants` table is created through the existing control-plane schema initialization
+The `dp_data_mutation_grants` and `dp_data_mutation_scopes` tables are created through the existing control-plane schema initialization
 used by release migrations. Deploy using the normal Server A release migration before serving this code;
 no automatic production schema writes are added to web requests.
 
@@ -382,3 +385,8 @@ Useful endpoints:
   protected-source rules remain relevant for operations executed directly on server A.
 - Persistent Agent mutation backups are not pruned automatically. Review and remove an individual
   confirmed backup only after the changed dataset and regenerated Viewer cache have been verified.
+
+
+Delete by flag type reads the published Viewer cache by Agent location ID. Prepare viewer first;
+a missing or invalidated cache produces a JSON message asking for preparation, rather than attempting
+to read the remote source path on Server A. Flags and their reasons use the same sidecars as the Viewer.

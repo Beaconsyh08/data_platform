@@ -93,7 +93,7 @@ def test_cache_annotations_and_reload(cached_viewer, role):
     assert 'id="dataset-result-sync"' in html
     assert 'annotateToggleUrl: "/remote/test/toggle_annotate"' in html
     assert f"annotationEditable: {'false' if role == 'viewer' else 'true'}" in html
-    assert ("/mutation-jobs" in html) == (role == "admin")
+    assert ("/mutation-jobs" in html) == (role in {"admin", "data_manager"})
     response = client.post("/remote/test/toggle_annotate", json={"annotate": True})
     assert response.status_code == (403 if role == "viewer" else 200)
     transitions = [{"time": 0, "state": 0}, {"time": 0.1, "state": 1}]
@@ -194,3 +194,59 @@ def test_scoped_data_manager_cached_viewer_delete_button(cached_viewer):
     assert "/mutation-jobs" in client.get("/remote/test/episode_0?direct=1").get_data(as_text=True)
     store.update_user(user["user_id"], role="operator")
     assert "/mutation-jobs" not in client.get("/remote/test/episode_0?direct=1").get_data(as_text=True)
+
+
+def test_remote_flag_types_use_location_cache(cached_viewer):
+    client, store, _ = cached_viewer
+    location = store.list_locations()[0]
+    static = Path(location["metadata"]["cache_root"]) / "static"
+    (static / "flagged_episodes.json").write_text(json.dumps({"flagged_episodes": [0]}))
+    (static / "quality_flagged_episodes.json").write_text(
+        json.dumps(
+            {
+                "flagged_episodes": [0],
+                "flag_reasons": {"0": [{"type": "quality_flag", "reason": "motion_jump"}]},
+            }
+        )
+    )
+    response = client.get(f"/api/control/locations/{location['location_id']}/flagged-episodes")
+    assert response.status_code == 200
+    assert response.get_json()["flagged_episodes"] == [0]
+    assert any(item["reason"] == "motion_jump" for item in response.get_json()["flag_reasons"]["0"])
+    assert client.get("/api/control/locations/missing/flagged-episodes").status_code == 404
+    store.mark_viewer_stale(location["location_id"])
+    response = client.get(f"/api/control/locations/{location['location_id']}/flagged-episodes")
+    assert response.status_code == 409
+    assert "Prepare viewer" in response.get_json()["error"]
+
+
+def test_delete_by_flag_type_frontend_uses_remote_location(cached_viewer):
+    import re
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("Node.js required")
+    client, _, _ = cached_viewer
+    html = client.get("/").get_data(as_text=True)
+    script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    checks = """
+const assert = require('node:assert/strict');
+(async () => {
+ const app = precomputeConsole();
+ Object.defineProperty(app, 'selectedDataset', {get: () => ({remote:true, remote_location_id:'location-one'})});
+ app.ensureSelectedDatasetLoaded = async () => 'remote:location-one';
+ app.requestJson = async (url, body, method) => {
+   assert.equal(url, '/api/control/locations/location-one/flagged-episodes');
+   assert.equal(method, 'GET');
+   return {flagged_episodes:[3], flag_reasons:{'3':[{type:'quality_flag',reason:'motion_jump'}]}};
+ };
+ await app.loadDeleteFlagReasonOptions();
+ assert.equal(app.error, '');
+ assert.deepEqual(app.deleteFlagReasonEpisodes.motion_jump, [3]);
+ app.preprocess.delete_flag_reason = 'motion_jump';
+ app.applyDeleteFlagReasonSelection();
+ assert.equal(app.preprocess.delete_episode_ids, '3');
+})().catch(err => {console.error(err);process.exit(1);});
+"""
+    subprocess.run(["node"], input=script + checks, check=True, capture_output=True, text=True, timeout=10)

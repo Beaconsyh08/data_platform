@@ -150,11 +150,23 @@ const assert = require('node:assert/strict');
  await app.saveDataScopes();
  assert.equal(calls[1].url, '/api/auth/users/manager/data-scopes');
  assert.equal(calls[1].method, 'PUT');
- assert.deepEqual(JSON.parse(calls[1].body), {location_ids:['new']});
+ assert.deepEqual(JSON.parse(calls[1].body), {location_ids:['new'], all_locations:false});
  assert.equal(app.scopeAccount, null);
  assert(refreshed);
  assert.equal(app.scopeBusy, false);
  assert.equal(app.error, '');
+ app.locations = [{location_id:'a',root:'/data/Alpha',node_name:'node-one'},
+                  {location_id:'b',root:'/data/Beta',node_name:'node-two'}];
+ app.scopeSearch = 'ALPHA node-one';
+ assert.deepEqual(app.filteredScopeLocations().map(x => x.location_id), ['a']);
+ app.scopeLocationIds = ['a','b'];
+ app.scopeSearch = 'Beta';
+ assert.deepEqual(app.filteredScopeLocations().map(x => x.location_id), ['b']);
+ assert.deepEqual(app.scopeLocationIds, ['a','b']);
+ app.scopeAccount = {user_id:'manager'};
+ app.scopeMode = 'all';
+ await app.saveDataScopes();
+ assert.deepEqual(JSON.parse(calls.at(-1).body), {all_locations:true, location_ids:[]});
 })().catch(err => { console.error(err); process.exit(1); });
 """
     subprocess.run(["node"], input=script + checks, check=True, capture_output=True, text=True, timeout=10)

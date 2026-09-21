@@ -5465,8 +5465,11 @@
                             return;
                         }
                         this.deleteFlagReasonLoading = true;
-                        const routeKey = this.routePathForDatasetKey(datasetKey);
-                        const data = await this.requestJson(`/${routeKey}/flagged_episodes?reasons=1`, null, 'GET');
+                        const locationId = this.selectedDataset?.remote_location_id;
+                        const url = this.selectedDataset?.remote
+                            ? `/api/control/locations/${encodeURIComponent(locationId)}/flagged-episodes`
+                            : `/${this.routePathForDatasetKey(datasetKey)}/flagged_episodes?reasons=1`;
+                        const data = await this.requestJson(url, null, 'GET');
                         const flaggedEpisodes = (data.flagged_episodes || [])
                             .map(value => Number(value))
                             .filter(Number.isFinite);
