@@ -218,6 +218,8 @@ for (const group of app.jointGroups) {
             const remaining = app.jointGroups.filter(g => g.enabled && app.labelToGroupIds[labels[i]].includes(g.id));
             assert.equal(app.dygraphArmJoints.mask[i], remaining.some(g => g.graph === 'arm'));
             assert.equal(app.dygraphGripperFlag.mask[i], remaining.some(g => g.graph === 'gripper'));
+            assert.equal(app.currentFrameData[i].checked, remaining.length > 0, 'Group toggle must update field checkboxes');
+            assert.equal(app.checked[i], app.currentFrameData[i].checked);
         }
     }
     app.toggleGroup(group.id);

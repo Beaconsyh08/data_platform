@@ -54,6 +54,7 @@ _PREPROCESS_OPS = {
     "value_edit",
 }
 _SOURCE_MUTATION_OPS = {
+    "trim_episode",
     "delete_episodes",
     "repair_v3_video_timestamps",
     "value_edit",
@@ -1320,6 +1321,30 @@ class DataPlatformAgent:
                 )
                 result_payload = {"delete": result}
                 affected_episode_ids = episode_ids
+            elif op == "trim_episode":
+                from lerobot.data_platform.precompute.preprocess.flag_fixes import trim_episode_inplace
+
+                episode, start, end = (options.get(key) for key in ("episode_id", "start_frame", "end_frame"))
+                if (
+                    any(type(value) is not int for value in (episode, start, end))
+                    or episode < 0
+                    or start < 0
+                    or end < start
+                ):
+                    raise ValueError("A valid episode_id and inclusive integer frame range are required")
+                if not reason:
+                    raise ValueError("reason is required for trimming source frames")
+                output_dir = Path(
+                    location.get("output_dir") or get_default_output_dir(source_root)
+                ).expanduser()
+                static_dir = _require_within(output_dir / "static", self.writable_roots, "trim cache")
+                self.client.event(
+                    self.state, job["job_id"], "Trimming episode data and videos; rebuilding metadata"
+                )
+                result_payload = {
+                    "trim": trim_episode_inplace(source_root, episode, start, end, static_dir=static_dir)
+                }
+                affected_episode_ids = [episode]
             elif op == "repair_v3_video_timestamps":
                 result = repair_v3_video_timestamps(
                     source_root,

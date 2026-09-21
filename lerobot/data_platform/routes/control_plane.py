@@ -39,11 +39,13 @@ REMOTE_PREPROCESS_OPS = {
     "value_edit",
 }
 REMOTE_SOURCE_MUTATION_OPS = {
+    "trim_episode",
     "delete_episodes",
     "repair_v3_video_timestamps",
     "value_edit",
 }
 _REMOTE_MUTATION_OPTION_KEYS = {
+    "trim_episode": {"episode_id", "start_frame", "end_frame", "reason"},
     "delete_episodes": {"episodes", "reason"},
     "repair_v3_video_timestamps": {"dry_run", "reason"},
     "value_edit": {"dry_run", "edits", "episode_ids", "reason"},
@@ -1121,10 +1123,23 @@ def register_control_plane_routes(
         if str(body.get("confirmation") or "") != expected_confirmation:
             return jsonify({"error": f"confirmation must exactly match: {expected_confirmation}"}), 409
         reason = str(options.get("reason") or "").strip()
-        if op in {"delete_episodes", "value_edit"} and not reason:
+        if op in {"delete_episodes", "value_edit", "trim_episode"} and not reason:
             return jsonify({"error": "reason is required for remote source mutations"}), 400
         if len(reason) > 500:
             return jsonify({"error": "reason must be 500 characters or fewer"}), 400
+        if op == "trim_episode":
+            if "mutation.trim_episode" not in node.get("capabilities", {}).get("operations", []):
+                return jsonify({"error": "Upgrade this Agent to enable Trim Apply"}), 409
+            episode, start, end = (options.get(key) for key in ("episode_id", "start_frame", "end_frame"))
+            if (
+                any(type(value) is not int for value in (episode, start, end))
+                or episode < 0
+                or start < 0
+                or end < start
+            ):
+                return jsonify(
+                    {"error": "A valid episode_id and inclusive integer frame range are required"}
+                ), 400
         if op == "delete_episodes":
             episodes = options.get("episodes")
             if (

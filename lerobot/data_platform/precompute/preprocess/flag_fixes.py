@@ -373,12 +373,16 @@ def trim_episode_inplace(
     """Trim one episode in a materialized v2.1 or v3.0 dataset."""
     root = validate_dataset_root(Path(root))
     if not is_v3_dataset(root):
-        return _trim_v21_episode_frames(
+        result = _trim_v21_episode_frames(
             root,
             int(episode_id),
             int(start_frame),
             int(end_frame),
         )
+
+        if static_dir is not None:
+            _delete_episode_cache(Path(static_dir), int(episode_id))
+        return result
 
     meta = V3DatasetMetadata(f"local/{root.name}", root)
     dataset = SimpleNamespace(
