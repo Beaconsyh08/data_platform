@@ -237,3 +237,22 @@ python scripts/benchmark_data_platform_compute.py \
 高并发测试从 32 核/64 GiB 开始，再测试 64 核/128 GiB；native threads 设为 1，
 video threads 测试 1/2。每次输出目录必须唯一，不清理全机页缓存。结果 JSON 不保存源数据路径。
 运行中任务不热修改资源配置；任务级并发不会让一个 Agent 同时领取多个任务。
+
+完整基准矩阵可由 `scripts/benchmark_data_platform_matrix.py` 顺序执行。该驱动需要测试节点的
+root 权限来创建临时 systemd 服务，计算进程使用 `--user` 指定的开发服务账号。
+对相同参数依次运行 `--stage baseline`、`--stage screen`、`--stage repeat`；已完成结果可复用，
+未完成目录会阻止重跑，以免覆盖失败证据。`--operation` 可选 viewer/smooth/standardize/merge/convert；
+Merge 自动选择另一份兼容的开发数据集，找不到时停止，不复制或修改源数据。
+
+```bash
+python scripts/benchmark_data_platform_matrix.py \
+  --old-python /path/to/baseline/.venv/bin/python \
+  --new-python /path/to/candidate/.venv/bin/python \
+  --datasets /path/to/development-datasets \
+  --output /path/to/benchmark-matrix \
+  --user data-platform-agent-dev --operation viewer --stage baseline
+```
+
+`screen` 对 32/64 核分别测试 4/8/16/32（以及 64 核下的 64）worker；Viewer/转换测试
+每视频 1/2 线程，其余预处理使用 1 线程。`repeat` 将基线及筛选出的最快两组补足三次。
+源代码验证可附加 `--new-source /path/to/checkout`；正式部署验收应使用安装后的解释器。
