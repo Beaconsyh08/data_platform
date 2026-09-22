@@ -1,0 +1,165 @@
+<section class="dp-page-surface" x-cloak x-show="activePage === 'mcap_import'"
+         x-data="mcapImportApp(controlPlaneUser, location => openDatasetTab(location, 'cache'))">
+    <div class="dp-page-header">
+        <div class="dp-page-kicker">Data Infra · Data Import</div>
+        <h2 class="dp-page-title mt-1">MCAP → LeRobot</h2>
+        <p class="dp-page-description">Import GenDAS bimanual recordings as LeRobot v3.0 on the source node, preserving two cameras, end-effector poses and gripper widths in meters.</p>
+    </div>
+    <div class="space-y-4 p-4 sm:p-5">
+        <p class="text-sm text-amber-200" x-show="!canWrite()">Read-only account. You can view sources and import results.</p>
+        <p class="text-sm text-rose-300" role="alert" x-show="error" x-text="error"></p>
+        <div class="grid gap-3 md:grid-cols-3">
+            <label class="text-sm">Source node
+                <select class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2" x-model="nodeId" @change="selected = []; setDefaultOutput()">
+                    <option value="">Select a node</option>
+                    <template x-for="node in nodes" :key="node.node_id"><option :value="node.node_id" x-text="`${node.name} · ${node.status}`"></option></template>
+                </select>
+            </label>
+            <label class="text-sm">Video short edge (pixels)
+                <input class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2" type="number" min="64" max="1600" step="2" x-model.number="shortSide">
+            </label>
+            <label class="text-sm">Maximum files per directory
+                <input class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2" type="number" min="0" max="100000" x-model.number="maxFiles">
+                <span class="text-xs text-slate-400">Default: 3 files. Set 0 explicitly to process all files.</span>
+            </label>
+        </div>
+        <p class="text-xs text-slate-400">30 FPS with aspect ratio preserved and even-edge padding. Missing signals split valid segments. Source files are preserved.</p>
+        <p class="text-sm text-amber-200" x-show="nodeId && capabilityError()" x-text="capabilityError()"></p>
+        <label class="block text-sm">Output parent directory (within the node writable roots)
+            <input class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2 font-mono text-xs" x-model="outputParent">
+        </label>
+        <div class="flex flex-wrap items-center gap-2">
+            <button class="dp-btn dp-btn-secondary" @click="refresh()" :disabled="busy">Refresh sources and status</button>
+            <button class="dp-btn dp-btn-primary" @click="submit('inspect')" :disabled="busy || !canWrite() || !selected.length || Boolean(capabilityError())">Inspect selected</button>
+            <button class="dp-btn dp-btn-primary" @click="submit('convert')" :disabled="busy || !canWrite() || !readyToConvert() || Boolean(capabilityError())">Convert selected</button>
+            <button class="dp-btn dp-btn-secondary" @click="selectPage('runs')">Open Pipeline Runs</button>
+        </div>
+        <p class="text-xs text-slate-400" x-show="nodeId && !sourceRows().length">No MCAP sources found on this node. Ask an administrator to configure the Agent allowed roots, then refresh. Raw directories do not need meta/info.json.</p>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+                <thead class="text-slate-400"><tr><th class="p-2">Select</th><th class="p-2">Source directory</th><th class="p-2">MCAP</th><th class="p-2">Inspect</th></tr></thead>
+                <tbody>
+                    <template x-for="source in sourceRows()" :key="source.location_id">
+                        <tr class="border-t border-slate-800">
+                            <td class="p-2"><input type="checkbox" x-model="selected" :value="source.location_id" :disabled="!canWrite()"></td>
+                            <td class="p-2 font-mono" x-text="source.root"></td>
+                            <td class="p-2" x-text="source.metadata.mcap_count"></td>
+                            <td class="p-2" x-text="inspectionLabel(source.location_id)"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+        <template x-for="job in importJobs()" :key="job.job_id">
+            <article class="rounded border border-slate-700 bg-slate-950/50 p-3 text-xs">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span class="font-semibold" x-text="`${job.operation.endsWith('inspect') ? 'Inspect' : 'Convert'} · ${sourceName(job.location_id)} · ${job.status}`"></span>
+                    <span class="font-mono text-slate-500" x-text="job.job_id"></span>
+                </div>
+                <p class="mt-2 text-slate-300" x-text="jobProgress(job)"></p>
+                <p class="mt-2 text-rose-300" x-show="job.error" x-text="job.error"></p>
+                <template x-if="job.result?.mcap_import">
+                    <div class="mt-2 space-y-2">
+                        <p x-text="reportLabel(job.result.mcap_import)"></p>
+                        <details><summary class="cursor-pointer text-sky-300">Files and valid segments</summary>
+                            <template x-for="file in job.result.mcap_import.files" :key="file.file">
+                                <p class="mt-1" x-text="`${file.file}: ${file.source_duration_s.toFixed(1)}s → ${file.valid_duration_s.toFixed(1)}s，${file.segments.length} segments;${JSON.stringify(file.output_shapes)}${file.trimmed ? ' · trimmed' : ''}`"></p>
+                            </template>
+                            <template x-for="file in job.result.mcap_import.rejected" :key="file.file">
+                                <p class="mt-1 text-amber-200" x-text="`${file.file}: ${file.reason}`"></p>
+                            </template>
+                        </details>
+                    </div>
+                </template>
+                <template x-if="job.result?.synced_location">
+                    <div class="mt-3"><p class="font-mono" x-text="job.result.synced_location.root"></p>
+                        <button class="dp-btn dp-btn-secondary mt-2" @click="openViewer(job.result.synced_location)">Registered dataset · Prepare Viewer</button>
+                    </div>
+                </template>
+            </article>
+        </template>
+    </div>
+</section>
+<script>
+function mcapImportApp(user, openViewer) {
+    return {
+        user, openViewer, nodes: [], sources: [], jobs: [], nodeId: '', selected: [],
+        shortSide: 256, maxFiles: 3, outputParent: '', busy: false, error: '', timer: null,
+        async init() {
+            if (!this.user) return;
+            await this.refresh();
+            this.timer = setInterval(() => {
+                if (this.jobs.some(job => ['queued', 'running', 'cancel_requested'].includes(job.status))) this.refresh();
+            }, 5000);
+        },
+        destroy() { clearInterval(this.timer); },
+        canWrite() { return ['admin', 'data_manager', 'operator'].includes(this.user?.role); },
+        node() { return this.nodes.find(node => node.node_id === this.nodeId); },
+        capabilityError() {
+            const node = this.node();
+            if (!node) return 'Select a source node';
+            if (node.status !== 'online') return 'Node is offline';
+            return node.capabilities?.mcap_import?.ready ? '' : (node.capabilities?.mcap_import?.reason || 'Upgrade the Agent and install the MCAP runtime');
+        },
+        sourceRows() { return this.sources.filter(source => source.node_id === this.nodeId); },
+        sourceName(id) { return this.sources.find(source => source.location_id === id)?.root || id; },
+        importJobs() { return this.jobs.filter(job => !this.nodeId || job.node_id === this.nodeId); },
+        config() { return {short_side: Number(this.shortSide), max_files: Number(this.maxFiles)}; },
+        inspection(id) {
+            return this.jobs.find(job => job.location_id === id && job.operation === 'import.mcap.inspect'
+                && job.status === 'done' && job.requested_by === this.user?.user_id
+                && job.result?.mcap_import?.config.short_side === Number(this.shortSide)
+                && job.result?.mcap_import?.config.max_files === Number(this.maxFiles));
+        },
+        inspectionLabel(id) { const job = this.inspection(id); return job ? this.reportLabel(job.result.mcap_import) : 'Inspect the current settings first'; },
+        readyToConvert() { return Boolean(this.selected.length && this.outputParent && this.selected.every(id => this.inspection(id))); },
+        reportLabel(report) { return `${report.files.length} valid files, ${report.total_episodes} episodes, ${report.total_frames} frames; ${report.rejected.length} files rejected`; },
+        jobProgress(job) {
+            const event = job.events?.at(-1);
+            if (!event) return job.status === 'queued' ? 'Submitted; waiting for the node' : '';
+            const p = event.payload || {};
+            return `${event.message || ''}${p.total ? ` · ${p.current || 0}/${p.total}` : ''}${p.file ? ` · ${p.file}` : ''}${p.frame !== undefined ? ` · frame ${p.frame}/${p.segment_frames}` : ''}`;
+        },
+        setDefaultOutput() {
+            const parent = this.node()?.writable_roots?.[0];
+            if (parent) this.outputParent = `${parent.replace(/\/+$/, '')}/genrobot-imports/${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`;
+        },
+        async json(url, body) {
+            const response = await fetch(url, body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)} : {});
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+            return data;
+        },
+        async refresh() {
+            try {
+                const [nodes, sources, jobs] = await Promise.all([
+                    this.json('/api/control/nodes'), this.json('/api/control/locations?format=mcap'), this.json('/api/control/jobs?limit=200')
+                ]);
+                this.nodes = nodes.nodes; this.sources = sources.locations;
+                this.jobs = jobs.jobs.filter(job => job.operation.startsWith('import.mcap.'));
+                await Promise.all(this.jobs.filter(job => ['running', 'cancel_requested'].includes(job.status)).map(async job => {
+                    const detail = await this.json(`/api/control/jobs/${encodeURIComponent(job.job_id)}`);
+                    Object.assign(job, detail.job);
+                }));
+            } catch (error) { this.error = error.message; }
+        },
+        async submit(operation) {
+            if (!this.canWrite() || this.busy) return;
+            this.busy = true; this.error = '';
+            const failed = [];
+            for (const id of this.selected) {
+                const source = this.sources.find(item => item.location_id === id);
+                const body = {operation, config: this.config()};
+                if (operation === 'convert') {
+                    body.inspection_job_id = this.inspection(id)?.job_id;
+                    const parts = source.root.split('/').filter(Boolean);
+                    body.out_root = `${this.outputParent.replace(/\/+$/, '')}/${parts.at(-2)}/${parts.at(-1)}`;
+                }
+                try { await this.json(`/api/control/locations/${encodeURIComponent(id)}/mcap-jobs`, body); }
+                catch (error) { failed.push(`${source?.root}: ${error.message}`); }
+            }
+            await this.refresh(); this.error = failed.join('; '); this.busy = false;
+        }
+    };
+}
+</script>

@@ -446,6 +446,7 @@
         </div>
 
         <main class="dp-main-canvas space-y-4">
+            {% include 'mcap_import.html' %}
             <section class="dp-page-surface flex flex-col"
                      x-cloak x-show="activePage === 'datasets'">
                 <div class="dp-page-header">
@@ -3832,7 +3833,7 @@
                     return Boolean(page && page.open_links.includes(key) && this.openLinkEnabled(key));
                 },
                 isOperationPage() {
-                    return this.activePage !== 'datasets' && this.activePage !== 'runs';
+                    return !['datasets', 'runs', 'mcap_import'].includes(this.activePage);
                 },
                 activePageRequiresDataset() {
                     return this.isOperationPage();
@@ -4038,7 +4039,7 @@
                     if (updateUrl) this.navigationRevision = (this.navigationRevision || 0) + 1;
                     if (
                         this.selectedDataset?.remote
-                        && !['datasets', 'preprocessing', 'admin_operations', 'runs', 'explore', 'annotation', 'quality', 'dataset_build'].includes(pageKey)
+                        && !['datasets', 'mcap_import', 'preprocessing', 'admin_operations', 'runs', 'explore', 'annotation', 'quality', 'dataset_build'].includes(pageKey)
                     ) {
                         this.error = 'This Agent dataset currently supports preprocessing, authorized source mutations, Viewer, and Runs.';
                         return;

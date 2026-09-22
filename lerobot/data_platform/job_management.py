@@ -26,6 +26,8 @@ from lerobot.data_platform.operation_log import build_operation_event, sanitize_
 JOB_PROTOCOL = 2
 ACTIVE_STATES = {"running", "cancel_requested", "interrupted"}
 SAFE_OPERATIONS = {
+    "import.mcap.inspect",
+    "import.mcap.convert",
     *CURATION_OPERATIONS,
     "caption.annotate",
     "viewer.prepare",
@@ -193,6 +195,13 @@ class JobManager:
                 location = session.get(DatasetLocation, job.location_id)
                 if location is None:
                     continue
+                if job.operation.startswith("import.mcap.") and (
+                    node.capabilities.get("job_protocol", 1) < 2
+                    or node.capabilities.get("mcap_import_protocol") != 1
+                    or job.operation not in node.capabilities.get("operations", [])
+                    or not node.capabilities.get("mcap_import", {}).get("ready")
+                ):
+                    continue
                 if (
                     job.operation.startswith("curation.")
                     and (node.capabilities or {}).get("curation_protocol") != 1
@@ -228,7 +237,8 @@ class JobManager:
                 control.revision += 1
                 if (
                     job.operation.startswith("preprocess.")
-                    or job.operation in {"curation.materialize", "curation.construction"}
+                    or job.operation
+                    in {"curation.materialize", "curation.construction", "import.mcap.convert"}
                 ) and not control.final_output:
                     source = PurePosixPath(location.root)
                     control.final_output = job.options.get("out_root") or str(

@@ -190,6 +190,12 @@ UV_CACHE_DIR="$CACHE_DIR/uv" "$RELEASE_DIR/uv" pip install \
 
 printf '%s\n' "$BUNDLE_DIGEST" > "$RELEASE_DIR/bundle.sha256"
 fi
+if [[ ! -f "$RELEASE_DIR/mcap-runtime/.ready" ]]; then
+    UV_CACHE_DIR="$CACHE_DIR/uv" "$RELEASE_DIR/.venv/bin/python" \
+        -m lerobot.data_platform.mcap_runtime \
+        --destination "$RELEASE_DIR/mcap-runtime" --uv "$RELEASE_DIR/uv"
+    touch "$RELEASE_DIR/mcap-runtime/.ready"
+fi
 if ((ADOPT_LEGACY)); then
     [[ $DEPLOY_ENV == prod && -n $INSTANCE_ID ]] || fail "Legacy adoption requires --env prod --instance-id UUID"
     "$RELEASE_DIR/.venv/bin/python" - "$CONFIG_FILE" "$STATE_DIR" "$INSTANCE_ID" "$BUNDLE_VERSION" "$BUNDLE_DIGEST" <<'PYADOPT'

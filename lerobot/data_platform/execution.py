@@ -66,6 +66,15 @@ def input_fingerprint(roots):
     digest = hashlib.sha256()
     for root in sorted({Path(value).resolve() for value in roots}):
         digest.update(str(root).encode())
+        # Raw imports have no LeRobot meta/data/videos directories yet.
+        for path in sorted(root.glob("*.mcap")):
+            if path.is_symlink():
+                raise ValueError("MCAP source symlinks are not supported")
+            stat = path.stat()
+            digest.update(path.name.encode())
+            digest.update(
+                str((stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)).encode()
+            )
         for directory in ("meta", "data", "videos"):
             for path in sorted((root / directory).rglob("*")):
                 if not path.is_file():
@@ -387,7 +396,7 @@ class ExecutionSupervisor:
             if final.exists():
                 raise FileExistsError("Final output already exists; reconcile it before retrying")
             staging = final.parent / f".dp-{job['job_id']}-{execution['attempt_id']}"
-        elif job["operation"] == "caption.annotate":
+        elif job["operation"] in {"caption.annotate", "import.mcap.inspect"}:
             staging = work / "staging"
         else:
             output = _require_within(
@@ -626,6 +635,10 @@ class ExecutionSupervisor:
             payload["result"]["dataset_location"] = _dataset_payload(
                 Path(marker["final"]), node_name=self.agent.name, metadata=original.get("metadata")
             )
+            if marker["job"]["operation"] == "import.mcap.convert":
+                checkpoints = Path(marker["final"]).parent / ".mcap-checkpoints" / marker["job"]["job_id"]
+                if checkpoints.is_dir():
+                    shutil.rmtree(checkpoints)
         for path in (Path(marker["work"]) / "uploads").glob("*.json"):
             record = json.loads(path.read_text())
             artifact = Path(record["path"])

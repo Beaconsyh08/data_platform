@@ -140,23 +140,31 @@ const assert = require('node:assert/strict');
  const app = controlPlane();
  const calls = [];
  app.request = async (url, options = {}) => {
-   calls.push({url, ...options}); return {location_ids: ['existing']};
+   calls.push({url, ...options});
+   if (url === '/api/control/locations?format=all') {
+     return {locations: [
+       {location_id:'a',root:'/data/Alpha',node_name:'node-one',dataset_format:'lerobot'},
+       {location_id:'b',root:'/data/Beta',node_name:'node-two',dataset_format:'mcap'}
+     ]};
+   }
+   return {location_ids: ['existing']};
  };
  let refreshed = false;
  app.load = async () => { refreshed = true; };
  await app.editDataScopes({user_id: 'manager', username: 'alice'});
  assert.deepEqual(app.scopeLocationIds, ['existing']);
+ assert.equal(calls[1].url, '/api/control/locations?format=all');
+ assert.deepEqual(app.scopeLocations.map(x => x.location_id), ['a','b']);
  app.scopeLocationIds = ['new'];
  await app.saveDataScopes();
- assert.equal(calls[1].url, '/api/auth/users/manager/data-scopes');
- assert.equal(calls[1].method, 'PUT');
- assert.deepEqual(JSON.parse(calls[1].body), {location_ids:['new'], all_locations:false});
+ assert.equal(calls[2].url, '/api/auth/users/manager/data-scopes');
+ assert.equal(calls[2].method, 'PUT');
+ assert.deepEqual(JSON.parse(calls[2].body), {location_ids:['new'], all_locations:false});
  assert.equal(app.scopeAccount, null);
  assert(refreshed);
  assert.equal(app.scopeBusy, false);
  assert.equal(app.error, '');
- app.locations = [{location_id:'a',root:'/data/Alpha',node_name:'node-one'},
-                  {location_id:'b',root:'/data/Beta',node_name:'node-two'}];
+ app.locations = [app.scopeLocations[0]];
  app.scopeSearch = 'ALPHA node-one';
  assert.deepEqual(app.filteredScopeLocations().map(x => x.location_id), ['a']);
  app.scopeLocationIds = ['a','b'];

@@ -11,6 +11,7 @@ from lerobot.data_platform.routes.dataset_results import register_dataset_result
 from lerobot.data_platform.routes.embedding import register_embedding_routes
 from lerobot.data_platform.routes.episode_deletion_requests import register_episode_deletion_request_routes
 from lerobot.data_platform.routes.lifecycle import register_lifecycle_routes
+from lerobot.data_platform.routes.mcap_import import register_mcap_import_routes
 from lerobot.data_platform.routes.preprocess import register_preprocess_routes
 from lerobot.data_platform.routes.tagging import register_tagging_routes
 from lerobot.data_platform.routes.tasks import register_task_routes
@@ -29,6 +30,7 @@ __all__ = [
     "register_embedding_routes",
     "register_episode_deletion_request_routes",
     "register_lifecycle_routes",
+    "register_mcap_import_routes",
     "register_preprocess_routes",
     "register_remote_analysis_routes",
     "register_tagging_routes",

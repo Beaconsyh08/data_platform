@@ -324,6 +324,12 @@ def discover_datasets(roots: list[Path], *, node_name: str) -> list[dict]:
                 except (OSError, json.JSONDecodeError, ValueError) as exc:
                     logging.warning("Could not inspect dataset %s: %s", current, exc)
                 continue
+            mcap_files = [path for path in current.glob("*.mcap") if path.is_file() and not path.is_symlink()]
+            if mcap_files:
+                from lerobot.data_platform.mcap_import import raw_location
+
+                datasets.append(raw_location(current, node_name, mcap_files))
+                continue
             try:
                 children = sorted(current.iterdir(), reverse=True)
             except OSError:
@@ -671,6 +677,8 @@ class DataPlatformAgent:
 
     def capabilities(self) -> dict:
         from lerobot.data_platform.curation_execution import worker_capabilities
+        from lerobot.data_platform.mcap_contract import OPERATIONS as MCAP_OPERATIONS
+        from lerobot.data_platform.mcap_import import runtime_status
 
         disk = {}
         for root in self.allowed_roots:
@@ -687,6 +695,9 @@ class DataPlatformAgent:
         ]
         if self.allow_source_mutations:
             operations.extend(f"mutation.{op}" for op in sorted(_SOURCE_MUTATION_OPS))
+        mcap_runtime = runtime_status()
+        if mcap_runtime.get("ready"):
+            operations.extend(sorted(MCAP_OPERATIONS))
         return {
             **worker_capabilities(),
             "caption_protocol": 1,
@@ -708,6 +719,8 @@ class DataPlatformAgent:
             "source_mutations_enabled": self.allow_source_mutations,
             "task_config_protocol": TASK_CONFIG_PROTOCOL,
             "result_sync_protocol": 1,
+            "mcap_import_protocol": 1,
+            "mcap_import": {**mcap_runtime, "adapters": ["genrobot_das"]},
         }
 
     def sync_locations(self) -> list[dict]:
@@ -801,6 +814,13 @@ class DataPlatformAgent:
         location = dict(job.get("location") or {})
         source_root = _require_within(Path(location.get("root") or ""), self.allowed_roots, "dataset root")
         operation = str(job.get("operation") or "")
+        if operation.startswith("import.mcap."):
+            from lerobot.data_platform.mcap_contract import OPERATIONS as MCAP_OPERATIONS
+            from lerobot.data_platform.mcap_import import execute_import
+
+            if operation not in MCAP_OPERATIONS:
+                raise ValueError("Unsupported MCAP import operation")
+            return execute_import(self, job, source_root)
         require_dataset_operation(
             source_root, operation, data_version_override=(job.get("options") or {}).get("data_version")
         )

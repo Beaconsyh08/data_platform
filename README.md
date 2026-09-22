@@ -44,6 +44,9 @@
 首次初始化、角色切换、升级和回退请按 [双环境部署指南](docs/data_platform_environments.md) 操作。
 账号统一使用 username；改密和管理员重置流程见 [账号与密码恢复](docs/data_platform_accounts.md)。
 
+**MCAP 导入：** Data Platform → Data Import 支持 GenDAS MCAP → LeRobot v3.0，
+先预检、再转换，默认每个目录最多 3 个文件。操作与部署配置见 [MCAP 导入指南](docs/data_platform_mcap_import.md)。
+
 
 Task definitions are configurable in the console. Existing Pick/Place/Give tasks and new task families share versioned catalogs, dataset mappings, analysis and curation filters, and portable Agent configuration snapshots. See the [task onboarding guide](docs/data_platform_task_catalog.md).
 

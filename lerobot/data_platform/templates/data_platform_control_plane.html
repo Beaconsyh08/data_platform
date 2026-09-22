@@ -107,7 +107,7 @@
                 <label class="text-sm"><input type="radio" x-model="scopeMode" value="selected" :disabled="scopeBusy"> Selected datasets only</label>
                 <input type="search" aria-label="Search data permissions" x-model="scopeSearch" placeholder="Search dataset, Agent or path" class="my-3 block w-full rounded border border-slate-700 bg-slate-950 px-3 py-2">
                 <p class="mb-2 text-xs text-slate-400" x-text="filteredScopeLocations().length + ' matching datasets'"></p>
-                <p class="text-sm text-slate-400" x-show="!locations.length">No registered datasets are available.</p>
+                <p class="text-sm text-slate-400" x-show="!scopeLocations.length">No registered datasets are available.</p>
                 <div class="max-h-72 overflow-y-auto space-y-2">
                     <template x-for="location in filteredScopeLocations()" :key="location.location_id">
                         <label class="flex items-center gap-2 text-sm">
@@ -323,7 +323,7 @@
     <script>
         function controlPlane() {
             return {
-                scopeAccount: null, scopeLocationIds: [], scopeBusy: false, scopeMode: 'all', scopeSearch: '',
+                scopeLocations: [], scopeAccount: null, scopeLocationIds: [], scopeBusy: false, scopeMode: 'all', scopeSearch: '',
                 nodes: [], locations: [], jobs: [], users: [], selectedNodeId: '', error: '', timer: null,
                 myJobsOnly: false, busyJob: null, jobHistory: null,
                 section: 'overview', refreshing: false, lastUpdated: null,
@@ -529,7 +529,7 @@
                 },
                 filteredScopeLocations() {
                     const tokens = this.scopeSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
-                    return this.locations.filter(location => {
+                    return this.scopeLocations.filter(location => {
                         const text = [this.locationName(location), location.dataset_key, location.node_name,
                             location.node_hostname, location.root].filter(Boolean).join(' ').toLowerCase();
                         return tokens.every(token => text.includes(token));
@@ -540,7 +540,11 @@
                     this.scopeAccount = null;
                     this.scopeBusy = true;
                     try {
-                        const data = await this.request(`/api/auth/users/${account.user_id}/data-scopes`);
+                        const [data, sources] = await Promise.all([
+                            this.request(`/api/auth/users/${account.user_id}/data-scopes`),
+                            this.request('/api/control/locations?format=all')
+                        ]);
+                        this.scopeLocations = sources.locations;
                         this.scopeMode = data.all_locations ? 'all' : 'selected';
                         this.scopeSearch = '';
                         this.scopeLocationIds = data.location_ids || [];
