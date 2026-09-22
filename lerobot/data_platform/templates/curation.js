@@ -98,6 +98,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     root.querySelectorAll('[data-section]').forEach(item => { item.hidden = item.dataset.section !== page; });
     root.querySelectorAll('[data-page]').forEach(item => item.setAttribute('aria-selected', item.dataset.page === page));
     root.querySelectorAll('[data-curation-tab]').forEach(item => { item.hidden = item.dataset.curationTab !== tab; });
+    root.querySelectorAll('[data-curation-general]').forEach(item => { item.hidden = value === 'annotation' && tab === 'temporal_caption'; });
   }
   function drawForms() {
     root.querySelectorAll('[data-operation]').forEach(container => {
@@ -140,7 +141,8 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('overview').textContent = `${data.info.total_frames || 0} frames · ${data.info.fps || '—'} fps · ${data.info.codebase_version || 'Unknown format'}`;
     $('viewer').hidden = !data.viewer_url; if (data.viewer_url) $('viewer').href = data.viewer_url;
     const captionBase = target.location_id ? `/remote/${encodeURIComponent(target.location_id)}` : `/${target.dataset_key}`;
-    $('caption').href = captionBase + '/temporal-caption'; $('analysis').href = captionBase + '/analysis';
+    $('caption-annotation').href = captionBase + '/temporal-caption';
+    $('caption').href = captionBase + '/temporal-caption/review'; $('analysis').href = captionBase + '/analysis';
     options($('workspace'), data.workspaces, item => item.workspace_id, item => `${item.owner} · ${item.status} · ${item.workspace_id.slice(-8)}`, 'Select a workspace');
     options($('episode'), data.episodes, item => String(item.episode_index), item => `Episode ${item.episode_index}`);
     options($('result'), data.runs.filter(item => !['curation.snapshot','curation.validate_source'].includes(item.operation)), item => item.run, item => `${operationNames[item.operation.split('.')[1]]} · ${new Date(item.created_at).toLocaleString()}`, 'Select a result');

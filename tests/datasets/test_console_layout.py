@@ -660,3 +660,49 @@ def test_curation_tabs_stay_in_console_and_skip_legacy_local_loaders():
 """
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+def test_temporal_caption_tab_hides_generic_review_and_restores_it():
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("Node required for curation navigation check")
+    templates = Path(viewer.__file__).parent / "templates"
+    source = (templates / "curation.js").read_text()
+    function = (
+        "function selectPage" + source.split("function selectPage", 1)[1].split("function drawForms", 1)[0]
+    )
+    subprocess.run(
+        [
+            "node",
+            "-e",
+            """
+const assert = require('node:assert/strict');
+let page;
+const general = Array.from({length:4}, () => ({hidden:false}));
+const root = {querySelectorAll: selector => selector === '[data-curation-general]' ? general : []};
+"""
+            + function
+            + """
+selectPage('annotation','temporal_caption');
+assert(general.every(item => item.hidden));
+selectPage('annotation','labeling');
+assert(general.every(item => !item.hidden));
+selectPage('dataset_build','curation_manifest');
+assert(general.every(item => !item.hidden));
+""",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    template = (templates / "visualize_dataset_curation.html").read_text()
+    assert template.count("data-curation-general") == 4
+    caption = template.split('data-curation-tab="temporal_caption"', 1)[1].split(
+        'data-curation-tab="labeling"', 1
+    )[0]
+    assert 'data-curation-id="caption-annotation"' in caption
+    assert 'data-curation-id="caption"' in caption
+    assert 'data-curation-id="accept-caption"' not in caption
+    assert "$('caption').href = captionBase + '/temporal-caption/review'" in source

@@ -205,3 +205,8 @@ The task page links to review; completed jobs link directly to their result. The
 Explore tools include Temporal Caption Review alongside Viewer, Analysis, and Label Review,
 including for remote datasets before Viewer preparation. Review remains inspection of model
 outputs; it does not record human approval or alter the dataset.
+
+The embedded Temporal Caption tab contains only annotation and review links. Generic review
+workspace, generated results, episode decisions, and tasks are hidden on this tab and remain
+available on other curation tabs. Caption evidence attachment lives under Dataset Build,
+Profile & recipe, beside the review workspace.
