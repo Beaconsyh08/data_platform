@@ -213,6 +213,7 @@ def test_inspect_convert_publish_and_scope_inheritance(tmp_path):
     }
     assert store.accessible_locations(excluded["user_id"]) == []
     assert len(client.get("/api/control/locations").json["locations"]) == 1
+    assert len(client.get("/api/control/locations?format=all").json["locations"]) == 2
 
 
 @pytest.mark.parametrize("role,allowed", [("viewer", False), ("operator", True), ("data_manager", True)])
@@ -228,6 +229,8 @@ def test_import_roles_and_dataset_scope(tmp_path, role, allowed):
     endpoint = f"/api/control/locations/{location['location_id']}/mcap-jobs"
     assert client.post(endpoint, json={}).status_code == (202 if allowed else 403)
     store.set_mutation_locations(user["user_id"], [], actor=admin)
+    if role in {"viewer", "operator"}:
+        assert client.get("/api/control/locations?format=all").json["locations"] == []
     assert client.post(endpoint, json={}).status_code == (202 if role == "data_manager" else 403)
 
 

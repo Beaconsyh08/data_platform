@@ -880,7 +880,8 @@ def register_control_plane_routes(
                 "locations": [
                     {**location, "source_mutation_allowed": location["location_id"] in allowed}
                     for location in store.accessible_locations(_current_user()["user_id"])
-                    if (location.get("metadata", {}).get("source_format") == "mcap")
+                    if request.args.get("format") == "all"
+                    or (location.get("metadata", {}).get("source_format") == "mcap")
                     == (request.args.get("format") == "mcap")
                 ]
             }
