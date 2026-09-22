@@ -31,8 +31,9 @@ Viewer 账号只读。Admin、data_manager、operator 可提交，沿用现有�
 | `/robot{0,1}/vio/eef_pose` | `{left,right}_arm_quaternion_pose`，xyz + xyzw |
 | `/robot{0,1}/sensor/magnetic_encoder` | `{left,right}_gripper_width`，单位米 |
 
-使用 protobuf 内嵌描述符与 H.264 连续解码，不需要 ROS 环境。不生成 head、action、
-虚构 state 或任务阶段标签；这批输出面向 Viewer 和兼容的基础预处理，训练 action 映射另行定义。
+使用 protobuf 内嵌描述符与 H.264 连续解码，不需要 ROS 环境。Viewer 分别显示
+Left Gripper / Right Gripper，使用独立颜色和开关，宽度保持米制。
+不生成 head、action、虚构 state 或任务阶段标签；这批输出面向 Viewer 和兼容的基础预处理，训练 action 映射另行定义。
 任务文本取来源目录的父目录名称。
 
 - 以消息 `header.timestamp` 的纳秒采集时间对齐到 30 FPS。
@@ -86,3 +87,17 @@ export DATA_PLATFORM_MCAP_PYTHON=/tmp/mcap-runtime/bin/python
 各 1 个 episode；双路视频均为 316×256。三者均通过 v3 元数据与全帧视频校验并生成 Viewer
 缓存。另用其中一条验证浏览器提交、真实 Agent 子进程执行、原子发布和注册、手机布局以及
 Viewer 账号只读；这些测试在隔离的本地测试服务执行，未部署到线上服务。
+
+## 头部通道核验（2026-09-22）
+
+对 H100 已下载数据的 19 个编号目录、36,409 个 MCAP 逐一读取 summary、通道、protobuf
+schema 类型和消息计数，全部成功，0 个读取错误。通道并集为 14 种，全部位于 `/robot0/`
+或 `/robot1/`，每侧最多包括：
+
+- `sensor/camera0/compressed` 和 `sensor/camera0/camera_info`
+- `sensor/imu`、`sensor/magnetic_encoder`
+- `vio/eef_pose`、`sim/robot_info`、`system_info`
+
+未发现独立头部相机或头部姿态通道，导入器没有遗漏相应的头部观测。此结论针对本次已下载
+的录制文件，不代表所有上游版本或物理采集设备。少数文件缺少单手信号，仍需执行预检和
+有效连续片段规则；此次全量检查仅扫描元数据，没有新增全量转换。

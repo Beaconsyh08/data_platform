@@ -65,7 +65,9 @@ def test_remote_lists_load_independently_when_jobs_fail(page):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("robot", ["umi", "dvt1", "dvt2", "joint_named", "ee_named", "ee_positional"])
+@pytest.mark.parametrize(
+    "robot", ["umi", "genrobot", "dvt1", "dvt2", "joint_named", "ee_named", "ee_positional"]
+)
 def test_viewer_signal_groups_remain_visible_after_refresh_and_toggles(robot):
     import json
     import re
@@ -91,6 +93,20 @@ def test_viewer_signal_groups_remain_visible_after_refresh_and_toggles(robot):
         features.update(
             {key: {"dtype": "float32", "shape": [1]} for key in ("left_gripper_pos", "right_gripper_pos")}
         )
+    elif robot == "genrobot":
+        features = {}
+        for side in ("left", "right"):
+            features[f"{side}_arm_quaternion_pose"] = {
+                "dtype": "float32",
+                "shape": [7],
+                "names": ["x", "y", "z", "qx", "qy", "qz", "qw"],
+            }
+            features[f"{side}_gripper_width"] = {
+                "dtype": "float32",
+                "shape": [1],
+                "names": ["width"],
+                "unit": "m",
+            }
     elif robot.startswith("ee_"):
         names = [
             f"{part}_{component}"
@@ -188,6 +204,23 @@ if (robot === 'umi') {
     assert.equal(app.dygraphArmJoints.mask[labels.indexOf('head_pose.x')], false);
     app.toggleGroup('head_rpy');
     app.toggleGroup('head_quat');
+}
+if (robot === 'genrobot') {
+    assert.equal(app.usesUmiPlotGroups, true);
+    assert.deepEqual(app.auxiliaryGroups.map(g => g.key), ['left', 'right', 'other']);
+    assert.deepEqual(app.jointGroups.filter(g => g.graph === 'arm').map(g => g.shortLabel), ['Left4', 'Right4']);
+    assert.equal(app.jointGroups.some(g => g.id.startsWith('head')), false);
+    const left = 'left_gripper_width.width', right = 'right_gripper_width.width';
+    assert.deepEqual(app.labelToGroupIds[left], ['left_gripper']);
+    assert.deepEqual(app.labelToGroupIds[right], ['right_gripper']);
+    assert.equal(app.signalShortLabel(left), 'Left Gripper');
+    assert.equal(app.signalShortLabel(right), 'Right Gripper');
+    assert.notEqual(app.umiSignalColor(left), app.umiSignalColor(right));
+    assert.equal(app.signalColumns.find(c => c.key === 'left_gripper_width').unit, 'm');
+    app.toggleGroup('left_gripper');
+    assert.equal(app.dygraphGripperFlag.mask[labels.indexOf(left)], false);
+    assert.equal(app.dygraphGripperFlag.mask[labels.indexOf(right)], true);
+    app.toggleGroup('left_gripper');
 }
 if (robot === 'joint_named') {
     assert.equal(app.usesUmiPlotGroups, false);

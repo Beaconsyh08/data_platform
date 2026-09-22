@@ -2697,7 +2697,10 @@
                     if (signal?.component) {
                         const source = ['state', 'observation.state'].includes(signal.source) ? 'State'
                             : signal.source === 'action' ? 'Action' : '';
-                        return signal.component + (source ? ` · ${source}` : '');
+                        const side = {left: 'Left', right: 'Right'}[signal.part];
+                        const component = signal.component === 'gripper' && side
+                            ? `${side} Gripper` : signal.component;
+                        return component + (source ? ` · ${source}` : '');
                     }
                     if (label.endsWith('_gripper_pos')) return 'gripper';
                     return label.split('.').pop();
