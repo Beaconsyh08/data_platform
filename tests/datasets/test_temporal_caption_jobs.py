@@ -132,6 +132,8 @@ def remote(tmp_path, monkeypatch):
 
 def queue(remote):
     client, store, node, token, location, _ = remote
+    current = next(n for n in store.list_nodes() if n["node_id"] == node["node_id"])
+    store.heartbeat(node["node_id"], capabilities={**current["capabilities"], "caption_signal_options": True})
     url = f"/api/control/locations/{location['location_id']}/temporal-caption/jobs"
     body = {"episode_index": 25, "scheme": "multiview_semantics"}
     response = client.post(url, json=body, headers={"Idempotency-Key": "one"})
@@ -210,7 +212,8 @@ def test_bad_options_do_not_queue(remote, options):
 
 
 @pytest.mark.parametrize("scheme", ["multiview_semantics", "video_events"])
-def test_real_episode_agent_execution_round_trip(remote, tmp_path, monkeypatch, scheme):
+@pytest.mark.parametrize("include_signals", [True, False])
+def test_real_episode_agent_execution_round_trip(remote, tmp_path, monkeypatch, scheme, include_signals):
     from lerobot.data_platform import qwen
     from lerobot.data_platform.temporal_caption_jobs import execute_caption_job
     from tests.datasets.test_temporal_caption import (
@@ -221,9 +224,13 @@ def test_real_episode_agent_execution_round_trip(remote, tmp_path, monkeypatch, 
     fixture.mkdir()
     test_export_reads_only_selected_episode_from_shared_v3_shard(fixture)
     client, store, node, token, location, _ = remote
+    current = next(n for n in store.list_nodes() if n["node_id"] == node["node_id"])
+    store.heartbeat(node["node_id"], capabilities={**current["capabilities"], "caption_signal_options": True})
     url = f"/api/control/locations/{location['location_id']}/temporal-caption/jobs"
     queued = client.post(
-        url, json={"episode_index": 1, "scheme": scheme}, headers={"Idempotency-Key": "real"}
+        url,
+        json={"episode_index": 1, "scheme": scheme, "include_signals": include_signals},
+        headers={"Idempotency-Key": "real"},
     ).get_json()["job"]
     job = store.claim_job(node["node_id"], worker_instance_id="worker")
     headers = {
@@ -267,6 +274,8 @@ def test_real_episode_agent_execution_round_trip(remote, tmp_path, monkeypatch, 
 
         def upload_artifact(self, state, job_id, relative, path, *, caption):
             assert caption
+            if str(relative) == "episode.json" and not include_signals:
+                assert all(set(row) == {"frame"} for row in json.loads(path.read_text())["signals"])
             response = client.put(
                 f"/api/agents/jobs/{job_id}/caption-artifacts/{relative}",
                 headers=headers,
@@ -288,7 +297,8 @@ def test_real_episode_agent_execution_round_trip(remote, tmp_path, monkeypatch, 
     variant = "refined" if scheme == "multiview_semantics" else "caption"
     review = client.get(url.removesuffix("/jobs") + f"/{job['job_id']}/{variant}").get_json()
     assert review["episode_index"] == 1 and review["frame_count"] == 2
-    assert review["context"]["signals"]
+    assert bool(review["context"]["signals"]) is include_signals
+    assert review["include_signals"] is include_signals
     assert list((tmp_path / "agent/caption-work").iterdir()) == []
 
 

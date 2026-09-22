@@ -147,3 +147,13 @@ def test_structural_retry_receives_exact_failed_boundary_and_response(tmp_path):
     corrective = [c["messages"][0]["content"][-1].get("text", "") for c in model.calls]
     assert any("segment start 6" in value and "Previous response:" in value for value in corrective)
     assert (tmp_path / "output/invalid-02-visual-0.json").is_file()
+
+
+def test_visual_only_fusion_has_no_derived_signal_evidence(tmp_path):
+    from lerobot.data_platform.temporal_caption_fusion import signal_evidence
+
+    metadata = json.loads((bundle(tmp_path) / "episode.json").read_text())
+    metadata["include_signals"] = False
+    evidence = signal_evidence(metadata)
+    assert evidence["signals"] == []
+    assert evidence["events"] == []

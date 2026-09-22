@@ -120,7 +120,11 @@ def prepare(root: Path, episode: int, output: Path) -> None:
     try:
         frames = output / "frames"
         frames.mkdir()
-        signal_keys = [key for key in rows[0] if "pose" in key or "gripper" in key or key == "action"]
+        signal_keys = [
+            key
+            for key in rows[0]
+            if "pose" in key or "gripper" in key or key in {"action", "state", "observation.state"}
+        ]
         signals = [{"frame": i, **{key: row[key] for key in signal_keys}} for i, row in enumerate(rows)]
         source_digest = hashlib.sha256(json.dumps(signals, sort_keys=True).encode())
         for i, row in enumerate(rows):

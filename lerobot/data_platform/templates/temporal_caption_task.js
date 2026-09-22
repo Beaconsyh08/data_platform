@@ -1,87 +1,71 @@
 window.createTemporalCaptionTask = (root, {api,reviewUrl,enabled=true}) => {
 const $=id=>root.querySelector(`[data-caption-id="${id}"]`);
-let schemes=[],destroyed=false,timer=null;
-function text(tag,value,cls=''){const e=document.createElement(tag);e.textContent=value;e.className=cls;return e;}
-async function get(url){const r=await fetch(url);if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json();}
-let jobReadiness=null;
-function updateJobReadiness(){
- const method=jobReadiness?.schemes?.find(x=>x.id===$('job-scheme').value);
- $('job-submit').disabled=!enabled || submitting || !(method ? method.can_submit : jobReadiness?.can_submit);
- $('job-readiness').textContent=(!enabled ? 'Preview only · start annotation on the development platform' : '') || method?.unavailable_reason || jobReadiness?.unavailable_reason || (jobReadiness?'Ready · a separate annotation result will be saved':'Checking annotation executor…');
-}
-function chooseScheme(){
- const id=$('job-scheme').value;
- if(!id)return;
- $('method-description').textContent=schemes.find(x=>x.id===id)?.description || '';
- try{localStorage.setItem('dataPlatform.captionMethod',id);}catch(_){}
- const url=new URL(reviewUrl,location.origin);url.searchParams.set('scheme',id);url.searchParams.set('episode',$('job-episode').value);$('open-review').href=url;
- updateJobReadiness();
-}
-let method=new URLSearchParams(location.search).get('scheme');
-try{method=method || localStorage.getItem('dataPlatform.captionMethod');}catch(_){}
-
-const pendingKey=`caption-submit:${api}`;
+let schemes=[], readiness=null, destroyed=false, timer=null, submitting=false;
+const pendingKey=`caption-batch:${api}`;
 let pending=JSON.parse(sessionStorage.getItem(pendingKey)||'null');
-let submitting=false;
-async function post(url,body,headers={}) {
-    const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(body)});
-    const data=await response.json(); if(!response.ok) throw new Error(data.error || `HTTP ${response.status}`); return data;
+$('open-review').href=reviewUrl;
+const locationMatch=api.match(/\/locations\/([^/]+)\/temporal-caption/);
+const dataset=locationMatch ? `remote:${decodeURIComponent(locationMatch[1])}` : api.replace('/api/temporal-caption/','');
+$('open-jobs').href='/?'+new URLSearchParams({select:dataset,page:'runs'});
+async function get(url){const response=await fetch(url);const data=await response.json();if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);return data;}
+function selection(){
+ const total=readiness?.total_episodes;
+ if(!Number.isInteger(total)||total<1)throw new Error('Dataset episode count is unavailable. Refresh dataset metadata.');
+ if($('episode-mode').value==='all')return Array.from({length:total},(_,i)=>i);
+ const result=new Set();
+ for(const token of $('job-episode').value.split(',')){
+  const match=token.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+  if(!match)throw new Error('Use indices or ranges, for example 0, 5, 10-20.');
+  const lo=Number(match[1]),hi=Number(match[2]??match[1]);
+  if(!Number.isSafeInteger(lo)||!Number.isSafeInteger(hi)||hi<lo||hi>=total)throw new Error(`Episode indices must be between 0 and ${total-1}.`);
+  for(let i=lo;i<=hi;i++)result.add(i);
+ }
+ return [...result].sort((a,b)=>a-b);
 }
-async function refreshJobs() {
-    try {
-        const data=await get(`${api}/jobs`);if(destroyed)return;
-        jobReadiness = data; updateJobReadiness();
-        $('caption-import-form').closest('details').hidden=!data.can_import;
-
-        $('caption-jobs').replaceChildren();
-        for(const job of data.jobs) {
-            const row=text('div',`Episode ${job.options.episode_index} · ${({video_events:'Video + Events',multiview_semantics:'Multi-view Semantics',fusion_review:'Fusion + Review'}[job.options.scheme]||job.options.scheme)} · ${job.status}${job.status==='queued'?` · ${job.queue_ahead} ahead`:''}`,'task-line');
-            if(job.error) row.append(text('p',job.error));
-            if(job.status==='running') {
-                const detail=await get(`/api/control/jobs/${job.job_id}`);
-                const event=detail.job.events?.at(-1); if(event) row.append(text('small',event.message));
-            }
-            if(job.result?.review_url) {const link=text('a','Open result');const target=new URL(reviewUrl,location.origin);target.search=new URL(job.result.review_url,location.origin).search;link.href=target;row.append(link);}
-            for(const action of ['cancel','retry'].filter(a=>(Array.isArray(job.available_actions) ? job.available_actions.includes(a) : job.available_actions?.[a]?.allowed === true || job.available_actions?.[a] === true))) {
-                const button=text('button',action==='cancel'?'Cancel':'Retry (calls Qwen again)');
-                button.onclick=async()=>{button.disabled=true;try{await post(`/api/control/jobs/${job.job_id}/${action}`,{revision:job.revision,idempotency_key:crypto.randomUUID()});await refreshJobs();}catch(error){$('job-status').textContent=error.message;button.disabled=false;}};
-                row.append(button);
-            }
-            $('caption-jobs').append(row);
-        }
-    } catch(error) {jobReadiness=null;updateJobReadiness();$('job-status').textContent=`Status unavailable; existing tasks may still be running. ${error.message}`;}
+function update(){
+ const scheme=schemes.find(x=>x.id===$('job-scheme').value);
+ $('method-description').textContent=scheme?.description||'';
+ $('range-label').hidden=$('episode-mode').value==='all';$('job-episode').required=!$('range-label').hidden;
+ const cap=readiness?.schemes?.find(x=>x.id===scheme?.id);
+ const reason=!enabled?'Preview only · start annotation on the platform':cap?.unavailable_reason||readiness?.unavailable_reason||(!readiness?.signal_options?'Upgrade the executor to support action/state input selection':'');
+ $('job-readiness').textContent=reason||'Ready';
+ let valid=false;
+ try{const episodes=selection();$('selection-summary').textContent=`${episodes.length} episode(s) · ${episodes.length} separate jobs`;valid=episodes.length>0;}
+ catch(error){$('selection-summary').textContent=error.message;}
+ $('job-submit').disabled=submitting||!enabled||!cap?.can_submit||!!reason||!valid;
 }
-if(pending) {$('job-episode').value=pending.body.episode_index;$('job-scheme').value=pending.body.scheme;$('job-status').textContent='Previous submission was not confirmed. Submit again to recover the same task.';}
-else {const episode=new URLSearchParams(location.search).get('episode');if(episode!==null)$('job-episode').value=episode;}
-$('job-scheme').onchange=()=>{chooseScheme();};
+async function refresh(){
+ try{
+  const catalog=await get(enabled ? `${api}/jobs` : api);if(destroyed)return;
+  schemes=catalog.schemes||[];
+  if(!$('job-scheme').options.length){for(const scheme of schemes){const option=document.createElement('option');option.value=scheme.id;option.textContent=scheme.name;$('job-scheme').append(option);}if(pending)$('job-scheme').value=pending.scheme;}
+  if(enabled)readiness=catalog;
+  if(!destroyed)update();
+ }catch(error){readiness=null;if(!destroyed){update();$('job-readiness').textContent=error.message;}}
+ if(enabled&&!destroyed)timer=setTimeout(refresh,10000);
+}
+if(pending){$('episode-mode').value='range';$('job-episode').value=pending.episodes.join(',');$('include-signals').checked=pending.include_signals;$('job-status').textContent='An earlier batch was not fully confirmed. Submit again to resume without duplicating confirmed jobs.';}
+for(const id of ['job-scheme','episode-mode','include-signals'])$(id).onchange=update;
+$('job-episode').oninput=update;
 $('caption-job-form').onsubmit=async event=>{
-    event.preventDefault();if(submitting)return;
-    const body={episode_index:Number($('job-episode').value),scheme:$('job-scheme').value};
-    if(!Number.isInteger(body.episode_index)||body.episode_index<0)return;
-    if(!pending||JSON.stringify(pending.body)!==JSON.stringify(body))pending={key:crypto.randomUUID(),body};
-    sessionStorage.setItem(pendingKey,JSON.stringify(pending));submitting=true;$('job-submit').disabled=true;$('job-status').textContent='Submitting…';
-    try {await post(`${api}/jobs`,pending.body,{'Idempotency-Key':pending.key});pending=null;sessionStorage.removeItem(pendingKey);$('job-status').textContent='Task accepted.';await refreshSaved();}
-    catch(error){$('job-status').textContent=`${error.message}. If delivery is uncertain, submit the same selection again to recover the task.`;}
-    finally {submitting=false;await refreshJobs();}
+ event.preventDefault();if(submitting||$('job-submit').disabled)return;
+ const batch={episodes:selection(),scheme:$('job-scheme').value,include_signals:$('include-signals').checked};
+ const signature=JSON.stringify(batch);
+ if(!pending||pending.signature!==signature)pending={...batch,signature,key:crypto.randomUUID(),confirmed:0};
+ sessionStorage.setItem(pendingKey,JSON.stringify(pending));submitting=true;update();
+ try{
+  for(let i=pending.confirmed;i<pending.episodes.length;i++){
+   if(destroyed)throw new Error('Dataset changed. Return to this dataset to resume submission.');
+   const response=await fetch(`${api}/jobs`,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':`${pending.key}:${pending.episodes[i]}`},body:JSON.stringify({episode_index:pending.episodes[i],scheme:pending.scheme,include_signals:pending.include_signals})});
+   const data=await response.json();if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);
+   pending.confirmed=i+1;sessionStorage.setItem(pendingKey,JSON.stringify(pending));
+   $('job-status').textContent=`${pending.confirmed}/${pending.episodes.length} jobs submitted. See Jobs for execution progress.`;
+  }
+  pending=null;sessionStorage.removeItem(pendingKey);
+  window.dispatchEvent(new CustomEvent('caption-jobs-submitted'));
+ }catch(error){$('job-status').textContent=`${error.message} Already submitted jobs remain in Jobs. Repeat the same selection to resume safely.`;}
+ finally{submitting=false;update();}
 };
-$('caption-import-form').onsubmit=async event=>{
-    event.preventDefault();const file=$('caption-import-file').files[0];if(!file)return;
-    const form=new FormData();form.append('results',file);$('caption-import-submit').disabled=true;
-    try{const response=await fetch(`${api}/import`,{method:'POST',body:form});const data=await response.json();if(!response.ok)throw new Error(data.error);location.href=data.review_url;}
-    catch(error){$('job-status').textContent=error.message;$('caption-import-submit').disabled=false;}
-};
-async function refreshSaved(){
- const data=await get(api);if(destroyed)return;
- schemes=data.schemes || [];
- if(!$('job-scheme').options.length){for(const scheme of schemes){const option=text('option',scheme.name);option.value=scheme.id;$('job-scheme').append(option);}if(schemes.some(x=>x.id===(pending?.body.scheme || method)))$('job-scheme').value=pending?.body.scheme || method;chooseScheme();}
- $('saved-results').replaceChildren();
- const runs=data.runs || [];
- $('saved-status').textContent=runs.length ? `${runs.length} saved result versions in this environment.` : 'No saved captions for this dataset in this environment. Results from another environment must be imported.';
- for(const run of runs){const url=new URL(reviewUrl,location.origin);url.search=new URLSearchParams({scheme:run.scheme.id,episode:run.episode_index,run:run.run});const row=text('p','');const link=text('a',`Episode ${run.episode_index} · ${run.scheme.name} · ${run.variant}`);link.href=url;row.append(link);$('saved-results').append(row);}
-}
-async function poll(){if(destroyed)return;await Promise.all([refreshJobs(),refreshSaved().catch(error=>{$('saved-status').textContent=error.message;})]);if(!destroyed)timer=setTimeout(poll,5000);}
-refreshSaved().catch(error=>{$('saved-status').textContent=error.message;});
-if(enabled)poll();else $('job-readiness').textContent='Preview only · start annotation on the development platform';
-$('job-episode').oninput=chooseScheme;
+refresh();
 return {destroy(){destroyed=true;clearTimeout(timer);}};
 };

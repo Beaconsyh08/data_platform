@@ -223,3 +223,26 @@ Register dataset version (previously Synchronize version) scans source identity 
 for versioned review and safe materialization; it does not copy or alter source data.
 Console initialization runs once, and delayed startup responses must not reset navigation
 after the user has selected a page.
+
+## Batch annotation and review controls
+
+The inline task form accepts episode indices/ranges (for example `0,5,10-20`) or the
+entire dataset. Each selected episode is a separate durable job in the shared Jobs
+page. Submission retains per-episode idempotency keys and a confirmed offset in the
+browser session so interrupted delivery can resume with the same selection. Changing
+the selection starts a new batch. Leaving the page stops further submissions; jobs
+already accepted continue. No new model requests are made merely by selecting all.
+
+`include_signals` is an optional boolean job option, defaulting to true for older
+clients. When false, inference receives no measured action/state, pose, gripper, or
+derived motion evidence. The option is saved in the artifact and verified during
+publication. An updated Agent advertising `caption_signal_options` is required.
+The ordinary task UI no longer offers ZIP import, saved-result lists, or a separate
+execution progress list; administrative CLI import remains available for migration.
+
+Review separates the episode selector from the result stage/run selector. Up/down
+arrows switch episodes outside other editing controls. Task outcome assessment is
+optional and distinct from Fusion annotation review: missing outcome fields mean
+not assessed, never failure. Viewer and caption review use left / head / right order;
+legacy composite videos are reordered into a derived display cache without rewriting
+the original result.

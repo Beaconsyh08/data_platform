@@ -5,13 +5,13 @@
 <a href="{{ annotation_url }}">Create annotation task</a><a href="{{ home_url }}">Dataset</a><span class="lang" aria-label="Caption language"><button id="lang-both" class="on">ZH + EN</button><button id="lang-en">EN</button><button id="lang-zh">ZH</button></span>
 <button id="theme" title="Toggle light or dark theme">◐ Theme</button></header>
 <div class="selectors"><label>Result method<select id="scheme">{% for scheme in caption_schemes %}<option value="{{ scheme.id }}">{{ scheme.name }}</option>{% endfor %}</select></label>
-<label>Saved episode / result<select id="variant" disabled></select></label><div><p id="scheme-description"></p><span id="meta" class="crumb"></span></div></div>
+<label>Episode (↑ / ↓)<select id="episode" disabled></select></label><label>Result stage / run<select id="variant" disabled></select></label><div><p id="scheme-description"></p><span id="meta" class="crumb"></span></div></div>
 
 <p id="status" role="status">Loading annotation results…</p>
 <main class="wrap" id="review" hidden>
 <section class="stage">
 <div class="card player"><video id="video" controls playsinline preload="metadata"></video>
-<div class="viewtags"><span>Head / scene</span><span>Left wrist</span><span>Right wrist</span></div>
+<div class="viewtags"><span>Left wrist</span><span>Head / scene</span><span>Right wrist</span></div>
 <div class="transport"><button id="previous">← Segment</button><button id="next">Segment →</button><span id="clock"></span><span class="spacer"></span>
 <label><input id="loop" type="checkbox"> Loop</label><select id="rate" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></div>
 <div id="current-caption"></div></div>
@@ -79,9 +79,9 @@ function plot(context) {
 }
 function renderQuality(result) {
     const box=$('quality'), quality=result.quality;
-    box.replaceChildren(text('div','Model quality assessment','sec-title'));
+    box.replaceChildren(text('div','Task outcome assessment','sec-title'));
     box.classList.toggle('quality-unknown',!quality || typeof quality.instruction_followed!=='boolean');
-    if(!quality || typeof quality.instruction_followed!=='boolean') { box.append(text('p','Not assessed by this scheme. No pass/fail verdict is inferred.')); return; }
+    if(!quality || typeof quality.instruction_followed!=='boolean') { box.append(text('p','Task success was not assessed in this result. This is not a failure. Segmentation review findings are shown separately below.')); return; }
     box.classList.toggle('pass',quality.instruction_followed===true && quality.success===true);
     const badges=text('div','','verdict-head');
     for(const [label,value] of [['Instruction followed',quality.instruction_followed],['Task success',quality.success]]) badges.append(text('span',`${label}: ${value===true?'yes':value===false?'no':'unknown'}`,`badge ${value===true?'ok':value===false?'bad':'warn'}`));
@@ -167,7 +167,7 @@ $('rate').onchange=()=>{$('video').playbackRate=Number($('rate').value);};
 $('plot').onclick=e=>{if(!artifact)return;const rect=e.currentTarget.getBoundingClientRect();$('loop').checked=false;$('video').currentTime=Math.max(0,Math.min(artifact.duration_s-.001,(e.clientX-rect.left)/rect.width*artifact.duration_s));};
 $('variant').onchange=load;
 function chooseScheme() {
-    const previousEpisode = artifact?.episode_index ?? (requested.has('episode') ? Number(requested.get('episode')) : null);
+    const previousEpisode = $('episode').value !== '' ? Number($('episode').value) : artifact?.episode_index ?? (requested.has('episode') ? Number(requested.get('episode')) : null);
     const previousResult = $('variant').value;
     const method = schemes.find(item => item.id === $('scheme').value);
     if (!method) return;
@@ -176,10 +176,16 @@ function chooseScheme() {
     $('scheme-description').textContent = method.description;
     try { localStorage.setItem(methodStorageKey, method.id); } catch (_) {}
     $('variant').replaceChildren();
-    const candidates = runs.filter(run => run.scheme.id === method.id).sort((a,b) => b.created_at-a.created_at);
+    const available = runs.filter(run => run.scheme.id === method.id).sort((a,b) => b.created_at-a.created_at);
+    const episodes=[...new Set(available.map(run=>run.episode_index))].sort((a,b)=>a-b);
+    $('episode').replaceChildren();
+    for(const ep of episodes){const option=text('option',String(ep));option.value=String(ep);$('episode').append(option);}
+    if(episodes.includes(previousEpisode))$('episode').value=String(previousEpisode);
+    $('episode').disabled=!episodes.length;
+    const candidates=available.filter(run=>run.episode_index===Number($('episode').value));
     const labels = {coarse:'Initial segmentation',refined:'Boundary review',caption:'Video annotation',fusion_draft:'Fusion draft',fusion_reviewed:'Reviewed fusion'};
     for (const run of candidates) {
-        const option = text('option',`Episode ${run.episode_index} · ${labels[run.variant]} · ${run.run}`);
+        const option = text('option',`${labels[run.variant]} · ${run.run}`);
         option.value = `${run.run}/${run.variant}`; $('variant').append(option);
     }
     const final = run => ['refined','caption','fusion_reviewed'].includes(run.variant);
@@ -196,6 +202,13 @@ function chooseScheme() {
     else $('status').textContent = `No saved results for ${method.name} on this dataset. Select an episode below to create one.`;
 }
 $('scheme').onchange = chooseScheme;
+$('episode').onchange=()=>{$('variant').value='';chooseScheme();};
+document.addEventListener('keydown',event=>{
+ if(!['ArrowUp','ArrowDown'].includes(event.key)||event.altKey||event.ctrlKey||event.metaKey)return;
+ if(event.target.closest('input,textarea,button,video') || (event.target.tagName==='SELECT'&&event.target.id!=='episode'))return;
+ event.preventDefault();const select=$('episode');const next=select.selectedIndex+(event.key==='ArrowDown'?1:-1);
+ if(next>=0&&next<select.options.length){select.selectedIndex=next;$('variant').value='';chooseScheme();}
+});
 if (schemes.some(item => item.id === initialMethod)) $('scheme').value = initialMethod;
 async function refreshRuns() {
     const data = await get(api);

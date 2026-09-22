@@ -3604,6 +3604,7 @@
                     this._jobRefreshHandlersInstalled = true;
                     const resume = () => this.resumeJobPolling();
                     window.addEventListener('pageshow', resume);
+                    window.addEventListener('caption-jobs-submitted', resume);
                     window.addEventListener('focus', resume);
                     document.addEventListener('visibilitychange', () => {
                         if (!document.hidden) resume();
@@ -5069,7 +5070,8 @@
                         output_dataset_key: outputLocationId ? `remote:${outputLocationId}` : null,
                         output_dataset_name: outputLocation ? this.remoteDatasetName(outputLocation) : '',
                         output_viewer_url: result.viewer_url || outputLocation?.metadata?.viewer_url || null,
-                        result_summary: result.preprocess?.summary || null,
+                        review_url: result.review_url || null,
+                        result_summary: result.preprocess?.summary || (job.operation === 'caption.annotate' ? job.options : null),
                         viewer_url: result.viewer_url
                             || (job.operation === 'viewer.prepare' ? location?.metadata?.viewer_url : null)
                             || null,
@@ -6882,6 +6884,7 @@
                     const operation = String(job?.job_type || job?.operation || job?.id || 'job');
                     const labels = {
                         'viewer.prepare': 'Prepare viewer',
+                        'caption.annotate': 'Temporal Caption',
                         'preprocess.standardize': 'Standardize dataset',
                         preprocess_standardize: 'Standardize dataset',
                     };

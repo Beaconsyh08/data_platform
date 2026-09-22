@@ -737,3 +737,30 @@ def test_delayed_console_startup_does_not_override_user_navigation():
 """
     )
     subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True, timeout=10)
+
+
+def test_caption_batch_selection_validates_ranges_and_all():
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("Node required")
+    templates = Path(viewer.__file__).parent / "templates"
+    source = (templates / "temporal_caption_task.js").read_text()
+    selection = (
+        "function selection()" + source.split("function selection()", 1)[1].split("function update()", 1)[0]
+    )
+    script = (
+        "const assert=require('node:assert/strict');let readiness={total_episodes:5};let mode='range',value='0,2-4,2';const $=id=>({value:id==='episode-mode'?mode:value});"
+        + selection
+        + """
+assert.deepEqual(selection(),[0,2,3,4]);
+for(const invalid of ['-1','3-1','0-5','', '1.5']){value=invalid;assert.throws(selection);}
+mode='all';assert.deepEqual(selection(),[0,1,2,3,4]);
+readiness=null;assert.throws(selection);
+"""
+    )
+    subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True, timeout=10)
+    form = (templates / "temporal_caption_task.html").read_text()
+    assert 'data-caption-id="open-jobs"' in form
+    assert "caption-import" not in form and "saved-results" not in form and "caption-jobs" not in form

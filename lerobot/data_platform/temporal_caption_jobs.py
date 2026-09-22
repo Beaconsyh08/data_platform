@@ -31,12 +31,18 @@ FILES = {
 
 
 def validate_options(options: dict) -> dict:
-    if not isinstance(options, dict) or set(options) != {"episode_index", "scheme"}:
-        raise ValueError("Specify only episode_index and scheme")
+    if (
+        not isinstance(options, dict)
+        or not {"episode_index", "scheme"} <= set(options)
+        or set(options) - {"episode_index", "scheme", "include_signals"}
+    ):
+        raise ValueError("Specify episode_index, scheme, and optional include_signals")
     if type(options["episode_index"]) is not int or options["episode_index"] < 0:
         raise ValueError("episode_index must be a non-negative integer")
     if not isinstance(options["scheme"], str) or options["scheme"] not in SCHEMES:
         raise ValueError("Unknown caption scheme")
+    if "include_signals" in options and type(options["include_signals"]) is not bool:
+        raise ValueError("include_signals must be a boolean")
     return dict(options)
 
 
@@ -91,6 +97,8 @@ def validate_run(source: Path, *, key: str | None = None, options: dict | None =
             raise ValueError("Invalid duration")
         if key is not None and value["dataset_key"] != key:
             raise ValueError("Artifact belongs to another dataset")
+        if options and value.get("include_signals", True) != options.get("include_signals", True):
+            raise ValueError("Artifact signal inputs do not match the requested options")
         if options and (scheme != options["scheme"] or value["episode_index"] != options["episode_index"]):
             raise ValueError("Artifact does not match the queued episode/scheme")
         if not isinstance(value.get("model"), str) or not value["model"]:
@@ -161,6 +169,15 @@ def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
         bundle, output = Path(temporary) / "bundle", Path(temporary) / "result"
         progress(f"Preparing episode {options['episode_index']} camera frames and measured signals")
         prepare(source, options["episode_index"], bundle)
+        metadata_path = bundle / "episode.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["include_signals"] = options.get("include_signals", True)
+        if not metadata["include_signals"]:
+            metadata["signals"] = [{"frame": row["frame"]} for row in metadata["signals"]]
+            metadata["signal_policy"] = (
+                "Visual only. No action/state, pose, gripper or motion evidence supplied."
+            )
+        write_json(metadata_path, metadata)
         from lerobot.data_platform.temporal_caption_fusion import infer_fusion
 
         run = {
@@ -174,7 +191,14 @@ def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
         for variant in SCHEMES[options["scheme"]]:
             artifact = output / f"{variant}.json"
             value = json.loads(artifact.read_text())
-            write_json(artifact, {**value, "source_fingerprint": fingerprint})
+            write_json(
+                artifact,
+                {
+                    **value,
+                    "source_fingerprint": fingerprint,
+                    "include_signals": options.get("include_signals", True),
+                },
+            )
         validate_run(output, key=location["dataset_key"], options=options)
         for name in sorted(FILES):
             if not (output / name).is_file():

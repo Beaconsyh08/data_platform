@@ -476,19 +476,9 @@ def _serve_csv_stripped(csv_path: Path, data_version: str | None = None, feature
 
 
 def _video_rank(filename: str) -> int:
-    normalized = re.sub(r"[./-]+", "_", (filename or "").lower()).strip("_")
-    tokens = {token for token in normalized.split("_") if token}
-    is_left_wrist = ("left" in tokens and "wrist" in tokens) or "left_wrist" in normalized
-    is_right_wrist = ("right" in tokens and "wrist" in tokens) or "right_wrist" in normalized
-    is_main_image = "image" in tokens and not is_left_wrist and not is_right_wrist
+    from lerobot.data_platform.camera_layout import camera_rank
 
-    if is_left_wrist:
-        return 0
-    if is_main_image:
-        return 1
-    if is_right_wrist:
-        return 2
-    return 3
+    return camera_rank(filename)
 
 
 def _sort_videos_info(videos_info: list[dict]) -> list[dict]:

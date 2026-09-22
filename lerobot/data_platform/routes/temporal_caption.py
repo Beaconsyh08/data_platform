@@ -142,10 +142,18 @@ def register_temporal_caption_routes(app, ctx) -> None:
     @app.get("/api/control/locations/<location_id>/temporal-caption/<run>/<variant>/video")
     def temporal_caption_video(run, variant, **kwargs):
         key, _, root, _, _ = resolve(**kwargs)
-        read_artifact(root, run, variant, key)
+        artifact = read_artifact(root, run, variant, key)
         path = root / run / "video.mp4"
         if not path.resolve().is_relative_to(root.resolve()) or not path.is_file():
             abort(404)
+        from lerobot.data_platform.camera_layout import ordered_review_video
+
+        metadata = root / run / "episode.json"
+        cameras = json.loads(metadata.read_text()).get("cameras", []) if metadata.exists() else []
+        if not cameras and artifact.get("source_frame_convention") == "inclusive":
+            # Legacy caption_demo exports used labeled head/left/right horizontal tiles.
+            cameras = ["head", "left_wrist", "right_wrist"]
+        path = ordered_review_video(path, cameras, root.parent / ".display-videos")
         return send_file(path, mimetype="video/mp4", conditional=True)
 
     from lerobot.data_platform.routes.temporal_caption_jobs import register_caption_job_routes

@@ -353,3 +353,68 @@ def test_video_event_scheme_runs_one_episode_and_uses_temporal_input(tmp_path, m
     with pytest.raises(FileExistsError):
         infer_video_events(bundle, output, "n/d", "test-model")
     assert len(requests) == 1
+
+
+def test_camera_order_supports_arm_and_wrist_names():
+    assert [viewer._video_rank(name) for name in ["left_arm_image", "head_image", "right_arm_image"]] == [
+        0,
+        1,
+        2,
+    ]
+    assert [viewer._video_rank(name) for name in ["left_wrist", "front", "right_wrist"]] == [0, 1, 2]
+
+
+def test_review_camera_reorder_preserves_source_and_reuses_cache(tmp_path):
+    import subprocess
+
+    from lerobot.data_platform.camera_layout import ordered_review_video
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg required")
+    image = Image.new("RGB", (96, 32))
+    for x, color in enumerate(["red", "green", "blue"]):
+        image.paste(color, (x * 32, 0, (x + 1) * 32, 32))
+    image.save(tmp_path / "frame.png")
+    source = tmp_path / "source.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-loop",
+            "1",
+            "-i",
+            str(tmp_path / "frame.png"),
+            "-t",
+            "0.1",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        check=True,
+    )
+    original = source.read_bytes()
+    cameras = ["head_image", "left_arm_image", "right_arm_image"]
+    target = ordered_review_video(source, cameras, tmp_path / "cache")
+    assert source.read_bytes() == original
+    mtime = target.stat().st_mtime_ns
+    assert ordered_review_video(source, cameras, tmp_path / "cache") == target
+    assert target.stat().st_mtime_ns == mtime
+    pixels = subprocess.check_output(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(target),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ]
+    )
+    rendered = Image.frombytes("RGB", (96, 32), pixels)
+    assert [max(range(3), key=lambda c: rendered.getpixel((x, 16))[c]) for x in [16, 48, 80]] == [1, 0, 2]

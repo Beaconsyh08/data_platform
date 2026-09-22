@@ -77,6 +77,8 @@ def register_caption_job_routes(app, ctx, resolve):
         node = next((n for n in store.list_nodes() if n["node_id"] == location["node_id"]), {})
         return jsonify(
             schemes=caption_scheme_status(node.get("capabilities") or {}, reason, user),
+            total_episodes=(location.get("metadata") or {}).get("total_episodes"),
+            signal_options=bool((node.get("capabilities") or {}).get("caption_signal_options")),
             can_import=bool(user and user["role"] == "admin"),
             can_submit=bool(
                 user and user["role"] in {"operator", "data_manager", "admin"} and reason is None
@@ -117,8 +119,15 @@ def register_caption_job_routes(app, ctx, resolve):
         try:
             options = validate_options(request.get_json(silent=True))
             location = store.get_location(location_id)
+            total = (location.get("metadata") or {}).get("total_episodes")
+            if isinstance(total, int) and options["episode_index"] >= total:
+                return jsonify(error="Episode index is outside this dataset"), 400
             reason = readiness(location)
             node = next(n for n in store.list_nodes() if n["node_id"] == location["node_id"])
+            if "include_signals" in options and not node.get("capabilities", {}).get(
+                "caption_signal_options"
+            ):
+                return jsonify(error="Upgrade the Agent to support action/state input selection"), 409
             selected = next(
                 item
                 for item in caption_scheme_status(node.get("capabilities") or {}, reason, _current_user())
@@ -218,6 +227,8 @@ def register_caption_job_routes(app, ctx, resolve):
                         None if ready else "Configure the model credential in the local executor environment",
                         user,
                     ),
+                    total_episodes=dataset.meta.total_episodes,
+                    signal_options=True,
                     can_import=False,
                     can_submit=bool(user and user["role"] in {"operator", "data_manager", "admin"} and ready),
                     unavailable_reason=None
@@ -235,6 +246,8 @@ def register_caption_job_routes(app, ctx, resolve):
             if not ready:
                 return jsonify(error="Local annotation backend is unavailable"), 409
             options = validate_options(request.get_json(silent=True))
+            if options["episode_index"] >= dataset.meta.total_episodes:
+                return jsonify(error="Episode index is outside this dataset"), 400
             delivery = request.headers.get("Idempotency-Key")
             if not delivery or len(delivery) > 128:
                 return jsonify(error="An Idempotency-Key (1–128 characters) is required"), 400

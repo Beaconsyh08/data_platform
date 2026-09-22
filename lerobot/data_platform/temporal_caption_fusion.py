@@ -101,6 +101,8 @@ def validate_review(value: dict, count: int) -> dict:
 
 
 def signal_evidence(meta: dict) -> dict:
+    if meta.get("include_signals") is False:
+        return {"signals": [], "events": [], "limitations": "Visual only; action/state signals disabled."}
     context = review_context_from_meta(meta)
     events = []
     for side in ("left", "right"):
@@ -135,7 +137,7 @@ def review_context_from_meta(meta: dict) -> list[dict]:
     rows = []
     previous = None
     for item in meta["signals"]:
-        row = {"frame": item["frame"]}
+        row = dict(item)
         for side in ("left", "right"):
             pose, old = item.get(f"{side}_arm_pose"), (previous or {}).get(f"{side}_arm_pose")
             row[f"{side}_pose"] = pose

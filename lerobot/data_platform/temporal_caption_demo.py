@@ -123,6 +123,7 @@ def import_demo(source: Path, output: Path, dataset_key: str) -> None:
                 "episode_index": artifact["episode_index"],
                 "frame_count": artifact["frame_count"],
                 "signals": signals,
+                "cameras": ["head", "left_wrist", "right_wrist"],
                 "task_hint": [meta.get("task", "")],
                 "gripper_events": meta.get("gripper_events", []),
             },
@@ -141,7 +142,7 @@ def review_context(folder: Path) -> dict:
     fps = float(meta["fps"])
     signals = []
     previous = None
-    for row in meta.get("signals", []):
+    for row in meta.get("signals", []) if meta.get("include_signals", True) else []:
         point = {"frame": row["frame"], "t": row["frame"] / fps}
         for side in ("left", "right"):
             point[f"{side}_gripper"] = row.get(f"{side}_gripper_pos")
@@ -191,7 +192,7 @@ def infer_video_events(
                     }
                 )
     digest = []
-    for frame in selected:
+    for frame in selected if meta.get("include_signals", True) else []:
         row = {"frame": frame, "t": round(frame / meta["fps"], 3)}
         for side in ("left", "right"):
             pose = meta["signals"][frame].get(f"{side}_arm_pose")
@@ -226,7 +227,11 @@ def infer_video_events(
                 "task": meta.get("task_hint"),
                 "frame_count": count,
                 "fps": meta["fps"],
-                "motion_digest": digest,
+                "motion_digest": digest if meta.get("include_signals", True) else [],
+                "include_signals": meta.get("include_signals", True),
+                "measured_signals": [meta["signals"][frame] for frame in selected]
+                if meta.get("include_signals", True)
+                else [],
                 "candidate_events": events,
             },
             ensure_ascii=False,
