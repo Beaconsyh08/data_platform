@@ -206,7 +206,20 @@ Explore tools include Temporal Caption Review alongside Viewer, Analysis, and La
 including for remote datasets before Viewer preparation. Review remains inspection of model
 outputs; it does not record human approval or alter the dataset.
 
-The embedded Temporal Caption tab contains only annotation and review links. Generic review
+The embedded Temporal Caption tab contains the three-method task form, executor readiness,
+task progress, saved caption results, and a separate video review link. The standalone task
+page uses the same controller and form. Caption tasks do not require a curation snapshot.
+Generic review
 workspace, generated results, episode decisions, and tasks are hidden on this tab and remain
 available on other curation tabs. Caption evidence attachment lives under Dataset Build,
 Profile & recipe, beside the review workspace.
+
+Caption results and model credentials are environment-specific. Import saved result packages
+into the registered location in the intended environment; releasing code does not migrate
+annotation data or credentials. A disabled start button explains the selected method's
+executor or role restriction.
+
+Register dataset version (previously Synchronize version) scans source identity and metadata
+for versioned review and safe materialization; it does not copy or alter source data.
+Console initialization runs once, and delayed startup responses must not reset navigation
+after the user has selected a page.

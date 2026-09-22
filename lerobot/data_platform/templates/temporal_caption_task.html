@@ -1,0 +1,11 @@
+<section class="card block" style="margin:16px 20px" aria-label="Annotation tasks">
+<h2>Temporal Caption</h2><a data-caption-id="open-review">Open Temporal Caption Review →</a>
+<p>Choose one method and an episode, then start annotation. Open Review to inspect the resulting video, segments, and captions.</p>
+<form data-caption-id="caption-job-form" class="transport">
+<label>Episode <input data-caption-id="job-episode" type="number" min="0" step="1" value="0" required style="width:90px"></label>
+<label>Annotation method <select data-caption-id="job-scheme"></select></label>
+<button data-caption-id="job-submit" disabled>Start annotation</button></form>
+<p data-caption-id="method-description"></p>
+<details hidden><summary>Import existing results (ZIP)</summary><form data-caption-id="caption-import-form"><label>Import existing results <input type="file" data-caption-id="caption-import-file" accept=".zip" required></label><button data-caption-id="caption-import-submit">Import review ZIP</button></form></details>
+<p data-caption-id="job-readiness">Checking annotation executor…</p><p data-caption-id="job-status" role="status"></p><div data-caption-id="caption-jobs"></div><h3>Saved caption results</h3><p data-caption-id="saved-status">Loading saved results…</p><div data-caption-id="saved-results"></div>
+</section>

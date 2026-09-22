@@ -1,7 +1,7 @@
 {# Embedded in the main console; navigation and dataset selection belong to its shell. #}
 <div class="row curation-toolbar">
   <div><div data-curation-id="dataset-name" class="muted"></div><p data-curation-id="version" class="muted"></p></div>
-  <div class="row"><button data-curation-id="refresh">Refresh</button><button data-curation-id="sync">Synchronize version</button></div>
+  <div class="row"><button data-curation-id="refresh">Refresh</button><button data-curation-id="sync" title="Scan dataset identity and metadata for versioned review; source files are not changed.">Register dataset version</button></div>
 </div>
 <p data-curation-id="notice" role="status" aria-live="polite" hidden></p>
   <section class="card" data-curation-general><div class="row"><h2>Review workspace</h2><select data-curation-id="workspace" aria-label="Review workspace"></select><button data-curation-id="new-draft">New draft</button><button data-curation-id="import-sidecars">Import existing review</button><span data-curation-id="draft-state" class="muted"></span></div><p class="muted">Review decisions are saved independently of generated results. Publish a reviewed draft to build a new dataset.</p></section>
@@ -14,7 +14,7 @@
   <section data-section="quality" hidden><div class="card" data-curation-tab="quality_flags"><h2>Quality detection</h2><div data-operation="quality"></div><p class="muted">Detected issues are evidence for review. Use the episode review below to keep, exclude, or propose a repair.</p></div></section>
   <section data-section="annotation" hidden>
     <div class="card" data-curation-tab="stage_subtask"><h2>Stage &amp; Subtask</h2><div data-operation="stage"></div><p class="muted">Use episode review to edit stage transitions or task text.</p></div>
-    <div class="card" data-curation-tab="temporal_caption"><h2>Temporal Caption</h2><p>Choose Multi-view Semantics, Video + Events, or Fusion + Review on the annotation page, then select an episode and start annotation.</p><div class="row"><a data-curation-id="caption-annotation">Create annotation task</a><a data-curation-id="caption">Open Temporal Caption Review</a></div><p class="muted">Review opens synchronized video, segments, captions, and automatic review findings. Dataset inclusion decisions belong to the review workspace under Dataset Build.</p></div>
+    <div data-curation-tab="temporal_caption" data-curation-id="caption-task">{% include 'temporal_caption_task.html' %}</div>
     <div class="card" data-curation-tab="labeling"><h2>Object Labeling</h2><div data-operation="labeling"></div></div>
     <div class="card" data-curation-tab="tagging"><h2>Auto-tagging</h2><div data-operation="tagging"></div></div>
   </section>

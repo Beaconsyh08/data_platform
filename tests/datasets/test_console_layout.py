@@ -702,7 +702,38 @@ assert(general.every(item => !item.hidden));
     caption = template.split('data-curation-tab="temporal_caption"', 1)[1].split(
         'data-curation-tab="labeling"', 1
     )[0]
-    assert 'data-curation-id="caption-annotation"' in caption
-    assert 'data-curation-id="caption"' in caption
+    assert "temporal_caption_task.html" in caption
     assert 'data-curation-id="accept-caption"' not in caption
-    assert "$('caption').href = captionBase + '/temporal-caption/review'" in source
+    assert "reviewUrl:captionBase+'/temporal-caption/review'" in source
+
+
+def test_delayed_console_startup_does_not_override_user_navigation():
+    import re
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("Node required")
+    template = (Path(viewer.__file__).parent / "templates/visualize_dataset_homepage.html").read_text()
+    assert 'x-init="init()"' not in template
+    method = re.search(r"^                async init\(\) \{.*?^                \},", template, re.M | re.S)
+    assert method
+    script = (
+        "const assert=require('node:assert/strict');const app={"
+        + method.group()
+        + "};"
+        + """
+(async()=>{
+ let release;const gate=new Promise(resolve=>release=resolve);let loads=0,installed=0;
+ Object.assign(app,{storedJobId:()=>'',loadAdminStatus:async()=>{},consoleMode:'full',
+   safeStartupLoad:fn=>fn(),loadDatasetRoots:()=>{loads++;return gate;},loadJobs:async()=>{},
+   loadOperationLogs:async()=>{},controlPlaneEnabled:false,tabEnabled:()=>false,
+   installJobRefreshHandlers:()=>installed++,activePage:'annotation',activeWorkspace:'data_curation'});
+ const first=app.init();await Promise.resolve();await app.init();
+ app.navigationRevision=1;release();await first;
+ assert.equal(loads,1);assert.equal(installed,1);
+ assert.equal(app.activePage,'annotation');assert.equal(app.activeWorkspace,'data_curation');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+    )
+    subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True, timeout=10)

@@ -166,9 +166,9 @@ def test_remote_review_without_viewer_requires_auth_and_is_scoped(tmp_path, monk
     page = f"/remote/{location['location_id']}/temporal-caption"
     annotation = client.get(page).get_data(as_text=True)
     review = client.get(page + "/review").get_data(as_text=True)
-    assert 'id="caption-job-form"' in annotation
+    assert 'data-caption-id="caption-job-form"' in annotation
     assert 'id="video"' not in annotation
-    assert 'id="job-scheme"' in annotation and 'value="fusion_review"' in annotation
+    assert 'data-caption-id="job-scheme"' in annotation and "createTemporalCaptionTask" in annotation
     assert f'href="{page}/review"' in annotation
     assert 'id="video"' in review and 'id="caption-job-form"' not in review
     assert f'href="{page}"' in review

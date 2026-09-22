@@ -259,7 +259,6 @@
 </head>
 <body class="min-h-screen text-sm text-slate-200 antialiased"
       x-data="precomputeConsole()"
-      x-init="init()"
       x-effect="syncOptionRules()">
     <div class="fixed bottom-4 right-4 z-50 max-w-xl rounded-lg border border-slate-600 bg-slate-900 p-4 shadow-xl"
          x-cloak x-show="error || remoteError || submissionNotice" role="status" aria-live="polite">
@@ -3230,7 +3229,8 @@
     </div>
 
     <template id="curation-workspace-template">{% include "visualize_dataset_curation.html" %}</template>
-    <script>{% include "curation.js" %}</script>
+    <script>{% include "temporal_caption_task.js" %}
+{% include "curation.js" %}</script>
     <script>
         function precomputeConsole() {
             return {
@@ -3537,6 +3537,9 @@
                     dataset_key_b: ''
                 },
                 async init() {
+                    if (this._initialized) return;
+                    this._initialized = true;
+                    const startupNavigation = this.navigationRevision || 0;
                     const storedJobId = this.storedJobId();
                     await this.loadAdminStatus();
                     if (this.consoleMode === 'visualize') {
@@ -3560,6 +3563,10 @@
                         startupLoads.push(this.safeStartupLoad(() => this.loadTaggingSchema()));
                     }
                     await Promise.all(startupLoads);
+                    if ((this.navigationRevision || 0) !== startupNavigation) {
+                        this.installJobRefreshHandlers();
+                        return;
+                    }
                     const startupJob = this.jobs.find(job => job.id === storedJobId)
                         || this.jobs.find(job => job.id === this.selectedJobId)
                         || null;
@@ -3576,6 +3583,7 @@
                             if (location) await this.useRemoteDataset(location, false);
                         }
                     }
+                    if ((this.navigationRevision || 0) !== startupNavigation) { this.installJobRefreshHandlers(); return; }
                     const startupTab = this.initialTab === 'schema'
                         ? (this.consoleMode === 'visualize' ? 'dataset_ops' : 'transform')
                         : this.initialTab;
@@ -4008,6 +4016,7 @@
                     }
                 },
                 async selectWorkspace(groupKey, updateUrl = true) {
+                    if (updateUrl) this.navigationRevision = (this.navigationRevision || 0) + 1;
                     const group = this.availableGroups().find(item => item.key === groupKey);
                     if (!group) return;
                     this.activeWorkspace = group.key;
@@ -4025,6 +4034,7 @@
                         : {dataset_key: this.selectedDatasetKey};
                 },
                 async selectPage(pageKey, updateUrl = true) {
+                    if (updateUrl) this.navigationRevision = (this.navigationRevision || 0) + 1;
                     if (
                         this.selectedDataset?.remote
                         && !['datasets', 'preprocessing', 'admin_operations', 'runs', 'explore', 'annotation', 'quality', 'dataset_build'].includes(pageKey)
@@ -4087,6 +4097,7 @@
                     window.history.replaceState(null, '', url);
                 },
                 async selectTab(tab, updateUrl = true) {
+                    if (updateUrl) this.navigationRevision = (this.navigationRevision || 0) + 1;
                     if (tab === 'schema') tab = this.consoleMode === 'visualize' ? 'dataset_ops' : 'transform';
                     if (
                         this.selectedDataset?.remote

@@ -5,7 +5,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
   const target = {...initialTarget};
   let destroyed = false;
   let context = null, result = null, busy = false, jobs = [], page = new URLSearchParams(location.search).get('page') || 'annotation';
-  let inputRuns = new Set(), captionRuns = [], timer = null, reviewRevision = null;
+  let inputRuns = new Set(), captionRuns = [], timer = null, captionController = null, reviewRevision = null;
   const pending = JSON.parse(sessionStorage.getItem('curation-deliveries') || '{}');
   const text = (tag, value, className) => { const node = document.createElement(tag); node.textContent = value; if (className) node.className = className; return node; };
   const notice = (message, error = false) => { $('notice').hidden = !message; $('notice').textContent = message; $('notice').className = error ? 'error' : ''; };
@@ -137,12 +137,11 @@ window.createCurationWorkspace = (root, initialTarget) => {
     const data = await api(`/api/curation/context?${query()}`);
     context = data; Object.assign(target, data.target);
     $('dataset-name').textContent = `${target.dataset_key.split('/').pop().replace(/-[a-f0-9]{8}$/, '')} · ${data.execution_node}`;
-    $('version').textContent = target.dataset_version_id ? `Version ${target.dataset_version_id} · ${data.episodes.length} episodes` : 'Synchronize a version to begin Curation.';
+    $('version').textContent = target.dataset_version_id ? `Version ${target.dataset_version_id} · ${data.episodes.length} episodes` : 'Register a dataset version for draft review and curation. Caption tasks can run without it.';
     $('overview').textContent = `${data.info.total_frames || 0} frames · ${data.info.fps || '—'} fps · ${data.info.codebase_version || 'Unknown format'}`;
     $('viewer').hidden = !data.viewer_url; if (data.viewer_url) $('viewer').href = data.viewer_url;
     const captionBase = target.location_id ? `/remote/${encodeURIComponent(target.location_id)}` : `/${target.dataset_key}`;
-    $('caption-annotation').href = captionBase + '/temporal-caption';
-    $('caption').href = captionBase + '/temporal-caption/review'; $('analysis').href = captionBase + '/analysis';
+    $('analysis').href = captionBase + '/analysis';
     options($('workspace'), data.workspaces, item => item.workspace_id, item => `${item.owner} · ${item.status} · ${item.workspace_id.slice(-8)}`, 'Select a workspace');
     options($('episode'), data.episodes, item => String(item.episode_index), item => `Episode ${item.episode_index}`);
     options($('result'), data.runs.filter(item => !['curation.snapshot','curation.validate_source'].includes(item.operation)), item => item.run, item => `${operationNames[item.operation.split('.')[1]]} · ${new Date(item.created_at).toLocaleString()}`, 'Select a result');
@@ -294,9 +293,12 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('load-caption-runs').onclick = () => action(async () => { const data = await api(captionApi()); captionRuns = data.runs || []; options($('caption-run'),captionRuns,item => `${item.run}:${item.variant}`,item => `Episode ${item.episode_index} · ${item.variant} · ${item.run}`,'Select a caption result'); notice('Caption results loaded.'); });
     $('accept-caption').onclick = () => action(async () => { const value = captionRuns.find(item => `${item.run}:${item.variant}` === $('caption-run').value); if (!value) throw new Error('Select a caption result.'); await api(`/api/curation/drafts/${draft().workspace_id}/caption-evidence`,{target,expected_revision:draft().revision,run:value.run,variant:value.variant}); await refresh(); notice('Caption evidence saved in the draft.'); });
   }
+  const captionBase = target.location_id ? `/remote/${encodeURIComponent(target.location_id)}` : `/${target.dataset_key}`;
+  const captionApiBase = target.location_id ? `/api/control/locations/${encodeURIComponent(target.location_id)}/temporal-caption` : `/api/temporal-caption/${target.dataset_key}`;
+  captionController = window.createTemporalCaptionTask($('caption-task'), {api:captionApiBase,reviewUrl:captionBase+'/temporal-caption/review'});
   drawForms(); bind();
   refresh().then(refreshJobs).catch(error => notice(error.message,true));
-  return {selectPage, destroy() { destroyed = true; clearTimeout(timer); }};
+  return {selectPage, destroy() { destroyed = true; clearTimeout(timer); captionController?.destroy(); }};
 };
 
 // Keep one controller per dataset, preserving unsaved fields when switching tabs.
