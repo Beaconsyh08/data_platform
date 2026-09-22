@@ -347,6 +347,8 @@ def required_data_profile_protocol(info: dict) -> int:
 
 
 def require_operation(info: dict, operation: str, *, profile: DatasetDataProfile | None = None) -> None:
+    if info.get("source_format") == "mcap":
+        raise ValueError("Raw MCAP sources must be converted before using dataset operations")
     profile = profile or profile_from_info(info)
     op = operation.removeprefix("preprocess.")
     capability = operation_capabilities(profile, info.get("features") or {}).get(op)

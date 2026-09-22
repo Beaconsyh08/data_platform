@@ -842,6 +842,30 @@ class ControlPlaneStore:
                 raise KeyError(location_id)
             return self._location_dict(location)
 
+    def inherit_import_access(self, source_id: str, output_id: str) -> None:
+        """Keep imported outputs visible to the source's explicitly scoped users."""
+        with self.sessions.begin() as session:
+            source = session.get(DatasetLocation, source_id)
+            output = session.get(DatasetLocation, output_id)
+            if output is None or source is None:
+                raise KeyError(output_id)
+            for grant in session.scalars(
+                select(DataMutationGrant).where(
+                    DataMutationGrant.location_id == source_id,
+                    DataMutationGrant.node_id == source.node_id,
+                    DataMutationGrant.root == source.root,
+                )
+            ):
+                if session.get(DataMutationGrant, (grant.user_id, output_id)) is None:
+                    session.add(
+                        DataMutationGrant(
+                            user_id=grant.user_id,
+                            location_id=output_id,
+                            node_id=output.node_id,
+                            root=output.root,
+                        )
+                    )
+
     def create_job(
         self,
         *,

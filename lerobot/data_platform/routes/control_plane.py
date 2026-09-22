@@ -431,6 +431,9 @@ def register_control_plane_routes(
     from lerobot.data_platform.routes.dataset_results import register_dataset_result_routes
 
     register_dataset_result_routes(app, store, remote_cache_root)
+    from lerobot.data_platform.routes.mcap_import import register_mcap_import_routes
+
+    register_mcap_import_routes(app, store)
 
     def _execution_credentials():
         return {
@@ -495,6 +498,8 @@ def register_control_plane_routes(
     def _validate_semantic_operation(location_id: str, operation: str, options: dict) -> None:
         location = store.get_location(location_id)
         metadata = location.get("metadata") or {}
+        if metadata.get("source_format") == "mcap":
+            raise ValueError("Convert this raw MCAP source before using dataset operations")
         profile = profile_from_info(metadata)
         required_protocol = required_data_profile_protocol(metadata)
         if operation == "viewer.prepare" and options.get("force_recompute_stage"):
@@ -806,6 +811,8 @@ def register_control_plane_routes(
                 synced_location = store.sync_locations(node["node_id"], [derived])[0]
                 result["synced_location"] = synced_location
                 result["output_location_id"] = synced_location["location_id"]
+                if current["operation"] == "import.mcap.convert":
+                    store.inherit_import_access(current["location_id"], synced_location["location_id"])
                 if current["operation"] in _DERIVED_VIEWER_OPERATIONS and (
                     current["operation"] != "preprocess.split"
                     or result.get("viewer_cache")
@@ -873,6 +880,8 @@ def register_control_plane_routes(
                 "locations": [
                     {**location, "source_mutation_allowed": location["location_id"] in allowed}
                     for location in store.accessible_locations(_current_user()["user_id"])
+                    if (location.get("metadata", {}).get("source_format") == "mcap")
+                    == (request.args.get("format") == "mcap")
                 ]
             }
         )

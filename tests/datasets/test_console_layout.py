@@ -342,6 +342,7 @@ def test_full_console_navigation_uses_workspace_page_tab_hierarchy():
     pages = _page_map(groups)
     assert list(pages) == [
         "datasets",
+        "mcap_import",
         "preprocessing",
         "versions",
         "runs",

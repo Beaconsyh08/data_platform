@@ -509,6 +509,11 @@ _CONSOLE_GROUP_DEFS = [
         "pages": [
             {"key": "datasets", "label": "Datasets", "always": True, "tabs": []},
             {
+                "key": "mcap_import",
+                "label": "Data Import",
+                "tabs": [{"key": "mcap_import", "label": "MCAP → LeRobot"}],
+            },
+            {
                 "key": "preprocessing",
                 "label": "Preprocessing",
                 "tabs": [
@@ -584,6 +589,7 @@ _LEGACY_CONSOLE_GROUP = {
 
 _CONSOLE_MODE_ALLOWED_TABS = {
     CONSOLE_MODE_FULL: {
+        "mcap_import",
         "cache",
         "explore_overview",
         "stage_subtask",
