@@ -762,5 +762,5 @@ readiness=null;assert.throws(selection);
     )
     subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True, timeout=10)
     form = (templates / "temporal_caption_task.html").read_text()
-    assert 'data-caption-id="open-jobs"' in form
+    assert 'data-caption-id="open-jobs"' not in form
     assert "caption-import" not in form and "saved-results" not in form and "caption-jobs" not in form

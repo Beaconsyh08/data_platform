@@ -284,3 +284,6 @@ inconsistent artifacts. Resume also binds complete episode metadata, including t
 Disabling signals produces visual-only hypotheses and explicit disabled status, never fabricated support.
 The ~53-second episode limit and 224-pixel camera panels remain; V2 does not add a trained signal encoder,
 calibrated confidence, semantic conflict classification or validated accuracy improvement.
+
+The annotation form links directly to Review; job tracking uses the console Jobs navigation.
+The signal-input checkbox has a dedicated horizontal row in both standalone and embedded forms.

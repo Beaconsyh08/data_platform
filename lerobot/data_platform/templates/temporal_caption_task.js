@@ -4,9 +4,6 @@ let schemes=[], readiness=null, destroyed=false, timer=null, submitting=false;
 const pendingKey=`caption-batch:${api}`;
 let pending=JSON.parse(sessionStorage.getItem(pendingKey)||'null');
 $('open-review').href=reviewUrl;
-const locationMatch=api.match(/\/locations\/([^/]+)\/temporal-caption/);
-const dataset=locationMatch ? `remote:${decodeURIComponent(locationMatch[1])}` : api.replace('/api/temporal-caption/','');
-$('open-jobs').href='/?'+new URLSearchParams({select:dataset,page:'runs'});
 async function get(url){const response=await fetch(url);const data=await response.json();if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);return data;}
 function selection(){
  const total=readiness?.total_episodes;

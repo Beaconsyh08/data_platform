@@ -1,10 +1,17 @@
+<style>
+.caption-task-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.caption-task-form > label { min-width: 0; max-width: 100%; }
+.caption-task-form > label.caption-signal-option { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; flex-basis: 100%; cursor: pointer; }
+.caption-task-form .caption-signal-option input[type=checkbox] { flex: 0 0 16px; width: 16px; height: 16px; min-width: 16px; margin: 2px 0 0; padding: 0; }
+.caption-task-form .caption-signal-option span { min-width: 0; overflow-wrap: anywhere; }
+</style>
 <section class="card block" style="margin:16px 20px" aria-label="Annotation tasks">
-<h2>Temporal Caption</h2><div class="row"><a data-caption-id="open-review">Open Temporal Caption Review →</a><a data-caption-id="open-jobs">Open Jobs →</a></div>
-<form data-caption-id="caption-job-form" class="transport">
+<h2>Temporal Caption</h2><div class="row"><a data-caption-id="open-review">Open Temporal Caption Review →</a></div>
+<form data-caption-id="caption-job-form" class="transport caption-task-form">
 <label>Annotation method <select data-caption-id="job-scheme"></select></label>
 <label>Episodes <select data-caption-id="episode-mode"><option value="range">Indices / ranges</option><option value="all">Entire dataset</option></select></label>
 <label data-caption-id="range-label">Episode indices <input data-caption-id="job-episode" type="text" value="0" placeholder="0, 5, 10-20" required></label>
-<label><input data-caption-id="include-signals" type="checkbox" checked> Include action/state, pose and gripper signals</label>
+<label class="caption-signal-option"><input data-caption-id="include-signals" type="checkbox" checked><span>Include action/state, pose and gripper signals</span></label>
 <button data-caption-id="job-submit" type="submit" disabled>Submit annotation jobs</button></form>
 <p data-caption-id="method-description"></p><p data-caption-id="selection-summary"></p>
 <p data-caption-id="job-readiness">Checking annotation executor…</p><p data-caption-id="job-status" role="status"></p>
