@@ -64,6 +64,9 @@ def register_caption_job_routes(app, ctx, resolve):
         capabilities = node.get("capabilities") or {}
         if capabilities.get("caption_protocol") != 1 or capabilities.get("job_protocol") != 2:
             return "Upgrade the remote Agent to caption protocol 1"
+        version = (location.get("metadata") or {}).get("codebase_version")
+        if version not in capabilities.get("caption_dataset_versions", ["v3.0"]):
+            return f"Upgrade the remote Agent to support Temporal Caption for {version} datasets"
         if not capabilities.get("caption_configured"):
             return "Configure DASHSCOPE_API_KEY in the remote Agent service environment"
         return None

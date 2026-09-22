@@ -213,3 +213,31 @@ def test_v2_visual_only_complete_pipeline(tmp_path):
     assert not cross["local_analysis"]["events"]
     assert cross["boundary_matrix"]["signal_status"] == "disabled"
     assert not any(r["status"] == "temporal_support" for r in cross["boundary_matrix"]["rows"])
+
+
+def test_long_episode_fusion_uses_bounded_overview_and_full_blind_audit(tmp_path):
+    source = bundle(tmp_path)
+    meta = json.loads((source / "episode.json").read_text())
+    meta.update(frame_count=180, fps=3, signals=[{"frame": i} for i in range(180)])
+    (source / "episode.json").write_text(json.dumps(meta))
+    image = (source / "frames/000000.jpg").read_bytes()
+    for i in range(12, 180):
+        (source / f"frames/{i:06d}.jpg").write_bytes(image)
+
+    class LongModel(Model):
+        def post_chat_completion(self, payload):
+            response = super().post_chat_completion(payload)
+            value = json.loads(response["choices"][0]["message"]["content"])
+            if "segments" in value:
+                value["segments"][-1]["end_frame"] = 180
+            response["choices"][0]["message"]["content"] = json.dumps(value)
+            return response
+
+    out = tmp_path / "output"
+    infer_fusion(source, out, "node/source", client=LongModel())
+    final = next(a for a in validate_run(out) if a["variant"] == "fusion_reviewed")
+    stages = final["review"]["stages"]
+    wide = next(s for s in stages if s["stage"] == "02-visual")["frames"]
+    assert len(wide) == 160 and wide[0] == 0 and wide[-1] == 179
+    blind = {f for s in stages if s["stage"].startswith("06-blind-audit") for f in s["frames"]}
+    assert blind == set(range(180))

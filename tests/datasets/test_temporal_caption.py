@@ -418,3 +418,65 @@ def test_review_camera_reorder_preserves_source_and_reuses_cache(tmp_path):
     )
     rendered = Image.frombytes("RGB", (96, 32), pixels)
     assert [max(range(3), key=lambda c: rendered.getpixel((x, 16))[c]) for x in [16, 48, 80]] == [1, 0, 2]
+
+
+def test_export_v21_embedded_images_and_source_preservation(tmp_path):
+    root = tmp_path / "source"
+    (root / "meta").mkdir(parents=True)
+    (root / "data/chunk-000").mkdir(parents=True)
+    info = {
+        "codebase_version": "v2.1",
+        "fps": 30,
+        "chunks_size": 1000,
+        "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+        "features": {
+            "image": {"dtype": "image", "shape": [8, 8, 3]},
+            "action": {"dtype": "float32", "shape": [2]},
+            "state": {"dtype": "float32", "shape": [2]},
+        },
+    }
+    (root / "meta/info.json").write_text(json.dumps(info))
+    (root / "meta/tasks.jsonl").write_text(json.dumps({"task_index": 0, "task": "Move"}) + "\n")
+    (root / "meta/episodes.jsonl").write_text(
+        "".join(json.dumps({"episode_index": i, "tasks": ["Move"], "length": 2}) + "\n" for i in [0, 1])
+    )
+    (root / "meta/episodes_stats.jsonl").write_text(
+        "".join(json.dumps({"episode_index": i, "stats": {}}) + "\n" for i in [0, 1])
+    )
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(image, format="PNG")
+    for episode in [0, 1]:
+        pq.write_table(
+            pa.Table.from_pylist(
+                [
+                    {
+                        "episode_index": episode,
+                        "frame_index": f,
+                        "timestamp": f / 30,
+                        "image": {"bytes": image.getvalue(), "path": None},
+                        "action": [episode, 1.0],
+                        "state": [f, 0.0],
+                    }
+                    for f in [0, 1]
+                ]
+            ),
+            root / f"data/chunk-000/episode_{episode:06d}.parquet",
+        )
+    before = {str(p): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    prepare(root, 1, tmp_path / "bundle")
+    meta = json.loads((tmp_path / "bundle/episode.json").read_text())
+    assert meta["frame_count"] == 2 and meta["episode_index"] == 1
+    assert meta["signals"][0]["action"] == [1, 1.0]
+    assert meta["signals"][1]["state"] == [1, 0.0]
+    assert before == {str(p): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+def test_long_episode_sampling_spans_whole_episode_and_retains_boundaries():
+    from lerobot.data_platform.temporal_caption import limit_frames
+
+    previous = {"segments": [{"start_frame": 0}, {"start_frame": 801}, {"start_frame": 1903}]}
+    frames = sample_frames(6000, 30, previous)
+    assert len(frames) == 200
+    assert {0, 801, 1903, 5999} <= set(frames)
+    assert len(limit_frames(list(range(2533)), 160)) == 160
+    assert limit_frames(list(range(2533)), 160)[-1] == 2532

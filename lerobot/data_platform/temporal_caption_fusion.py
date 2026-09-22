@@ -12,7 +12,7 @@ import shutil
 import time
 from pathlib import Path
 
-from lerobot.data_platform.temporal_caption import PROMPT, validate_result, write_json
+from lerobot.data_platform.temporal_caption import PROMPT, limit_frames, validate_result, write_json
 from lerobot.data_platform.temporal_caption_signals import (
     analyze_signals,
     boundary_matrix,
@@ -287,9 +287,7 @@ def infer_fusion(
     local_signals = analyze_signals(meta)
     signals = signal_evidence(meta)
     signals["local_signal_analysis"] = local_signals.to_dict()
-    wide = uniform_frames(count, fps, 3)
-    if len(wide) > 160:
-        raise ValueError("Fusion currently supports short episodes up to approximately 53 seconds")
+    wide = limit_frames(uniform_frames(count, fps, 3), 160)
     global_view = ask("01-global", LEDGER, wide, {}, validate_ledger)
     visual = ask("02-visual", PARTITION, wide, {}, validate_partition)
     video_frames = sorted({round(i * (count - 1) / (min(80, count) - 1)) for i in range(min(80, count))})

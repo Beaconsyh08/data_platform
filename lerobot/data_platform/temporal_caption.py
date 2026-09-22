@@ -89,21 +89,37 @@ def validate_result(result: dict, frame_count: int) -> dict:
 
 
 def prepare(root: Path, episode: int, output: Path) -> None:
-    """Export exactly one image-backed v3 episode using the shared format reader."""
+    """Export exactly one image-backed v2.1/v3.0 episode using shared format readers."""
     import numpy as np
     from PIL import Image, ImageDraw
 
     from lerobot.data_platform.precompute.dataset_io import V3DatasetMetadata, read_episode_table
 
     info = json.loads((root / "meta/info.json").read_text())
-    if not str(info.get("codebase_version", "")).startswith("v3"):
-        raise ValueError("This trial exporter supports image-backed v3 datasets")
-    meta = V3DatasetMetadata(f"local/{root.name}", root)
+    version = info.get("codebase_version")
+    if version == "v3.0":
+        meta = V3DatasetMetadata(f"local/{root.name}", root)
+    elif version == "v2.1":
+        from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
+
+        # Load local metadata explicitly; never fall back to Hub downloads or source writes.
+        meta = LeRobotDatasetMetadata.__new__(LeRobotDatasetMetadata)
+        meta.repo_id, meta.root = f"local/{root.name}", root
+        meta.load_metadata()
+    else:
+        raise ValueError("Caption export supports image-backed v2.1 and v3.0 datasets")
+    if episode not in meta.episodes:
+        raise ValueError("Episode is not present in dataset metadata")
     cameras = [key for key, feature in meta.features.items() if feature.get("dtype") == "image"]
     if not cameras or len(cameras) > 4:
         raise ValueError("Expected 1–4 image cameras")
+    data_path = (root / meta.get_data_file_path(episode)).resolve()
+    if not data_path.is_relative_to(root.resolve()):
+        raise ValueError("Episode data path escapes dataset root")
     table = read_episode_table(root, meta, episode).sort_by("frame_index")
     rows = table.to_pylist()
+    if any(row["episode_index"] != episode for row in rows):
+        raise ValueError("Episode data contains rows from another episode")
     if not rows or [row["frame_index"] for row in rows] != list(range(len(rows))):
         raise ValueError("Expected contiguous episode-local frame indices")
     fps = float(meta.fps)
@@ -185,6 +201,20 @@ def prepare(root: Path, episode: int, output: Path) -> None:
         raise
 
 
+def limit_frames(frames: list[int], budget: int, required=()) -> list[int]:
+    """Bound request size while retaining endpoints and explicit candidate boundaries."""
+    frames = sorted(set(frames) | set(required))
+    if len(frames) <= budget:
+        return frames
+    keep = {frames[0], frames[-1], *required}
+    if len(keep) > budget:
+        raise ValueError("Too many required boundary frames")
+    remaining = sorted(set(frames) - keep)
+    slots = budget - len(keep)
+    keep.update(remaining[round(i * (len(remaining) - 1) / max(1, slots - 1))] for i in range(slots))
+    return sorted(keep)
+
+
 def sample_frames(frame_count: int, fps: float, previous: dict | None = None) -> list[int]:
     stride = max(1, round(fps / 2))
     selected = set(range(0, frame_count, stride)) | {frame_count - 1}
@@ -196,7 +226,8 @@ def sample_frames(frame_count: int, fps: float, previous: dict | None = None) ->
                     max(0, center - round(fps)), min(frame_count, center + round(fps)), max(1, round(fps / 8))
                 )
             )
-    return sorted(selected)
+    boundaries = [s["start_frame"] for s in previous["segments"]] if previous else []
+    return limit_frames(sorted(selected), 200, boundaries)
 
 
 def infer(
@@ -214,8 +245,6 @@ def infer(
         if progress:
             progress("Initial segmentation" if variant == "coarse" else "Boundary review")
         selected = sample_frames(meta["frame_count"], meta["fps"], previous)
-        if len(selected) > 200:
-            raise ValueError("Trial exceeds the 200-image budget per request")
         evidence = {key: value for key, value in meta.items() if key != "signals"}
         # 4 Hz signals include the full pose/gripper observations, without assuming physical units.
         evidence["signals"] = [

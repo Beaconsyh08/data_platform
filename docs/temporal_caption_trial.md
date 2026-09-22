@@ -8,9 +8,10 @@ navigation, active caption highlighting, and optional segment loop.
 
 ## Independent inference workflow
 
-1. Select exactly one episode by index. The trial exporter supports image-backed LeRobot v3 datasets
-   with 1–4 cameras and regular timestamps. It uses the shared v3 reader to filter a shared Parquet
-   shard by `episode_index`, verifies local frame indices/timestamps, and rejects output inside the source.
+1. Select exactly one episode by index. The trial exporter supports image-backed LeRobot v2.1/v3.0 datasets
+   with 1–4 cameras and regular timestamps. It uses format-aware readers: per-episode files for v2.1,
+   shared shards filtered by `episode_index` for v3.0. It verifies episode identity, frame indices and
+   timestamps, and rejects output inside the source.
 2. Export the episode's images into labeled, synchronized camera panels and an H.264 MP4. Export
    available pose, gripper, and action observations into an episode bundle outside the source dataset.
    The exporter does not manufacture an action column from measured poses.
@@ -37,7 +38,7 @@ Run preparation on the Agent host, with its existing environment. The output mus
 
 ```bash
 python -m lerobot.data_platform.temporal_caption prepare \
-  --root /path/to/image-backed-v3-dataset --episode 0 --output /path/to/episode-bundle
+  --root /path/to/image-backed-dataset --episode 0 --output /path/to/episode-bundle
 ```
 
 Transfer only this bundle to the inference host. Configure `DASHSCOPE_API_KEY` in the process environment
@@ -141,8 +142,8 @@ Deploy Server A first, then the Agent from the same immutable development releas
 `DASHSCOPE_API_KEY` (optionally `DASHSCOPE_BASE_URL`) in the Agent's protected service environment and
 restart that development Agent. Its heartbeat advertises `caption_protocol=1` and credential availability
 as a boolean. The key never travels through job options, result artifacts, or the browser. The Agent needs
-FFmpeg and the dataset dependencies; currently only v3.0 datasets with 1–4 embedded image cameras are
-supported. Raw source access is restricted to the Agent's registered allowed roots.
+FFmpeg and the dataset dependencies; v2.1 and v3.0 datasets with 1–4 embedded image cameras are
+supported. Agents advertise `caption_dataset_versions`; v2.1 submissions require upgraded executors. Raw source access is restricted to the Agent's registered allowed roots.
 
 Execution prepares exactly one episode outside the dataset, calls Qwen3.8-max, and retains upload files
 in the durable execution spool. Server A accepts only the current node/attempt/lease and allowlisted
@@ -188,7 +189,10 @@ receipts. `no_issues_detected` means only that this model review found no furthe
 currently use the same Qwen model with independent requests and thinking disabled. This is not independent
 human validation or a demonstrated accuracy improvement over either baseline.
 
-The current runner supports short episodes (about 53 seconds at 30 fps for the global image budget).
+Global Fusion observations adapt to episode duration with at most 160 images covering the entire episode.
+Dense evidence and blind audit remain packeted over the full duration. Multi-view requests use at most
+200 images while retaining endpoints and candidate boundaries; longer episodes have sparser global
+observations and may need more evidence packets. The former ~53-second Fusion rejection is removed.
 CLI inference can resume completed stage receipts only when dataset identity, source digest, model,
 pipeline version and each stage's prompt/sampling signature match. A remote job retry may still repeat
 inference because it starts a fresh isolated execution. No API keys are stored in receipts.
@@ -282,7 +286,7 @@ Review displays the version, matrix, source details, local signal report and per
 references. Clicking a candidate seeks the video. V2 publication recomputes local evidence to detect
 inconsistent artifacts. Resume also binds complete episode metadata, including the signal-input toggle.
 Disabling signals produces visual-only hypotheses and explicit disabled status, never fabricated support.
-The ~53-second episode limit and 224-pixel camera panels remain; V2 does not add a trained signal encoder,
+Camera panels remain 224 pixels; V2 does not add a trained signal encoder,
 calibrated confidence, semantic conflict classification or validated accuracy improvement.
 
 The annotation form links directly to Review; job tracking uses the console Jobs navigation.

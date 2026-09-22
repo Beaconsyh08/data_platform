@@ -690,6 +690,7 @@ class DataPlatformAgent:
         return {
             **worker_capabilities(),
             "caption_protocol": 1,
+            "caption_dataset_versions": ["v2.1", "v3.0"],
             "caption_signal_options": True,
             "caption_schemes": ["multiview_semantics", "video_events", "fusion_review"],
             "caption_configured": bool(os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_DASHSCOPE_API_KEY")),

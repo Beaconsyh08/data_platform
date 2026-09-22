@@ -211,18 +211,27 @@ def test_bad_options_do_not_queue(remote, options):
     assert store.list_jobs() == []
 
 
+@pytest.mark.parametrize("dataset_version", ["v2.1", "v3.0"])
 @pytest.mark.parametrize("scheme", ["multiview_semantics", "video_events"])
 @pytest.mark.parametrize("include_signals", [True, False])
-def test_real_episode_agent_execution_round_trip(remote, tmp_path, monkeypatch, scheme, include_signals):
+def test_real_episode_agent_execution_round_trip(
+    remote, tmp_path, monkeypatch, scheme, include_signals, dataset_version
+):
     from lerobot.data_platform import qwen
     from lerobot.data_platform.temporal_caption_jobs import execute_caption_job
     from tests.datasets.test_temporal_caption import (
         test_export_reads_only_selected_episode_from_shared_v3_shard,
+        test_export_v21_embedded_images_and_source_preservation,
     )
 
     fixture = tmp_path / "fixture"
     fixture.mkdir()
-    test_export_reads_only_selected_episode_from_shared_v3_shard(fixture)
+    exporter = (
+        test_export_v21_embedded_images_and_source_preservation
+        if dataset_version == "v2.1"
+        else test_export_reads_only_selected_episode_from_shared_v3_shard
+    )
+    exporter(fixture)
     client, store, node, token, location, _ = remote
     current = next(n for n in store.list_nodes() if n["node_id"] == node["node_id"])
     store.heartbeat(node["node_id"], capabilities={**current["capabilities"], "caption_signal_options": True})
@@ -372,3 +381,41 @@ def test_all_three_methods_can_be_reused_in_new_jobs(remote):
         assert response.status_code == 202
         assert response.get_json()["job"]["options"] == {"episode_index": index, "scheme": scheme}
     assert len(store.list_jobs()) == 3
+
+
+def test_v21_readiness_requires_executor_support(remote):
+    client, store, node, _, location, _ = remote
+    loc = store.sync_locations(
+        node["node_id"],
+        [
+            {
+                "dataset_key": location["dataset_key"],
+                "root": location["root"],
+                "output_dir": "/data/cache",
+                "metadata": {
+                    "codebase_version": "v2.1",
+                    "total_episodes": 43,
+                    "features": {"image": {"dtype": "image"}},
+                },
+            }
+        ],
+    )[0]
+    url = f"/api/control/locations/{loc['location_id']}/temporal-caption/jobs"
+    assert "Upgrade the remote Agent" in client.get(url).get_json()["unavailable_reason"]
+    current = next(n for n in store.list_nodes() if n["node_id"] == node["node_id"])
+    store.heartbeat(
+        node["node_id"],
+        capabilities={
+            **current["capabilities"],
+            "caption_dataset_versions": ["v2.1", "v3.0"],
+            "caption_signal_options": True,
+        },
+    )
+    ready = client.get(url).get_json()
+    assert ready["can_submit"] and ready["total_episodes"] == 43
+    response = client.post(
+        url,
+        json={"episode_index": 0, "scheme": "multiview_semantics", "include_signals": False},
+        headers={"Idempotency-Key": "v21"},
+    )
+    assert response.status_code == 202, response.get_json()
