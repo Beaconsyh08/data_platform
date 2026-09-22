@@ -246,3 +246,41 @@ optional and distinct from Fusion annotation review: missing outcome fields mean
 not assessed, never failure. Viewer and caption review use left / head / right order;
 legacy composite videos are reordered into a derived display cache without rewriting
 the original result.
+
+## Cross-modal Fusion V2
+
+New `fusion_review` jobs use `pipeline_version=fusion-review-2`; existing V1 runs remain readable.
+No fourth scheme is added. Upgrade both the server and executors to run V2; old executors still run V1.
+The per-result pipeline version in Review identifies the implementation that actually generated it.
+
+The new signal branch runs locally before any model hypotheses, at the full source frame rate:
+
+- Process numeric dimensions separately so differently scaled features do not dominate each other.
+- Detect jumps using the maximum of median absolute delta plus six robust MAD scales, 5% of the
+  observed range, and a numerical floor. Record the actual threshold and magnitude, not a probability.
+- Detect motion start/stop from delta crossing 20% of its 90th percentile (with range/numeric floors).
+- Retain gripper midrange crossings as candidates, including gradual transitions; they do not imply contact.
+- Suppress nearby detections per dimension and event kind within 0.15 seconds. Never bridge missing
+  or non-finite samples; report unusable channels explicitly.
+- Do not assume action/state dimensions correspond or infer tracking errors, physical units, contact,
+  gripper polarity or success. Thresholds are heuristics and still require calibration on labeled data.
+
+Local code merges visual, joint video/event and signal boundary candidates into bounded-span groups
+of at most 0.25 seconds. It retains every source frame, feature, dimension and detector threshold.
+The matrix labels temporal support, signal-only candidates, visual/joint-only support and disagreement
+between boundary hypotheses. These are temporal evidence labels, not semantic verdicts. Missing signal
+support is not proof that an action did not occur. All contributing frames drive dense visual sampling.
+
+Fusion receives this matrix and the independent signal report. Visual blind audit receives neither
+signals nor captions. Local signal audit identifies changes away from current segment boundaries;
+these are supplied to model review, targeted repair and verification without automatically declaring
+an omission. The signal audit is recomputed after repair and separately for draft/final artifacts.
+All numerical analysis, candidate grouping, source attribution and audit matching use zero API calls.
+Visual understanding, semantic fusion and review still use Qwen; the base model stages are unchanged, but extra candidate windows can increase evidence packets and API calls.
+
+Review displays the version, matrix, source details, local signal report and per-segment boundary
+references. Clicking a candidate seeks the video. V2 publication recomputes local evidence to detect
+inconsistent artifacts. Resume also binds complete episode metadata, including the signal-input toggle.
+Disabling signals produces visual-only hypotheses and explicit disabled status, never fabricated support.
+The ~53-second episode limit and 224-pixel camera panels remain; V2 does not add a trained signal encoder,
+calibrated confidence, semantic conflict classification or validated accuracy improvement.

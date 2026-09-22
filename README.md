@@ -846,6 +846,7 @@ Agent 文件权限、任务提交反馈及 operator 删除 episode 的审批流�
 
 在 `Data Curation → Annotation → Temporal Caption` 平行查看三视角视频和分段 caption，
 切换 Multi-view Semantics（多视角语义分段）、Video + Events（视频事件分段）与 Fusion + Review（融合及独立复核），
-按 episode 查看双语 caption、运动曲线和各自结果版本。支持导入现有结果、提交远程单条标注任务及查看进度，不依赖完整 Viewer 缓存；
+按 episode 查看双语 caption、运动曲线和各自结果版本。Fusion V2 在本地计算信号变化、候选边界来源和时间一致性矩阵，
+再由模型进行语义融合与独立复核。支持按 episode 区间或整个数据集提交标注 Jobs，并选择是否输入 action/state 等信号；
 不覆盖现有标注，不回写源数据。运行步骤、范围和结果复核限制见
 [Temporal Caption 实验](docs/temporal_caption_trial.md)。

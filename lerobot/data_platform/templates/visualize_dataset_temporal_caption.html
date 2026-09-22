@@ -21,7 +21,7 @@
 <svg id="plot" class="plot" viewBox="0 0 1000 190" role="img" aria-label="Measured gripper position and motion speed"></svg>
 <div class="legend"><span><i style="background:var(--ph-approach)"></i>Left</span><span><i style="background:var(--ph-release)"></i>Right</span><span>Speed in source position units/s · click to seek</span></div></div>
 <div class="card block"><div class="sec-title">How this was produced</div><p id="method"></p><div class="usage" id="usage"></div>
-<div id="fusion-audit" hidden></div><details><summary>Input provenance & limitations</summary><pre id="provenance"></pre></details><p class="note">Model drafts · not human reviewed. A second pass is not automatically more accurate.</p></div>
+<div id="cross-modal" hidden></div><div id="fusion-audit" hidden></div><details><summary>Input provenance & limitations</summary><pre id="provenance"></pre></details><p class="note">Model drafts · not human reviewed. A second pass is not automatically more accurate.</p></div>
 </section>
 <section class="panel">
 <div class="card verdict" id="quality"></div>
@@ -89,11 +89,38 @@ function renderQuality(result) {
     if(quality.notes_zh) box.append(text('p',quality.notes_zh,'cap-zh'));
     const list=document.createElement('ul'); for(const issue of quality.issues || []) list.append(text('li',issue)); box.append(list);
 }
+function renderCrossModal(data) {
+    const box=$('cross-modal'), cross=data.cross_modal;
+    box.replaceChildren(); box.hidden=!cross;
+    if(!cross)return;
+    box.append(text('h3',`Cross-modal evidence · ${data.pipeline_version}`));
+    box.append(text('p',cross.boundary_matrix.meaning));
+    box.append(text('p',`Signals: ${cross.boundary_matrix.signal_status} · local analysis, no API calls`));
+    const scroll=text('div');scroll.style.overflowX='auto';
+    const table=document.createElement('table');table.style.width='100%';
+    const head=document.createElement('tr');
+    for(const label of ['Frame / time','Sources','Temporal assessment','Evidence'])head.append(text('th',label));
+    table.append(head);
+    for(const row of cross.boundary_matrix.rows) {
+        const tr=document.createElement('tr'), td=document.createElement('td');
+        const jump=text('button',`${row.range.join('–')} / ${(row.frame/data.fps).toFixed(2)}s`);
+        jump.onclick=()=>{$('loop').checked=false;$('video').currentTime=row.frame/data.fps;};td.append(jump);tr.append(td);
+        tr.append(text('td',row.sources.join(', ')),text('td',row.status.replaceAll('_',' ')));
+        const detail=document.createElement('td'), disclosure=document.createElement('details');
+        disclosure.append(text('summary',`${row.evidence.length} observations`),text('pre',JSON.stringify(row.evidence,null,2)));
+        detail.append(disclosure);tr.append(detail);table.append(tr);
+    }
+    scroll.append(table);box.append(scroll);
+    const details=document.createElement('details');
+    details.append(text('summary',`Signal audit: ${cross.signal_audit.unmatched_events.length} changes away from segment boundaries`),
+        text('p',cross.signal_audit.meaning),text('pre',JSON.stringify({signal_audit:cross.signal_audit,local_analysis:cross.local_analysis},null,2)));
+    box.append(details);
+}
 function render(data) {
     artifact=data; active=0; selectedLoop=0;
     $('status').textContent=(data.review_notes || []).join(' '); $('review').hidden=false;
     $('video').pause(); $('video').src=data.video_url; $('video').playbackRate=Number($('rate').value);
-    $('meta').textContent=`Episode ${data.episode_index} · ${data.frame_count} frames · ${data.duration_s.toFixed(2)} s · ${data.model}`;
+    $('meta').textContent=`Episode ${data.episode_index} · ${data.frame_count} frames · ${data.duration_s.toFixed(2)} s · ${data.model}${data.pipeline_version ? ` · ${data.pipeline_version}` : ''}`;
     $('scheme-description').textContent=data.scheme.description; $('method').textContent=data.scheme.description;
     $('task').textContent=data.context.task || 'Not supplied';
     bilingual($('summary'),data.result.summary_en,data.result.summary);
@@ -101,6 +128,7 @@ function render(data) {
     bilingual($('scene'),scene.description_en,scene.description_zh); $('objects').replaceChildren();
     for(const object of scene.objects || []) $('objects').append(text('span',object,'obj'));
     renderQuality(data.result);
+    renderCrossModal(data);
     $('usage').replaceChildren();
     for(const [label,value] of [['Model',data.model],['Input tokens',data.usage?.prompt_tokens??'—'],['Output tokens',data.usage?.completion_tokens??'—']]) {
         const cell=text('div','','u');cell.append(text('div',label,'u-k'),text('div',String(value),'u-v'));$('usage').append(cell);
@@ -126,6 +154,8 @@ function render(data) {
         if(segment.confidence!=='not_reported') header.append(text('span',`${segment.confidence} confidence`));
         body.append(header,text('div',segment.caption_en,'cap-en'),text('div',segment.caption,'cap-zh'));
         const evidence=text('div',segment.evidence,'evidence');body.append(evidence);
+        const support=data.cross_modal?.segment_support?.find(item=>item.start_frame===segment.start_frame);
+        if(support)body.append(text('div',`Boundary evidence: ${support.candidate_ids.join(', ') || 'no nearby local candidate'}`,'note'));
         if(segment.boundary_interval) body.append(text('div',`Boundary range: frames ${segment.boundary_interval.join('–')}`,'note'));
         if(segment.uncertainty) body.append(text('div',segment.uncertainty,'note'));
         button.append(text('span','','rail'),body);button.onclick=()=>seek(i);$('segments').append(button);

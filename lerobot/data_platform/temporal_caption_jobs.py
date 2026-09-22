@@ -79,6 +79,20 @@ def validate_run(source: Path, *, key: str | None = None, options: dict | None =
             if audit.get("human_reviewed") is not False or not isinstance(audit.get("stages"), list):
                 raise ValueError("Missing fusion review evidence")
             validate_review({"issues": audit.get("remaining_issues")}, value["frame_count"])
+            if value.get("pipeline_version") == "fusion-review-2":
+                from lerobot.data_platform.temporal_caption_signals import (
+                    analyze_signals,
+                    cross_modal_report,
+                )
+
+                stages = {stage["stage"]: stage["result"] for stage in audit["stages"]}
+                local = analyze_signals(meta)
+                cross = value.get("cross_modal") or {}
+                expected = cross_modal_report(
+                    stages["02-visual"], stages["03-events"], value["result"], local, meta["fps"]
+                )
+                if cross != json.loads(json.dumps(expected)):
+                    raise ValueError("Cross-modal evidence does not match source signals and hypotheses")
             expected_status = (
                 "draft"
                 if variant == "fusion_draft"

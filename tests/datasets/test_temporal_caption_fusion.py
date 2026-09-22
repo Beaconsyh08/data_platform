@@ -157,3 +157,59 @@ def test_visual_only_fusion_has_no_derived_signal_evidence(tmp_path):
     evidence = signal_evidence(metadata)
     assert evidence["signals"] == []
     assert evidence["events"] == []
+
+
+def test_v2_local_evidence_reaches_fusion_and_review_without_extra_calls(tmp_path):
+    model = Model()
+    source, out = bundle(tmp_path), tmp_path / "output"
+    infer_fusion(source, out, "node/source", client=model)
+    final = json.loads((out / "fusion_reviewed.json").read_text())
+    assert final["pipeline_version"] == "fusion-review-2"
+    assert final["cross_modal"]["local_analysis"]["events"]
+    assert final["cross_modal"]["boundary_matrix"]["rows"]
+    assert len(final["cross_modal"]["segment_support"]) == len(final["result"]["segments"])
+    for stage in final["review"]["stages"]:
+        prompt = (out / f"stage-{stage['stage']}.prompt.txt").read_text()
+        obs = json.loads(prompt.split("OBSERVATIONS:\n")[1])
+        if stage["stage"].startswith("06-blind"):
+            assert not {"signals", "local_signal_analysis", "boundary_matrix", "candidate"} & obs.keys()
+        if stage["stage"] == "05-fusion":
+            assert obs["boundary_matrix"] == final["cross_modal"]["boundary_matrix"]
+        if stage["stage"] in {"07-review", "09-repair-0", "10-verify-0"}:
+            assert "signal_audit" in obs
+    # Seven base API stages plus one local recheck/repair/verify cycle; no signal API stage.
+    assert len(model.calls) == 10
+    meta = json.loads((source / "episode.json").read_text())
+    meta["include_signals"] = False
+    (source / "episode.json").write_text(json.dumps(meta))
+    with pytest.raises(ValueError, match="changed inputs"):
+        infer_fusion(source, out, "node/source", client=model)
+
+
+def test_v2_published_evidence_is_validated_and_v1_remains_readable(tmp_path):
+    source, out = bundle(tmp_path), tmp_path / "output"
+    infer_fusion(source, out, "node/source", client=Model())
+    path = out / "fusion_reviewed.json"
+    artifact = json.loads(path.read_text())
+    artifact["cross_modal"]["boundary_matrix"]["rows"][0]["status"] = "invented"
+    path.write_text(json.dumps(artifact))
+    with pytest.raises(ValueError, match="Cross-modal evidence"):
+        validate_run(out)
+    artifact["pipeline_version"] = "fusion-review-1"
+    artifact.pop("cross_modal")
+    path.write_text(json.dumps(artifact))
+    assert len(validate_run(out)) == 2
+
+
+def test_v2_visual_only_complete_pipeline(tmp_path):
+    source, out = bundle(tmp_path), tmp_path / "output"
+    path = source / "episode.json"
+    meta = json.loads(path.read_text())
+    meta["include_signals"] = False
+    path.write_text(json.dumps(meta))
+    infer_fusion(source, out, "node/source", client=Model())
+    final = next(a for a in validate_run(out) if a["variant"] == "fusion_reviewed")
+    cross = final["cross_modal"]
+    assert not cross["local_analysis"]["events"]
+    assert cross["boundary_matrix"]["signal_status"] == "disabled"
+    assert not any(r["status"] == "temporal_support" for r in cross["boundary_matrix"]["rows"])

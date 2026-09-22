@@ -13,14 +13,23 @@ import time
 from pathlib import Path
 
 from lerobot.data_platform.temporal_caption import PROMPT, validate_result, write_json
+from lerobot.data_platform.temporal_caption_signals import (
+    analyze_signals,
+    boundary_matrix,
+    cross_modal_report,
+    signal_audit,
+)
 
-VERSION = "fusion-review-1"
+VERSION = "fusion-review-2"
 PARTITION = (
     PROMPT
     + """
 Additionally give each segment boundary_interval: [earliest_possible_start, latest_possible_start],
 integer inclusive uncertainty bounds containing start_frame; first boundary is [0,0].
 Never claim exact contact from sparse or occluded observations. Maintain stable object descriptions.
+Local boundary matrices describe temporal proximity only, never semantic agreement or contact.
+Action values are commands, not evidence of execution. Missing signal support is not contradiction.
+Resolve hypothesis disagreements from images; retain uncertainty when evidence is insufficient.
 You may add scene and quality but do not invent task success. All segments must cover the ENTIRE episode.
 """
 )
@@ -36,6 +45,9 @@ REVIEW = """Audit the proposed annotation against the supplied independent event
 Find missing short actions/regrasps/failures, object identity swaps, incorrect arms, unsupported contact,
 misplaced boundaries, captions inconsistent with their interval, and incorrect task-compliance claims.
 A ledger and previous reviewer can also be wrong: cite visual evidence rather than trusting either.
+Local signal changes and boundary matrices describe temporal proximity, never semantic agreement.
+Unmatched signal events may occur inside continuous actions; investigate them, do not automatically split.
+Commands do not prove execution; absent signal support does not disprove visual evidence.
 Return JSON {"issues":[{"start_frame":0,"end_frame":10,"severity":"major|minor",
 "kind":"omission|identity|arm|boundary|unsupported|task|other", "description":"problem and evidence",
 "suggestion":"specific correction or retain uncertainty"}], "notes":"scope and remaining limits"}.
@@ -167,6 +179,7 @@ def infer_fusion(
         "source_digest": meta["source_digest"],
         "dataset_key": dataset_key,
         "model": model,
+        "metadata_sha256": hashlib.sha256(json.dumps(meta, sort_keys=True).encode()).hexdigest(),
     }
     marker = output / "fusion-input.json"
     if marker.exists() and json.loads(marker.read_text()) != identity:
@@ -269,7 +282,11 @@ def infer_fusion(
         stages.append(receipt)
         return value
 
+    if progress:
+        progress("Fusion V2: local full-rate signal analysis")
+    local_signals = analyze_signals(meta)
     signals = signal_evidence(meta)
+    signals["local_signal_analysis"] = local_signals.to_dict()
     wide = uniform_frames(count, fps, 3)
     if len(wide) > 160:
         raise ValueError("Fusion currently supports short episodes up to approximately 53 seconds")
@@ -284,10 +301,8 @@ def infer_fusion(
         validate_partition,
         video=True,
     )
-    centers = sorted(
-        {s["start_frame"] for r in (visual, events) for s in r["segments"][1:]}
-        | {e["frame"] for e in signals["events"]}
-    )
+    matrix = boundary_matrix(visual, events, local_signals, fps)
+    centers = sorted({e["frame"] for row in matrix["rows"] for e in row["evidence"]})
     dense = focus_frames(count, fps, centers)
     # Inspect all dense windows in bounded independent packets; do not silently discard evidence.
     packets = []
@@ -307,6 +322,7 @@ def infer_fusion(
             "visual_hypothesis": visual,
             "event_hypothesis": events,
             "focused_observations": packets,
+            "boundary_matrix": matrix,
             **signals,
         },
         validate_partition,
@@ -317,14 +333,23 @@ def infer_fusion(
         LEDGER
         + "\nActively look for short missed regrasp/transfer/failed attempts. No candidate captions are provided.",
         blind_frames[:140],
-        signals,
+        {},
         validate_ledger,
     )
     for i in range(140, len(blind_frames), 140):
-        extra = ask(f"06-blind-audit-{i // 140}", LEDGER, blind_frames[i : i + 140], signals, validate_ledger)
+        extra = ask(f"06-blind-audit-{i // 140}", LEDGER, blind_frames[i : i + 140], {}, validate_ledger)
         blind = {**blind, "events": [*blind["events"], *extra["events"]]}
     review = ask(
-        "07-review", REVIEW, wide, {"candidate": draft, "independent_events": blind}, validate_review
+        "07-review",
+        REVIEW,
+        wide,
+        {
+            "candidate": draft,
+            "independent_events": blind,
+            "boundary_matrix": matrix,
+            "signal_audit": signal_audit(draft, local_signals, fps),
+        },
+        validate_review,
     )
     initial_review = copy.deepcopy(review)
     final = copy.deepcopy(draft)
@@ -376,7 +401,14 @@ def infer_fusion(
             PARTITION
             + "\nRepair only flagged intervals and adjacent boundaries. Keep frozen_segments verbatim. Reviewer claims are fallible; use fresh evidence and retain uncertainty if needed.",
             wide,
-            {"candidate": final, "issues": issues, "fresh_evidence": evidence, "frozen_segments": frozen},
+            {
+                "candidate": final,
+                "issues": issues,
+                "fresh_evidence": evidence,
+                "frozen_segments": frozen,
+                "boundary_matrix": matrix,
+                "signal_audit": signal_audit(final, local_signals, fps),
+            },
             validate_repair,
         )
         repairs.append({"issues": issues, "before": before, "after": final})
@@ -384,7 +416,13 @@ def infer_fusion(
             f"10-verify-{iteration}",
             REVIEW,
             wide,
-            {"candidate": final, "independent_events": blind, "fresh_evidence": evidence},
+            {
+                "candidate": final,
+                "independent_events": blind,
+                "fresh_evidence": evidence,
+                "boundary_matrix": matrix,
+                "signal_audit": signal_audit(final, local_signals, fps),
+            },
             validate_review,
         )
     shutil.copyfile(bundle / "video.mp4", output / "video.mp4")
@@ -424,6 +462,7 @@ def infer_fusion(
                 "pipeline_version": VERSION,
                 "sampled_frames": dense,
                 "result": result,
+                "cross_modal": cross_modal_report(visual, events, result, local_signals, fps),
                 "review": {**audit, "status": "draft" if variant == "fusion_draft" else audit["status"]},
             },
         )
