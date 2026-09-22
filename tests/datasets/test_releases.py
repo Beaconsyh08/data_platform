@@ -2,6 +2,7 @@
 
 import io
 import json
+import shlex
 import subprocess
 import tarfile
 from pathlib import Path
@@ -65,7 +66,8 @@ def test_build_checks_archived_lock_before_tests_and_preserves_it(
         assert not (releases.RELEASE_ROOT / "candidate").exists()
     else:
         root = releases.build_release(source, "candidate", index_url=index_url)
-        releases.verify_release("candidate")
+        _, manifest = releases.verify_release("candidate")
+        assert manifest["package_index_url"] == index_url
         with tarfile.open(root / "server.tar.gz") as stream:
             assert stream.extractfile("uv.lock").read() == lock
 
@@ -239,9 +241,10 @@ def test_commands_require_environment_before_sudo_or_mutations(script, tmp_path,
 
 
 @pytest.mark.parametrize("failure", [None, "prepare", "health", "agent"])
+@pytest.mark.parametrize("index_url", [None, "https://explicit.test/simple"])
 @pytest.mark.parametrize("environment_name,hard", [("dev", False), ("prod", True)])
 def test_deploy_order_and_failure_preserve_maintenance(
-    release, tmp_path, monkeypatch, failure, environment_name, hard
+    release, tmp_path, monkeypatch, failure, environment_name, hard, index_url
 ):
     from lerobot.data_platform import deployment_backup, environment, release_cli
     from lerobot.data_platform.control_plane import ControlPlaneStore
@@ -258,10 +261,15 @@ def test_deploy_order_and_failure_preserve_maintenance(
         release_cli, "agent_targets", lambda: [AgentTarget("test-host", "/unused", ("test-node",))]
     )
     monkeypatch.setattr(Deployment, "maintenance_file", property(lambda self: tmp_path / "maintenance"))
+    manifest = json.loads((release / "release.json").read_text())
+    manifest["package_index_url"] = "https://saved.test/simple"
+    releases.atomic_json(release / "release.json", manifest)
+    expected_index = index_url or manifest["package_index_url"]
     events = []
     monkeypatch.setattr(release_cli, "agent_preflight", lambda deployment: events.append("ssh"))
 
     def prepare(deployment, version, **kwargs):
+        assert kwargs["index_url"] == expected_index
         assert kwargs["hard"] is hard
         events.append("prepare")
         if failure == "prepare":
@@ -281,6 +289,7 @@ def test_deploy_order_and_failure_preserve_maintenance(
             raise RuntimeError("health failed")
 
     def agent(*args, **kwargs):
+        assert kwargs["index_url"] == expected_index
         assert kwargs["hard"] is hard
         events.append("agent")
         if failure == "agent":
@@ -292,9 +301,9 @@ def test_deploy_order_and_failure_preserve_maintenance(
     monkeypatch.setattr(releases, "check_nodes", lambda *args, **kwargs: events.append("heartbeat"))
     if failure:
         with pytest.raises(RuntimeError):
-            release_cli.deploy(Deployment(environment_name), "candidate", hard=hard)
+            release_cli.deploy(Deployment(environment_name), "candidate", hard=hard, index_url=index_url)
     else:
-        release_cli.deploy(Deployment(environment_name), "candidate", hard=hard)
+        release_cli.deploy(Deployment(environment_name), "candidate", hard=hard, index_url=index_url)
     with store.sessions() as session:
         assert is_maintenance(session) == (failure in {"health", "agent"})
     assert events[:2] == ["ssh", "prepare"]
@@ -530,3 +539,38 @@ def test_incomplete_installation_is_preserved_before_retry(release, tmp_path, mo
         count = len(calls)
         assert releases.prepare_server(deployment, "candidate") == target
         assert len(calls) == count
+
+
+@pytest.mark.parametrize("index_url", [None, "https://mirror.test/a'b/simple"])
+def test_agent_install_forwards_mirror_after_privilege_boundary(release, monkeypatch, index_url):
+    from lerobot.data_platform import release_cli
+    from lerobot.data_platform.deployment import AgentTarget
+
+    monkeypatch.setattr(release_cli, "ssh_prefix", lambda: [])
+    monkeypatch.setattr(release_cli, "agent_connection", lambda target: (target.host, []))
+    calls = []
+    monkeypatch.setattr(releases, "run", lambda argv, **kwargs: calls.append(argv))
+    target = AgentTarget("host", "/unused", ("dev-node",))
+    monkeypatch.setattr(release_cli, "agent_targets", lambda: [target])
+    release_cli.install_agent(Deployment("dev"), "candidate", index_url=index_url)
+    command = calls[-1][-1]
+    line = next(line for line in command.splitlines() if "./install.sh --env dev" in line)
+    expected = ["$@"]
+    if index_url:
+        expected += ["env", "UV_DEFAULT_INDEX=" + index_url]
+    assert shlex.split(line) == expected + ["./install.sh", "--env", "dev"]
+
+
+@pytest.mark.parametrize(
+    "index_url",
+    [
+        "http://mirror.test/simple",
+        "https:///simple",
+        "https://user:secret@mirror.test/simple",
+        "https://mirror.test/simple?token=secret",
+        "https://mirror.test/simple#secret",
+    ],
+)
+def test_unsafe_package_index_is_rejected_before_archiving(tmp_path, index_url):
+    with pytest.raises(ValueError, match="Package index"):
+        releases.build_release(tmp_path, "candidate", index_url=index_url)

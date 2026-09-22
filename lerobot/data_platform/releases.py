@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from lerobot.data_platform.deployment import Deployment, agent_targets, load_environment, server_unit
 
@@ -36,6 +37,16 @@ def validate_version(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", value):
         raise ValueError("Release names must contain 1-100 letters, digits, dots, underscores or dashes")
     return value
+
+
+def validate_package_index(index_url: str | None) -> None:
+    if not index_url:
+        return
+    parsed = urlsplit(index_url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("Package index must use HTTPS")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Package index must not contain credentials, query parameters, or fragments")
 
 
 def digest(path: Path) -> str:
@@ -72,8 +83,7 @@ def extract_archive(archive: Path, destination: Path):
 
 
 def build_release(source: Path, version: str, *, index_url: str | None = None) -> Path:
-    if index_url and not index_url.startswith("https://"):
-        raise ValueError("Package index must use HTTPS")
+    validate_package_index(index_url)
     version = validate_version(version)
     source = source.resolve()
     status = run(
@@ -155,6 +165,7 @@ def build_release(source: Path, version: str, *, index_url: str | None = None) -
                 "format": 1,
                 "release": version,
                 "commit": commit,
+                "package_index_url": index_url,
                 "created_at": time.time(),
                 "files": files,
                 "agent_archive": agent.name,

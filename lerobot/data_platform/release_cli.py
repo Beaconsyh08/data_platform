@@ -70,14 +70,18 @@ print(json.dumps(values))
             raise RuntimeError("Remote Agent configuration does not match the selected environment/node")
 
 
-def install_agent(deployment, version, *, hard=False):
-    return [_install_agent_target(deployment, version, target, hard=hard) for target in agent_targets()]
+def install_agent(deployment, version, *, hard=False, index_url=None):
+    return [
+        _install_agent_target(deployment, version, target, hard=hard, index_url=index_url)
+        for target in agent_targets()
+    ]
 
 
-def _install_agent_target(deployment, version, target, *, hard=False):
+def _install_agent_target(deployment, version, target, *, hard=False, index_url=None):
     root, manifest = releases.verify_release(
         version, production=deployment.environment == "prod" and not hard
     )
+    releases.validate_package_index(index_url)
     host, options = agent_connection(target)
     archive = manifest["agent_archive"]
     remote = f"data-platform-updates/{deployment.environment}/{version}"
@@ -107,6 +111,9 @@ def _install_agent_target(deployment, version, target, *, hard=False):
             ]
         )
     env = deployment.environment
+    installer = "./install.sh"
+    if index_url:
+        installer = f"env UV_DEFAULT_INDEX={shlex.quote(index_url)} ./install.sh"
     command = f"""set -eu
 cd {remote}
 sha256sum --check {archive}.sha256
@@ -114,7 +121,7 @@ tar -xzf {archive}
 cd {archive.removesuffix(".tar.gz")}
 ./install.sh --verify-only
 if [ "$(id -u)" = 0 ]; then set --; else set -- sudo -n; fi
-"$@" ./install.sh --env {env}
+"$@" {installer} --env {env}
 test "$(readlink -f /opt/data-platform-agent/{env}/current)" = /opt/data-platform-agent/{env}/releases/{version}
 "$@" systemctl is-active --quiet data-platform-agent@{env}.service
 """
@@ -138,6 +145,8 @@ def deploy(
     root, manifest = releases.verify_release(
         version, production=deployment.environment == "prod" and not hard
     )
+    index_url = index_url or manifest.get("package_index_url")
+    releases.validate_package_index(index_url)
     deployment.root.mkdir(parents=True, exist_ok=True)
     with (deployment.root / ".deployment.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -221,7 +230,9 @@ def deploy(
             releases.wait_healthy(deployment, version)
             if with_agent:
                 progress("agents")
-            remote = install_agent(deployment, version, hard=hard) if with_agent else None
+            remote = (
+                install_agent(deployment, version, hard=hard, index_url=index_url) if with_agent else None
+            )
             if with_agent:
                 progress("heartbeats")
                 for attempt in range(30):
