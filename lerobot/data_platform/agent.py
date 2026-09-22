@@ -826,13 +826,21 @@ class DataPlatformAgent:
         output_dir = Path(location.get("output_dir") or get_default_output_dir(source_root)).expanduser()
         output_dir = _require_within(output_dir, self.writable_roots, "viewer output directory")
         last_event_at = 0.0
+        last_step = None
 
         def progress(payload: dict) -> None:
-            nonlocal last_event_at
+            nonlocal last_event_at, last_step
             now = time.monotonic()
-            if now - last_event_at < 1.0 and payload.get("status") != "error":
+            step = payload.get("step")
+            if (
+                now - last_event_at < 1.0
+                and step == last_step
+                and payload.get("status") not in {"error", "done"}
+                and not ("files_total" in payload and payload.get("files_current") == payload["files_total"])
+            ):
                 return
             last_event_at = now
+            last_step = step
             self.client.event(
                 self.state,
                 job["job_id"],

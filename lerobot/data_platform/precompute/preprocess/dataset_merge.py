@@ -2,7 +2,6 @@ import csv
 import json
 import shutil
 import tempfile
-from concurrent.futures import as_completed
 from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
@@ -12,7 +11,7 @@ import pyarrow.parquet as pq
 
 from lerobot.common.datasets.compute_stats import aggregate_stats
 from lerobot.common.datasets.utils import cast_stats_to_numpy, serialize_dict
-from lerobot.data_platform.execution_pools import ThreadPoolExecutor
+from lerobot.data_platform.execution_pools import ThreadPoolExecutor, map_completed
 from lerobot.data_platform.precompute.data_profile import (
     resolve_data_profile,
     signal_schema_from_features,
@@ -1004,9 +1003,10 @@ def run_merge(
                 )
         else:
             with ThreadPoolExecutor(max_workers=min(worker_count, len(episode_map))) as executor:
-                futures = {
-                    executor.submit(
-                        _write_merged_episode,
+
+                def write_episode(entry):
+                    src_pos, src_root, old_idx, new_idx = entry
+                    _, _, stats = _write_merged_episode(
                         src_root,
                         old_idx,
                         new_idx,
@@ -1019,11 +1019,11 @@ def run_merge(
                         arrow_fields=arrow_fields,
                         projections=projections[src_pos],
                         expected_length=episode_lengths[new_idx],
-                    ): (old_idx, new_idx)
-                    for src_pos, src_root, old_idx, new_idx in episode_map
-                }
-                for idx, future in enumerate(as_completed(futures), start=1):
-                    old_idx, new_idx, signal_stats_by_episode[new_idx] = future.result()
+                    )
+                    return old_idx, new_idx, stats
+
+                for idx, row in enumerate(map_completed(executor, write_episode, episode_map), start=1):
+                    old_idx, new_idx, signal_stats_by_episode[new_idx] = row
                     emit(
                         progress_callback,
                         status="running",

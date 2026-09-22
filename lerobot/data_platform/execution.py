@@ -16,6 +16,8 @@ import time
 import uuid
 from pathlib import Path
 
+from lerobot.data_platform.execution_resources import ExecutionResources, configure_native_threads
+
 
 def serialize_completion(root):
     """Serialize filesystem finalization across web threads and processes."""
@@ -103,7 +105,8 @@ def group_members(pgid):
 class ComputeGroup:
     """Use a delegated cgroup v2 subtree; development can explicitly allow process groups."""
 
-    def __init__(self, attempt_id):
+    def __init__(self, attempt_id, resources: ExecutionResources | None = None):
+        resources = resources or ExecutionResources.resolve()
         self.path = None
         root_value = os.environ.get("DATA_PLATFORM_CGROUP_ROOT")
         if root_value:
@@ -123,15 +126,8 @@ class ComputeGroup:
             (root / "cgroup.subtree_control").write_text("+cpu +memory +pids")
             target = root / f"job-{attempt_id}"
             target.mkdir(exist_ok=True)
-            cpus = max(
-                0.1,
-                (os.cpu_count() or 1) * float(os.environ.get("DATA_PLATFORM_COMPUTE_CPU_FRACTION", "0.5")),
-            )
-            (target / "cpu.max").write_text(f"{int(cpus * 100000)} 100000")
-            memory = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-            (target / "memory.max").write_text(
-                str(int(memory * float(os.environ.get("DATA_PLATFORM_COMPUTE_MEMORY_FRACTION", "0.6"))))
-            )
+            (target / "cpu.max").write_text(f"{max(1, int(resources.cpu_limit * 100000))} 100000")
+            (target / "memory.max").write_text(str(resources.memory_limit))
             (target / "memory.oom.group").write_text("1")
             self.path = target
         except OSError:
@@ -287,6 +283,7 @@ def run_worker(config_path):
         time.sleep(0.05)
     if config.get("cgroup"):
         (Path(config["cgroup"]) / "cgroup.procs").write_text(str(os.getpid()))
+    configure_native_threads()
     from lerobot.data_platform.agent import DataPlatformAgent, _json_value
 
     client = SpoolingClient(config["server_url"], work, server_identity=config.get("server_identity"))
@@ -357,6 +354,7 @@ class ExecutionSupervisor:
         from lerobot.data_platform.agent import _require_safe_output, _require_within
 
         agent = self.agent
+        resources = ExecutionResources.resolve()
         execution = job["execution"]
         work = self.root / execution["attempt_id"]
         work.mkdir(mode=0o700)
@@ -406,30 +404,45 @@ class ExecutionSupervisor:
             if "overwrite" in job_copy["options"]:
                 job_copy["options"]["overwrite"] = False
         job_copy["location"]["output_dir"] = str(staging / "source-cache" if final else staging / "cache")
-        cpus = max(
-            1,
-            min(
-                4,
-                int(
-                    (os.cpu_count() or 1) * float(os.environ.get("DATA_PLATFORM_COMPUTE_CPU_FRACTION", "0.5"))
-                ),
-            ),
-        )
-        for key in ("workers", "prepare_workers"):
-            if key in job_copy["options"]:
-                job_copy["options"][key] = min(cpus, max(1, int(job_copy["options"][key])))
+        requested = {
+            key: job_copy["options"][key]
+            for key in ("workers", "prepare_workers")
+            if key in job_copy["options"]
+        }
+        for key, value in requested.items():
+            job_copy["options"][key] = resources.workers(value)
         if job["operation"] == "viewer.prepare":
-            job_copy["options"].setdefault("prepare_workers", cpus)
+            job_copy["options"].setdefault("prepare_workers", resources.max_workers)
         elif job["operation"] in {
             "preprocess.standardize",
             "preprocess.smooth_action",
             "preprocess.convert_v3",
             "preprocess.merge",
         }:
-            job_copy["options"].setdefault("workers", cpus)
-        group = ComputeGroup(execution["attempt_id"])
+            job_copy["options"].setdefault("workers", resources.max_workers)
+        effective = {
+            key: job_copy["options"][key]
+            for key in ("workers", "prepare_workers")
+            if key in job_copy["options"]
+        }
+        agent.client.event(
+            agent.state,
+            job["job_id"],
+            "Resolved execution resource budget",
+            {
+                "phase": "resources",
+                **resources.record(),
+                "requested_workers": requested,
+                "effective_workers": effective,
+                "worker_limit_reason": "node worker limit or inherited CPU budget"
+                if any(value and int(value) > effective[key] for key, value in requested.items())
+                else None,
+            },
+        )
+        group = ComputeGroup(execution["attempt_id"], resources)
         config = {
             "work": str(work),
+            "resources": resources.record(),
             "job": job_copy,
             "state_path": str(agent.state_path),
             "name": agent.name,
@@ -449,11 +462,8 @@ class ExecutionSupervisor:
         atomic_json(work / "config.json", config)
         lock = (self.root / ".node-lock").open("a")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        env = dict(
-            os.environ, OMP_NUM_THREADS=str(cpus), OPENBLAS_NUM_THREADS=str(cpus), MKL_NUM_THREADS=str(cpus)
-        )
+        env = {**os.environ, **resources.environment()}
         env["DATA_PLATFORM_EXECUTION_STOP_FILE"] = str(work / "stop.json")
-        env["DATA_PLATFORM_EXECUTION_WORKERS"] = str(cpus)
         env["CUDA_VISIBLE_DEVICES"] = os.environ.get("DATA_PLATFORM_GPU_DEVICES", "")
         process = subprocess.Popen(
             [sys.executable, "-m", "lerobot.data_platform.execution", str(work / "config.json")],

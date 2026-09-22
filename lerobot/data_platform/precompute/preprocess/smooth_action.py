@@ -1,6 +1,4 @@
 import os
-from concurrent.futures import as_completed
-from lerobot.data_platform.execution_pools import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +8,7 @@ import pyarrow.parquet as pq
 
 from lerobot.common.datasets.compute_stats import aggregate_stats
 from lerobot.common.datasets.utils import cast_stats_to_numpy, serialize_dict
+from lerobot.data_platform.execution_pools import ProcessPoolExecutor, map_completed
 from lerobot.data_platform.precompute.data_profile import require_dataset_operation
 from lerobot.data_platform.precompute.dataset_io import is_v3_info, update_episode_metadata
 from lerobot.data_platform.precompute.preprocess.common import (
@@ -267,9 +266,10 @@ def run_smooth_action(
             )
     else:
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
-            futures = [executor.submit(_rewrite_parquet_worker, task) for task in tasks]
-            for idx, future in enumerate(as_completed(futures), start=1):
-                stats_by_episode.update(future.result())
+            for idx, result_row in enumerate(
+                map_completed(executor, _rewrite_parquet_worker, tasks), start=1
+            ):
+                stats_by_episode.update(result_row)
                 emit(
                     progress_callback,
                     status="running",

@@ -191,3 +191,49 @@ sudo env -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY \
 
 构建成功后，根据所选流程使用 `--release "$RELEASE"` 部署已有包。
 这是依赖下载方式的调整，不会关闭 TLS 校验，也不需要修改锁文件。
+
+## Agent 任务并发与资源预算
+
+`workers` / `prepare_workers` 是请求值。Agent 在启动任务时结合节点上限、CPU affinity、
+cpuset 和所有父级 cgroup 限制计算实际值，并通过 Jobs 的 `resources` 事件记录请求值、
+生效值和截断原因。显式 `1` 保持串行；支持 `0` 的预处理操作继续将其解释为自动选择。
+普通节点未配置时保留最多 4 worker 和原有 CPU/内存比例。
+
+管理员可在目标环境的 `agent.env` 中设置：
+
+| 配置 | 含义 |
+| --- | --- |
+| `DATA_PLATFORM_COMPUTE_MAX_WORKERS` | 单任务 worker 上限，正整数，默认 4 |
+| `DATA_PLATFORM_COMPUTE_CPU_LIMIT` | 单任务 CPU 核数预算，优先于 CPU fraction |
+| `DATA_PLATFORM_COMPUTE_MEMORY_LIMIT_GIB` | 单任务内存 GiB，优先于 memory fraction |
+| `DATA_PLATFORM_COMPUTE_NATIVE_THREADS` | 每个计算进程的 BLAS/OpenMP/OpenCV/Arrow 线程数 |
+| `DATA_PLATFORM_VIDEO_THREADS` | 每个视频编码、解码和滤镜的线程上限 |
+
+Viewer 的并发单位是一个相机视频或一份 episode CSV；单 episode 的多相机也可并行。
+所有输出共用一个有界队列，episode 的全部工作成功才增加完成计数，文件完成数单独显示在事件中。
+保持编码器、时间边界及 Stage 语义；失败/取消不发布不完整的新缓存。
+Merge、标准化、平滑和转换继续沿用既有算法及线程/进程池，通过相同预算限制并发。
+
+提高应用配置不能突破 systemd 配额。开发 Agent 的通用默认值仍是 2 核/4 GiB。
+需要提高时，排空开发任务后使用 `deploy/data-platform/agent-resources.conf.example`
+建立 `data-platform-agent@dev.service.d/50-resources.conf`，再执行 `systemctl daemon-reload`
+并重启开发 Agent。该 drop-in 与生成的 unit 分开保存，升级不会覆盖；生产配置不随之变化。
+修改前备份目标 `agent.env` 及 drop-in（记录原先不存在的情况），回退时在任务排空后一起恢复。
+保留原有 GPU 隔离、CPUWeight/IOWeight 和文件系统保护设置。
+
+基准脚本 `scripts/benchmark_data_platform_compute.py` 仅处理指定开发样本，将结果写入全新的
+输出目录，并核对输入指纹。`--sample single|v21|v3` 分别匹配三相机的 1/48 episode v2.1、
+451 episode v3.0（Viewer 取前 64 个 episode）；不匹配或匹配不唯一时拒绝执行。
+使用同一服务账号、独立 systemd cgroup 和相同输入比较旧/新版本，原配额与提高后的配额分开记录。
+该脚本测量计算与本地结果写入，不模拟上传；线上验收另外记录完整 Jobs 生命周期。
+
+```bash
+python scripts/benchmark_data_platform_compute.py \
+  --datasets /path/to/development-datasets \
+  --output /path/to/new-benchmark-output \
+  --sample v21 --workers 16 --operation viewer
+```
+
+高并发测试从 32 核/64 GiB 开始，再测试 64 核/128 GiB；native threads 设为 1，
+video threads 测试 1/2。每次输出目录必须唯一，不清理全机页缓存。结果 JSON 不保存源数据路径。
+运行中任务不热修改资源配置；任务级并发不会让一个 Agent 同时领取多个任务。
