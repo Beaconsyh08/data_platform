@@ -14,10 +14,13 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import replace
 from pathlib import Path
 
+import requests
+
 from lerobot.data_platform.execution_resources import ExecutionResources, configure_native_threads
+from lerobot.data_platform.job_concurrency import PARALLEL_OPERATIONS, agent_slots, footprint
+from lerobot.data_platform.job_concurrency import conflicts as resource_conflicts
 
 
 def serialize_completion(root):
@@ -351,33 +354,129 @@ class ExecutionSupervisor:
 
     def reconcile(self):
         """Pending executions always take precedence over claiming more work."""
+        for launch in sorted(self.root.glob("*/launch.json")):
+            marker_path = launch.parent / "marker.json"
+            if not marker_path.exists():
+                record = json.loads(launch.read_text())
+                if "job" in record:
+                    atomic_json(marker_path, record)
         for path in sorted(self.root.glob("*/marker.json")):
             marker = json.loads(path.read_text())
             if marker.get("acknowledged"):
+                if marker.get("reservation") and Path(marker["reservation"]).exists():
+                    self._release(marker["reservation"])
                 continue
             self.agent.client.activate(marker["job"])
             self.monitor(marker, None)
             return True
+        return self.reconcile_unstarted()
+
+    def reconcile_unstarted(self, exclude=()):
+        for path in sorted(self.root.glob("*/reservation.json")):
+            if path.parent.name in exclude:
+                continue
+            if (path.parent / "marker.json").exists():
+                continue
+            record = json.loads(path.read_text())
+            self.agent.client.activate(record["job"])
+            self.agent.client.complete(
+                self.agent.state,
+                record["job_id"],
+                status="error",
+                error="Agent restarted before compute launch",
+            )
+            self._release(path)
+            return True
         return False
+
+    def _release(self, reservation):
+        with (self.root / ".resource-registry-lock").open("a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            Path(reservation).unlink(missing_ok=True)
+
+    def _wait_heartbeat(self, job_id):
+        while True:
+            try:
+                return self.agent.client.control_heartbeat(
+                    self.agent.state, job_id, lease_seconds=self.agent.lease_seconds
+                )
+            except requests.RequestException:
+                time.sleep(1)
+
+    def _reserve(self, job, work, roots, output_dir, final):
+        """Reserve canonical paths through result acknowledgement, including Agent restarts."""
+        mine = footprint(
+            job["operation"],
+            roots[0],
+            output_dir,
+            job.get("options") or {},
+            job["job_id"],
+            final_output=str(final) if final else None,
+            canonical=True,
+        )
+        reservation = work / "reservation.json"
+        options = {
+            key: job.get("options", {}).get(key)
+            for key in ("_source_locations", "source_locations", "episode_index", "out_root")
+            if key in job.get("options", {})
+        }
+        lock_path = self.root / ".resource-registry-lock"
+        announced = False
+        while True:
+            heartbeat = self._wait_heartbeat(job["job_id"])
+            if heartbeat.get("stop_mode"):
+                raise StopRequestedError("Job cancelled while waiting for resources")
+            with lock_path.open("a") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                busy = False
+                for path in self.root.glob("*/reservation.json"):
+                    if path == reservation:
+                        continue
+                    record = json.loads(path.read_text())
+                    other = footprint(
+                        record["operation"],
+                        record["source"],
+                        record["output_dir"],
+                        record["options"],
+                        record["job_id"],
+                        final_output=record.get("final_output"),
+                        canonical=True,
+                    )
+                    if resource_conflicts(mine, other):
+                        busy = True
+                        break
+                if not busy:
+                    atomic_json(
+                        reservation,
+                        {
+                            "operation": job["operation"],
+                            "source": roots[0],
+                            "output_dir": output_dir,
+                            "options": options,
+                            "job_id": job["job_id"],
+                            "final_output": str(final) if final else None,
+                            "job": job,
+                        },
+                    )
+                    return reservation
+            if not announced:
+                with contextlib.suppress(requests.RequestException):
+                    self.agent.client.event(
+                        self.agent.state,
+                        job["job_id"],
+                        "Waiting for another job's data paths",
+                        {"phase": "waiting_resources"},
+                    )
+                announced = True
+            time.sleep(1)
 
     def start(self, job):
         from lerobot.data_platform.agent import _require_safe_output, _require_within
 
         agent = self.agent
         resources = ExecutionResources.resolve()
-        caption_limit = max(1, int(os.environ.get("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "1")))
-        caption = job["operation"] == "caption.annotate"
-        if caption and caption_limit > 1:
-            cpu = resources.cpu_limit / caption_limit
-            threads = max(1, int(cpu))
-            resources = replace(
-                resources,
-                cpu_limit=cpu,
-                memory_limit=max(1, resources.memory_limit // caption_limit),
-                max_workers=min(resources.max_workers, threads),
-                native_threads=min(resources.native_threads, threads),
-                video_threads=min(resources.video_threads, threads),
-            )
+        job_limit = agent_slots()
+        resources = resources.for_slots(job_limit)
         execution = job["execution"]
         work = self.root / execution["attempt_id"]
         work.mkdir(mode=0o700)
@@ -399,10 +498,11 @@ class ExecutionSupervisor:
                 )
             job_copy["options"]["input_root"] = str(inputs)
         source = _require_within(Path(job["location"]["root"]), agent.allowed_roots, "dataset root")
-        roots = [str(source)] + [item["root"] for item in job["options"].get("source_locations", [])]
+        source_locations = (
+            job["options"].get("_source_locations") or job["options"].get("source_locations") or []
+        )
+        roots = [str(source)] + [item["root"] for item in source_locations]
         roots = [str(_require_within(Path(root), agent.allowed_roots, "input dataset")) for root in roots]
-        fingerprint = input_fingerprint(roots)
-        agent.client.checkpoint(agent.state, job["job_id"], "executing", fingerprint=fingerprint)
         final = Path(execution["final_output"]) if execution.get("final_output") else None
         if final:
             for root in roots:
@@ -417,6 +517,16 @@ class ExecutionSupervisor:
                 Path(job["location"]["output_dir"]), agent.writable_roots, "viewer cache"
             )
             staging = output.parent / f".dp-{job['job_id']}-{execution['attempt_id']}"
+        output_dir = str(
+            _require_within(
+                Path(job["location"]["output_dir"]), agent.writable_roots, "dataset output directory"
+            )
+        )
+        reservation = self._reserve(job, work, roots, output_dir, final)
+        if final and final.exists():
+            raise FileExistsError("Final output appeared while waiting for resources")
+        fingerprint = input_fingerprint(roots)
+        agent.client.checkpoint(agent.state, job["job_id"], "executing", fingerprint=fingerprint)
         if staging.exists():
             raise FileExistsError("Execution staging already exists")
         staging.mkdir(mode=0o700, parents=True)
@@ -486,10 +596,18 @@ class ExecutionSupervisor:
         lock = (self.root / ".node-lock").open("a")
         slot = None
         try:
-            fcntl.flock(lock, (fcntl.LOCK_SH if caption else fcntl.LOCK_EX) | fcntl.LOCK_NB)
-            if caption:
-                for index in range(caption_limit):
-                    candidate = (self.root / f".caption-slot-{index}").open("a")
+            while slot is None:
+                heartbeat = self._wait_heartbeat(job["job_id"])
+                if heartbeat.get("stop_mode"):
+                    raise StopRequestedError("Job cancelled while waiting for an execution slot")
+                mode = fcntl.LOCK_SH if job["operation"] in PARALLEL_OPERATIONS else fcntl.LOCK_EX
+                try:
+                    fcntl.flock(lock, mode | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    time.sleep(1)
+                    continue
+                for index in range(job_limit):
+                    candidate = (self.root / f".job-slot-{index}").open("a")
                     try:
                         fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
@@ -498,9 +616,11 @@ class ExecutionSupervisor:
                         slot = candidate
                         break
                 if slot is None:
-                    raise BlockingIOError("All caption execution slots are busy")
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                    time.sleep(1)
         except BaseException:
             lock.close()
+            self._release(reservation)
             raise
         env = {**os.environ, **resources.environment()}
         env["DATA_PLATFORM_EXECUTION_STOP_FILE"] = str(work / "stop.json")
@@ -516,6 +636,7 @@ class ExecutionSupervisor:
             lock.close()
             if slot:
                 slot.close()
+            self._release(reservation)
             raise
         marker = {
             "job": job,
@@ -527,9 +648,10 @@ class ExecutionSupervisor:
             "cgroup": config["cgroup"],
             "acknowledged": False,
             "publishing": False,
+            "reservation": str(reservation),
         }
+        atomic_json(work / "launch.json", marker)
         atomic_json(work / "marker.json", marker)
-        atomic_json(work / "launch.json", {"pid": process.pid})
         try:
             self.monitor(marker, process)
         finally:
@@ -629,6 +751,8 @@ class ExecutionSupervisor:
         )
         marker["acknowledged"] = True
         atomic_json(work / "marker.json", marker)
+        if marker.get("reservation"):
+            self._release(marker["reservation"])
         if marker.get("cgroup"):
             with contextlib.suppress(OSError):
                 Path(marker["cgroup"]).rmdir()

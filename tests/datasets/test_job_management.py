@@ -169,6 +169,119 @@ def test_caption_parallelism_requires_matching_agent_capability(setup):
     assert store.claim_job(node["node_id"], worker_instance_id="two") is None
 
 
+def _enable_two_slots(store, node):
+    store.job_manager.node_limit = 2
+    store.job_manager.user_limit = 2
+    with store.sessions.begin() as session:
+        row = session.get(ControlPlaneNode, node["node_id"])
+        row.capabilities = {**row.capabilities, "job_concurrent_limit": 2}
+
+
+def test_two_independent_viewer_jobs_claim_and_report_slots(setup):
+    store, _, owner, node, location, create = setup
+    _enable_two_slots(store, node)
+    other = store.sync_locations(
+        node["node_id"],
+        [{"root": "/data/other", "dataset_key": "other", "output_dir": "/data/other-cache"}],
+    )[0]
+    first = create()
+    second = store.create_job(
+        location_id=other["location_id"], requested_by=owner["user_id"], operation="viewer.prepare"
+    )
+    claimed_first = store.claim_job(node["node_id"], worker_instance_id="one")
+    claimed_second = store.claim_job(node["node_id"], worker_instance_id="two")
+    assert claimed_first["job_id"] == first["job_id"]
+    assert claimed_second["job_id"] == second["job_id"]
+    queued = store.create_job(
+        location_id=other["location_id"], requested_by=owner["user_id"], operation="viewer.prepare"
+    )
+    status = store.job_manager.decorate(store.get_job(queued["job_id"]), owner)
+    assert status["node_slots"] == {"used": 2, "limit": 2}
+    assert status["queue_wait_reason"] == "data_path_conflict"
+    third = store.sync_locations(
+        node["node_id"],
+        [{"root": "/data/third", "dataset_key": "third", "output_dir": "/data/third-cache"}],
+    )[0]
+    independent = store.create_job(
+        location_id=third["location_id"], requested_by=owner["user_id"], operation="viewer.prepare"
+    )
+    assert (
+        store.job_manager.decorate(store.get_job(independent["job_id"]), owner)["queue_wait_reason"]
+        == "node_capacity"
+    )
+    assert command(store, first, owner, "cancel")["status"] == "cancel_requested"
+    assert store.claim_job(node["node_id"], worker_instance_id="three") is None
+    store.complete_job(
+        first["job_id"],
+        node_id=node["node_id"],
+        status="cancelled",
+        attempt_id=claimed_first["execution"]["attempt_id"],
+        credential=claimed_first["execution"]["credential"],
+    )
+    assert store.claim_job(node["node_id"], worker_instance_id="three")["job_id"] == independent["job_id"]
+    assert store.get_job(second["job_id"])["status"] == "running"
+
+
+@pytest.mark.parametrize("other_output", ["/data/cache", "/data/cache/subdir"])
+def test_shared_output_and_merge_secondary_input_wait(setup, other_output):
+    store, _, owner, node, location, create = setup
+    _enable_two_slots(store, node)
+    shared_cache = store.sync_locations(
+        node["node_id"],
+        [{"root": "/data/other", "dataset_key": "other", "output_dir": other_output}],
+    )[0]
+    first = create()
+    shared = store.create_job(
+        location_id=shared_cache["location_id"],
+        requested_by=owner["user_id"],
+        operation="viewer.prepare",
+    )
+    merge = store.create_job(
+        location_id=shared_cache["location_id"],
+        requested_by=owner["user_id"],
+        operation="preprocess.merge",
+        options={"source_location_ids": [location["location_id"]]},
+    )
+    assert store.claim_job(node["node_id"], worker_instance_id="one")["job_id"] == first["job_id"]
+    assert store.claim_job(node["node_id"], worker_instance_id="two") is None
+    for job in (shared, merge):
+        status = store.job_manager.decorate(store.get_job(job["job_id"]), owner)
+        assert status["queue_wait_reason"] == "data_path_conflict"
+
+
+def test_caption_can_mix_with_other_dataset_but_mutation_waits(setup):
+    store, admin, owner, node, location, _ = setup
+    _enable_two_slots(store, node)
+    other = store.sync_locations(
+        node["node_id"],
+        [{"root": "/data/other", "dataset_key": "other", "output_dir": "/data/other-cache"}],
+    )[0]
+    third = store.sync_locations(
+        node["node_id"],
+        [{"root": "/data/third", "dataset_key": "third", "output_dir": "/data/third-cache"}],
+    )[0]
+    caption = store.create_job(
+        location_id=location["location_id"],
+        requested_by=owner["user_id"],
+        operation="caption.annotate",
+        options={"episode_index": 0},
+    )
+    viewer = store.create_job(
+        location_id=other["location_id"], requested_by=owner["user_id"], operation="viewer.prepare"
+    )
+    mutation = store.create_job(
+        location_id=third["location_id"],
+        requested_by=admin["user_id"],
+        operation="mutation.value_edit",
+    )
+    assert store.claim_job(node["node_id"], worker_instance_id="one")["job_id"] == caption["job_id"]
+    assert store.claim_job(node["node_id"], worker_instance_id="two")["job_id"] == viewer["job_id"]
+    assert (
+        store.job_manager.decorate(store.get_job(mutation["job_id"]), admin)["queue_wait_reason"]
+        == "exclusive_job"
+    )
+
+
 def test_cancel_does_not_release_running_slot_and_stale_attempt_is_rejected(setup):
     store, _, owner, node, _, create = setup
     job = create()

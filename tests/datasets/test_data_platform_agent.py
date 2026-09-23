@@ -454,14 +454,14 @@ def test_agent_does_not_overwrite_success_with_error_when_completion_response_fa
     assert [status for status, _result, _error in client.completions] == ["done"]
 
 
-def test_caption_dispatcher_runs_two_jobs_and_reserves_normal_slot(tmp_path, monkeypatch):
+def test_dispatcher_runs_two_independent_job_types(tmp_path, monkeypatch):
     from threading import Event, Lock
     from types import SimpleNamespace
 
     from lerobot.data_platform.agent import _ExecutionDispatcher
     from lerobot.data_platform.execution import ExecutionSupervisor
 
-    monkeypatch.setenv("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "2")
+    monkeypatch.setenv("DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS", "2")
     agent = SimpleNamespace(state_path=tmp_path / "agent.json")
     dispatcher = _ExecutionDispatcher(agent)
     entered = Event()
@@ -490,9 +490,7 @@ def test_caption_dispatcher_runs_two_jobs_and_reserves_normal_slot(tmp_path, mon
             {"job_id": "a", "operation": "caption.annotate", "execution": {"attempt_id": "a"}}
         )
         assert dispatcher.available()
-        dispatcher.dispatch(
-            {"job_id": "b", "operation": "caption.annotate", "execution": {"attempt_id": "b"}}
-        )
+        dispatcher.dispatch({"job_id": "b", "operation": "viewer.prepare", "execution": {"attempt_id": "b"}})
         assert entered.wait(5)
         assert not dispatcher.available()
     finally:
@@ -502,6 +500,11 @@ def test_caption_dispatcher_runs_two_jobs_and_reserves_normal_slot(tmp_path, mon
 
     dispatcher.threads.clear()
     dispatcher.dispatch({"job_id": "c", "operation": "viewer.prepare", "execution": {"attempt_id": "c"}})
+    assert dispatcher.available()
+    for thread, _ in dispatcher.threads.values():
+        thread.join(timeout=5)
+    dispatcher.threads.clear()
+    dispatcher.dispatch({"job_id": "d", "operation": "mutation.trim", "execution": {"attempt_id": "d"}})
     assert not dispatcher.available()
     for thread, _ in dispatcher.threads.values():
         thread.join(timeout=5)

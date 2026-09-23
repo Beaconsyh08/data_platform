@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -223,18 +224,68 @@ def test_completion_outage_replays_result_without_recomputing(tmp_path, monkeypa
         "process_identity": "never",
         "publishing": True,
         "acknowledged": False,
+        "reservation": str(work / "reservation.json"),
     }
+    atomic_json(work / "reservation.json", {"job_id": "job"})
     atomic_json(work / "marker.json", marker)
     real_complete = client.complete
     monkeypatch.setattr(client, "complete", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("offline")))
     with pytest.raises(RuntimeError, match="offline"):
         supervisor.reconcile()
     assert not json.loads((work / "marker.json").read_text())["acknowledged"]
+    assert (work / "reservation.json").exists()
     monkeypatch.setattr(client, "complete", real_complete)
     assert supervisor.reconcile()
     assert client.completions == [payload | {"error": None}]
     assert json.loads((work / "marker.json").read_text())["acknowledged"]
+    assert not (work / "reservation.json").exists()
     assert not supervisor.reconcile()
+
+
+def test_agent_path_reservation_waits_and_renews_until_release(tmp_path):
+    client = Client()
+    supervisor = ExecutionSupervisor(fake_agent(tmp_path, client))
+    source = str(tmp_path / "source")
+    output = str(tmp_path / "cache")
+    first_work = supervisor.root / "one"
+    second_work = supervisor.root / "two"
+    first_work.mkdir()
+    second_work.mkdir()
+    first = supervisor._reserve(
+        {"job_id": "one", "operation": "viewer.prepare", "options": {}},
+        first_work,
+        [source],
+        output,
+        None,
+    )
+    finished = threading.Event()
+    reservations = []
+
+    def wait_for_reservation():
+        reservations.append(
+            supervisor._reserve(
+                {"job_id": "two", "operation": "viewer.prepare", "options": {}},
+                second_work,
+                [source],
+                output,
+                None,
+            )
+        )
+        finished.set()
+
+    thread = threading.Thread(target=wait_for_reservation)
+    thread.start()
+    try:
+        assert not finished.wait(0.2)
+        assert "Waiting for another job's data paths" in client.events
+        supervisor._release(first)
+        assert finished.wait(3)
+        assert reservations[0].exists()
+    finally:
+        supervisor._release(first)
+        for path in reservations:
+            supervisor._release(path)
+        thread.join(timeout=3)
 
 
 def test_local_validated_request_is_queued_and_replayed(tmp_path, monkeypatch):

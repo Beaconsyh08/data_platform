@@ -5064,7 +5064,15 @@
                         progress: Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0,
                         current,
                         total,
-                        message: job.status === 'queued' ? `Queued: ${job.queue_ahead || 0} task(s) ahead` : (job.error || lastEvent?.message || job.status),
+                        message: job.status === 'queued'
+                            ? `Queued: ${job.queue_ahead || 0} task(s) ahead · ${({
+                                data_path_conflict: 'waiting for data paths',
+                                exclusive_job: 'waiting for exclusive job',
+                                node_capacity: 'node slots full',
+                                user_capacity: 'user slots full',
+                                agent_capacity: 'waiting for Agent capacity'
+                            })[job.queue_wait_reason] || 'waiting for scheduling'} · node ${job.node_slots?.used || 0}/${job.node_slots?.limit || 1}`
+                            : (job.error || lastEvent?.message || job.status),
                         error: job.error || null,
                         output_root: outputRoot,
                         output_location_id: outputLocationId,

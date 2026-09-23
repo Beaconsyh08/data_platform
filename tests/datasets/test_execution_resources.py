@@ -50,6 +50,19 @@ def test_parent_limits_win(monkeypatch):
     assert (budget.max_workers, budget.cpu_limit, budget.memory_limit) == (2, 2, 4 * 1024**3)
 
 
+def test_two_fixed_execution_slots(monkeypatch):
+    monkeypatch.setenv("DATA_PLATFORM_COMPUTE_MAX_WORKERS", "16")
+    monkeypatch.setenv("DATA_PLATFORM_COMPUTE_CPU_LIMIT", "32")
+    monkeypatch.setenv("DATA_PLATFORM_COMPUTE_MEMORY_LIMIT_GIB", "64")
+    monkeypatch.setenv("DATA_PLATFORM_COMPUTE_NATIVE_THREADS", "1")
+    monkeypatch.setenv("DATA_PLATFORM_VIDEO_THREADS", "1")
+    parent = resources.ExecutionResources.resolve()
+    slot = parent.for_slots(2)
+    assert (slot.cpu_limit, slot.memory_limit, slot.max_workers) == (16, 30 * 1024**3, 16)
+    assert (slot.native_threads, slot.video_threads) == (1, 1)
+    assert parent == parent.for_slots(1)
+
+
 @pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "bad", "1.5"])
 def test_invalid_worker_config_fails(value, monkeypatch):
     monkeypatch.setenv("DATA_PLATFORM_COMPUTE_MAX_WORKERS", value)

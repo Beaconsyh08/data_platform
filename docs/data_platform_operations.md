@@ -208,7 +208,8 @@ cpuset 和所有父级 cgroup 限制计算实际值，并通过 Jobs 的 `resour
 | `DATA_PLATFORM_COMPUTE_MEMORY_LIMIT_GIB` | 单任务内存 GiB，优先于 memory fraction |
 | `DATA_PLATFORM_COMPUTE_NATIVE_THREADS` | 每个计算进程的 BLAS/OpenMP/OpenCV/Arrow 线程数 |
 | `DATA_PLATFORM_VIDEO_THREADS` | 每个视频编码、解码和滤镜的线程上限 |
-| `DATA_PLATFORM_CAPTION_RUNNING_LIMIT` | Temporal Caption 在同一节点同时执行的 episode 上限；Server 和 Agent 均设置，默认 1 |
+| `DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS` | Agent 同时执行的远程 Job 槽位，默认 1，当前最多 2；开启双槽时将单任务资源固定分为 16 核/30 GiB（父配额 32 核/64 GiB） |
+| `DATA_PLATFORM_CAPTION_RUNNING_LIMIT` | 旧 Agent 的 Temporal Caption 双任务兼容上限；新 Agent 使用通用 Job 槽位 |
 
 Viewer 的并发单位是一个相机视频或一份 episode CSV；单 episode 的多相机也可并行。
 所有输出共用一个有界队列，episode 的全部工作成功才增加完成计数，文件完成数单独显示在事件中。
@@ -237,12 +238,19 @@ python scripts/benchmark_data_platform_compute.py \
 
 高并发测试从 32 核/64 GiB 开始，再测试 64 核/128 GiB；native threads 设为 1，
 video threads 测试 1/2。每次输出目录必须唯一，不清理全机页缓存。结果 JSON 不保存源数据路径。
-Temporal Caption 可在同一 Agent 上并行执行不同 episode：开发环境的 Server 与 Agent 均设置
-`DATA_PLATFORM_CAPTION_RUNNING_LIMIT=2` 后，最多同时运行 2 个标注任务。同一 episode 不会重复执行；
-标注与 Viewer、预处理等普通计算任务互斥，普通计算任务仍一次执行一个。每个并行标注任务的
-CPU/内存上限按标注槽位数分摊，API 请求并发也随实际运行任务数增加，应同时检查供应商限流。
-旧 Agent 未报告并行能力时，Server 仍只分配 1 个标注任务。仅在开发任务排空后修改配置并重启；
-Server A 的本地执行器仍串行。运行中任务不热修改并发配额。
+H100 开发节点可将 Server 的 `DATA_PLATFORM_NODE_RUNNING_LIMIT` 和
+`DATA_PLATFORM_USER_RUNNING_LIMIT` 都设为 `2`，Agent 设 `DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS=2`。
+实际节点并发取 Server 上限与 Agent 心跳能力中的较小者；旧 Agent 未上报通用槽位时按 1 槽处理，
+并保留旧 Caption 专用双任务兼容逻辑。Viewer、预处理、Temporal Caption、Curation、MCAP 导入
+共用两个槽位；不同任务只有在所有输入数据集和输出路径互不重叠时并行，路径相同或互为父子时排队。
+同一数据集的 Caption 可以并行标注不同 episode，同一 episode 不会重复执行；直接修改源数据的
+任务独占节点。Agent 启动前以解析后的真实路径再次检查，持有资源锁至结果确认；等待锁位时续租。
+Jobs 显示 `queue_wait_reason` 与 `node_slots`，以区分节点容量、用户容量与路径冲突。
+
+双槽时无论只运行一个还是两个任务，每个任务最多 16 核/30 GiB，余下约 4 GiB 留给 Agent 与系统；
+`workers` 仍受每槽 CPU 和节点 worker 上限约束，原生与视频线程单独限制。超过 30 GiB 的任务应
+在排空后改为单槽运行，不能临时借用第二槽内存。API 标注并发可能受供应商限流约束。
+仅在开发任务排空后修改配置并重启；Server A 本地执行器和生产保持串行，运行中任务不热改配额。
 
 完整基准矩阵可由 `scripts/benchmark_data_platform_matrix.py` 顺序执行。该驱动需要测试节点的
 root 权限来创建临时 systemd 服务，计算进程使用 `--user` 指定的开发服务账号。

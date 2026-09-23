@@ -14,6 +14,8 @@ from pathlib import PurePosixPath
 from sqlalchemy import func, select, update
 
 from lerobot.data_platform.curation import OPERATIONS as CURATION_OPERATIONS
+from lerobot.data_platform.job_concurrency import PARALLEL_OPERATIONS, footprint
+from lerobot.data_platform.job_concurrency import conflicts as resource_conflicts
 from lerobot.data_platform.management_storage import (
     JobAttempt,
     JobCommand,
@@ -190,28 +192,21 @@ class JobManager:
                         )
                     ) and not has_approved_deletion(session, job):
                         continue
-                caption = job.operation == "caption.annotate"
-                if caption:
-                    caption_limit = min(
+                capability = (node.capabilities or {}).get("job_concurrent_limit")
+                node_limit = min(self.node_limit, max(1, int(capability or 1)))
+                user_limit = self.user_limit
+                if capability is None and job.operation == "caption.annotate":
+                    if any(row.operation != "caption.annotate" for row in node_active):
+                        continue
+                    legacy_caption_limit = min(
                         self.caption_limit,
                         max(1, int((node.capabilities or {}).get("caption_concurrent_limit", 1))),
                     )
-                    if len(node_active) >= caption_limit or any(
-                        row.operation != "caption.annotate" for row in node_active
-                    ):
-                        continue
-                    if any(
-                        row.requested_by == job.requested_by and row.operation != "caption.annotate"
-                        for row in active
-                    ):
-                        continue
-                    if sum(row.requested_by == job.requested_by for row in active) >= max(
-                        self.user_limit, caption_limit
-                    ):
-                        continue
-                elif (
-                    node_active
-                    or sum(row.requested_by == job.requested_by for row in active) >= self.user_limit
+                    node_limit = max(node_limit, legacy_caption_limit)
+                    user_limit = max(user_limit, legacy_caption_limit)
+                if (
+                    len(node_active) >= node_limit
+                    or sum(row.requested_by == job.requested_by for row in active) >= user_limit
                 ):
                     continue
                 location = session.get(DatasetLocation, job.location_id)
@@ -234,7 +229,6 @@ class JobManager:
                     required = DATA_PROFILE_PROTOCOL
                 if required > (node.capabilities or {}).get("data_profile_protocol", 0):
                     continue
-                # Captions read the same dataset, but each episode has an independent run and staging area.
                 if any(row.node_id == node_id and self._conflicts(session, row, job) for row in active):
                     continue
                 protocol = min(JOB_PROTOCOL, int((node.capabilities or {}).get("job_protocol", 1)))
@@ -290,25 +284,35 @@ class JobManager:
     def _conflicts(self, session, left, right):
         from lerobot.data_platform.control_plane import DatasetLocation
 
-        if left.operation == right.operation == "caption.annotate":
-            left_location = session.get(DatasetLocation, left.location_id)
-            right_location = session.get(DatasetLocation, right.location_id)
-            return (
-                left_location is not None
-                and right_location is not None
-                and left_location.root == right_location.root
-                and (left.options or {}).get("episode_index") == (right.options or {}).get("episode_index")
+        def describe(job):
+            location = session.get(DatasetLocation, job.location_id)
+            if location is None:
+                raise ValueError("Missing registered job location")
+            options = dict(job.options or {})
+            if options.get("source_location_ids") and not options.get("_source_locations"):
+                options["_source_locations"] = [
+                    {
+                        "root": source.root,
+                        "output_dir": source.output_dir,
+                    }
+                    for key in options["source_location_ids"]
+                    if (source := session.get(DatasetLocation, key)) is not None
+                ]
+                if len(options["_source_locations"]) != len(options["source_location_ids"]):
+                    raise ValueError("Missing registered source location")
+            return footprint(
+                job.operation,
+                location.root,
+                location.output_dir,
+                options,
+                job.job_id,
+                final_output=self.control(session, job).final_output,
             )
 
-        def paths(job):
-            location = session.get(DatasetLocation, job.location_id)
-            values = [location.root, location.output_dir] if location else []
-            values += [item["root"] for item in (job.options or {}).get("source_locations", [])]
-            if (job.options or {}).get("out_root"):
-                values.append(job.options["out_root"])
-            return [PurePosixPath(path) for path in values]
-
-        return any(a == b or a in b.parents or b in a.parents for a in paths(left) for b in paths(right))
+        try:
+            return resource_conflicts(describe(left), describe(right))
+        except (KeyError, TypeError, ValueError):
+            return True
 
     def validate(self, session, job, node_id, attempt_id=None, credential=None, *, allow_terminal=False):
         if job is None or job.node_id != node_id:
@@ -543,7 +547,7 @@ class JobManager:
         )
 
     def decorate(self, payload, actor=None):
-        from lerobot.data_platform.control_plane import ControlPlaneUser
+        from lerobot.data_platform.control_plane import ControlPlaneNode, ControlPlaneUser, RemoteJob
 
         with self.store.sessions() as session:
             submitter = (
@@ -553,6 +557,40 @@ class JobManager:
             )
             payload["requested_by_username"] = submitter.username if submitter else None
             payload["queue_ahead"] = self.queue_ahead(session, payload)
+            node = session.get(ControlPlaneNode, payload["node_id"])
+            active = session.scalars(
+                select(RemoteJob).where(
+                    RemoteJob.node_id == payload["node_id"], RemoteJob.status.in_(ACTIVE_STATES)
+                )
+            ).all()
+            capability = (node.capabilities or {}).get("job_concurrent_limit") if node else None
+            limit = min(self.node_limit, max(1, int(capability or 1)))
+            user_limit = self.user_limit
+            if capability is None and payload["operation"] == "caption.annotate" and node:
+                legacy_limit = min(
+                    self.caption_limit,
+                    max(1, int((node.capabilities or {}).get("caption_concurrent_limit", 1))),
+                )
+                limit = max(limit, legacy_limit)
+                user_limit = max(user_limit, legacy_limit)
+            payload["node_slots"] = {"used": len(active), "limit": limit}
+            payload["queue_wait_reason"] = None
+            if payload["status"] == "queued":
+                current = session.get(RemoteJob, payload["job_id"])
+                conflicting = [row for row in active if current and self._conflicts(session, row, current)]
+                if conflicting:
+                    payload["queue_wait_reason"] = (
+                        "exclusive_job"
+                        if current.operation not in PARALLEL_OPERATIONS
+                        or any(row.operation not in PARALLEL_OPERATIONS for row in conflicting)
+                        else "data_path_conflict"
+                    )
+                elif len(active) >= limit:
+                    payload["queue_wait_reason"] = "node_capacity"
+                elif sum(row.requested_by == payload["requested_by"] for row in active) >= user_limit:
+                    payload["queue_wait_reason"] = "user_capacity"
+                elif not node or not capability:
+                    payload["queue_wait_reason"] = "agent_capacity"
             control = session.get(JobControl, payload["job_id"])
             if control:
                 payload.update(self.control_dict(control))

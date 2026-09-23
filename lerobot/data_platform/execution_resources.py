@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 _PREFIX = "DATA_PLATFORM_COMPUTE_"
@@ -101,6 +101,21 @@ class ExecutionResources:
     def workers(self, requested: int | None) -> int:
         # Zero is the existing automatic-worker sentinel for selected transforms.
         return min(self.max_workers, max(1, int(requested))) if requested else self.max_workers
+
+    def for_slots(self, slots: int) -> ExecutionResources:
+        if slots <= 1:
+            return self
+        cpu = self.cpu_limit / slots
+        threads = max(1, math.floor(cpu))
+        reserve_bytes = min(4 * 1024**3, max(1024**3, self.memory_limit // 16))
+        return replace(
+            self,
+            cpu_limit=cpu,
+            memory_limit=max(1, (self.memory_limit - reserve_bytes) // slots),
+            max_workers=min(self.max_workers, threads),
+            native_threads=min(self.native_threads, threads),
+            video_threads=min(self.video_threads, threads),
+        )
 
     def environment(self) -> dict[str, str]:
         return {

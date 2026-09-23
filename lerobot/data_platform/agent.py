@@ -24,6 +24,7 @@ import requests
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.data_platform.cli import get_default_output_dir, run_precompute
+from lerobot.data_platform.job_concurrency import agent_slots
 from lerobot.data_platform.operation_log import append_operation_event
 from lerobot.data_platform.precompute.data_profile import (
     DATA_PROFILE_PROTOCOL,
@@ -705,6 +706,7 @@ class DataPlatformAgent:
             "caption_concurrent_limit": max(
                 1, int(os.environ.get("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "1"))
             ),
+            "job_concurrent_limit": agent_slots(),
             "caption_dataset_versions": ["v2.1", "v3.0"],
             "caption_signal_options": True,
             "caption_schemes": ["multiview_semantics", "video_events", "fusion_review"],
@@ -778,6 +780,7 @@ class DataPlatformAgent:
                         status="cancelled" if isinstance(exc, StopRequestedError) else "error",
                         error=str(exc),
                     )
+                    supervisor._release(supervisor.root / job["execution"]["attempt_id"] / "reservation.json")
             return True
         stop_heartbeat = threading.Event()
         heartbeat_thread = threading.Thread(
@@ -1502,7 +1505,7 @@ class _ExecutionDispatcher:
         self.agent = agent
         self.supervisor = ExecutionSupervisor(agent)
         self.threads: dict[str, tuple[threading.Thread, dict]] = {}
-        self.caption_limit = max(1, int(os.environ.get("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "1")))
+        self.job_limit = agent_slots()
 
     def _worker_agent(self, job: dict) -> DataPlatformAgent:
         worker = copy.copy(self.agent)
@@ -1535,6 +1538,7 @@ class _ExecutionDispatcher:
                             status="cancelled" if isinstance(exc, StopRequestedError) else "error",
                             error=str(exc),
                         )
+                        supervisor._release(supervisor.root / attempt_id / "reservation.json")
                     except Exception:
                         logging.exception("Could not report start failure for job %s", job["job_id"])
             finally:
@@ -1545,19 +1549,36 @@ class _ExecutionDispatcher:
         thread.start()
 
     def reconcile(self) -> None:
+        from lerobot.data_platform.execution import atomic_json
+
         for attempt_id, (thread, _) in list(self.threads.items()):
             if not thread.is_alive():
                 del self.threads[attempt_id]
+        for launch in sorted(self.supervisor.root.glob("*/launch.json")):
+            marker_path = launch.parent / "marker.json"
+            if not marker_path.exists():
+                record = json.loads(launch.read_text())
+                if "job" in record:
+                    atomic_json(marker_path, record)
         for path in sorted(self.supervisor.root.glob("*/marker.json")):
             marker = json.loads(path.read_text())
             attempt_id = marker["job"]["execution"]["attempt_id"]
+            if (
+                marker.get("acknowledged")
+                and marker.get("reservation")
+                and Path(marker["reservation"]).exists()
+            ):
+                self.supervisor._release(marker["reservation"])
             if not marker.get("acknowledged") and attempt_id not in self.threads:
                 self._launch(marker["job"], marker=marker)
+        self.supervisor.reconcile_unstarted(self.threads)
 
     def available(self) -> bool:
+        from lerobot.data_platform.job_concurrency import PARALLEL_OPERATIONS
+
         active = [job for _, job in self.threads.values()]
         return not active or (
-            len(active) < self.caption_limit and all(job["operation"] == "caption.annotate" for job in active)
+            len(active) < self.job_limit and all(job["operation"] in PARALLEL_OPERATIONS for job in active)
         )
 
     def dispatch(self, job: dict) -> None:
