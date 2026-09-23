@@ -351,6 +351,8 @@ def main():
     from lerobot.data_platform.environment import check_server_environment
 
     check_server_environment()
+    # The local executor calls run_once synchronously; only the H100 Agent dispatches concurrent jobs.
+    os.environ["DATA_PLATFORM_CAPTION_RUNNING_LIMIT"] = "1"
 
     parser = argparse.ArgumentParser(description="Run queued local Data Platform requests outside Gunicorn")
     parser.add_argument("--config", type=Path, default=None)
