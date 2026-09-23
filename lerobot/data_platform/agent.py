@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import logging
@@ -701,6 +702,9 @@ class DataPlatformAgent:
         return {
             **worker_capabilities(),
             "caption_protocol": 1,
+            "caption_concurrent_limit": max(
+                1, int(os.environ.get("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "1"))
+            ),
             "caption_dataset_versions": ["v2.1", "v3.0"],
             "caption_signal_options": True,
             "caption_schemes": ["multiview_semantics", "video_events", "fusion_review"],
@@ -727,18 +731,21 @@ class DataPlatformAgent:
         discovered = discover_datasets(self.allowed_roots, node_name=self.name)
         return self.client.sync_locations(self.state, discovered)
 
-    def run_once(self, *, sync: bool = True) -> bool:
+    def run_once(
+        self, *, sync: bool = True, dispatch=None, allow_claim: bool = True, sync_results: bool = True
+    ) -> bool:
         heartbeat = self.client.heartbeat(self.state, self.capabilities()) or {}
         if isinstance(self.client, AgentClient):
             from lerobot.data_platform.execution import ExecutionSupervisor, StopRequestedError
 
             supervisor = ExecutionSupervisor(self)
-            if supervisor.reconcile():
+            if dispatch is None and supervisor.reconcile():
                 return True
         if sync:
             self.sync_locations()
         if (
-            heartbeat.get("result_sync_protocol") == 1
+            sync_results
+            and heartbeat.get("result_sync_protocol") == 1
             and time.monotonic() - getattr(self, "_last_result_sync_at", 0) >= 10
         ):
             from lerobot.data_platform.dataset_results import sync_agent_results
@@ -749,9 +756,14 @@ class DataPlatformAgent:
                 logging.exception("Dataset result synchronization will retry on the next sync poll")
             finally:
                 self._last_result_sync_at = time.monotonic()
+        if not allow_claim:
+            return False
         job = self.client.claim(self.state, lease_seconds=self.lease_seconds)
         if job is None:
             return False
+        if dispatch is not None and job.get("execution"):
+            dispatch(job)
+            return True
         job_id = job["job_id"]
         if job.get("execution"):
             try:
@@ -1457,12 +1469,21 @@ class DataPlatformAgent:
         return completed_result
 
     def run_forever(self, *, poll_seconds: float, sync_seconds: float) -> None:
+        dispatcher = _ExecutionDispatcher(self) if isinstance(self.client, AgentClient) else None
         last_sync_at = 0.0
         while True:
             now = time.monotonic()
-            should_sync = now - last_sync_at >= max(10.0, sync_seconds)
             try:
-                worked = self.run_once(sync=should_sync)
+                if dispatcher is not None:
+                    dispatcher.reconcile()
+                no_active_jobs = dispatcher is None or not dispatcher.threads
+                should_sync = no_active_jobs and now - last_sync_at >= max(10.0, sync_seconds)
+                worked = self.run_once(
+                    sync=should_sync,
+                    dispatch=dispatcher.dispatch if dispatcher is not None else None,
+                    allow_claim=dispatcher.available() if dispatcher is not None else True,
+                    sync_results=no_active_jobs,
+                )
                 if should_sync:
                     last_sync_at = now
             except Exception:
@@ -1470,6 +1491,77 @@ class DataPlatformAgent:
                 worked = False
             if not worked:
                 time.sleep(max(0.5, poll_seconds))
+
+
+class _ExecutionDispatcher:
+    """Keep supervised jobs independent while the main Agent continues polling."""
+
+    def __init__(self, agent: DataPlatformAgent):
+        from lerobot.data_platform.execution import ExecutionSupervisor
+
+        self.agent = agent
+        self.supervisor = ExecutionSupervisor(agent)
+        self.threads: dict[str, tuple[threading.Thread, dict]] = {}
+        self.caption_limit = max(1, int(os.environ.get("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "1")))
+
+    def _worker_agent(self, job: dict) -> DataPlatformAgent:
+        worker = copy.copy(self.agent)
+        worker.client = AgentClient(self.agent.client.server_url, verify=self.agent.client.verify)
+        worker.client.worker_instance_id = self.agent.client.worker_instance_id
+        worker.client.activate(job)
+        return worker
+
+    def _launch(self, job: dict, *, marker: dict | None = None) -> None:
+        from lerobot.data_platform.execution import ExecutionSupervisor, StopRequestedError
+
+        attempt_id = job["execution"]["attempt_id"]
+        worker = self._worker_agent(job)
+
+        def run() -> None:
+            supervisor = ExecutionSupervisor(worker)
+            try:
+                if marker is None:
+                    supervisor.start(job)
+                else:
+                    supervisor.monitor(marker, None)
+            except Exception as exc:
+                logging.exception("Execution requires reconciliation for job %s", job["job_id"])
+                path = supervisor.root / attempt_id / "marker.json"
+                if not path.exists():
+                    try:
+                        worker.client.complete(
+                            worker.state,
+                            job["job_id"],
+                            status="cancelled" if isinstance(exc, StopRequestedError) else "error",
+                            error=str(exc),
+                        )
+                    except Exception:
+                        logging.exception("Could not report start failure for job %s", job["job_id"])
+            finally:
+                worker.client.session.close()
+
+        thread = threading.Thread(target=run, daemon=True, name=f"data-platform-job-{job['job_id'][:8]}")
+        self.threads[attempt_id] = (thread, job)
+        thread.start()
+
+    def reconcile(self) -> None:
+        for attempt_id, (thread, _) in list(self.threads.items()):
+            if not thread.is_alive():
+                del self.threads[attempt_id]
+        for path in sorted(self.supervisor.root.glob("*/marker.json")):
+            marker = json.loads(path.read_text())
+            attempt_id = marker["job"]["execution"]["attempt_id"]
+            if not marker.get("acknowledged") and attempt_id not in self.threads:
+                self._launch(marker["job"], marker=marker)
+
+    def available(self) -> bool:
+        active = [job for _, job in self.threads.values()]
+        return not active or (
+            len(active) < self.caption_limit and all(job["operation"] == "caption.annotate" for job in active)
+        )
+
+    def dispatch(self, job: dict) -> None:
+        self._launch(job)
 
 
 def main() -> None:

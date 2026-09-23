@@ -452,3 +452,106 @@ def test_agent_does_not_overwrite_success_with_error_when_completion_response_fa
 
     assert agent.run_once(sync=False) is True
     assert [status for status, _result, _error in client.completions] == ["done"]
+
+
+def test_caption_dispatcher_runs_two_jobs_and_reserves_normal_slot(tmp_path, monkeypatch):
+    from threading import Event, Lock
+    from types import SimpleNamespace
+
+    from lerobot.data_platform.agent import _ExecutionDispatcher
+    from lerobot.data_platform.execution import ExecutionSupervisor
+
+    monkeypatch.setenv("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "2")
+    agent = SimpleNamespace(state_path=tmp_path / "agent.json")
+    dispatcher = _ExecutionDispatcher(agent)
+    entered = Event()
+    release = Event()
+    lock = Lock()
+    active = set()
+
+    def start(_supervisor, job):
+        with lock:
+            active.add(job["job_id"])
+            if len(active) == 2:
+                entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(ExecutionSupervisor, "start", start)
+    monkeypatch.setattr(
+        dispatcher,
+        "_worker_agent",
+        lambda _job: SimpleNamespace(
+            state_path=agent.state_path,
+            client=SimpleNamespace(session=SimpleNamespace(close=lambda: None)),
+        ),
+    )
+    try:
+        dispatcher.dispatch(
+            {"job_id": "a", "operation": "caption.annotate", "execution": {"attempt_id": "a"}}
+        )
+        assert dispatcher.available()
+        dispatcher.dispatch(
+            {"job_id": "b", "operation": "caption.annotate", "execution": {"attempt_id": "b"}}
+        )
+        assert entered.wait(5)
+        assert not dispatcher.available()
+    finally:
+        release.set()
+        for thread, _ in dispatcher.threads.values():
+            thread.join(timeout=5)
+
+    dispatcher.threads.clear()
+    dispatcher.dispatch({"job_id": "c", "operation": "viewer.prepare", "execution": {"attempt_id": "c"}})
+    assert not dispatcher.available()
+    for thread, _ in dispatcher.threads.values():
+        thread.join(timeout=5)
+
+
+def test_caption_dispatcher_reconciles_each_attempt_once(tmp_path, monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+
+    from lerobot.data_platform.agent import _ExecutionDispatcher
+    from lerobot.data_platform.execution import ExecutionSupervisor, atomic_json
+
+    monkeypatch.setenv("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "2")
+    agent = SimpleNamespace(state_path=tmp_path / "agent.json")
+    dispatcher = _ExecutionDispatcher(agent)
+    release = Event()
+    seen = []
+
+    def monitor(_supervisor, marker, _process):
+        seen.append(marker["job"]["job_id"])
+        assert release.wait(5)
+
+    monkeypatch.setattr(ExecutionSupervisor, "monitor", monitor)
+    monkeypatch.setattr(
+        dispatcher,
+        "_worker_agent",
+        lambda _job: SimpleNamespace(
+            state_path=agent.state_path,
+            client=SimpleNamespace(session=SimpleNamespace(close=lambda: None)),
+        ),
+    )
+    try:
+        for name in ("a", "b"):
+            path = dispatcher.supervisor.root / name / "marker.json"
+            atomic_json(
+                path,
+                {
+                    "job": {
+                        "job_id": name,
+                        "operation": "caption.annotate",
+                        "execution": {"attempt_id": name},
+                    },
+                    "acknowledged": False,
+                },
+            )
+        dispatcher.reconcile()
+        dispatcher.reconcile()
+        assert sorted(seen) == ["a", "b"]
+        assert not dispatcher.available()
+    finally:
+        release.set()
+        for thread, _ in dispatcher.threads.values():
+            thread.join(timeout=5)

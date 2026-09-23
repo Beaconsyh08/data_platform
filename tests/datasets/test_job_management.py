@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import pytest
 
-from lerobot.data_platform.control_plane import ControlPlaneStore, RemoteJob, _utcnow
+from lerobot.data_platform.control_plane import ControlPlaneNode, ControlPlaneStore, RemoteJob, _utcnow
 from lerobot.data_platform.job_management import JobConflictError
 from lerobot.data_platform.management_storage import EventSpool, LogDelivery, UsageLogStore
 from lerobot.data_platform.operation_log import build_operation_event
@@ -116,6 +116,57 @@ def test_claim_race_has_one_winner(setup):
             )
         )
     assert sum(result is not None for result in results) == 1
+
+
+def test_caption_jobs_share_node_only_for_distinct_episodes(setup):
+    store, _, owner, node, location, create = setup
+    store.job_manager.caption_limit = 2
+    with store.sessions.begin() as session:
+        row = session.get(ControlPlaneNode, node["node_id"])
+        row.capabilities = {**row.capabilities, "caption_concurrent_limit": 2}
+
+    def caption(episode):
+        return store.create_job(
+            location_id=location["location_id"],
+            requested_by=owner["user_id"],
+            operation="caption.annotate",
+            options={"episode_index": episode, "scheme": "fusion_review"},
+        )
+
+    first = caption(0)
+    duplicate = caption(0)
+    second = caption(1)
+    normal = create()
+    claimed_first = store.claim_job(node["node_id"], worker_instance_id="one")
+    claimed_second = store.claim_job(node["node_id"], worker_instance_id="two")
+    assert {claimed_first["job_id"], claimed_second["job_id"]} == {first["job_id"], second["job_id"]}
+    assert store.claim_job(node["node_id"], worker_instance_id="three") is None
+    assert store.get_job(duplicate["job_id"])["status"] == "queued"
+    assert store.get_job(normal["job_id"])["status"] == "queued"
+
+    for claimed in (claimed_first, claimed_second):
+        store.complete_job(
+            claimed["job_id"],
+            node_id=node["node_id"],
+            status="error",
+            attempt_id=claimed["execution"]["attempt_id"],
+            credential=claimed["execution"]["credential"],
+        )
+    assert store.claim_job(node["node_id"], worker_instance_id="four") is not None
+
+
+def test_caption_parallelism_requires_matching_agent_capability(setup):
+    store, _, owner, node, location, _ = setup
+    store.job_manager.caption_limit = 2
+    for episode in (0, 1):
+        store.create_job(
+            location_id=location["location_id"],
+            requested_by=owner["user_id"],
+            operation="caption.annotate",
+            options={"episode_index": episode, "scheme": "fusion_review"},
+        )
+    assert store.claim_job(node["node_id"], worker_instance_id="one") is not None
+    assert store.claim_job(node["node_id"], worker_instance_id="two") is None
 
 
 def test_cancel_does_not_release_running_slot_and_stale_attempt_is_rejected(setup):

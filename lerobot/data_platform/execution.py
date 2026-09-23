@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 from lerobot.data_platform.execution_resources import ExecutionResources, configure_native_threads
@@ -364,6 +365,19 @@ class ExecutionSupervisor:
 
         agent = self.agent
         resources = ExecutionResources.resolve()
+        caption_limit = max(1, int(os.environ.get("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "1")))
+        caption = job["operation"] == "caption.annotate"
+        if caption and caption_limit > 1:
+            cpu = resources.cpu_limit / caption_limit
+            threads = max(1, int(cpu))
+            resources = replace(
+                resources,
+                cpu_limit=cpu,
+                memory_limit=max(1, resources.memory_limit // caption_limit),
+                max_workers=min(resources.max_workers, threads),
+                native_threads=min(resources.native_threads, threads),
+                video_threads=min(resources.video_threads, threads),
+            )
         execution = job["execution"]
         work = self.root / execution["attempt_id"]
         work.mkdir(mode=0o700)
@@ -470,16 +484,39 @@ class ExecutionSupervisor:
         }
         atomic_json(work / "config.json", config)
         lock = (self.root / ".node-lock").open("a")
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        slot = None
+        try:
+            fcntl.flock(lock, (fcntl.LOCK_SH if caption else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+            if caption:
+                for index in range(caption_limit):
+                    candidate = (self.root / f".caption-slot-{index}").open("a")
+                    try:
+                        fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        candidate.close()
+                    else:
+                        slot = candidate
+                        break
+                if slot is None:
+                    raise BlockingIOError("All caption execution slots are busy")
+        except BaseException:
+            lock.close()
+            raise
         env = {**os.environ, **resources.environment()}
         env["DATA_PLATFORM_EXECUTION_STOP_FILE"] = str(work / "stop.json")
         env["CUDA_VISIBLE_DEVICES"] = os.environ.get("DATA_PLATFORM_GPU_DEVICES", "")
-        process = subprocess.Popen(
-            [sys.executable, "-m", "lerobot.data_platform.execution", str(work / "config.json")],
-            start_new_session=True,
-            pass_fds=(lock.fileno(),),
-            env=env,
-        )
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-m", "lerobot.data_platform.execution", str(work / "config.json")],
+                start_new_session=True,
+                pass_fds=(lock.fileno(), *((slot.fileno(),) if slot else ())),
+                env=env,
+            )
+        except BaseException:
+            lock.close()
+            if slot:
+                slot.close()
+            raise
         marker = {
             "job": job,
             "work": str(work),
@@ -497,6 +534,8 @@ class ExecutionSupervisor:
             self.monitor(marker, process)
         finally:
             lock.close()
+            if slot:
+                slot.close()
 
     def monitor(self, marker, process):
         agent, job = self.agent, marker["job"]

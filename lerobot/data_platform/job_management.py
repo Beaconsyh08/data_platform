@@ -58,6 +58,7 @@ class JobManager:
         self.store = store
         self.user_limit = max(1, int(os.environ.get("DATA_PLATFORM_USER_RUNNING_LIMIT", "1")))
         self.node_limit = max(1, int(os.environ.get("DATA_PLATFORM_NODE_RUNNING_LIMIT", "1")))
+        self.caption_limit = max(1, int(os.environ.get("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "1")))
         self.queue_limit = max(1, int(os.environ.get("DATA_PLATFORM_USER_QUEUE_LIMIT", "20")))
 
     @staticmethod
@@ -148,8 +149,7 @@ class JobManager:
             ):
                 return None
             active = session.scalars(select(RemoteJob).where(RemoteJob.status.in_(ACTIVE_STATES))).all()
-            if sum(job.node_id == node_id for job in active) >= self.node_limit:
-                return None
+            node_active = [job for job in active if job.node_id == node_id]
             queued = session.scalars(
                 select(RemoteJob).where(RemoteJob.node_id == node_id, RemoteJob.status == "queued")
             ).all()
@@ -190,7 +190,29 @@ class JobManager:
                         )
                     ) and not has_approved_deletion(session, job):
                         continue
-                if sum(row.requested_by == job.requested_by for row in active) >= self.user_limit:
+                caption = job.operation == "caption.annotate"
+                if caption:
+                    caption_limit = min(
+                        self.caption_limit,
+                        max(1, int((node.capabilities or {}).get("caption_concurrent_limit", 1))),
+                    )
+                    if len(node_active) >= caption_limit or any(
+                        row.operation != "caption.annotate" for row in node_active
+                    ):
+                        continue
+                    if any(
+                        row.requested_by == job.requested_by and row.operation != "caption.annotate"
+                        for row in active
+                    ):
+                        continue
+                    if sum(row.requested_by == job.requested_by for row in active) >= max(
+                        self.user_limit, caption_limit
+                    ):
+                        continue
+                elif (
+                    node_active
+                    or sum(row.requested_by == job.requested_by for row in active) >= self.user_limit
+                ):
                     continue
                 location = session.get(DatasetLocation, job.location_id)
                 if location is None:
@@ -212,7 +234,7 @@ class JobManager:
                     required = DATA_PROFILE_PROTOCOL
                 if required > (node.capabilities or {}).get("data_profile_protocol", 0):
                     continue
-                # Until shared-filesystem locking is configured, all paths on a node are conservatively exclusive.
+                # Captions read the same dataset, but each episode has an independent run and staging area.
                 if any(row.node_id == node_id and self._conflicts(session, row, job) for row in active):
                     continue
                 protocol = min(JOB_PROTOCOL, int((node.capabilities or {}).get("job_protocol", 1)))
@@ -267,6 +289,16 @@ class JobManager:
 
     def _conflicts(self, session, left, right):
         from lerobot.data_platform.control_plane import DatasetLocation
+
+        if left.operation == right.operation == "caption.annotate":
+            left_location = session.get(DatasetLocation, left.location_id)
+            right_location = session.get(DatasetLocation, right.location_id)
+            return (
+                left_location is not None
+                and right_location is not None
+                and left_location.root == right_location.root
+                and (left.options or {}).get("episode_index") == (right.options or {}).get("episode_index")
+            )
 
         def paths(job):
             location = session.get(DatasetLocation, job.location_id)
