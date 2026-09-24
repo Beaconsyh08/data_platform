@@ -696,6 +696,50 @@ def test_curation_tabs_stay_in_console_and_skip_legacy_local_loaders():
     assert result.returncode == 0, result.stderr
 
 
+def test_agent_dataset_can_open_mcap_import_page():
+    import json
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the navigation behavior check")
+    template = (Path(viewer.__file__).parent / "templates/visualize_dataset_homepage.html").read_text()
+    methods = []
+    for name in ["selectTab", "selectPage"]:
+        match = re.search(rf"^                async {name}\(.*?^                \}},", template, re.M | re.S)
+        assert match is not None
+        methods.append(match.group())
+    groups = viewer._console_groups_for_tabs(
+        viewer._CONSOLE_MODE_ALLOWED_TABS["full"],
+        allowed_open_links=viewer._CONSOLE_MODE_ALLOWED_OPEN_LINKS["full"],
+    )
+    script = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
+    script += "const groups = " + json.dumps(groups) + ";\n"
+    script += r"""
+(async () => {
+    Object.assign(app, {selectedDataset: {remote: true}, activePage: 'preprocessing',
+        activeTab: 'cache', error: '', navigationRevision: 0, consoleMode: 'full',
+        tabEnabled: () => true, updateHomeUrl() {},
+        findPage: key => groups.flatMap(group => group.pages.map(page => ({group, page})))
+            .find(item => item.page.key === key),
+        pageForTab: key => groups.flatMap(group => group.pages.map(page => ({group, page})))
+            .find(item => item.page.tabs.some(tab => tab.key === key)),
+        currentSubTabs() { return this.findPage(this.activePage).page.tabs; },
+        unifiedCurationActive: () => false, syncSchemaOpForTab() {},
+        loadPreprocessCapabilities: async () => {}});
+    await app.selectPage('mcap_import');
+    assert.equal(app.error, '');
+    assert.equal(app.activePage, 'mcap_import');
+    assert.equal(app.activeTab, 'mcap_import');
+    assert.equal(app.activeWorkspace, 'data_platform');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
 def test_temporal_caption_tab_hides_generic_review_and_restores_it():
     import shutil
     import subprocess

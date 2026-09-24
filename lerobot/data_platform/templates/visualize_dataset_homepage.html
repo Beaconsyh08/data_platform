@@ -4106,7 +4106,7 @@
                         && this.pageForTab(tab)?.group.key !== 'data_curation'
                         && ![
                             'cache', 'standardize', 'transform', 'split_merge', 'data_modification',
-                            'dataset_ops', 'explore_overview', 'temporal_caption'
+                            'dataset_ops', 'explore_overview', 'temporal_caption', 'mcap_import'
                         ].includes(tab)
                     ) {
                         this.error = `This Agent dataset does not support the ${tab} workflow yet.`;
