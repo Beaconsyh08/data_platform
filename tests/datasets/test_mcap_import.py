@@ -1,6 +1,8 @@
 """Raw import contracts, authorization, publication and timestamp segmentation."""
 
 import importlib.util
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +42,33 @@ def worker(monkeypatch):
 def test_invalid_config(options):
     with pytest.raises(ValueError):
         McapImportConfig.from_dict(options)
+
+
+def test_convert_button_requires_a_successful_current_inspection():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the MCAP page behavior check")
+    template = (Path(mcap_import.__file__).parent / "templates" / "mcap_import.html").read_text()
+    script = template.split("<script>", 1)[1].split("</script>", 1)[0]
+    checks = """
+const assert = require('node:assert/strict');
+const app = mcapImportApp({user_id: 'owner', role: 'admin'}, () => {});
+app.selected = ['source']; app.outputParent = '/datasets/output';
+app.jobs = [{job_id: 'failed', location_id: 'source', operation: 'import.mcap.inspect',
+    status: 'error', requested_by: 'owner', error: 'invalid raw output path',
+    options: {config: {short_side: 256, max_files: 3}}}];
+assert.equal(app.readyToConvert(), false);
+assert.match(app.inspectionLabel('source'), /invalid raw output path/);
+app.jobs.unshift({job_id: 'valid', location_id: 'source', operation: 'import.mcap.inspect',
+    status: 'done', requested_by: 'owner', result: {mcap_import: {
+        config: {short_side: 256, max_files: 3}, files: [{file: 'sample.mcap'}],
+        total_episodes: 1, total_frames: 30, rejected: []}}});
+assert.equal(app.readyToConvert(), true);
+app.maxFiles = 0;
+assert.equal(app.readyToConvert(), false);
+"""
+    result = subprocess.run([node, "-e", script + checks], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
 
 
 def test_raw_discovery_fingerprint_and_source_preservation(tmp_path):

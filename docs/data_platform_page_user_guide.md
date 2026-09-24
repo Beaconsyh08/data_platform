@@ -3,7 +3,7 @@
 任务类型、对象和属性现可通过页面维护；旧 Pick/Place/Give 与开关门、装载衣物等新任务共用版本化定义。新增任务、别名复用、筛选配比及 Agent 配置同步见 [Task setup](data_platform_task_catalog.md)。
 
 > 适用范围：当前仓库 `lerobot.data_platform` Web 页面，包含 Data Platform 与 Data Curation 两个逻辑 Workspace。
-> 页面默认地址：`http://127.0.0.1:9091`。本文按当前代码整理，更新时间为 2026-08-24。
+> 页面默认地址：`http://127.0.0.1:9091`。本文按当前代码整理，更新时间为 2026-09-24。
 
 ## 1. 这套页面是做什么的
 
@@ -163,6 +163,14 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 Datasets 页对远程数据源执行原地修改（包括 Delete by flag type 删除 Episodes）时，确认弹窗只需输入 `MUTATE`，无需附加数据集名称。删除原因仍为必填，原有权限检查和恢复备份继续生效。
 
 ## 5. 两个 Workspace 的主要功能
+
+### MCAP → LeRobot 导入
+
+在 Data Platform 的 **MCAP → LeRobot** 页面选择在线 Agent 和原始 MCAP 目录，先点击
+**Inspect selected**。只有当前账户对每个选中目录、当前视频尺寸和文件数量的检查成功且找到有效文件后，
+**Convert selected** 才能点击。修改任一参数后需要重新检查。输出父目录必须位于该 Agent 的
+writable roots；转换在 Agent 上写入新的 LeRobot v3.0 数据集，不改原始 MCAP。
+检查失败时可在来源行及任务结果中查看错误。转换完成后通过新注册的数据集进入 Cache 准备 Viewer。
 
 ### 5.1 Data Platform — Cache
 

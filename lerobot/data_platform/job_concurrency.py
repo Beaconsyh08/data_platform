@@ -87,7 +87,9 @@ def footprint(
 ) -> JobFootprint:
     source_locations = options.get("_source_locations") or options.get("source_locations") or []
     inputs = [source, *(item["root"] for item in source_locations)]
-    outputs = [] if operation == "caption.annotate" else [output_dir]
+    # Raw MCAP locations have no Viewer output directory. Conversion reserves its final output below.
+    no_cache_output = {"caption.annotate", "import.mcap.inspect", "import.mcap.convert"}
+    outputs = [] if operation in no_cache_output else [output_dir]
     outputs.extend(item["output_dir"] for item in source_locations if item.get("output_dir"))
     final = final_output or options.get("out_root") or default_final_output(operation, source, job_id)
     if final:

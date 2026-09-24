@@ -247,6 +247,12 @@ H100 开发节点可将 Server 的 `DATA_PLATFORM_NODE_RUNNING_LIMIT` 和
 任务独占节点。Agent 启动前以解析后的真实路径再次检查，持有资源锁至结果确认；等待锁位时续租。
 Jobs 显示 `queue_wait_reason` 与 `node_slots`，以区分节点容量、用户容量与路径冲突。
 
+原始 MCAP location 不设置 Viewer `output_dir`；`import.mcap.inspect` 只保留源路径占用，
+`import.mcap.convert` 保留源路径及最终输出路径。对已完成计算、但上传中断的 `viewer.prepare`
+任务，同一任务的安全 Retry 会在源数据指纹、发布凭据、任务配置和全部缓存文件均吻合时复用
+Agent 上的已发布缓存，仅重新上传文件并完成 Server 注册。上传期间持续续租；任一校验不符时
+停止复用，不覆盖既有缓存。确认 Server 端 Viewer 已注册后才将任务视为恢复完成。
+
 双槽时无论只运行一个还是两个任务，每个任务最多 16 核/30 GiB，余下约 4 GiB 留给 Agent 与系统；
 `workers` 仍受每槽 CPU 和节点 worker 上限约束，原生与视频线程单独限制。超过 30 GiB 的任务应
 在排空后改为单槽运行，不能临时借用第二槽内存。API 标注并发可能受供应商限流约束。

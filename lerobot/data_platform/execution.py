@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -394,6 +395,104 @@ class ExecutionSupervisor:
             fcntl.flock(handle, fcntl.LOCK_EX)
             Path(reservation).unlink(missing_ok=True)
 
+    def _reuse_published_viewer(self, job, work, fingerprint, reservation):
+        """Replay a completed attempt's Viewer uploads on retry without recomputing its cache."""
+        if job["operation"] != "viewer.prepare":
+            return False
+        for prior in sorted(
+            self.root.glob("*/published.json"), key=lambda path: path.stat().st_mtime, reverse=True
+        ):
+            previous = prior.parent
+            if previous == work or not (previous / "config.json").is_file():
+                continue
+            config = json.loads((previous / "config.json").read_text())
+            if config.get("job", {}).get("job_id") != job["job_id"]:
+                continue
+            payload = json.loads(prior.read_text())
+            if payload.get("status") != "done":
+                continue
+            if config.get("fingerprint") != fingerprint:
+                raise ValueError("Viewer source changed since the completed attempt; cache cannot be reused")
+            source = Path(job["location"]["root"]).resolve()
+            target = Path(job["location"]["output_dir"]).resolve()
+            static = target / "static"
+            receipt = target / ".viewer-publication.json"
+            if not receipt.is_file() or not (static / "viewer_manifest.json").is_file():
+                raise FileNotFoundError("Completed Viewer cache or publication receipt is missing")
+            identity = json.loads(receipt.read_text())
+            expected_staging = target.parent / f".dp-{job['job_id']}-{previous.name}" / "cache"
+            if identity != {"staging": str(expected_staging), "target": str(target), "source": str(source)}:
+                raise ValueError("Completed Viewer cache belongs to a different execution")
+            manifest = json.loads((static / "viewer_manifest.json").read_text())
+            if (
+                manifest.get("root") != str(source)
+                or manifest.get("repo_id") != job["location"]["dataset_key"]
+                or (manifest.get("task_config") or {}).get("digest")
+                != (job.get("options", {}).get("task_config") or {}).get("digest")
+            ):
+                raise ValueError("Completed Viewer cache does not match this job")
+            uploads = sorted((previous / "uploads").glob("*.json"))
+            names = set()
+            for path in uploads:
+                upload = json.loads(path.read_text())
+                artifact = Path(upload["path"])
+                relative = Path(upload["relative_path"])
+                if (
+                    upload.get("derived")
+                    or upload.get("caption")
+                    or upload.get("curation")
+                    or relative.is_absolute()
+                    or ".." in relative.parts
+                    or artifact.is_symlink()
+                    or not artifact.is_file()
+                    or artifact.resolve() != (static / relative).resolve()
+                ):
+                    raise ValueError("Completed Viewer upload list contains an invalid artifact")
+                names.add(relative.as_posix())
+            cache_files = {
+                path.relative_to(static).as_posix() for path in static.rglob("*") if path.is_file()
+            }
+            if (
+                any(path.is_symlink() for path in static.rglob("*"))
+                or not uploads
+                or len(names) != len(uploads)
+                or names != cache_files
+                or "viewer_manifest.json" not in names
+                or (payload.get("result") or {}).get("uploaded_files") != len(uploads)
+            ):
+                raise ValueError("Completed Viewer upload list does not match the published cache")
+            self.agent.client.checkpoint(
+                self.agent.state, job["job_id"], "finalizing", fingerprint=fingerprint
+            )
+            for path in uploads:
+                destination = work / "uploads" / path.name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, destination)
+            atomic_json(work / "published.json", payload)
+            marker = {
+                "job": job,
+                "work": str(work),
+                "staging": str(target.parent / f".dp-{job['job_id']}-{work.name}"),
+                "final": None,
+                "pid": 0,
+                "process_identity": None,
+                "cgroup": None,
+                "acknowledged": False,
+                "publishing": True,
+                "reservation": str(reservation),
+            }
+            atomic_json(work / "launch.json", marker)
+            atomic_json(work / "marker.json", marker)
+            self.agent.client.event(
+                self.agent.state,
+                job["job_id"],
+                "Reusing completed Viewer cache; resuming artifact upload",
+                {"phase": "upload", "total": len(uploads)},
+            )
+            self.monitor(marker, None)
+            return True
+        return False
+
     def _wait_heartbeat(self, job_id):
         while True:
             try:
@@ -517,15 +616,19 @@ class ExecutionSupervisor:
                 Path(job["location"]["output_dir"]), agent.writable_roots, "viewer cache"
             )
             staging = output.parent / f".dp-{job['job_id']}-{execution['attempt_id']}"
-        output_dir = str(
-            _require_within(
-                Path(job["location"]["output_dir"]), agent.writable_roots, "dataset output directory"
+        output_dir = ""
+        if job["operation"] not in {"caption.annotate", "import.mcap.inspect", "import.mcap.convert"}:
+            output_dir = str(
+                _require_within(
+                    Path(job["location"]["output_dir"]), agent.writable_roots, "dataset output directory"
+                )
             )
-        )
         reservation = self._reserve(job, work, roots, output_dir, final)
         if final and final.exists():
             raise FileExistsError("Final output appeared while waiting for resources")
         fingerprint = input_fingerprint(roots)
+        if self._reuse_published_viewer(job, work, fingerprint, reservation):
+            return
         agent.client.checkpoint(agent.state, job["job_id"], "executing", fingerprint=fingerprint)
         if staging.exists():
             raise FileExistsError("Execution staging already exists")
@@ -723,32 +826,69 @@ class ExecutionSupervisor:
         if payload["status"] != "done" and Path(marker["staging"]).exists():
             shutil.rmtree(marker["staging"], ignore_errors=False)
         self.flush_events(job, work)
+        renewal_stop = threading.Event()
+        renewal_thread = None
         if payload["status"] == "done":
-            # Retry uploads and confirmation after a network failure, without executing again.
-            for path in sorted(
-                (work / "uploads").glob("*.json"),
-                key=lambda value: (
-                    json.loads(value.read_text())["relative_path"] == "viewer_manifest.json",
-                    value.name,
-                ),
-            ):
-                upload = json.loads(path.read_text())
-                agent.client.upload_artifact(
-                    agent.state,
-                    job["job_id"],
-                    Path(upload["relative_path"]),
-                    Path(upload["path"]),
-                    derived=upload["derived"],
-                    **({"caption": True} if upload.get("caption") else {}),
-                    **({"curation": True} if upload.get("curation") else {}),
+            from lerobot.data_platform.agent import AgentClient
+
+            heartbeat_client = (
+                AgentClient(agent.client.server_url, verify=agent.client.verify)
+                if isinstance(agent.client, AgentClient)
+                else agent.client
+            )
+            if heartbeat_client is not agent.client:
+                heartbeat_client.activate(job)
+
+            def renew_lease():
+                while not renewal_stop.wait(max(5, agent.lease_seconds / 3)):
+                    # Upload/complete will retain the marker after a transient outage.
+                    with contextlib.suppress(Exception):
+                        heartbeat_client.control_heartbeat(
+                            agent.state, job["job_id"], lease_seconds=agent.lease_seconds
+                        )
+
+            agent.client.control_heartbeat(agent.state, job["job_id"], lease_seconds=agent.lease_seconds)
+            renewal_thread = threading.Thread(target=renew_lease, daemon=True)
+            renewal_thread.start()
+        try:
+            if payload["status"] == "done":
+                # Retry uploads and confirmation after a network failure, without executing again.
+                uploads = sorted(
+                    (work / "uploads").glob("*.json"),
+                    key=lambda value: (
+                        json.loads(value.read_text())["relative_path"] == "viewer_manifest.json",
+                        value.name,
+                    ),
                 )
-        agent.client.complete(
-            agent.state,
-            job["job_id"],
-            status=payload["status"],
-            result=payload.get("result"),
-            error=payload.get("error"),
-        )
+                for index, path in enumerate(uploads, start=1):
+                    upload = json.loads(path.read_text())
+                    agent.client.upload_artifact(
+                        agent.state,
+                        job["job_id"],
+                        Path(upload["relative_path"]),
+                        Path(upload["path"]),
+                        derived=upload["derived"],
+                        **({"caption": True} if upload.get("caption") else {}),
+                        **({"curation": True} if upload.get("curation") else {}),
+                    )
+                    if index % 100 == 0 or index == len(uploads):
+                        agent.client.event(
+                            agent.state,
+                            job["job_id"],
+                            f"Uploaded {index}/{len(uploads)} artifacts",
+                            {"phase": "upload", "current": index, "total": len(uploads)},
+                        )
+            agent.client.complete(
+                agent.state,
+                job["job_id"],
+                status=payload["status"],
+                result=payload.get("result"),
+                error=payload.get("error"),
+            )
+        finally:
+            renewal_stop.set()
+            if renewal_thread:
+                renewal_thread.join(timeout=5)
         marker["acknowledged"] = True
         atomic_json(work / "marker.json", marker)
         if marker.get("reservation"):

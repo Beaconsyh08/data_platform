@@ -11,7 +11,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from lerobot.data_platform.execution import ExecutionSupervisor, atomic_json, group_members, process_identity
+from lerobot.data_platform.execution import (
+    ExecutionSupervisor,
+    atomic_json,
+    group_members,
+    input_fingerprint,
+    process_identity,
+)
+from lerobot.data_platform.job_concurrency import footprint
 from tests.datasets.test_preprocess_ops import _add_v21_stat_counts, _make_dataset
 
 
@@ -64,6 +71,94 @@ def fake_agent(tmp_path, client):
         allow_source_mutations=False,
         lease_seconds=60,
     )
+
+
+@pytest.mark.parametrize("operation", ["import.mcap.inspect", "import.mcap.convert"])
+def test_raw_mcap_execution_does_not_require_viewer_output_dir(tmp_path, monkeypatch, operation):
+    source = tmp_path / "raw" / "00001"
+    source.mkdir(parents=True)
+    (source / "sample.mcap").write_bytes(b"sample")
+    final = tmp_path / "converted" / "00001" if operation.endswith("convert") else None
+    job = {
+        "job_id": "mcap-job",
+        "operation": operation,
+        "location": {"root": str(source), "output_dir": "", "dataset_key": "raw/00001"},
+        "options": {},
+        "execution": {"attempt_id": "attempt", "final_output": str(final) if final else None},
+    }
+    paths = footprint(
+        operation, str(source), "", {}, job["job_id"], final_output=str(final) if final else None
+    )
+    assert paths.sources == (str(source),)
+    assert paths.outputs == ((str(final),) if final else ())
+    supervisor = ExecutionSupervisor(fake_agent(tmp_path, Client()))
+
+    def reserved(_job, _work, _roots, output_dir, requested_final):
+        assert output_dir == ""
+        assert requested_final == final
+        raise RuntimeError("reached reservation")
+
+    monkeypatch.setattr(supervisor, "_reserve", reserved)
+    with pytest.raises(RuntimeError, match="reached reservation"):
+        supervisor.start(job)
+
+
+def test_completed_viewer_cache_retry_replays_uploads_without_compute(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "meta.json").write_text("stable")
+    target = tmp_path / "vis" / "local_vis_source"
+    static = target / "static"
+    static.mkdir(parents=True)
+    atomic_json(
+        static / "viewer_manifest.json",
+        {"root": str(source), "repo_id": "node/source", "task_config": {"digest": "task-digest"}},
+    )
+    (static / "video.bin").write_bytes(b"existing cached video")
+    client = Client()
+    uploaded = []
+    client.upload_artifact = lambda _state, _job_id, relative, _path, **_flags: uploaded.append(str(relative))
+    supervisor = ExecutionSupervisor(fake_agent(tmp_path, client))
+    old = supervisor.root / "old-attempt"
+    old.mkdir()
+    fingerprint = input_fingerprint([source])
+    atomic_json(old / "config.json", {"job": {"job_id": "viewer-job"}, "fingerprint": fingerprint})
+    atomic_json(old / "published.json", {"status": "done", "result": {"uploaded_files": 2}})
+    atomic_json(
+        target / ".viewer-publication.json",
+        {
+            "staging": str(target.parent / ".dp-viewer-job-old-attempt" / "cache"),
+            "target": str(target),
+            "source": str(source),
+        },
+    )
+    for name in ("video.bin", "viewer_manifest.json"):
+        atomic_json(
+            old / "uploads" / f"{name}.json",
+            {
+                "relative_path": name,
+                "path": str(static / name),
+                "derived": False,
+            },
+        )
+    current = supervisor.root / "new-attempt"
+    reservation = current / "reservation.json"
+    job = {
+        "job_id": "viewer-job",
+        "operation": "viewer.prepare",
+        "location": {"root": str(source), "output_dir": str(target), "dataset_key": "node/source"},
+        "options": {"task_config": {"digest": "task-digest"}},
+        "execution": {"attempt_id": "new-attempt"},
+    }
+    with pytest.raises(ValueError, match="Viewer source changed"):
+        supervisor._reuse_published_viewer(job, current, "changed-source", reservation)
+    assert not uploaded
+    supervisor.start(job)
+    assert uploaded == ["video.bin", "viewer_manifest.json"]
+    assert client.completions[-1]["status"] == "done"
+    assert client.checkpoints[-1][0] == "finalizing"
+    assert json.loads((current / "marker.json").read_text())["acknowledged"] is True
+    assert not reservation.exists()
 
 
 def test_spooling_client_provides_only_inherited_identity(tmp_path):

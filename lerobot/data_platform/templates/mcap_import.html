@@ -34,6 +34,8 @@
             <button class="dp-btn dp-btn-primary" @click="submit('convert')" :disabled="busy || !canWrite() || !readyToConvert() || Boolean(capabilityError())">Convert selected</button>
             <button class="dp-btn dp-btn-secondary" @click="selectPage('runs')">Open Pipeline Runs</button>
         </div>
+        <p class="text-xs text-slate-400">Select source directories, run Inspect selected, then wait for a successful inspection with valid files before converting. Changing either setting requires a new inspection.</p>
+        <p class="text-xs text-amber-200" x-show="selected.length && !readyToConvert()" x-text="conversionHint()"></p>
         <p class="text-xs text-slate-400" x-show="nodeId && !sourceRows().length">No MCAP sources found on this node. Ask an administrator to configure the Agent allowed roots, then refresh. Raw directories do not need meta/info.json.</p>
         <div class="overflow-x-auto">
             <table class="w-full text-left text-xs">
@@ -111,8 +113,24 @@ function mcapImportApp(user, openViewer) {
                 && job.result?.mcap_import?.config.short_side === Number(this.shortSide)
                 && job.result?.mcap_import?.config.max_files === Number(this.maxFiles));
         },
-        inspectionLabel(id) { const job = this.inspection(id); return job ? this.reportLabel(job.result.mcap_import) : 'Inspect the current settings first'; },
-        readyToConvert() { return Boolean(this.selected.length && this.outputParent && this.selected.every(id => this.inspection(id))); },
+        inspectionLabel(id) {
+            const job = this.inspection(id);
+            if (job) return this.reportLabel(job.result.mcap_import);
+            const latest = this.jobs.find(item => item.location_id === id && item.operation === 'import.mcap.inspect'
+                && item.requested_by === this.user?.user_id && item.options?.config?.short_side === Number(this.shortSide)
+                && item.options?.config?.max_files === Number(this.maxFiles));
+            if (latest?.error) return `Inspect failed: ${latest.error}`;
+            if (latest) return `Inspect ${latest.status}`;
+            return 'Inspect the current settings first';
+        },
+        readyToConvert() {
+            return Boolean(this.selected.length && this.outputParent && this.selected.every(id => this.inspection(id)?.result?.mcap_import?.files?.length));
+        },
+        conversionHint() {
+            if (!this.outputParent) return 'Choose an output parent directory.';
+            if (this.selected.some(id => this.inspection(id)?.result?.mcap_import?.files?.length === 0)) return 'Inspection found no valid files; review the rejected files.';
+            return 'Run Inspect selected for every selected source with the current settings, and wait until it completes.';
+        },
         reportLabel(report) { return `${report.files.length} valid files, ${report.total_episodes} episodes, ${report.total_frames} frames; ${report.rejected.length} files rejected`; },
         jobProgress(job) {
             const event = job.events?.at(-1);
