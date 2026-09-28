@@ -16,7 +16,7 @@ import shutil
 import sys
 import time
 import traceback
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from fractions import Fraction
 from pathlib import Path
 
@@ -124,6 +124,8 @@ def image_frames(path, topic):
     import av
 
     decoder = av.CodecContext.create("h264", "r")
+    # Limit decoder fan-out when several files and cameras are read concurrently.
+    decoder.thread_count = 2
     for _, _, msg in messages(path, [topic]):
         if msg.format.lower() != "h264":
             raise ValueError("GenDAS requires H.264 camera streams")
@@ -336,6 +338,12 @@ def selected_images(path, topic, timestamps, shape, short_side):
         iterator.close()
 
 
+def next_camera_images(images, readers):
+    # Each stream has exactly one in-flight read; timestamps and per-camera order are unchanged.
+    futures = {side: readers.submit(next, iterator) for side, iterator in images.items()}
+    return {side: future.result() for side, future in futures.items()}
+
+
 def write_file(path, destination, config, inspected, task):
     import numpy as np
     from scipy.spatial.transform import Rotation, Slerp
@@ -364,6 +372,7 @@ def write_file(path, destination, config, inspected, task):
         for side in SIDES
     }
     lineage = []
+    image_readers = ThreadPoolExecutor(max_workers=len(SIDES))
     try:
         for segment_no, (a, b) in enumerate(segments):
             columns = {}
@@ -392,8 +401,9 @@ def write_file(path, destination, config, inspected, task):
                 ].tolist()
             for index in range(b - a):
                 frame = {"task": task}
+                camera_images = next_camera_images(images, image_readers)
                 for side in SIDES:
-                    frame[f"observation.images.{side}_wrist"] = next(images[side])
+                    frame[f"observation.images.{side}_wrist"] = camera_images[side]
                     frame[f"{side}_arm_quaternion_pose"] = columns[f"{side}_pose"][index]
                     frame[f"{side}_gripper_width"] = columns[f"{side}_width"][index]
                 dataset.add_frame(frame)
@@ -411,6 +421,7 @@ def write_file(path, destination, config, inspected, task):
             )
         dataset.finalize()
     finally:
+        image_readers.shutdown(wait=True, cancel_futures=True)
         for iterator in images.values():
             iterator.close()
         dataset.finalize()

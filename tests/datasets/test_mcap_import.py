@@ -534,3 +534,48 @@ if __name__ == "__main__":
         text=True,
         timeout=30,
     )
+
+
+def test_camera_reads_overlap_without_reordering(worker):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    barrier = Barrier(2)
+
+    def camera(side):
+        for stamp in [101, 102, 107]:
+            barrier.wait(timeout=5)
+            yield side, stamp
+
+    images = {side: camera(side) for side in worker.SIDES}
+    with ThreadPoolExecutor(max_workers=2) as readers:
+        for stamp in [101, 102, 107]:
+            assert worker.next_camera_images(images, readers) == {
+                side: (side, stamp) for side in worker.SIDES
+            }
+
+
+def test_camera_read_failure_waits_for_other_reader_before_cleanup(worker):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    other_started = Event()
+
+    def broken():
+        assert other_started.wait(timeout=5)
+        raise ValueError("Missing decoded frame")
+        yield  # make this an iterator
+
+    def other():
+        other_started.set()
+        yield "frame"
+
+    images = {"left": broken(), "right": other()}
+    with (
+        pytest.raises(ValueError, match="Missing decoded frame"),
+        ThreadPoolExecutor(max_workers=2) as readers,
+    ):
+        worker.next_camera_images(images, readers)
+    # The healthy stream is no longer executing and can safely be closed by write_file's finally.
+    for iterator in images.values():
+        iterator.close()
