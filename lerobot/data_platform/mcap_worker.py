@@ -507,9 +507,8 @@ def process_file(path, config, convert, cache, i, total):
         destination = cache / key
         receipt = cache / f"{key}.json"
         file_lineage = load_checkpoint(destination, receipt)
-        if file_lineage is not None:
-            emit("resuming", file_index=i, total=total, file=path.name)
-        else:
+        reused = file_lineage is not None
+        if not reused:
             temporary = cache / f".{key}.partial"
             if temporary.exists():
                 shutil.rmtree(temporary)
@@ -538,6 +537,7 @@ def process_file(path, config, convert, cache, i, total):
         "summary": summary,
         "root": destination if convert else None,
         "sha": sha if convert else None,
+        "reused": reused if convert else False,
         "lineage": file_lineage if convert else [],
     }
 
@@ -620,6 +620,8 @@ def run(request):
     completed = {}
     for i, result in file_results(files, config, convert, cache, workers):
         completed[i] = result
+        if result.get("reused"):
+            emit("resuming", file=files[i].name, message=f"{files[i].name}: reused verified checkpoint")
         emit(
             "converting" if convert else "inspecting",
             current=len(completed),

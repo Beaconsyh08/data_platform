@@ -456,6 +456,7 @@ def test_file_checkpoint_reused_without_encoding(worker, monkeypatch, tmp_path):
     result = worker.process_file(source, config, True, tmp_path, 0, 1)
     assert result["root"] == destination
     assert result["lineage"] == lineage
+    assert result["reused"] is True
     (destination / "data").write_bytes(b"corrupt")
     assert worker.load_checkpoint(destination, tmp_path / f"{key}.json") is None
 
