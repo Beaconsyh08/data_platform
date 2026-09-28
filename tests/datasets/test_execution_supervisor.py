@@ -103,7 +103,7 @@ def test_raw_mcap_execution_does_not_require_viewer_output_dir(tmp_path, monkeyp
         supervisor.start(job)
 
 
-def test_completed_viewer_cache_retry_replays_uploads_without_compute(tmp_path):
+def test_completed_viewer_cache_retry_replays_uploads_without_compute(tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
     (source / "meta.json").write_text("stable")
@@ -153,6 +153,13 @@ def test_completed_viewer_cache_retry_replays_uploads_without_compute(tmp_path):
     with pytest.raises(ValueError, match="Viewer source changed"):
         supervisor._reuse_published_viewer(job, current, "changed-source", reservation)
     assert not uploaded
+    from lerobot.data_platform import execution
+
+    def real_process_group_only(pid):
+        assert pid is not None and pid > 0
+        return []
+
+    monkeypatch.setattr(execution, "group_members", real_process_group_only)
     supervisor.start(job)
     assert uploaded == ["video.bin", "viewer_manifest.json"]
     assert client.completions[-1]["status"] == "done"

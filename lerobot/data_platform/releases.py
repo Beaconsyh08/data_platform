@@ -132,6 +132,7 @@ def build_release(source: Path, version: str, *, index_url: str | None = None) -
         env["PYTHONPATH"] = str(snapshot)
         for key in ("HF_HOME", "HF_DATASETS_CACHE", "HF_LEROBOT_HOME", "UV_CACHE_DIR"):
             env[key] = str(root / "test-cache" / key)
+        print(f"Validating {version} ({len(VALIDATION_TESTS)} test modules)", flush=True)
         with (root / "validation.txt").open("w") as report:
             run(
                 [python, "-m", "pytest", *VALIDATION_TESTS, "-q"],
@@ -140,6 +141,7 @@ def build_release(source: Path, version: str, *, index_url: str | None = None) -
                 stdout=report,
                 stderr=subprocess.STDOUT,
             )
+        print(f"Release validation passed: {version}", flush=True)
         run(
             [
                 python,

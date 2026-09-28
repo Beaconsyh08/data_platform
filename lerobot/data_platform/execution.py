@@ -474,7 +474,7 @@ class ExecutionSupervisor:
                 "work": str(work),
                 "staging": str(target.parent / f".dp-{job['job_id']}-{work.name}"),
                 "final": None,
-                "pid": 0,
+                "pid": None,
                 "process_identity": None,
                 "cgroup": None,
                 "acknowledged": False,
@@ -769,11 +769,13 @@ class ExecutionSupervisor:
         while True:
             if process:
                 process.poll()
+            pid = marker.get("pid")
             alive = (
-                process_identity(marker["pid"]) == marker["process_identity"]
+                pid is not None
+                and process_identity(pid) == marker["process_identity"]
                 and marker["process_identity"] is not None
             )
-            members = group_members(marker["pid"])
+            members = group_members(pid) if pid is not None else []
             if marker.get("cgroup") and Path(marker["cgroup"]).exists():
                 members = list(
                     set(
