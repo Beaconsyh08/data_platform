@@ -5,9 +5,30 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+from pathlib import PurePosixPath
 
 PROTOCOL = 1
 OPERATIONS = {"import.mcap.inspect", "import.mcap.convert"}
+
+
+def default_output_root(source: str, writable_roots: list[str]) -> str | None:
+    """Mirror a source tree into its writable sibling, using Agent paths only."""
+    path = PurePosixPath(source)
+    roots = [PurePosixPath(root) for root in writable_roots]
+    if not path.is_absolute() or not path.name or ".." in path.parts:
+        return None
+    roots = [root for root in roots if root.is_absolute() and ".." not in root.parts]
+    ancestors = [path, *[parent for parent in path.parents if parent.name]]
+    # Prefer an explicitly configured paired root over a broad writable ancestor.
+    for ancestor in ancestors:
+        paired = ancestor.with_name(f"{ancestor.name}_lerobot")
+        if paired in roots:
+            return str(paired / path.relative_to(ancestor))
+    sibling = path.with_name(f"{path.name}_lerobot") if path.name else None
+    if sibling and any(sibling.is_relative_to(root) for root in roots):
+        return str(sibling)
+    # No suitable destination on this source's storage; require an explicit choice.
+    return None
 
 
 @dataclass(frozen=True)

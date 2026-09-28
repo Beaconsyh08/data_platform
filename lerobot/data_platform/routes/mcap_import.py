@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
-from lerobot.data_platform.mcap_contract import McapImportConfig
+from lerobot.data_platform.mcap_contract import McapImportConfig, default_output_root
 
 
 def register_mcap_import_routes(app, store):
@@ -45,8 +45,15 @@ def register_mcap_import_routes(app, store):
                 )
             if f"import.mcap.{operation}" not in capabilities.get("operations", []):
                 raise JobConflictError("Agent does not support this import operation")
-            options = {"config": config.to_dict()}
+            options = {"config": config.to_dict(), "source_root": location["root"]}
             if operation == "convert":
+                output = body.get("out_root") or default_output_root(
+                    location["root"], node.get("writable_roots") or []
+                )
+                options["out_root"] = _validate_remote_output_path(store, location_id, output)
+            # Old clients may still bind conversion to an explicit inspection.
+            # Direct conversion runs the same checks inside the worker instead.
+            if operation == "convert" and body.get("inspection_job_id"):
                 probe = store.get_job(str(body.get("inspection_job_id") or ""))
                 if (
                     probe["location_id"] != location_id
@@ -59,7 +66,6 @@ def register_mcap_import_routes(app, store):
                 if report.get("config_digest") != config.digest or not report.get("files"):
                     raise JobConflictError("Settings changed; inspect again before converting")
                 options.update(
-                    out_root=_validate_remote_output_path(store, location_id, body.get("out_root")),
                     input_fingerprint=report["input_fingerprint"],
                     inspection_job_id=probe["job_id"],
                 )

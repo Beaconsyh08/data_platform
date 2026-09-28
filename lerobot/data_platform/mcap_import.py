@@ -129,7 +129,9 @@ def execute_import(agent, job, source: Path) -> dict:
                     continue
                 last_error = event.get("error") or last_error
                 event["elapsed_s"] = round(time.monotonic() - started, 1)
-                agent.client.event(agent.state, job["job_id"], f"MCAP: {event['phase']}", event)
+                agent.client.event(
+                    agent.state, job["job_id"], event.get("message") or f"MCAP: {event['phase']}", event
+                )
             if process.wait():
                 stop = os.environ.get("DATA_PLATFORM_EXECUTION_STOP_FILE")
                 if stop and Path(stop).exists():

@@ -874,11 +874,27 @@ def register_control_plane_routes(
 
     @app.route("/api/control/locations")
     def control_locations():
+        from lerobot.data_platform.mcap_contract import default_output_root
+
         allowed = set(store.mutation_location_ids(_current_user()["user_id"]))
+        nodes = {node["node_id"]: node for node in store.list_nodes()}
         return jsonify(
             {
                 "locations": [
-                    {**location, "source_mutation_allowed": location["location_id"] in allowed}
+                    {
+                        **location,
+                        "source_mutation_allowed": location["location_id"] in allowed,
+                        **(
+                            {
+                                "default_import_output": default_output_root(
+                                    location["root"],
+                                    nodes.get(location["node_id"], {}).get("writable_roots") or [],
+                                )
+                            }
+                            if location.get("metadata", {}).get("source_format") == "mcap"
+                            else {}
+                        ),
+                    }
                     for location in store.accessible_locations(_current_user()["user_id"])
                     if request.args.get("format") == "all"
                     or (location.get("metadata", {}).get("source_format") == "mcap")

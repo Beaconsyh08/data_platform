@@ -166,11 +166,17 @@ Datasets 页对远程数据源执行原地修改（包括 Delete by flag type �
 
 ### MCAP → LeRobot 导入
 
-在 Data Platform 的 **MCAP → LeRobot** 页面选择在线 Agent 和原始 MCAP 目录，先点击
-**Inspect selected**。只有当前账户对每个选中目录、当前视频尺寸和文件数量的检查成功且找到有效文件后，
-**Convert selected** 才能点击。修改任一参数后需要重新检查。输出父目录必须位于该 Agent 的
-writable roots；转换在 Agent 上写入新的 LeRobot v3.0 数据集，不改原始 MCAP。
-检查失败时可在来源行及任务结果中查看错误。转换完成后通过新注册的数据集进入 Cache 准备 Viewer。
+在 **MCAP → LeRobot** 选择在线 Agent，搜索、分页勾选来源目录，确认输出预览后直接点击
+**Convert selected**。每个文件会在转换任务内自动检查信号和有效时间段，不必先点 Inspect。
+默认每目录最多 3 个文件，设为 0 才处理全部；每个来源目录输出一个 LeRobot v3.0 数据集。
+
+输出优先映射到 Agent 配置的同级 `<来源树名>_lerobot` 可写根，并保留相对目录层级；
+没有配对根时，使用可写范围内的来源同级 `<目录名>_lerobot`。无法自动选择时，需在高级
+设置指定输出父目录。页面显示最终路径，已有输出不会覆盖，原始 MCAP 保留。
+高级设置也包含视频短边和可选 **Inspect only**，用于单独预览，不是转换的前置步骤。
+
+提交后在统一 **Jobs** 查看进度、逐文件检查/拒绝原因及 Result summary 中的完整报告，
+导入页不再平铺历史。转换完成后从 Jobs 使用新数据集或点击 **Prepare viewer**。
 
 ### 5.1 Data Platform — Cache
 

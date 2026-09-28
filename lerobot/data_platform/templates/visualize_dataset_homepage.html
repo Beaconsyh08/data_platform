@@ -49,6 +49,7 @@
         .dp-header-workspace { grid-area: workspace; }
         .dp-header-dataset { grid-area: dataset; }
         .dp-header-utilities { grid-area: jobs; }
+        .dp-header-grid-import { grid-template-areas: "brand jobs" "workspace workspace"; }
         .dp-workspace-nav button {
             flex: 1 1 0;
         }
@@ -227,6 +228,10 @@
                 grid-template-areas: "brand workspace dataset jobs";
                 grid-template-columns: auto auto minmax(16rem, 1fr) auto;
             }
+            .dp-header-grid-import {
+                grid-template-areas: "brand workspace jobs";
+                grid-template-columns: auto minmax(0, 1fr) auto;
+            }
             .dp-header-dataset {
                 justify-self: end;
                 max-width: 24rem;
@@ -252,6 +257,7 @@
                 grid-template-areas: "brand" "workspace" "dataset" "jobs";
                 grid-template-columns: minmax(0, 1fr);
             }
+            .dp-header-grid-import { grid-template-areas: "brand" "workspace" "jobs"; }
             .dp-header-utilities { flex-wrap: wrap; justify-content: flex-start; }
         }
         {% include "curation.css" %}
@@ -268,7 +274,7 @@
     </div>
     <div class="mx-auto max-w-[1680px] px-3 py-3 sm:px-5 sm:py-4">
         <header class="dp-app-header sticky top-2 z-30 mb-5 backdrop-blur">
-            <div class="dp-header-grid px-3 py-3 sm:px-4">
+            <div class="dp-header-grid px-3 py-3 sm:px-4" :class="{'dp-header-grid-import': activePage === 'mcap_import'}">
                 <div class="dp-header-brand flex min-w-0 items-center gap-3">
                     <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-sky-800/80 bg-sky-950/70 text-sm font-bold text-sky-200">ED</div>
                     <div class="min-w-0">
@@ -291,7 +297,7 @@
                             </button>
                         </template>
                 </nav>
-                <div class="dp-header-dataset relative min-w-0 text-xs" @click.outside="datasetPickerOpen = false">
+                <div class="dp-header-dataset relative min-w-0 text-xs" x-show="activePage !== 'mcap_import'" @click.outside="datasetPickerOpen = false">
                         <button class="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-900/90 px-3 py-2 text-left hover:border-sky-600"
                                 @click="datasetPickerOpen = !datasetPickerOpen"
                                 aria-label="Select current dataset">
@@ -5029,6 +5035,13 @@
                     }
                     this.mergeRemoteJobsIntoRuns();
                 },
+                async trackMcapJobs(jobs) {
+                    jobs.forEach(job => this.mergeRemoteJob(job));
+                    this.runsFilter.scope = 'all';
+                    this.runsFilter.status = '';
+                    this.jobDrawerOpen = true;
+                    await this.selectJob(this.remoteJobForRuns(jobs[0]));
+                },
                 remoteJobForRuns(job) {
                     if (!job) return null;
                     const events = job.events || [];
@@ -5058,7 +5071,7 @@
                         dataset_key: `remote:${job.location_id}`,
                         display_dataset_key: location
                             ? `${serverName} · ${this.remoteDatasetName(location)}`
-                            : job.location_id,
+                            : (job.options?.source_root || job.location_id),
                         server_name: serverName,
                         status: job.status,
                         progress: Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0,
@@ -5080,7 +5093,7 @@
                         output_dataset_name: outputLocation ? this.remoteDatasetName(outputLocation) : '',
                         output_viewer_url: result.viewer_url || outputLocation?.metadata?.viewer_url || null,
                         review_url: result.review_url || null,
-                        result_summary: result.preprocess?.summary || (job.operation === 'caption.annotate' ? job.options : null),
+                        result_summary: result.mcap_import || result.preprocess?.summary || (job.operation === 'caption.annotate' ? job.options : null),
                         viewer_url: result.viewer_url
                             || (job.operation === 'viewer.prepare' ? location?.metadata?.viewer_url : null)
                             || null,

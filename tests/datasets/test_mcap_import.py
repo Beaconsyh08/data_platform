@@ -13,7 +13,7 @@ import pytest
 from lerobot.data_platform import mcap_contract, mcap_import
 from lerobot.data_platform.agent import discover_datasets
 from lerobot.data_platform.execution import input_fingerprint
-from lerobot.data_platform.mcap_contract import McapImportConfig
+from lerobot.data_platform.mcap_contract import McapImportConfig, default_output_root
 from tests.datasets.test_control_plane import _app, _bootstrap, _store
 from tests.datasets.test_data_platform_agent import _agent
 
@@ -44,7 +44,29 @@ def test_invalid_config(options):
         McapImportConfig.from_dict(options)
 
 
-def test_convert_button_requires_a_successful_current_inspection():
+@pytest.mark.parametrize(
+    "source,roots,expected",
+    [
+        (
+            "/storage/raw/collection/task/00002",
+            ["/other/output", "/storage/raw_lerobot"],
+            "/storage/raw_lerobot/collection/task/00002",
+        ),
+        ("/storage/raw/task/00002", ["/storage", "/storage/raw_lerobot"], "/storage/raw_lerobot/task/00002"),
+        ("/storage/raw/task/00002", ["/storage"], "/storage/raw/task/00002_lerobot"),
+        ("/storage/raw/task/00002", ["/other/output"], None),
+        ("/storage/raw/task/00002", ["/storage/raw/task/00002"], None),
+        ("/storage/raw/task/00002", [], None),
+        ("/", ["/"], None),
+        ("relative/source", ["/storage"], None),
+        ("/storage/raw/../source", ["/storage"], None),
+    ],
+)
+def test_output_follows_source_and_writable_roots(source, roots, expected):
+    assert default_output_root(source, roots) == expected
+
+
+def test_convert_page_selection_output_and_job_handoff():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the MCAP page behavior check")
@@ -52,20 +74,48 @@ def test_convert_button_requires_a_successful_current_inspection():
     script = template.split("<script>", 1)[1].split("</script>", 1)[0]
     checks = """
 const assert = require('node:assert/strict');
-const app = mcapImportApp({user_id: 'owner', role: 'admin'}, () => {});
-app.selected = ['source']; app.outputParent = '/datasets/output';
-app.jobs = [{job_id: 'failed', location_id: 'source', operation: 'import.mcap.inspect',
-    status: 'error', requested_by: 'owner', error: 'invalid raw output path',
-    options: {config: {short_side: 256, max_files: 3}}}];
-assert.equal(app.readyToConvert(), false);
-assert.match(app.inspectionLabel('source'), /invalid raw output path/);
-app.jobs.unshift({job_id: 'valid', location_id: 'source', operation: 'import.mcap.inspect',
-    status: 'done', requested_by: 'owner', result: {mcap_import: {
-        config: {short_side: 256, max_files: 3}, files: [{file: 'sample.mcap'}],
-        total_episodes: 1, total_frames: 30, rejected: []}}});
-assert.equal(app.readyToConvert(), true);
-app.maxFiles = 0;
-assert.equal(app.readyToConvert(), false);
+(async () => {
+    const submitted = [];
+    const app = mcapImportApp({user_id: 'owner', role: 'admin'}, jobs => submitted.push(...jobs));
+    app.nodeId = 'node';
+    app.nodes = [{node_id: 'node', status: 'online', capabilities: {mcap_import: {ready: true}}}];
+    app.sources = Array.from({length: 19}, (_, i) => ({location_id: `source-${i}`, node_id: 'node',
+        root: `/storage/raw/task/${String(i).padStart(5, '0')}`, metadata: {mcap_count: 12},
+        default_import_output: `/storage/raw_lerobot/task/${String(i).padStart(5, '0')}`}));
+    assert.equal(app.pageSources().length, 8);
+    app.selectVisible(); app.page = 2; app.selectVisible();
+    assert.equal(app.selected.length, 16);
+    app.search = '00018'; app.page = 1;
+    assert.equal(app.filteredSources().length, 1);
+    assert.equal(app.selected.length, 16); // Filtering preserves selected folders.
+    app.selected = ['source-18'];
+    assert.equal(app.readyToConvert(), true); // No inspection job is needed.
+    assert.equal(app.outputFor(app.sources[18]), '/storage/raw_lerobot/task/00018');
+    assert.equal(app.selectedFileCount(), 3);
+    app.maxFiles = 0;
+    assert.equal(app.selectedFileCount(), 12);
+    app.maxFiles = -1;
+    assert.equal(app.readyToConvert(), false);
+    app.maxFiles = 3;
+    app.outputParent = '/storage/custom';
+    assert.equal(app.outputFor(app.sources[18]), '/storage/custom/00018');
+    app.json = async (url, body) => {
+        assert.equal(body.operation, 'convert');
+        assert.equal(body.inspection_job_id, undefined);
+        assert.equal(body.out_root, '/storage/custom/00018');
+        return {job: {job_id: 'new-job', location_id: 'source-18'}};
+    };
+    await app.submit('convert');
+    assert.equal(submitted[0].job_id, 'new-job');
+    assert.equal(app.selected.length, 0);
+    assert.match(app.notice, /Jobs/);
+    app.selected = ['source-18']; app.user.role = 'viewer';
+    await app.submit('convert');
+    assert.equal(submitted.length, 1);
+    app.changeNode();
+    assert.equal(app.selected.length, 0);
+    assert.equal(app.outputParent, '');
+})().catch(error => { console.error(error); process.exitCode = 1; });
 """
     result = subprocess.run([node, "-e", script + checks], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
@@ -191,6 +241,54 @@ def _inspect(client, location, headers):
     return job["job_id"]
 
 
+def test_direct_convert_with_suggested_output_and_safety_checks(tmp_path):
+    store, client, _, _, location, _ = _setup(tmp_path)
+    endpoint = f"/api/control/locations/{location['location_id']}/mcap-jobs"
+    source = client.get("/api/control/locations?format=mcap").json["locations"][0]
+    expected = "/datasets/raw/task/00001_lerobot"
+    assert source["default_import_output"] == expected
+    for path, status in [(location["root"], 400), ("/elsewhere/output", 403)]:
+        response = client.post(endpoint, json={"operation": "convert", "out_root": path})
+        assert response.status_code == status, response.json
+    response = client.post(endpoint, json={"operation": "convert"})
+    assert response.status_code == 202, response.json
+    job = response.json["job"]
+    assert job["options"]["out_root"] == expected
+    assert job["options"]["source_root"] == location["root"]
+    assert "inspection_job_id" not in job["options"]
+    assert "input_fingerprint" not in job["options"]
+    assert [row["operation"] for row in store.list_jobs()] == ["import.mcap.convert"]
+
+
+def test_direct_conversion_inspects_before_writing(worker, tmp_path, monkeypatch):
+    source = tmp_path / "raw"
+    source.mkdir()
+    (source / "bad.mcap").write_bytes(b"invalid")
+    events = []
+    monkeypatch.setattr(worker, "emit", lambda phase, **kwargs: events.append({"phase": phase, **kwargs}))
+
+    def invalid_file(*args):
+        raise ValueError("Missing required signals")
+
+    monkeypatch.setattr(worker, "inspect_file", invalid_file)
+    monkeypatch.setattr(worker, "write_file", lambda *args: pytest.fail("Invalid input must not be written"))
+    with pytest.raises(ValueError, match="No valid MCAP files"):
+        worker.run(
+            {
+                "source": str(source),
+                "operation": "convert",
+                "config": {},
+                "input_fingerprint": "test",
+                "output": str(tmp_path / "output"),
+                "checkpoint_root": str(tmp_path / "checkpoints"),
+                "result": str(tmp_path / "report.json"),
+            }
+        )
+    assert not (tmp_path / "output").exists()
+    assert events[-1]["phase"] == "rejected"
+    assert "bad.mcap: Missing required signals" in events[-1]["message"]
+
+
 def test_inspect_convert_publish_and_scope_inheritance(tmp_path):
     store, client, admin, node, location, headers = _setup(tmp_path)
     viewer = store.register_user(username="scoped", password="valid-password", role="viewer")
@@ -246,7 +344,8 @@ def test_inspect_convert_publish_and_scope_inheritance(tmp_path):
 
 
 @pytest.mark.parametrize("role,allowed", [("viewer", False), ("operator", True), ("data_manager", True)])
-def test_import_roles_and_dataset_scope(tmp_path, role, allowed):
+@pytest.mark.parametrize("operation", ["inspect", "convert"])
+def test_import_roles_and_dataset_scope(tmp_path, role, allowed, operation):
     store, client, admin, _, location, _ = _setup(tmp_path)
     user = store.register_user(username="worker", password="valid-password", role=role)
     store.set_mutation_locations(user["user_id"], [location["location_id"]], actor=admin)
@@ -256,11 +355,13 @@ def test_import_roles_and_dataset_scope(tmp_path, role, allowed):
         == 200
     )
     endpoint = f"/api/control/locations/{location['location_id']}/mcap-jobs"
-    assert client.post(endpoint, json={}).status_code == (202 if allowed else 403)
+    assert client.post(endpoint, json={"operation": operation}).status_code == (202 if allowed else 403)
     store.set_mutation_locations(user["user_id"], [], actor=admin)
     if role in {"viewer", "operator"}:
         assert client.get("/api/control/locations?format=all").json["locations"] == []
-    assert client.post(endpoint, json={}).status_code == (202 if role == "data_manager" else 403)
+    assert client.post(endpoint, json={"operation": operation}).status_code == (
+        202 if role == "data_manager" else 403
+    )
 
 
 def test_changed_source_rejected_before_starting_worker(tmp_path, monkeypatch):

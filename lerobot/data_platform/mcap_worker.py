@@ -462,6 +462,7 @@ def run(request):
     if not files:
         raise ValueError("No MCAP files in this source directory")
     report = {
+        "source": str(source),
         "config": config.to_dict(),
         "config_digest": config.digest,
         "files": [],
@@ -483,8 +484,20 @@ def run(request):
             if expected is not None and expected != shapes:
                 raise ValueError("Incompatible output dimensions within this dataset")
             expected = shapes
+            emit(
+                "inspected",
+                current=i,
+                total=len(files),
+                file=path.name,
+                message=(
+                    f"{path.name}: {summary['source_duration_s']:.1f}s recorded, "
+                    f"{summary['valid_duration_s']:.1f}s valid; {len(summary['segments'])} segment(s), "
+                    f"{summary['frames']} frames; output {json.dumps(shapes)}"
+                ),
+            )
         except ValueError as exc:
             report["rejected"].append({"file": path.name, "reason": str(exc)})
+            emit("rejected", current=i + 1, total=len(files), file=path.name, message=f"{path.name}: {exc}")
             continue
         if convert:
             sha = file_hash(path)
@@ -514,6 +527,13 @@ def run(request):
                 except ValueError as exc:
                     shutil.rmtree(temporary, ignore_errors=True)
                     report["rejected"].append({"file": path.name, "reason": str(exc)})
+                    emit(
+                        "rejected",
+                        current=i + 1,
+                        total=len(files),
+                        file=path.name,
+                        message=f"{path.name}: {exc}",
+                    )
                     continue
             roots.append(destination)
             for row in file_lineage:
@@ -533,6 +553,13 @@ def run(request):
         raise ValueError("No valid MCAP files: " + json.dumps(report["rejected"][:5]))
     report["total_frames"] = sum(item["frames"] for item in report["files"])
     report["total_episodes"] = sum(len(item["segments"]) for item in report["files"])
+    emit(
+        "summary",
+        message=(
+            f"{len(report['files'])} valid files, {report['total_episodes']} episodes, "
+            f"{report['total_frames']} frames; {len(report['rejected'])} files rejected"
+        ),
+    )
     if convert:
         from lerobot.datasets.aggregate import aggregate_datasets
 
