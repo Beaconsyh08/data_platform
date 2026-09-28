@@ -208,7 +208,7 @@ cpuset 和所有父级 cgroup 限制计算实际值，并通过 Jobs 的 `resour
 | `DATA_PLATFORM_COMPUTE_MEMORY_LIMIT_GIB` | 单任务内存 GiB，优先于 memory fraction |
 | `DATA_PLATFORM_COMPUTE_NATIVE_THREADS` | 每个计算进程的 BLAS/OpenMP/OpenCV/Arrow 线程数 |
 | `DATA_PLATFORM_VIDEO_THREADS` | 每个视频编码、解码和滤镜的线程上限 |
-| `DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS` | Agent 同时执行的远程 Job 槽位，默认 1，当前最多 2；开启双槽时将单任务资源固定分为 16 核/30 GiB（父配额 32 核/64 GiB） |
+| `DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS` | Agent 同时执行的远程 Job 槽位，默认 1，当前最多 4；CPU 和扣除 Agent 预留量后的内存按槽位数固定均分（例如父配额 32 核/64 GiB，双槽各 16 核/30 GiB） |
 | `DATA_PLATFORM_CAPTION_RUNNING_LIMIT` | 旧 Agent 的 Temporal Caption 双任务兼容上限；新 Agent 使用通用 Job 槽位 |
 
 Viewer 的并发单位是一个相机视频或一份 episode CSV；单 episode 的多相机也可并行。
@@ -242,7 +242,7 @@ H100 开发节点可将 Server 的 `DATA_PLATFORM_NODE_RUNNING_LIMIT` 和
 `DATA_PLATFORM_USER_RUNNING_LIMIT` 都设为 `2`，Agent 设 `DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS=2`。
 实际节点并发取 Server 上限与 Agent 心跳能力中的较小者；旧 Agent 未上报通用槽位时按 1 槽处理，
 并保留旧 Caption 专用双任务兼容逻辑。Viewer、预处理、Temporal Caption、Curation、MCAP 导入
-共用两个槽位；不同任务只有在所有输入数据集和输出路径互不重叠时并行，路径相同或互为父子时排队。
+共用配置的槽位；不同任务只有在所有输入数据集和输出路径互不重叠时并行，路径相同或互为父子时排队。
 同一数据集的 Caption 可以并行标注不同 episode，同一 episode 不会重复执行；直接修改源数据的
 任务独占节点。Agent 启动前以解析后的真实路径再次检查，持有资源锁至结果确认；等待锁位时续租。
 Jobs 显示 `queue_wait_reason` 与 `node_slots`，以区分节点容量、用户容量与路径冲突。
@@ -253,10 +253,14 @@ Jobs 显示 `queue_wait_reason` 与 `node_slots`，以区分节点容量、用�
 Agent 上的已发布缓存，仅重新上传文件并完成 Server 注册。上传期间持续续租；任一校验不符时
 停止复用，不覆盖既有缓存。确认 Server 端 Viewer 已注册后才将任务视为恢复完成。
 
-双槽时无论只运行一个还是两个任务，每个任务最多 16 核/30 GiB，余下约 4 GiB 留给 Agent 与系统；
+开发父配额 32 核/64 GiB、双槽时，无论只运行一个还是两个任务，每个任务最多 16 核/30 GiB，余下约 4 GiB 留给 Agent 与系统；
 `workers` 仍受每槽 CPU 和节点 worker 上限约束，原生与视频线程单独限制。超过 30 GiB 的任务应
 在排空后改为单槽运行，不能临时借用第二槽内存。API 标注并发可能受供应商限流约束。
-仅在开发任务排空后修改配置并重启；Server A 本地执行器和生产保持串行，运行中任务不热改配额。
+生产 H100 可将 Server 的 `DATA_PLATFORM_NODE_RUNNING_LIMIT=4`、
+`DATA_PLATFORM_USER_RUNNING_LIMIT=2` 与 Agent 的 `DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS=4` 配套设置。
+同一用户最多运行两个任务，多个用户合计最多四个；资源按四槽固定均分，单任务不借用空闲槽配额。
+保留既有节点总资源预算；Server A 本地执行器仍为单槽。配置变更须在运行任务完成或确认取消后
+重启对应服务，运行中任务不热改配额；排队任务保留。
 
 完整基准矩阵可由 `scripts/benchmark_data_platform_matrix.py` 顺序执行。该驱动需要测试节点的
 root 权限来创建临时 systemd 服务，计算进程使用 `--user` 指定的开发服务账号。

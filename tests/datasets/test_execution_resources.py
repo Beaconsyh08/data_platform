@@ -50,15 +50,20 @@ def test_parent_limits_win(monkeypatch):
     assert (budget.max_workers, budget.cpu_limit, budget.memory_limit) == (2, 2, 4 * 1024**3)
 
 
-def test_two_fixed_execution_slots(monkeypatch):
+@pytest.mark.parametrize("slots", [2, 4])
+def test_fixed_execution_slots(monkeypatch, slots):
     monkeypatch.setenv("DATA_PLATFORM_COMPUTE_MAX_WORKERS", "16")
     monkeypatch.setenv("DATA_PLATFORM_COMPUTE_CPU_LIMIT", "32")
     monkeypatch.setenv("DATA_PLATFORM_COMPUTE_MEMORY_LIMIT_GIB", "64")
     monkeypatch.setenv("DATA_PLATFORM_COMPUTE_NATIVE_THREADS", "1")
     monkeypatch.setenv("DATA_PLATFORM_VIDEO_THREADS", "1")
     parent = resources.ExecutionResources.resolve()
-    slot = parent.for_slots(2)
-    assert (slot.cpu_limit, slot.memory_limit, slot.max_workers) == (16, 30 * 1024**3, 16)
+    slot = parent.for_slots(slots)
+    assert (slot.cpu_limit, slot.memory_limit, slot.max_workers) == (
+        32 / slots,
+        60 * 1024**3 // slots,
+        32 // slots,
+    )
     assert (slot.native_threads, slot.video_threads) == (1, 1)
     assert parent == parent.for_slots(1)
 
@@ -157,3 +162,13 @@ def test_duplicate_outputs_rejected_before_work(tmp_path):
     item = ViewerWork(0, tmp_path / "same", lambda: pytest.fail("must not run"))
     with pytest.raises(ValueError, match="Duplicate"):
         run_viewer_work([item, item], 2)
+
+
+@pytest.mark.parametrize("configured, expected", [(None, 1), ("1", 1), ("2", 2), ("4", 4), ("8", 4)])
+def test_agent_slot_configuration(monkeypatch, configured, expected):
+    from lerobot.data_platform.job_concurrency import agent_slots
+
+    monkeypatch.delenv("DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS", raising=False)
+    if configured is not None:
+        monkeypatch.setenv("DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS", configured)
+    assert agent_slots() == expected

@@ -472,3 +472,40 @@ def test_job_reads_are_private_and_queue_exposes_only_count(setup, tmp_path):
     client.post("/api/auth/login", json={"username": viewer["username"], "password": "long-test-password"})
     assert client.get("/api/control/jobs").get_json()["jobs"] == []
     assert client.get(f"/api/control/jobs/{own_job['job_id']}").status_code == 404
+
+
+def test_four_node_slots_keep_two_per_user(setup):
+    store, admin, owner, node, _, _ = setup
+    store.job_manager.node_limit = 4
+    store.job_manager.user_limit = 2
+    with store.sessions.begin() as session:
+        row = session.get(ControlPlaneNode, node["node_id"])
+        row.capabilities = {**row.capabilities, "job_concurrent_limit": 4}
+    jobs = []
+    for index, user in enumerate([owner, owner, owner, admin, admin, admin]):
+        location = store.sync_locations(
+            node["node_id"],
+            [
+                {
+                    "root": f"/data/input-{index}",
+                    "dataset_key": f"input-{index}",
+                    "output_dir": f"/data/cache-{index}",
+                }
+            ],
+        )[0]
+        jobs.append(
+            store.create_job(
+                location_id=location["location_id"], requested_by=user["user_id"], operation="viewer.prepare"
+            )
+        )
+    first = [store.claim_job(node["node_id"], worker_instance_id=f"worker-{i}") for i in range(2)]
+    assert [job["job_id"] for job in first] == [job["job_id"] for job in jobs[:2]]
+    assert (
+        store.job_manager.decorate(store.get_job(jobs[2]["job_id"]))["queue_wait_reason"] == "user_capacity"
+    )
+    second = [store.claim_job(node["node_id"], worker_instance_id=f"other-{i}") for i in range(2)]
+    assert [job["job_id"] for job in second] == [job["job_id"] for job in jobs[3:5]]
+    assert store.claim_job(node["node_id"], worker_instance_id="fifth") is None
+    status = store.job_manager.decorate(store.get_job(jobs[5]["job_id"]))
+    assert status["node_slots"] == {"used": 4, "limit": 4}
+    assert status["queue_wait_reason"] == "node_capacity"

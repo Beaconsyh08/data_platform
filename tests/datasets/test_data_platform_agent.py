@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from lerobot.data_platform import agent as agent_module
 from lerobot.data_platform.agent import DataPlatformAgent, discover_datasets
 from lerobot.data_platform.precompute.preprocess.common import PreprocessResult
@@ -454,14 +456,15 @@ def test_agent_does_not_overwrite_success_with_error_when_completion_response_fa
     assert [status for status, _result, _error in client.completions] == ["done"]
 
 
-def test_dispatcher_runs_two_independent_job_types(tmp_path, monkeypatch):
+@pytest.mark.parametrize("slots", [2, 4])
+def test_dispatcher_runs_independent_job_types(tmp_path, monkeypatch, slots):
     from threading import Event, Lock
     from types import SimpleNamespace
 
     from lerobot.data_platform.agent import _ExecutionDispatcher
     from lerobot.data_platform.execution import ExecutionSupervisor
 
-    monkeypatch.setenv("DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS", "2")
+    monkeypatch.setenv("DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS", str(slots))
     agent = SimpleNamespace(state_path=tmp_path / "agent.json")
     dispatcher = _ExecutionDispatcher(agent)
     entered = Event()
@@ -472,7 +475,7 @@ def test_dispatcher_runs_two_independent_job_types(tmp_path, monkeypatch):
     def start(_supervisor, job):
         with lock:
             active.add(job["job_id"])
-            if len(active) == 2:
+            if len(active) == slots:
                 entered.set()
         assert release.wait(5)
 
@@ -491,6 +494,12 @@ def test_dispatcher_runs_two_independent_job_types(tmp_path, monkeypatch):
         )
         assert dispatcher.available()
         dispatcher.dispatch({"job_id": "b", "operation": "viewer.prepare", "execution": {"attempt_id": "b"}})
+        for index in range(2, slots):
+            assert dispatcher.available()
+            key = f"extra-{index}"
+            dispatcher.dispatch(
+                {"job_id": key, "operation": "preprocess.merge", "execution": {"attempt_id": key}}
+            )
         assert entered.wait(5)
         assert not dispatcher.available()
     finally:
