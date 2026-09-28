@@ -285,8 +285,8 @@ def test_direct_conversion_inspects_before_writing(worker, tmp_path, monkeypatch
             }
         )
     assert not (tmp_path / "output").exists()
-    assert events[-1]["phase"] == "rejected"
-    assert "bad.mcap: Missing required signals" in events[-1]["message"]
+    rejected = [event for event in events if event["phase"] == "rejected"]
+    assert "bad.mcap: Missing required signals" in rejected[-1]["message"]
 
 
 def test_inspect_convert_publish_and_scope_inheritance(tmp_path):
@@ -400,3 +400,136 @@ def test_checkpoint_reuse_requires_matching_content(worker, tmp_path):
     assert worker.load_checkpoint(root, receipt) == lineage
     data.write_bytes(b"tampered")
     assert worker.load_checkpoint(root, receipt) is None
+
+
+@pytest.mark.parametrize(
+    "cpu,memory_gib,node_workers,inherited_workers,expected",
+    [
+        (112, 1200, 4, 4, 4),
+        (16, 30, 8, 8, 4),
+        (8, 16, 4, 4, 2),
+        (16, 3, 4, 4, 1),
+        (16, 16, 4, 2, 2),
+        (1, 1, 4, 4, 1),
+    ],
+)
+def test_conversion_worker_budget(monkeypatch, cpu, memory_gib, node_workers, inherited_workers, expected):
+    from lerobot.data_platform.execution_resources import ExecutionResources
+
+    budget = ExecutionResources(cpu, memory_gib * 1024**3, node_workers, 4, 4)
+    monkeypatch.setattr(ExecutionResources, "resolve", lambda: budget)
+    monkeypatch.setenv("DATA_PLATFORM_EXECUTION_WORKERS", str(inherited_workers))
+    assert mcap_import.conversion_workers() == expected
+    assert mcap_import.worker_environment()["OMP_NUM_THREADS"] == "1"
+
+
+def test_file_checkpoint_reused_without_encoding(worker, monkeypatch, tmp_path):
+    import hashlib
+    import json
+
+    source = tmp_path / "sample.mcap"
+    source.write_bytes(b"source")
+    config = McapImportConfig()
+    sha = worker.file_hash(source)
+    key = hashlib.sha256(f"{source.name}:{sha}:{config.digest}".encode()).hexdigest()
+    destination = tmp_path / key
+    destination.mkdir()
+    (destination / "data").write_bytes(b"converted")
+    lineage = [{"episode_index": 0}]
+    (tmp_path / f"{key}.json").write_text(
+        json.dumps(
+            {
+                "lineage": lineage,
+                "manifest": worker.checkpoint_manifest(destination),
+            }
+        )
+    )
+    summary = {
+        "output_shapes": {},
+        "source_duration_s": 1,
+        "valid_duration_s": 1,
+        "segments": [{}],
+        "frames": 30,
+    }
+    monkeypatch.setattr(worker, "inspect_file", lambda *args: (summary,))
+    monkeypatch.setattr(worker, "write_file", lambda *args: pytest.fail("Checkpoint should skip encoding"))
+    result = worker.process_file(source, config, True, tmp_path, 0, 1)
+    assert result["root"] == destination
+    assert result["lineage"] == lineage
+    (destination / "data").write_bytes(b"corrupt")
+    assert worker.load_checkpoint(destination, tmp_path / f"{key}.json") is None
+
+
+def test_parallel_completion_keeps_source_order(worker, monkeypatch, tmp_path):
+    import json
+
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in ("00001.mcap", "00002.mcap", "00003.mcap"):
+        (source / name).touch()
+    monkeypatch.setattr(
+        worker,
+        "file_results",
+        lambda files, *args: iter(
+            [
+                (
+                    2,
+                    {"summary": {"file": files[2].name, "output_shapes": {}, "frames": 60, "segments": [{}]}},
+                ),
+                (
+                    0,
+                    {"summary": {"file": files[0].name, "output_shapes": {}, "frames": 30, "segments": [{}]}},
+                ),
+                (1, {"rejected": {"file": files[1].name, "reason": "Invalid signal"}}),
+            ]
+        ),
+    )
+    report = tmp_path / "report.json"
+    worker.run(
+        {
+            "operation": "inspect",
+            "source": str(source),
+            "config": {},
+            "checkpoint_root": str(tmp_path / "cache"),
+            "result": str(report),
+            "input_fingerprint": "test",
+        }
+    )
+    result = json.loads(report.read_text())
+    assert [row["file"] for row in result["files"]] == ["00001.mcap", "00003.mcap"]
+    assert result["total_frames"] == 90
+    assert result["total_episodes"] == 2
+    assert result["rejected"][0]["file"] == "00002.mcap"
+
+
+def test_file_pool_stop_is_bounded_and_keeps_completed_work(tmp_path):
+    script = tmp_path / "pool_check.py"
+    script.write_text("""
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import mcap_worker as worker
+
+def fake_file(path, config, convert, cache, i, total):
+    if i == 0:
+        (cache / "completed").write_text("checkpoint")
+        return {"ok": True}
+    while True:
+        worker.emit("converting", file=str(path))
+        time.sleep(0.01)
+
+if __name__ == "__main__":
+    worker.process_file = fake_file
+    worker.emit = lambda *args, **kwargs: None
+    results = worker.file_results(list(range(10)), None, True, Path(sys.argv[2]), 2)
+    assert next(results) == (0, {"ok": True})
+    results.close()
+    assert (Path(sys.argv[2]) / "completed").read_text() == "checkpoint"
+""")
+    subprocess.run(
+        [sys.executable, str(script), str(Path(mcap_import.__file__).parent), str(tmp_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )

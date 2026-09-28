@@ -176,7 +176,9 @@ Datasets 页对远程数据源执行原地修改（包括 Delete by flag type �
 高级设置也包含视频短边和可选 **Inspect only**，用于单独预览，不是转换的前置步骤。
 
 提交后在统一 **Jobs** 查看进度、逐文件检查/拒绝原因及 Result summary 中的完整报告，
-导入页不再平铺历史。转换完成后从 Jobs 使用新数据集或点击 **Prepare viewer**。
+导入页不再平铺历史。转换按任务 CPU、内存和 Agent worker 上限自动并行处理文件（最多 4 个），
+Jobs 日志显示实际并行数及已完成文件数；episode 顺序仍按来源文件排序。
+重试同一任务时会校验并复用逐文件断点缓存，不重复编码已完成文件。转换完成后从 Jobs 使用新数据集或点击 **Prepare viewer**。
 
 ### 5.1 Data Platform — Cache
 

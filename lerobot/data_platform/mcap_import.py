@@ -40,7 +40,27 @@ def _runtime_status(python: str, modified: int, worker_modified: int) -> dict:
 
 
 def worker_environment() -> dict:
-    return {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    # File workers own two encoder threads each; prevent nested BLAS/OpenMP fan-out.
+    for key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        env[key] = "1"
+    return env
+
+
+def conversion_workers() -> int:
+    from lerobot.data_platform.execution_resources import ExecutionResources
+
+    resources = ExecutionResources.resolve()
+    return max(
+        1,
+        min(
+            4,
+            resources.max_workers,
+            int(os.environ.get("DATA_PLATFORM_EXECUTION_WORKERS", resources.max_workers)),
+            int(resources.cpu_limit // 4),
+            int(resources.memory_limit // (2 * 1024**3)),
+        ),
+    )
 
 
 def runtime_status() -> dict:
@@ -95,6 +115,7 @@ def execute_import(agent, job, source: Path) -> dict:
         checkpoints = final.parent / ".mcap-checkpoints" / job["job_id"]
     request = {
         "operation": "convert" if convert else "inspect",
+        "workers": conversion_workers() if convert else 1,
         "source": str(source),
         "output": str(output) if output else None,
         "config": config.to_dict(),

@@ -9,11 +9,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import multiprocessing
 import os
+import queue
 import shutil
 import sys
 import time
 import traceback
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from fractions import Fraction
 from pathlib import Path
 
@@ -41,7 +44,13 @@ PROFILE = {
 }
 
 
+_EVENT_QUEUE = None
+_STOP_EVENT = None
+
+
 def stop_check():
+    if _STOP_EVENT is not None and _STOP_EVENT.is_set():
+        raise InterruptedError("Import stopped")
     stop = os.environ.get("DATA_PLATFORM_EXECUTION_STOP_FILE")
     if stop and Path(stop).exists():
         raise InterruptedError("Import stopped")
@@ -49,7 +58,16 @@ def stop_check():
 
 def emit(phase, **values):
     stop_check()
-    print(json.dumps({"phase": phase, **values}), flush=True)
+    event = {"phase": phase, **values}
+    if _EVENT_QUEUE is not None:
+        while True:
+            stop_check()
+            try:
+                _EVENT_QUEUE.put(event, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+    print(json.dumps(event), flush=True)
 
 
 def atomic_json(path, value):
@@ -449,6 +467,128 @@ def validate_videos(root):
         offset += length
 
 
+def initialize_file_worker(events, stopped):
+    global _EVENT_QUEUE, _STOP_EVENT
+    _EVENT_QUEUE, _STOP_EVENT = events, stopped
+    # Cancellation must not wait for a child log queue to flush after the parent stops draining.
+    events.cancel_join_thread()
+    import cv2
+    import pyarrow as pa
+
+    cv2.setNumThreads(1)
+    pa.set_cpu_count(1)
+    pa.set_io_thread_count(1)
+
+
+def process_file(path, config, convert, cache, i, total):
+    source = path.parent
+    emit("inspecting", file_index=i, total=total, file=path.name)
+    try:
+        inspected = inspect_file(path, config)
+        summary = inspected[0]
+        shapes = summary["output_shapes"]
+        emit(
+            "inspected",
+            file_index=i,
+            total=total,
+            file=path.name,
+            message=(
+                f"{path.name}: {summary['source_duration_s']:.1f}s recorded, "
+                f"{summary['valid_duration_s']:.1f}s valid; {len(summary['segments'])} segment(s), "
+                f"{summary['frames']} frames; output {json.dumps(shapes)}"
+            ),
+        )
+    except ValueError as exc:
+        emit("rejected", file_index=i, total=total, file=path.name, message=f"{path.name}: {exc}")
+        return {"rejected": {"file": path.name, "reason": str(exc)}}
+    if convert:
+        sha = file_hash(path)
+        key = hashlib.sha256(f"{path.name}:{sha}:{config.digest}".encode()).hexdigest()
+        destination = cache / key
+        receipt = cache / f"{key}.json"
+        file_lineage = load_checkpoint(destination, receipt)
+        if file_lineage is not None:
+            emit("resuming", file_index=i, total=total, file=path.name)
+        else:
+            temporary = cache / f".{key}.partial"
+            if temporary.exists():
+                shutil.rmtree(temporary)
+            try:
+                file_lineage = write_file(
+                    path, temporary, config, inspected, source.parent.name.replace("_", " ")
+                )
+                validate_videos(temporary)
+                if file_hash(path) != sha:
+                    raise RuntimeError("Source changed during conversion")
+                if destination.exists():
+                    shutil.rmtree(destination)
+                temporary.replace(destination)
+                atomic_json(receipt, {"lineage": file_lineage, "manifest": checkpoint_manifest(destination)})
+            except ValueError as exc:
+                shutil.rmtree(temporary, ignore_errors=True)
+                emit(
+                    "rejected",
+                    file_index=i,
+                    total=total,
+                    file=path.name,
+                    message=f"{path.name}: {exc}",
+                )
+                return {"rejected": {"file": path.name, "reason": str(exc)}}
+    return {
+        "summary": summary,
+        "root": destination if convert else None,
+        "sha": sha if convert else None,
+        "lineage": file_lineage if convert else [],
+    }
+
+
+def file_results(files, config, convert, cache, workers):
+    if workers == 1:
+        for i, path in enumerate(files):
+            yield i, process_file(path, config, convert, cache, i, len(files))
+        return
+    context = multiprocessing.get_context("spawn")
+    events, stopped = context.Queue(maxsize=128), context.Event()
+    pool = ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=context,
+        initializer=initialize_file_worker,
+        initargs=(events, stopped),
+    )
+    pending = {}
+    remaining = iter(enumerate(files))
+
+    def submit_next():
+        item = next(remaining, None)
+        if item is not None:
+            i, path = item
+            pending[pool.submit(process_file, path, config, convert, cache, i, len(files))] = i
+
+    try:
+        for _ in range(workers):
+            submit_next()
+        while pending:
+            stop_check()
+            while True:
+                try:
+                    event = events.get_nowait()
+                except queue.Empty:
+                    break
+                emit(event.pop("phase"), **event)
+            done, _ = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+            for future in done:
+                i = pending.pop(future)
+                yield i, future.result()
+                submit_next()
+    finally:
+        stopped.set()
+        for future in pending:
+            future.cancel()
+        pool.shutdown(wait=True, cancel_futures=True)
+        events.close()
+        events.join_thread()
+
+
 def run(request):
     # Never depend on a service account having a writable home or a shared Hub cache.
     work = Path(request["result"]).parent
@@ -475,80 +615,46 @@ def run(request):
     cache = Path(request["checkpoint_root"])
     if convert:
         cache.mkdir(parents=True, exist_ok=True)
-    for i, path in enumerate(files):
-        emit("inspecting", current=i, total=len(files), file=path.name)
-        try:
-            inspected = inspect_file(path, config)
-            summary = inspected[0]
-            shapes = summary["output_shapes"]
-            if expected is not None and expected != shapes:
-                raise ValueError("Incompatible output dimensions within this dataset")
-            expected = shapes
-            emit(
-                "inspected",
-                current=i,
-                total=len(files),
-                file=path.name,
-                message=(
-                    f"{path.name}: {summary['source_duration_s']:.1f}s recorded, "
-                    f"{summary['valid_duration_s']:.1f}s valid; {len(summary['segments'])} segment(s), "
-                    f"{summary['frames']} frames; output {json.dumps(shapes)}"
-                ),
-            )
-        except ValueError as exc:
-            report["rejected"].append({"file": path.name, "reason": str(exc)})
-            emit("rejected", current=i + 1, total=len(files), file=path.name, message=f"{path.name}: {exc}")
+    workers = max(1, min(int(request.get("workers", 1)), len(files), 4)) if convert else 1
+    emit("resources", workers=workers, message=f"MCAP conversion: {workers} file worker(s)")
+    completed = {}
+    for i, result in file_results(files, config, convert, cache, workers):
+        completed[i] = result
+        emit(
+            "converting" if convert else "inspecting",
+            current=len(completed),
+            total=len(files),
+            file=files[i].name,
+            message=f"Completed {len(completed)}/{len(files)} files ({workers} workers)",
+        )
+    # Completion order must never change dataset episode order or identity.
+    for i, result in sorted(completed.items()):
+        if "rejected" in result:
+            report["rejected"].append(result["rejected"])
             continue
+        summary = result["summary"]
+        shapes = summary["output_shapes"]
+        if expected is not None and expected != shapes:
+            reason = "Incompatible output dimensions within this dataset"
+            report["rejected"].append({"file": files[i].name, "reason": reason})
+            emit("rejected", file=files[i].name, message=f"{files[i].name}: {reason}")
+            continue
+        expected = shapes
         if convert:
-            sha = file_hash(path)
-            key = hashlib.sha256(f"{path.name}:{sha}:{config.digest}".encode()).hexdigest()
-            destination = cache / key
-            receipt = cache / f"{key}.json"
-            file_lineage = load_checkpoint(destination, receipt)
-            if file_lineage is not None:
-                emit("resuming", current=i, total=len(files), file=path.name)
-            else:
-                temporary = cache / f".{key}.partial"
-                if temporary.exists():
-                    shutil.rmtree(temporary)
-                try:
-                    file_lineage = write_file(
-                        path, temporary, config, inspected, source.parent.name.replace("_", " ")
-                    )
-                    validate_videos(temporary)
-                    if file_hash(path) != sha:
-                        raise RuntimeError("Source changed during conversion")
-                    if destination.exists():
-                        shutil.rmtree(destination)
-                    temporary.replace(destination)
-                    atomic_json(
-                        receipt, {"lineage": file_lineage, "manifest": checkpoint_manifest(destination)}
-                    )
-                except ValueError as exc:
-                    shutil.rmtree(temporary, ignore_errors=True)
-                    report["rejected"].append({"file": path.name, "reason": str(exc)})
-                    emit(
-                        "rejected",
-                        current=i + 1,
-                        total=len(files),
-                        file=path.name,
-                        message=f"{path.name}: {exc}",
-                    )
-                    continue
-            roots.append(destination)
-            for row in file_lineage:
+            roots.append(result["root"])
+            sha = result["sha"]
+            for row in result["lineage"]:
                 lineage.append(
                     {
                         **row,
                         "episode_index": len(lineage),
                         "source_sha256": sha,
                         "episode_uid": hashlib.sha256(
-                            f"{path.name}:{sha}:{row['start_ns']}:{row['last_frame_ns']}".encode()
+                            f"{files[i].name}:{sha}:{row['start_ns']}:{row['last_frame_ns']}".encode()
                         ).hexdigest(),
                     }
                 )
         report["files"].append(summary)
-        emit("converting" if convert else "inspecting", current=i + 1, total=len(files), file=path.name)
     if not report["files"]:
         raise ValueError("No valid MCAP files: " + json.dumps(report["rejected"][:5]))
     report["total_frames"] = sum(item["frames"] for item in report["files"])
