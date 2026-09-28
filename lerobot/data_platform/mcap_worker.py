@@ -626,7 +626,7 @@ def run(request):
     cache = Path(request["checkpoint_root"])
     if convert:
         cache.mkdir(parents=True, exist_ok=True)
-    workers = max(1, min(int(request.get("workers", 1)), len(files), 4)) if convert else 1
+    workers = max(1, min(int(request.get("workers", 1)), len(files), 8)) if convert else 1
     emit("resources", workers=workers, message=f"MCAP conversion: {workers} file worker(s)")
     completed = {}
     for i, result in file_results(files, config, convert, cache, workers):

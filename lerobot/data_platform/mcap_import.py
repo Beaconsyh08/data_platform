@@ -54,7 +54,7 @@ def conversion_workers() -> int:
     return max(
         1,
         min(
-            4,
+            8,
             resources.max_workers,
             int(os.environ.get("DATA_PLATFORM_EXECUTION_WORKERS", resources.max_workers)),
             int(resources.cpu_limit // 4),

@@ -406,6 +406,9 @@ def test_checkpoint_reuse_requires_matching_content(worker, tmp_path):
     "cpu,memory_gib,node_workers,inherited_workers,expected",
     [
         (112, 1200, 4, 4, 4),
+        (112, 1200, 8, 8, 8),
+        (112, 1200, 16, 16, 8),
+        (112, 1200, 8, 4, 4),
         (16, 30, 8, 8, 4),
         (8, 16, 4, 4, 2),
         (16, 3, 4, 4, 1),
