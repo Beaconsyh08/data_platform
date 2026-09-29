@@ -3289,27 +3289,7 @@ def run_server(
             jobs_registry[job_id] = job
 
         def _update_job(payload: dict) -> None:
-            with _jobs_lock:
-                update_time = time.time()
-                status = payload.get("status")
-                if status and status != "done":
-                    job["status"] = status
-                if job.get("status") == "running" and job.get("started_at") is None:
-                    job["started_at"] = update_time
-                if "current" in payload:
-                    job["current"] = payload["current"]
-                if "total" in payload:
-                    job["total"] = payload["total"]
-                total = job.get("total") or 0
-                current = job.get("current") or 0
-                job["progress"] = int((current / total) * 100) if total else 0
-                if payload.get("message"):
-                    job["message"] = payload["message"]
-                    _append_job_log(job, payload["message"])
-                elapsed_seconds, eta_seconds = _job_timing_snapshot(job, update_time)
-                job["elapsed_seconds"] = elapsed_seconds
-                job["eta_seconds"] = eta_seconds
-                job["updated_at"] = update_time
+            route_context.update_job(job, payload)
 
         def _run_job() -> None:
             try:
@@ -3543,27 +3523,7 @@ def run_server(
             jobs_registry[job_id] = job
 
         def _update_job(payload: dict) -> None:
-            with _jobs_lock:
-                update_time = time.time()
-                status = payload.get("status")
-                if status and status != "done":
-                    job["status"] = status
-                if job.get("status") == "running" and job.get("started_at") is None:
-                    job["started_at"] = update_time
-                if "current" in payload:
-                    job["current"] = payload["current"]
-                if "total" in payload:
-                    job["total"] = payload["total"]
-                total_value = job.get("total") or 0
-                current = job.get("current") or 0
-                job["progress"] = int((current / total_value) * 100) if total_value else 0
-                if payload.get("message"):
-                    job["message"] = payload["message"]
-                    _append_job_log(job, payload["message"])
-                elapsed_seconds, eta_seconds = _job_timing_snapshot(job, update_time)
-                job["elapsed_seconds"] = elapsed_seconds
-                job["eta_seconds"] = eta_seconds
-                job["updated_at"] = update_time
+            route_context.update_job(job, payload)
 
         def _run_job() -> None:
             try:
@@ -7764,27 +7724,7 @@ def run_server(
             jobs_registry[job_id] = job
 
         def _update_delete_job(payload: dict) -> None:
-            with _jobs_lock:
-                update_time = time.time()
-                status = payload.get("status")
-                if status and status != "done":
-                    job["status"] = status
-                if job.get("status") == "running" and job.get("started_at") is None:
-                    job["started_at"] = update_time
-                if "current" in payload:
-                    job["current"] = payload["current"]
-                if "total" in payload:
-                    job["total"] = payload["total"]
-                total = job.get("total") or 0
-                current = job.get("current") or 0
-                job["progress"] = int((current / total) * 100) if total else 0
-                if payload.get("message"):
-                    job["message"] = payload["message"]
-                    _append_job_log(job, payload["message"])
-                elapsed_seconds, eta_seconds = _job_timing_snapshot(job, update_time)
-                job["elapsed_seconds"] = elapsed_seconds
-                job["eta_seconds"] = eta_seconds
-                job["updated_at"] = update_time
+            route_context.update_job(job, payload)
 
         def _run_job() -> None:
             try:

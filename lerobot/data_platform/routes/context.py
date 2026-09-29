@@ -49,22 +49,26 @@ class RouteContext:
             from lerobot.data_platform.local_execution import report_local_progress
 
             report_local_progress(payload)
+        from lerobot.data_platform.job_progress import progress_snapshot, visible_progress_log
+
         with self.jobs_lock:
+            if job.get("status") in {"done", "error", "cancelled", "interrupted"}:
+                return
             update_time = time.time()
             status = payload.get("status")
             if status and status != "done":
                 job["status"] = status
             if job.get("status") == "running" and job.get("started_at") is None:
                 job["started_at"] = update_time
-            if "current" in payload:
-                job["current"] = payload["current"]
-            if "total" in payload:
-                job["total"] = payload["total"]
-            total_value = job.get("total") or 0
-            current = job.get("current") or 0
-            job["progress"] = int((current / total_value) * 100) if total_value else 0
-            if payload.get("message"):
-                job["message"] = payload["message"]
+            previous = job.get("_progress_snapshot", {})
+            snapshot = progress_snapshot(previous, payload)
+            job["_progress_snapshot"] = snapshot
+            for key in ("current", "total", "progress", "message"):
+                if key in snapshot:
+                    job[key] = snapshot[key]
+            if payload.get("message") and visible_progress_log(
+                previous, payload, payload["message"], str(payload.get("level") or "info")
+            ):
                 self.append_job_log(job, payload["message"])
             elapsed_seconds, eta_seconds = self.job_timing_snapshot(job, update_time)
             job["elapsed_seconds"] = elapsed_seconds

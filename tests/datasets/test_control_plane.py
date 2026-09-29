@@ -195,7 +195,13 @@ def test_control_plane_auth_node_location_and_viewer_job_round_trip(tmp_path: Pa
     assert "events" not in listed_job
     detailed_job = client.get(f"/api/control/jobs/{job_id}").get_json()["job"]
     assert detailed_job["events"][-1]["message"] == "Prepared episode 3/12"
-    assert detailed_job["events"][-1]["payload"] == {"current": 3, "total": 12}
+    assert detailed_job["events"][-1]["payload"] == {
+        "current": 3,
+        "total": 12,
+        "attempt_id": None,
+        "log_visible": True,
+    }
+    assert detailed_job["progress"]["progress"] == 25
 
     manifest = {"episodes": [{"episode_index": 3}], "repo_id": location["dataset_key"]}
     uploaded = client.put(

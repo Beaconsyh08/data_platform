@@ -1012,16 +1012,28 @@ class ControlPlaneStore:
                 return self._event_dict(session.get(RemoteJobEvent, previous.event_id))
             if job is None or job.node_id != str(node_id):
                 raise KeyError(job_id)
+            from lerobot.data_platform.job_progress import progress_snapshot, visible_progress_log
+
+            previous_progress = (job.result or {}).get("progress", {})
+            event_payload = {**dict(payload or {}), "attempt_id": attempt_id}
+            event_payload["log_visible"] = visible_progress_log(
+                previous_progress, event_payload, message, level
+            )
             event = RemoteJobEvent(
                 job_id=job.job_id,
                 level=str(level or "info")[:32],
                 message=sanitize_for_log(str(message)),
-                payload=sanitize_for_log(dict(payload or {})),
+                payload=sanitize_for_log(event_payload),
                 created_at=_utcnow(),
             )
             session.add(event)
-            if payload and ("current" in payload or "total" in payload):
-                job.result = {**(job.result or {}), "progress": sanitize_for_log(payload)}
+            job.result = {
+                **(job.result or {}),
+                "progress": sanitize_for_log(
+                    progress_snapshot(previous_progress, payload or {}, message=message)
+                ),
+            }
+            job.updated_at = event.created_at
             session.flush()
             if receipt_id:
                 session.add(EventReceipt(receipt_id=receipt_id, event_id=event.event_id))

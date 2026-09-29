@@ -842,3 +842,42 @@ readiness=null;assert.throws(selection);
     form = (templates / "temporal_caption_task.html").read_text()
     assert 'data-caption-id="open-jobs"' not in form
     assert "caption-import" not in form and "saved-results" not in form and "caption-jobs" not in form
+
+
+def test_jobs_use_durable_progress_and_ignore_stale_responses():
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the page behavior check")
+    template = (Path(viewer.__file__).parent / "templates" / "visualize_dataset_homepage.html").read_text()
+    methods = []
+    for name in ("remoteJobForRuns", "mergeRemoteJob"):
+        match = re.search(rf"^                {name}\(job\) \{{", template, re.MULTILINE)
+        end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
+        methods.append(template[match.start() : match.end() + end.end()])
+    script = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};"
+    script += r"""
+    Object.assign(app, {remoteLocations: [], controlPlaneNodes: [], remoteJobs: [],
+        showDetailedJobLogs: false, mergeRemoteJobsIntoRuns() {}});
+    const job = {job_id: 'one', attempt_id: 'a', status: 'running',
+        updated_at: '2026-09-29T00:00:02', progress: {progress: 75, current: 3, total: 4},
+        events: [{message: 'detail', payload: {log_visible: false}},
+                 {message: 'Metadata written', payload: {}}]};
+    assert.equal(app.remoteJobForRuns(job).progress, 75);
+    assert.equal(app.remoteJobForRuns(job).logs.length, 1);
+    app.showDetailedJobLogs = true;
+    assert.equal(app.remoteJobForRuns(job).logs.length, 2);
+    app.mergeRemoteJob(job);
+    app.mergeRemoteJob({...job, updated_at: '2026-09-29T00:00:01', progress: {progress: 10}});
+    assert.equal(app.remoteJobs[0].progress.progress, 75);
+    const retry = app.remoteJobForRuns({...job, status: 'queued', progress: {}});
+    assert.equal(retry.progress, 0);
+    assert.equal(retry.logs.length, 0);
+    const done = app.remoteJobForRuns({...job, status: 'done'});
+    assert.equal(done.progress, 100);
+    assert.equal(done.message, 'Completed');
+    """
+    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)

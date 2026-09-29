@@ -861,21 +861,25 @@ class DataPlatformAgent:
         output_dir = Path(location.get("output_dir") or get_default_output_dir(source_root)).expanduser()
         output_dir = _require_within(output_dir, self.writable_roots, "viewer output directory")
         last_event_at = 0.0
-        last_step = None
+        last_stage = None
 
         def progress(payload: dict) -> None:
-            nonlocal last_event_at, last_step
+            nonlocal last_event_at, last_stage
             now = time.monotonic()
-            step = payload.get("step")
-            if (
-                now - last_event_at < 1.0
-                and step == last_step
-                and payload.get("status") not in {"error", "done"}
-                and not ("files_total" in payload and payload.get("files_current") == payload["files_total"])
-            ):
+            stage = payload.get("phase") or payload.get("step")
+            finished = payload.get("status") in {"done", "error"} or (
+                payload.get("total") and payload.get("current", 0) >= payload["total"]
+            ) or (
+                "files_total" in payload and payload.get("files_current") == payload["files_total"]
+            )
+            if now - last_event_at < 1.0 and stage == last_stage and not finished:
                 return
-            last_event_at = now
-            last_step = step
+            last_event_at, last_stage = now, stage
+            payload = dict(payload)
+            if "progress" in payload:
+                payload["progress"] = 0.95 * payload["progress"]
+            elif payload.get("total"):
+                payload["progress"] = 95 * payload.get("current", 0) / payload["total"]
             self.client.event(
                 self.state,
                 job["job_id"],
@@ -921,17 +925,6 @@ class DataPlatformAgent:
         files.sort(key=lambda path: (path == manifest, path.as_posix()))
         for index, path in enumerate(files, start=1):
             relative = path.relative_to(static_dir)
-            progress = (
-                {"current": round(98 + 2 * index / len(files), 2), "total": 100, "phase": "upload"}
-                if derived
-                else {"current": index, "total": len(files), "phase": "upload"}
-            )
-            self.client.event(
-                self.state,
-                job["job_id"],
-                f"Uploading viewer artifact {index}/{len(files)}: {relative}",
-                progress,
-            )
             self.client.upload_artifact(
                 self.state,
                 job["job_id"],
@@ -939,6 +932,19 @@ class DataPlatformAgent:
                 path,
                 derived=derived,
             )
+            if not getattr(self.client, "deferred_uploads", False):
+                start = 98 if derived else 95
+                self.client.event(
+                    self.state,
+                    job["job_id"],
+                    f"Uploaded viewer artifacts {index}/{len(files)}",
+                    {
+                        "current": index,
+                        "total": len(files),
+                        "phase": "upload",
+                        "progress": start + (99 - start) * index / len(files),
+                    },
+                )
         return len(files)
 
     def _run_preprocess(self, job: dict, source_root: Path, location: dict) -> dict:
@@ -996,14 +1002,26 @@ class DataPlatformAgent:
             def callback(payload: dict) -> None:
                 current = float(payload.get("current") or 0)
                 total = float(payload.get("total") or 0)
-                fraction = current / total if total > 0 else 0.0
+                fraction = (
+                    float(payload["progress"]) / 100
+                    if "progress" in payload
+                    else current / total
+                    if total > 0
+                    else 0.0
+                )
                 mapped = start + max(0.0, min(1.0, fraction)) * (end - start)
                 message = str(payload.get("message") or payload.get("step") or label)
                 self.client.event(
                     self.state,
                     job["job_id"],
                     f"{label}: {message}",
-                    {**payload, "current": round(mapped, 2), "total": 100},
+                    {
+                        **payload,
+                        "phase": label,
+                        "progress": round(mapped, 2),
+                        "current": round(mapped, 2),
+                        "total": 100,
+                    },
                 )
 
             return callback
@@ -1216,7 +1234,13 @@ class DataPlatformAgent:
         def progress(start: int, end: int):
             def callback(payload: dict) -> None:
                 total = float(payload.get("total") or 0)
-                fraction = float(payload.get("current") or 0) / total if total else 0
+                fraction = (
+                    float(payload["progress"]) / 100
+                    if "progress" in payload
+                    else float(payload.get("current") or 0) / total
+                    if total
+                    else 0
+                )
                 self.client.event(
                     self.state,
                     job["job_id"],
@@ -1224,6 +1248,8 @@ class DataPlatformAgent:
                     {
                         **payload,
                         "status": "running",
+                        "phase": "merge" if start == 0 else "output_viewer",
+                        "progress": start + (end - start) * min(1, max(0, fraction)),
                         "current": start + (end - start) * min(1, max(0, fraction)),
                         "total": 100,
                     },

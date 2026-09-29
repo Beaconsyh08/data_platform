@@ -3036,6 +3036,7 @@
                         <div class="mb-2 flex items-center justify-between">
                             <div>
                                 <h3 class="text-xs font-semibold text-slate-200">Live logs</h3>
+                                <label class="text-xs text-slate-400" x-show="selectedJob()?.remote"><input type="checkbox" x-model="showDetailedJobLogs" @change="mergeRemoteJobsIntoRuns()"> Detailed events</label>
                                 <p class="mt-0.5 text-[11px] text-slate-500">Streaming output for the selected job</p>
                             </div>
                             <button class="text-xs text-sky-300 hover:text-sky-200" @click="loadJobs()">Refresh</button>
@@ -3219,6 +3220,7 @@
                                      x-text="JSON.stringify(selectedJob()?.result_summary, null, 2)"></pre>
                             </details>
                             <div x-ref="jobLogBox" class="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-3 text-xs">
+                                <label class="text-xs text-slate-400" x-show="selectedJob()?.remote"><input type="checkbox" x-model="showDetailedJobLogs" @change="mergeRemoteJobsIntoRuns()"> Detailed events</label>
                                 <p class="text-slate-500" x-show="selectedJob()?.logs.length === 0">No job logs yet.</p>
                                 <template x-for="(entry, idx) in selectedJob()?.logs" :key="`${idx}-${entry.time}-${entry.message}`">
                                     <div class="mb-1 grid grid-cols-[4.5rem_1fr] gap-2">
@@ -3293,6 +3295,7 @@
                 remoteActionBusy: false,
                 remoteError: '',
                 remoteRefreshTimer: null,
+                showDetailedJobLogs: false,
                 selectedRemoteJobTimer: null,
                 rootDir: {{ datasets_root|tojson }},
                 sourceRoots: [],
@@ -4861,12 +4864,14 @@
                 },
                 async loadRemoteSources() {
                     if (!this.controlPlaneEnabled) return;
+                    const requestId = this.remoteLoadRequest = (this.remoteLoadRequest || 0) + 1;
                     try {
                         const results = await Promise.allSettled([
                             this.requestJson('/api/control/nodes'),
                             this.requestJson('/api/control/locations'),
                             this.requestJson('/api/control/jobs?limit=200')
                         ]);
+                        if (requestId !== this.remoteLoadRequest) return;
                         const [nodesResult, locationsResult, jobsResult] = results;
                         this.loadDeletionRequests().catch(err => { this.error = err.message; });
                         if (nodesResult.status === 'fulfilled') this.controlPlaneNodes = nodesResult.value.nodes || [];
@@ -4876,7 +4881,8 @@
                         );
                         if (jobsResult.status === 'fulfilled') this.remoteJobs = (jobsResult.value.jobs || []).map(job => {
                             const previous = previousById.get(job.job_id);
-                            return previous?.events ? {...job, events: previous.events} : job;
+                            if (previous?.updated_at && job.updated_at && previous.updated_at > job.updated_at) return previous;
+                            return previous?.events && previous.attempt_id === job.attempt_id ? {...job, events: previous.events} : job;
                         });
                         if (this.selectedRemoteLocation) {
                             this.selectedRemoteLocation = this.remoteLocations.find(
@@ -5026,6 +5032,8 @@
                 },
                 mergeRemoteJob(job) {
                     if (!job?.job_id) return;
+                    const previous = this.remoteJobs.find(item => item.job_id === job.job_id);
+                    if (previous?.updated_at && job.updated_at && previous.updated_at > job.updated_at) return;
                     const index = this.remoteJobs.findIndex(item => item.job_id === job.job_id);
                     if (index >= 0) this.remoteJobs.splice(index, 1, job);
                     else this.remoteJobs.unshift(job);
@@ -5044,9 +5052,11 @@
                 },
                 remoteJobForRuns(job) {
                     if (!job) return null;
-                    const events = job.events || [];
+                    const events = job.status === 'queued' ? [] : (job.events || []).filter(
+                        event => !event.payload?.attempt_id || event.payload.attempt_id === job.attempt_id
+                    );
                     const lastEvent = events.length ? events[events.length - 1] : null;
-                    const payload = lastEvent?.payload || {};
+                    const payload = job.progress || job.result?.progress || lastEvent?.payload || {};
                     const total = Number(payload.total || 0);
                     const current = Number(payload.current || 0);
                     let progress = Number(payload.progress);
@@ -5085,7 +5095,7 @@
                                 user_capacity: 'user slots full',
                                 agent_capacity: 'waiting for Agent capacity'
                             })[job.queue_wait_reason] || 'waiting for scheduling'} · node ${job.node_slots?.used || 0}/${job.node_slots?.limit || 1}`
-                            : (job.error || lastEvent?.message || job.status),
+                            : (job.error || (job.status === 'done' ? 'Completed' : payload.message || lastEvent?.message || job.status)),
                         error: job.error || null,
                         output_root: outputRoot,
                         output_location_id: outputLocationId,
@@ -5097,7 +5107,7 @@
                         viewer_url: result.viewer_url
                             || (job.operation === 'viewer.prepare' ? location?.metadata?.viewer_url : null)
                             || null,
-                        logs: events.map(event => ({
+                        logs: events.filter(event => this.showDetailedJobLogs || event.payload?.log_visible !== false).map(event => ({
                             time: event.created_at ? new Date(event.created_at).toLocaleTimeString() : '',
                             message: event.message || '',
                             payload: event.payload || {}
@@ -5138,7 +5148,7 @@
                     if (!job) return 0;
                     if (job.status === 'done') return 100;
                     const events = job.events || [];
-                    const payload = events.length ? (events[events.length - 1].payload || {}) : {};
+                    const payload = job.progress || job.result?.progress || (events.length ? events[events.length - 1].payload || {} : {});
                     let progress = Number(payload.progress);
                     if (!Number.isFinite(progress) && Number(payload.total) > 0) {
                         progress = Number(payload.current || 0) / Number(payload.total) * 100;
@@ -5150,6 +5160,8 @@
                     if (!job) return '';
                     if (job.error) return job.error;
                     const events = job.events || [];
+                    if (job.status === 'done') return 'Viewer cache ready';
+                    if (job.progress?.message || job.result?.progress?.message) return job.progress?.message || job.result.progress.message;
                     if (events.length) return events[events.length - 1].message || job.status;
                     if (job.status === 'queued') return 'Waiting for Agent';
                     if (job.status === 'running') return 'Preparing viewer cache on Agent';
@@ -6816,7 +6828,9 @@
                     finally { this.jobControlBusy = ''; }
                 },
                 async loadJobs() {
+                    const requestId = this.jobsLoadRequest = (this.jobsLoadRequest || 0) + 1;
                     const data = await this.requestJson('/api/jobs');
+                    if (requestId !== this.jobsLoadRequest) return;
                     this.jobs = data.jobs || [];
                     this.mergeRemoteJobsIntoRuns();
                     this.syncActiveJob();

@@ -418,6 +418,8 @@ class JobManager:
                 if count >= self.queue_limit:
                     raise JobConflictError("User queue limit reached")
                 job.status, control.phase, control.queued_at = "queued", "queued", time.time()
+                job.result, job.error = {}, None
+                job.started_at = job.finished_at = None
                 control.stop_mode = None
             elif action in {"cancel", "terminate"}:
                 if job.status == "cancelled":
@@ -491,9 +493,13 @@ class JobManager:
                 raise JobConflictError("Stopped execution cannot publish results")
             if job.status not in ACTIVE_STATES:
                 raise JobConflictError("Job is not active")
+            progress = (job.result or {}).get("progress", {})
             job.status, job.result, job.error = (
                 status,
-                dict(result or {}),
+                {
+                    **dict(result or {}),
+                    "progress": {**progress, **({"progress": 100} if status == "done" else {})},
+                },
                 sanitize_for_log(error),
             )
             job.finished_at = job.updated_at = _utcnow()

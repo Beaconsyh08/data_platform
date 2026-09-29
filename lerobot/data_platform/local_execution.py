@@ -216,8 +216,23 @@ def local_job_payload(store, persistent):
     for key in ("created_at", "started_at", "finished_at", "updated_at"):
         if persistent.get(key):
             snapshot[key] = datetime.fromisoformat(persistent[key]).timestamp()
+    progress = (persistent.get("result") or {}).get("progress", {})
+    for key in ("current", "total", "progress", "message"):
+        if key in progress:
+            snapshot[key] = progress[key]
+    if persistent.get("events"):
+        snapshot["logs"] = [
+            {"time": event["created_at"], "message": event["message"]}
+            for event in persistent["events"]
+            if event.get("payload", {}).get("log_visible", True)
+            and persistent["status"] != "queued"
+            and event.get("payload", {}).get("attempt_id") in {None, persistent.get("attempt_id")}
+        ][-80:]
     if persistent["status"] == "done":
         snapshot["progress"] = 100
+        snapshot["message"] = (persistent.get("result", {}).get("local_job") or {}).get(
+            "message"
+        ) or "Completed"
     return snapshot
 
 

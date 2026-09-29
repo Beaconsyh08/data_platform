@@ -587,7 +587,10 @@ def run_precompute(
             def report(payload):
                 if progress is not None:
                     progress.update(payload["current"] - progress.n)
-                _emit_progress(progress_callback, **payload)
+                _emit_progress(
+                    progress_callback,
+                    **{**payload, "progress": 90 * payload["current"] / max(1, payload["total"])},
+                )
 
             items = []
             v3_episodes = (
@@ -636,6 +639,7 @@ def run_precompute(
             progress_callback,
             status="running",
             step="cached",
+            progress=90,
             current=len(episodes),
             total=len(episodes),
             message="Detected cached video/CSV files; skipped prepare stage",

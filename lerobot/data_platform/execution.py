@@ -226,8 +226,13 @@ def publish_viewer_cache(cache: Path, target: Path, source: Path) -> None:
 class SpoolingClient:
     """Compute spools control-plane telemetry/artifacts; provider clients may make inference calls."""
 
+    deferred_uploads = True
+
     def __init__(self, server_url, work, *, server_identity=None):
         self.server_url, self.work = server_url, Path(work)
+        from threading import Lock
+
+        self.event_lock = Lock()
         self.sequence = 0
         self.server_identity = server_identity
 
@@ -243,23 +248,26 @@ class SpoolingClient:
 
     def event(self, state, job_id, message, payload=None):
         self.check_stop()
-        self.sequence += 1
-        from lerobot.data_platform.management_storage import EventSpool
-        from lerobot.data_platform.operation_log import sanitize_for_log
+        with self.event_lock:
+            self.sequence += 1
+            from lerobot.data_platform.management_storage import EventSpool
+            from lerobot.data_platform.operation_log import sanitize_for_log
 
-        spool = EventSpool(
-            self.work / "events",
-            max_bytes=int(os.environ.get("DATA_PLATFORM_AGENT_EVENT_SPOOL_BYTES", str(256 * 1024 * 1024))),
-        )
-        spool.write(
-            sanitize_for_log(
-                {
-                    "event_id": f"{self.work.name}:{self.sequence}",
-                    "message": str(message),
-                    "payload": payload or {},
-                }
+            spool = EventSpool(
+                self.work / "events",
+                max_bytes=int(
+                    os.environ.get("DATA_PLATFORM_AGENT_EVENT_SPOOL_BYTES", str(256 * 1024 * 1024))
+                ),
             )
-        )
+            spool.write(
+                sanitize_for_log(
+                    {
+                        "event_id": f"{self.work.name}:{self.sequence}",
+                        "message": str(message),
+                        "payload": payload or {},
+                    }
+                )
+            )
 
     def upload_artifact(
         self, state, job_id, relative_path, path, *, derived=False, caption=False, curation=False
@@ -342,9 +350,20 @@ class ExecutionSupervisor:
         self.root = agent.state_path.parent / "executions"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    def flush_events(self, job, work):
-        for path in sorted((work / "events").glob("*.json"))[:100]:
-            payload = json.loads(path.read_text())
+    def flush_events(self, job, work, *, drain=False):
+        # EventSpool filenames are UUID hashes, not delivery order.
+        pending = [(path, json.loads(path.read_text())) for path in (work / "events").glob("*.json")]
+        pending.sort(key=lambda item: int(item[1]["event_id"].rsplit(":", 1)[-1]))
+        last_heartbeat = time.monotonic()
+        heartbeat_interval = max(1, min(20, self.agent.lease_seconds / 3))
+        for path, payload in pending if drain else pending[:100]:
+            if time.monotonic() - last_heartbeat >= heartbeat_interval:
+                heartbeat = self.agent.client.control_heartbeat(
+                    self.agent.state, job["job_id"], lease_seconds=self.agent.lease_seconds
+                )
+                if drain and heartbeat.get("stop_mode"):
+                    atomic_json(work / "stop.json", {"mode": heartbeat["stop_mode"]})
+                last_heartbeat = time.monotonic()
             self.agent.client.event(
                 self.agent.state,
                 job["job_id"],
@@ -805,6 +824,7 @@ class ExecutionSupervisor:
             time.sleep(1)
         if process:
             process.wait()
+        self.flush_events(job, work, drain=True)
         if (work / "published.json").exists():
             payload = json.loads((work / "published.json").read_text())
         else:
@@ -827,7 +847,7 @@ class ExecutionSupervisor:
                 atomic_json(work / "published.json", payload)
         if payload["status"] != "done" and Path(marker["staging"]).exists():
             shutil.rmtree(marker["staging"], ignore_errors=False)
-        self.flush_events(job, work)
+        self.flush_events(job, work, drain=True)
         renewal_stop = threading.Event()
         renewal_thread = None
         if payload["status"] == "done":
@@ -862,6 +882,7 @@ class ExecutionSupervisor:
                         value.name,
                     ),
                 )
+                last_report = 0.0
                 for index, path in enumerate(uploads, start=1):
                     upload = json.loads(path.read_text())
                     agent.client.upload_artifact(
@@ -873,13 +894,21 @@ class ExecutionSupervisor:
                         **({"caption": True} if upload.get("caption") else {}),
                         **({"curation": True} if upload.get("curation") else {}),
                     )
-                    if index % 100 == 0 or index == len(uploads):
+                    now = time.monotonic()
+                    if now - last_report >= 1 or index == len(uploads):
+                        start = 95 if job.get("operation") == "viewer.prepare" else 98
                         agent.client.event(
                             agent.state,
                             job["job_id"],
-                            f"Uploaded {index}/{len(uploads)} artifacts",
-                            {"phase": "upload", "current": index, "total": len(uploads)},
+                            f"Uploaded artifacts {index}/{len(uploads)}",
+                            {
+                                "phase": "upload",
+                                "current": index,
+                                "total": len(uploads),
+                                "progress": start + (99 - start) * index / len(uploads),
+                            },
                         )
+                        last_report = now
             agent.client.complete(
                 agent.state,
                 job["job_id"],
