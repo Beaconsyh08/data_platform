@@ -291,6 +291,9 @@ class ControlPlaneStore:
         if initialize_schema:
             migrate_management(self.engine)
         self.job_manager = JobManager(self)
+        from lerobot.data_platform.dataset_scans import DatasetScanManager
+
+        self.scan_manager = DatasetScanManager(self)
         from sqlalchemy import event, inspect
 
         from lerobot.data_platform.management_storage import enqueue_event

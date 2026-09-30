@@ -8,6 +8,7 @@ from lerobot.data_platform.routes.control_plane import (
 )
 from lerobot.data_platform.routes.curation import register_curation_routes
 from lerobot.data_platform.routes.dataset_results import register_dataset_result_routes
+from lerobot.data_platform.routes.dataset_scans import register_dataset_scan_routes
 from lerobot.data_platform.routes.embedding import register_embedding_routes
 from lerobot.data_platform.routes.episode_deletion_requests import register_episode_deletion_request_routes
 from lerobot.data_platform.routes.lifecycle import register_lifecycle_routes
@@ -20,6 +21,7 @@ from lerobot.data_platform.routes.temporal_caption import register_temporal_capt
 __all__ = [
     "register_curation_routes",
     "register_dataset_result_routes",
+    "register_dataset_scan_routes",
     "register_account_password_routes",
     "RouteContext",
     "register_management_routes",

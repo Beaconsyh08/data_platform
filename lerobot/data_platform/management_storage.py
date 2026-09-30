@@ -83,6 +83,21 @@ class AuditOutbox(ManagementBase):
     payload: Mapped[dict] = mapped_column(JSON)
 
 
+class DatasetScan(ManagementBase):
+    __tablename__ = "dp_dataset_scans"
+
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(36), index=True)
+    active_node_id: Mapped[str | None] = mapped_column(String(36), unique=True, nullable=True)
+    requested_by: Mapped[str] = mapped_column(String(36))
+    path: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    dataset_count: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
 def migrate_management(engine) -> None:
     """Migration 1 creates management tables; serialize startup migrations across processes."""
     import hashlib
@@ -108,6 +123,8 @@ def migrate_management(engine) -> None:
                 conn.execute(SchemaMigration.__table__.insert().values(version=3))
             if conn.scalar(select(SchemaMigration.version).where(SchemaMigration.version == 4)) is None:
                 conn.execute(SchemaMigration.__table__.insert().values(version=4))
+            if conn.scalar(select(SchemaMigration.version).where(SchemaMigration.version == 5)) is None:
+                conn.execute(SchemaMigration.__table__.insert().values(version=5))
             conn.commit()
         finally:
             if mysql:

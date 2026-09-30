@@ -197,8 +197,18 @@ sudo env -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY \
 Agent 按 `--sync-seconds` 定期扫描 `allowed_roots` 并上报数据集目录（默认 300 秒，最短 10 秒），
 有任务运行或全部槽位占满时也继续扫描；计算与任务续租由执行线程独立处理。
 扫描只读取数据集元数据，不自动准备 Viewer。Viewer 标注结果回传仍仅在 Agent 空闲时执行，
-避免与任务缓存发布竞争。远端页面的 `Scan` / `Refresh` 只读取已上报的目录并按路径过滤，
-不会立即触发 Agent 扫描，因此新目录需等下一次自动扫描后再刷新页面列表。
+避免与任务缓存发布竞争。远端页面的 `Scan` 向选中 Agent 提交即时目录扫描，由下一次心跳领取，
+不等待自动扫描周期或计算任务槽位；`Refresh` 只重新读取已登记目录。扫描请求持久化保存，
+每节点最多一个未完成请求；同一账号重复提交相同路径复用该请求。状态依次为等待、扫描中、
+完成或失败，只有源目录读取、登记同步及最终确认都成功才显示完成。最终确认暂时失败时优先重试
+确认，不重复扫盘；Agent 重启后可重新执行未完成的只读扫描。
+
+即时扫描要求节点心跳能力 `dataset_scan_protocol=1`，Server 先迁移到管理 schema 5 并升级，
+然后升级 Agent。旧 Agent 的 Scan 禁用并提示升级，Refresh 仍可使用。请求在 Server 和 Agent
+两端检查 `allowed_roots`，Agent 解析真实路径以拒绝越界软链接；读取仍受服务账号的 Linux 权限限制。
+只有 Admin、Data Manager 和具有全数据集读取范围的 Operator 可发起发现，Viewer 保持只读。
+权限在提交和开始扫描时复核，扫描中的任务不因范围撤销而取消。请求与结果沿用 `dataset.scan`
+操作审计，不新增独立日志系统。
 
 `workers` / `prepare_workers` 是请求值。Agent 在启动任务时结合节点上限、CPU affinity、
 cpuset 和所有父级 cgroup 限制计算实际值，并通过 Jobs 的 `resources` 事件记录请求值、

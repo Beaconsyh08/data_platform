@@ -17,8 +17,9 @@ from urllib.parse import urlsplit
 from lerobot.data_platform.deployment import Deployment, agent_targets, load_environment, server_unit
 
 RELEASE_ROOT = Path("/var/lib/data-platform-releases")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 VALIDATION_TESTS = [
+    "tests/datasets/test_dataset_scans.py",
     "tests/datasets/test_job_progress.py",
     "tests/datasets/test_console_layout.py",
     "tests/datasets/test_data_manager.py",

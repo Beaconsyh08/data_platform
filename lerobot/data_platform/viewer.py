@@ -4430,6 +4430,10 @@ def run_server(
     app.extensions["data_platform_route_context"] = route_context
     app.config["DATA_PLATFORM_CONSOLE_MODE"] = console_mode
     app.config["DATA_PLATFORM_LEGACY_MUTATIONS"] = legacy_mutations_enabled
+    if control_plane_store is not None:
+        from lerobot.data_platform.routes.dataset_scans import register_dataset_scan_routes
+
+        register_dataset_scan_routes(app, route_context)
 
     def _complete_local_execution(result):
         for entry in result.get("local_registrations") or []:

@@ -307,7 +307,7 @@ def _dataset_payload(root: Path, *, node_name: str, metadata: dict | None = None
     }
 
 
-def discover_datasets(roots: list[Path], *, node_name: str) -> list[dict]:
+def discover_datasets(roots: list[Path], *, node_name: str, strict: bool = False) -> list[dict]:
     datasets = []
     seen = set()
     for configured_root in _resolve_roots(roots):
@@ -324,6 +324,8 @@ def discover_datasets(roots: list[Path], *, node_name: str) -> list[dict]:
                 try:
                     datasets.append(_dataset_payload(current, node_name=node_name))
                 except (OSError, json.JSONDecodeError, ValueError) as exc:
+                    if strict:
+                        raise
                     logging.warning("Could not inspect dataset %s: %s", current, exc)
                 continue
             mcap_files = [path for path in current.glob("*.mcap") if path.is_file() and not path.is_symlink()]
@@ -335,6 +337,8 @@ def discover_datasets(roots: list[Path], *, node_name: str) -> list[dict]:
             try:
                 children = sorted(current.iterdir(), reverse=True)
             except OSError:
+                if strict:
+                    raise
                 continue
             for child in children:
                 if (
@@ -456,6 +460,14 @@ class AgentClient:
             json={"locations": locations},
         )
         return list(response["locations"])
+
+    def update_scan(self, state: AgentState, request_id: str, **payload) -> dict:
+        return self._request(
+            "POST",
+            f"/api/agents/scans/{request_id}",
+            token=state.node_token,
+            json=payload,
+        )["scan"]
 
     def claim(self, state: AgentState, *, lease_seconds: int) -> dict | None:
         response = self._request(
@@ -725,6 +737,7 @@ class DataPlatformAgent:
             "source_mutations_enabled": self.allow_source_mutations,
             "task_config_protocol": TASK_CONFIG_PROTOCOL,
             "result_sync_protocol": 1,
+            "dataset_scan_protocol": 1,
             "mcap_import_protocol": 1,
             "mcap_import": {**mcap_runtime, "adapters": ["genrobot_das"]},
         }
@@ -733,10 +746,38 @@ class DataPlatformAgent:
         discovered = discover_datasets(self.allowed_roots, node_name=self.name)
         return self.client.sync_locations(self.state, discovered)
 
+    def _process_scan_request(self, request: dict | None) -> None:
+        completion = getattr(self, "_pending_scan_completion", None)
+        if completion:
+            request_id, payload = completion
+            self.client.update_scan(self.state, request_id, **payload)
+            self._pending_scan_completion = None
+            if request and request["request_id"] == request_id:
+                return
+        if not request:
+            return
+        request_id = request["request_id"]
+        self.client.update_scan(self.state, request_id, status="running")
+        try:
+            root = _require_within(Path(request["path"]), self.allowed_roots, "scan path")
+            if not root.is_dir():
+                raise FileNotFoundError(f"Scan directory does not exist: {root}")
+            locations = discover_datasets([root], node_name=self.name, strict=True)
+            synced = self.client.sync_locations(self.state, locations)
+            payload = {"status": "done", "dataset_count": len(synced)}
+        except Exception as exc:
+            from lerobot.data_platform.operation_log import sanitize_for_log
+
+            payload = {"status": "error", "error": sanitize_for_log(str(exc))}
+        self._pending_scan_completion = request_id, payload
+        self.client.update_scan(self.state, request_id, **payload)
+        self._pending_scan_completion = None
+
     def run_once(
         self, *, sync: bool = True, dispatch=None, allow_claim: bool = True, sync_results: bool = True
     ) -> bool:
         heartbeat = self.client.heartbeat(self.state, self.capabilities()) or {}
+        self._process_scan_request(heartbeat.get("scan_request"))
         if isinstance(self.client, AgentClient):
             from lerobot.data_platform.execution import ExecutionSupervisor, StopRequestedError
 

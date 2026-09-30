@@ -564,6 +564,8 @@ def register_control_plane_routes(
 
     @app.route("/api/agents/heartbeat", methods=["POST"])
     def agent_heartbeat():
+        from dataclasses import asdict
+
         node, error = _node_or_error()
         if error:
             return error
@@ -572,7 +574,14 @@ def register_control_plane_routes(
             refreshed = store.heartbeat(node["node_id"], capabilities=body.get("capabilities"))
         except KeyError:
             return jsonify({"error": "node not found"}), 404
-        return jsonify({"node": refreshed, "result_sync_protocol": 1})
+        scan = store.scan_manager.pending(node["node_id"])
+        return jsonify(
+            {
+                "node": refreshed,
+                "result_sync_protocol": 1,
+                "scan_request": asdict(scan) if scan else None,
+            }
+        )
 
     @app.route("/api/agents/locations/sync", methods=["POST"])
     def agent_sync_locations():
@@ -870,7 +879,8 @@ def register_control_plane_routes(
 
     @app.route("/api/control/nodes")
     def control_nodes():
-        return jsonify({"nodes": store.list_nodes()})
+        allowed = store.scan_manager.can_request(_current_user()["user_id"])
+        return jsonify({"nodes": [{**node, "dataset_scan_allowed": allowed} for node in store.list_nodes()]})
 
     @app.route("/api/control/locations")
     def control_locations():

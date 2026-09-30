@@ -503,13 +503,14 @@
                                        :placeholder="datasetServerFilter === 'local' ? '/path/on/server-a' : '/path/on/selected-agent'">
                                 <button class="dp-btn dp-btn-primary dp-btn-inline shrink-0 sm:min-w-[7rem]"
                                         @click="scanSelectedServer()"
-                                        :disabled="scanBusy || busy || !scanPath"
+                                        :disabled="scanBusy || busy || !scanPath || Boolean(remoteScanDisabledReason())"
+                                        :title="remoteScanDisabledReason()"
                                         x-text="scanBusy ? 'Scanning...' : 'Scan'">Scan</button>
                             </div>
                         </label>
                     </div>
                     <p class="mt-2 text-[11px] text-slate-500" x-show="datasetServerFilter !== 'local'">
-                        Remote Scan refreshes the Agent catalog and filters datasets below this path. It cannot escape the Agent's configured allowed roots.
+                        Scan asks the selected Agent to scan this path now, including while tasks are running. Refresh reloads the registered list.
                     </p>
                     <div class="mt-3 flex flex-col gap-2 rounded-lg border px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
                          :class="rootProtected ? 'border-amber-800/70 bg-amber-950/20' : 'border-slate-800 bg-slate-950/60'"
@@ -525,7 +526,9 @@
                                 x-text="rootProtected ? 'Remove root protection' : 'Mark root as source'"></button>
                     </div>
                     <p class="mt-2 text-xs text-sky-300" x-show="scanBusy"
-                       x-text="datasetServerFilter === 'local' ? 'Scanning Server A folders and lightweight cache status…' : 'Refreshing Agent datasets…'"></p>
+                       x-text="datasetServerFilter === 'local' ? 'Scanning Server A folders and lightweight cache status…' : (scanMessage || 'Waiting for the Agent to scan…')"></p>
+                    <p class="mt-2 text-xs text-sky-300" x-show="!scanBusy && scanMessage" x-text="scanMessage"></p>
+                    <p class="mt-2 text-xs text-amber-200" x-show="datasetServerFilter !== 'local' && remoteScanDisabledReason()" x-text="remoteScanDisabledReason()"></p>
                     <p class="mt-2 rounded-lg border border-red-900/70 bg-red-950/30 px-3 py-2 text-xs text-red-200"
                        x-show="error || remoteError" x-text="remoteError || error"></p>
                 </div>
@@ -540,7 +543,7 @@
                             <p class="mt-0.5 text-[11px] text-slate-500">Agent discoveries are synchronized automatically. Choose one to make it the working dataset.</p>
                         </div>
                         <button class="text-sky-300 hover:text-sky-200"
-                                @click="scanSelectedServer()" :disabled="scanBusy">Refresh</button>
+                                @click="refreshSelectedServer()">Refresh</button>
                     </div>
                     <div class="mb-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                         <div class="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">
@@ -3302,6 +3305,9 @@
                 rootProtected: false,
                 busy: false,
                 scanBusy: false,
+                scanMessage: '',
+                remoteScanSerial: 0,
+                remoteScanRequest: null,
                 loadingDatasetKey: null,
                 error: '',
                 submissionNotice: '',
@@ -4761,6 +4767,10 @@
                     ) || null;
                 },
                 onDatasetServerChange() {
+                    this.remoteScanSerial += 1;
+                    this.scanBusy = false;
+                    this.scanMessage = '';
+                    this.remoteScanRequest = null;
                     this.selectedRemoteLocation = null;
                     this.remoteViewerJob = null;
                     this.remoteError = '';
@@ -4780,27 +4790,82 @@
                         return requested === allowed || requested.startsWith(`${allowed}/`);
                     }));
                 },
+                remoteScanDisabledReason() {
+                    if (this.datasetServerFilter === 'local') return '';
+                    if (!this.canOperateRemote()) return 'Immediate scans require an admin, data manager or operator account. Use Refresh to reload the list.';
+                    const node = this.selectedServerNode();
+                    if (node?.dataset_scan_allowed === false) return 'Immediate scans require unrestricted dataset access. Use Refresh to reload your permitted datasets.';
+                    if (node?.capabilities?.dataset_scan_protocol !== 1) return 'Upgrade the selected Agent to support immediate scans.';
+                    if (node?.status !== 'online') return 'The selected Agent is offline. Use Refresh to reload the registered list.';
+                    return '';
+                },
+                async refreshSelectedServer() {
+                    const requested = String(this.scanPath || '').trim();
+                    if (this.datasetServerFilter === 'local') {
+                        this.rootDir = requested;
+                        await this.loadDatasetRoots();
+                    } else {
+                        await this.loadRemoteSources();
+                        if (!this.remoteError && this.remotePathAllowed(requested)) this.remoteScanPath = requested.replace(/\/+$/, '');
+                    }
+                },
                 async scanSelectedServer() {
+                    if (this.scanBusy) return;
                     const requested = String(this.scanPath || '').trim();
                     if (!requested) return;
                     this.error = '';
                     this.remoteError = '';
+                    this.scanMessage = '';
                     if (this.datasetServerFilter === 'local') {
-                        this.rootDir = requested;
-                        await this.loadDatasetRoots();
+                        await this.refreshSelectedServer();
                         return;
                     }
+                    const denied = this.remoteScanDisabledReason();
+                    if (denied) { this.remoteError = denied; return; }
                     if (!this.remotePathAllowed(requested)) {
-                        const roots = this.selectedServerNode()?.allowed_roots || [];
-                        this.remoteError = `Path must be inside this Agent's allowed roots: ${roots.join(', ') || 'none configured'}`;
+                        this.remoteError = 'Path must be inside this Agent\'s allowed roots.';
                         return;
                     }
+                    const nodeId = this.datasetServerFilter;
+                    const serial = ++this.remoteScanSerial;
+                    const current = () => serial === this.remoteScanSerial && nodeId === this.datasetServerFilter && requested === String(this.scanPath || '').trim();
                     this.scanBusy = true;
                     try {
-                        await this.loadRemoteSources();
-                        if (!this.remoteError) this.remoteScanPath = requested.replace(/\/+$/, '');
+                        let scan = this.remoteScanRequest;
+                        if (!scan || scan.node_id !== nodeId || scan.path !== requested.replace(/\/+$/, '')) {
+                            const data = await this.requestJson(`/api/control/nodes/${encodeURIComponent(nodeId)}/scans`, {path: requested});
+                            scan = data.scan;
+                        }
+                        if (!current()) return;
+                        this.remoteScanRequest = scan;
+                        const deadline = Date.now() + 180000;
+                        while (current()) {
+                            if (scan.status === 'error') throw new Error(scan.error || 'Agent scan failed');
+                            if (scan.status === 'done') {
+                                this.remoteScanRequest = null;
+                                await this.loadRemoteSources();
+                                if (!current()) return;
+                                if (this.remoteError) throw new Error(this.remoteError);
+                                this.remoteScanPath = requested.replace(/\/+$/, '');
+                                this.scanMessage = `Scan completed: ${scan.dataset_count} dataset(s) discovered under this path.`;
+                                return;
+                            }
+                            this.scanMessage = scan.status === 'running' ? 'Agent is scanning the requested path…' : 'Scan requested; waiting for the Agent…';
+                            if (Date.now() >= deadline) throw new Error('Scan is still pending on the Agent. Click Scan to check again; Refresh reloads the registered list.');
+                            await new Promise(resolve => window.setTimeout(resolve, 1000));
+                            if (!current()) return;
+                            scan = (await this.requestJson(`/api/control/scans/${encodeURIComponent(scan.request_id)}`)).scan;
+                            if (!current()) return;
+                            this.remoteScanRequest = scan;
+                        }
+                    } catch (err) {
+                        if (current()) {
+                            this.remoteError = err.message;
+                            this.scanMessage = '';
+                            if (this.remoteScanRequest?.status === 'error') this.remoteScanRequest = null;
+                        }
                     } finally {
-                        this.scanBusy = false;
+                        if (serial === this.remoteScanSerial) this.scanBusy = false;
                     }
                 },
                 remoteLocationsForSelectedServer() {

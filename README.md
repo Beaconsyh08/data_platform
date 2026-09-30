@@ -486,6 +486,9 @@ sudo journalctl -u data-platform-agent -n 100 --no-pager -l
 点击 **View N datasets** 后可按名称或路径搜索，并按处理中、最近失败或 Viewer 缺失筛选；
 数据集列表每页显示 20 条。远程预处理统一从首页 Dataset console 发起。
 
+首页选择远端 Agent 后，**Scan** 会请求立即扫描输入路径并登记新数据集，即使计算任务正在运行；
+**Refresh** 只重新读取已登记列表。即时扫描要求支持该能力的在线 Agent 和有发现权限的账号。
+
 在首页选择 Agent、扫描路径后，点击数据集卡片上的 **select & preprocess**，即可把该节点的
 数据设为 Working dataset。页面顶部的 **Working dataset** 下拉框也同时列出 Server A 与全部
 Agent 数据集，切换后 Server 和操作表单会一起更新，刷新页面仍会恢复该选择。
