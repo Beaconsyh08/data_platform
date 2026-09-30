@@ -41,6 +41,7 @@ class RouteContext:
     analysis_with_live_tags: Callable[[tuple[str, str], dict, Path], dict] | None = None
     legacy_mutations_enabled: bool = False
     dataset_is_protected: Callable[[tuple[str, str]], bool] | None = None
+    remote_cache_root: Path | None = None
 
     def update_job(self, job: dict, payload: dict) -> None:
         import os

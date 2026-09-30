@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ dataset_key }} · Data Inspect</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    {% include "data_platform_workspace_styles.html" %}
+    <style>
+        .inspect-controls {display:flex;flex-wrap:wrap;gap:14px;align-items:end}
+        .inspect-controls label {display:grid;gap:5px}
+        .inspect-grid {display:grid;grid-template-columns:280px minmax(0,1fr);gap:20px}
+        .inspect-fields {max-height:540px;overflow:auto}
+        .inspect-field {display:flex;gap:8px;padding:10px 0;border-bottom:1px solid #1e293b}
+        .inspect-field small {display:block;color:#94a3b8;overflow-wrap:anywhere}
+        .inspect-table {overflow:auto;max-height:540px}
+        .inspect-table table {width:100%;font:12px ui-monospace,monospace;border-collapse:collapse}
+        .inspect-table th,.inspect-table td {padding:10px;border-bottom:1px solid #334155;text-align:left;white-space:nowrap;max-width:340px;overflow:hidden;text-overflow:ellipsis}
+        .inspect-table th {position:sticky;top:0;background:#0f172a}
+        .inspect-table tbody tr {cursor:pointer}
+        .inspect-table tbody tr:hover {background:#082f49}
+        #inspect-detail {max-height:480px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+        [hidden] {display:none!important}
+        @media(max-width:800px) {.inspect-grid {grid-template-columns:1fr}}
+    </style>
+</head>
+<body class="min-h-screen text-sm text-slate-200 antialiased">
+    {% set page_kind = "Explore / Inspect" %}
+    {% set page_title = dataset_key %}
+    {% set page_subtitle = "Preview actual records and fields, a small window at a time." %}
+    {% include "visualize_dataset_topbar.html" %}
+    <main class="dp-workspace space-y-5">
+        <header>
+            <h2 class="dp-page-title">Data Inspect</h2>
+            <p class="dp-page-description">Read-only preview. CSV shows the stored cache values, which may be sampled or derived.</p>
+        </header>
+        {% if inspect_cache_only %}
+        <div class="dp-notice text-amber-200">{% if inspect_remote %}Remote source Parquet is not supported in this release. Published CSV remains readable while the Agent is offline.{% else %}Only Viewer cache is available; source Parquet is not accessible.{% endif %}</div>
+        {% endif %}
+        <div class="inspect-controls dp-page-surface p-5">
+            <label>Data source<select id="inspect-source" class="dp-input">
+                <option value="parquet" {% if inspect_cache_only %}disabled{% endif %}>Original Parquet</option>
+                <option value="csv" {% if inspect_cache_only %}selected{% endif %}>Viewer CSV</option>
+            </select></label>
+            <label>Episode<select id="inspect-episode" class="dp-input" aria-label="Episode"></select></label>
+            <label>Starting row (0-based)<input id="inspect-offset" class="dp-input" type="number" value="0" min="0" step="1"></label>
+            <label>Rows per page<input id="inspect-limit" class="dp-input" type="number" value="50" min="1" max="200" step="1"></label>
+            <button id="inspect-load" class="dp-btn dp-btn-primary">Load rows</button>
+            <a class="dp-btn" href="{{ cache_url }}">Open Cache</a>
+        </div>
+        <div id="inspect-status" class="dp-notice text-sky-200" role="status" aria-live="polite">Loading schema…</div>
+        <div id="inspect-error" class="dp-notice border-rose-900 text-rose-200" role="alert" hidden></div>
+        <div id="inspect-provenance" class="dp-context-card p-4 space-y-2" hidden>
+            <p id="inspect-file" class="font-mono text-sky-200"></p>
+            <p id="inspect-counts" class="text-slate-300"></p>
+            <p id="inspect-remote" class="text-amber-200"></p>
+        </div>
+        <div class="inspect-grid">
+            <aside class="dp-page-surface p-4">
+                <h3 class="font-semibold mb-3">Fields</h3>
+                <input id="inspect-search" class="dp-input w-full" type="search" placeholder="Search fields" aria-label="Search fields">
+                <p class="text-xs text-slate-400 mt-2">Choose fields, then load rows. Click a record to inspect all fields.</p>
+                <div id="inspect-fields" class="inspect-fields mt-2"></div>
+            </aside>
+            <section class="dp-page-surface p-4 min-w-0">
+                <div class="flex flex-wrap gap-3 items-center mb-3">
+                    <button id="inspect-prev" class="dp-btn" disabled>Previous</button>
+                    <button id="inspect-next" class="dp-btn" disabled>Next</button>
+                    <span id="inspect-range" class="text-slate-400"></span>
+                </div>
+                <div id="inspect-table" class="inspect-table"></div>
+                <p id="inspect-empty" class="dp-empty-state" hidden>No records in this window.</p>
+            </section>
+        </div>
+        <section id="inspect-detail-panel" class="dp-page-surface p-4" hidden>
+            <h3 id="inspect-detail-title" class="font-semibold mb-3">Record JSON</h3>
+            <pre id="inspect-detail" class="font-mono text-xs"></pre>
+        </section>
+    </main>
+    <script>
+    (() => {
+        const api = {{ inspect_api_base|tojson }};
+        const el = id => document.getElementById('inspect-' + id);
+        let schema = null, preview = null, requestId = 0, controller = null, detailId = 0;
+        let detailController = null;
+        const selected = new Set();
+        const text = (node, value) => { node.textContent = value ?? ''; };
+        function cell(value) {
+            if (Array.isArray(value)) return JSON.stringify(value.slice(0, 6)) + (value.length > 6 ? ` … (${value.length} values)` : '');
+            if (value && typeof value === 'object') {
+                const summary = JSON.stringify(value.preview ?? value).slice(0, 120);
+                return summary + (value.truncated || value.__inspect_truncated__ ? ` … (truncated${value.length ? ', length ' + value.length : ''})` : '');
+            }
+            return value === null ? 'null' : String(value);
+        }
+        function begin() {
+            controller?.abort(); detailController?.abort();
+            controller = new AbortController();
+            requestId++; detailId++;
+            el('error').hidden = true;
+            el('detail-panel').hidden = true;
+            el('load').disabled = true; el('prev').disabled = true; el('next').disabled = true;
+            text(el('status'), 'Loading…');
+            return requestId;
+        }
+        async function get(kind, params, signal) {
+            const response = await fetch(api + '/' + kind + '?' + params, {signal});
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            return result;
+        }
+        function fail(error, id) {
+            if (id !== requestId || error.name === 'AbortError') return;
+            text(el('error'), error.message); el('error').hidden = false;
+            text(el('status'), 'Preview unavailable. Change source or episode, or open Cache.');
+        }
+        function fields() {
+            const query = el('search').value.toLowerCase();
+            el('fields').replaceChildren();
+            for (const column of schema?.columns || []) {
+                if (!column.name.toLowerCase().includes(query)) continue;
+                const label = document.createElement('label'); label.className = 'inspect-field';
+                const input = document.createElement('input'); input.type = 'checkbox';
+                input.dataset.columnId = column.id; input.checked = selected.has(column.id);
+                input.addEventListener('change', () => input.checked ? selected.add(column.id) : selected.delete(column.id));
+                const info = document.createElement('span');
+                text(info, column.name + (schema.source === 'csv' ? ` [column ${Number(column.id) + 1}]` : ''));
+                const detail = document.createElement('small');
+                text(detail, column.dtype + (column.shape ? ' · shape ' + JSON.stringify(column.shape) : '')
+                    + (column.previewable ? '' : ' · media payload omitted'));
+                info.append(detail);
+                if (column.names) { const names = document.createElement('small'); text(names, JSON.stringify(column.names)); info.append(names); }
+                label.append(input, info); el('fields').append(label);
+            }
+        }
+        function provenance(data) {
+            const p = data.provenance;
+            el('provenance').hidden = !p;
+            if (!p) return;
+            text(el('file'), `${p.source === 'csv' ? 'Viewer cache' : 'Source Parquet'}: ${p.file} · episode ${p.episode_index}`);
+            text(el('counts'), `Source episode frames: ${p.source_frames ?? 'not reported'} · `
+                + (p.source === 'csv' ? `CSV sampling step: ${p.downsample} · cached rows: ${data.cache_rows ?? 'not counted (read on demand)'} · cache: ${p.cache_status}` : 'Original stored values; no signal normalization.'));
+            text(el('remote'), p.remote ? `Location ${p.remote.location_id} · Agent ${p.remote.agent_status || 'unknown'} · ${p.remote.state || 'unknown state'} · metadata last synced ${p.remote.last_synced_at || 'unknown'}${p.cache_status === 'stale' ? ' · Cache is stale relative to the current source.' : ''}` : '');
+        }
+        function table(data) {
+            el('table').replaceChildren();
+            const table = document.createElement('table'), head = table.createTHead().insertRow();
+            for (const name of ['Row', ...data.columns.map(c => c.name)]) { const th = document.createElement('th'); text(th, name); head.append(th); }
+            const body = table.createTBody();
+            data.rows.forEach((values, index) => {
+                const row = body.insertRow(), position = data.offset + index;
+                row.tabIndex = 0; row.setAttribute('aria-label', 'Inspect row ' + position);
+                for (const value of [position, ...values]) text(row.insertCell(), cell(value));
+                row.addEventListener('click', () => record(position));
+                row.addEventListener('keydown', event => { if (event.key === 'Enter') record(position); });
+            });
+            el('table').append(table); el('empty').hidden = data.rows.length !== 0;
+            text(el('range'), data.rows.length ? `Rows ${data.offset}–${data.next_offset - 1}` : `No rows at offset ${data.offset}`);
+            el('prev').disabled = data.offset === 0; el('next').disabled = !data.has_more;
+            text(el('status'), data.truncated ? 'Response capped at 2 MiB. Continue with Next or choose fewer fields.' : `${data.rows.length} records loaded. Large values are explicitly marked as truncated.`);
+            provenance(data);
+        }
+        async function loadSchema(reset) {
+            const id = begin(); schema = null; preview = null;
+            el('table').replaceChildren(); el('fields').replaceChildren(); el('provenance').hidden = true;
+            el('empty').hidden = true; text(el('range'), '');
+            const params = new URLSearchParams({source: el('source').value});
+            if (!reset && el('episode').value !== '') params.set('episode_index', el('episode').value);
+            el('offset').value = '0';
+            try {
+                const result = await get('schema', params, controller.signal);
+                if (id !== requestId) return;
+                schema = result;
+                el('episode').replaceChildren(...result.episodes.map(index => { const option = new Option('Episode ' + index, index); option.selected = index === result.episode_index; return option; }));
+                selected.clear(); result.default_columns.forEach(id => selected.add(id)); fields();
+                if (result.episode_index === null) { text(el('status'), 'This dataset contains no episodes.'); return; }
+                await loadRows();
+            } catch (error) { fail(error, id); }
+            finally { if (id === requestId) el('load').disabled = false; }
+        }
+        async function loadRows() {
+            const id = begin(); preview = null;
+            try {
+                if (!schema) throw new Error('Choose a data source with available records first.');
+                if (!selected.size) throw new Error('Select at least one field.');
+                const params = new URLSearchParams({source: schema.source, episode_index: schema.episode_index,
+                    offset: el('offset').value, limit: el('limit').value});
+                schema.columns.filter(column => selected.has(column.id)).forEach(column => params.append('columns', column.id));
+                const result = await get('rows', params, controller.signal);
+                if (id !== requestId) return;
+                preview = result; table(result);
+            } catch (error) { if (id === requestId) el('table').replaceChildren(); fail(error, id); }
+            finally { if (id === requestId) el('load').disabled = false; }
+        }
+        async function record(position) {
+            if (!schema || !preview) return;
+            detailController?.abort(); detailController = new AbortController();
+            const version = requestId, id = ++detailId;
+            el('detail-panel').hidden = false; text(el('detail-title'), `Row ${position} · all fields`); text(el('detail'), 'Loading record…');
+            const params = new URLSearchParams({source: schema.source, episode_index: schema.episode_index, offset: position, limit: 1});
+            schema.columns.forEach(column => params.append('columns', column.id));
+            try {
+                const result = await get('rows', params, detailController.signal);
+                if (version !== requestId || id !== detailId) return;
+                const row = result.rows[0];
+                text(el('detail'), row ? JSON.stringify(result.columns.map((column, index) => ({column_id: column.id, name: column.name, value: row[index]})), null, 2) : 'Record is no longer available. Reload the preview.');
+            } catch (error) { if (version === requestId && id === detailId && error.name !== 'AbortError') text(el('detail'), error.message); }
+        }
+        el('source').addEventListener('change', () => loadSchema(true));
+        el('episode').addEventListener('change', () => loadSchema(false));
+        el('search').addEventListener('input', fields);
+        el('load').addEventListener('click', loadRows);
+        el('prev').addEventListener('click', () => { el('offset').value = Math.max(0, preview.offset - Number(el('limit').value)); loadRows(); });
+        el('next').addEventListener('click', () => { el('offset').value = preview.next_offset; loadRows(); });
+        loadSchema(true);
+    })();
+    </script>
+</body>
+</html>

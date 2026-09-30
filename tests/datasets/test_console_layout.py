@@ -395,7 +395,7 @@ def test_full_console_navigation_uses_workspace_page_tab_hierarchy():
         "embedding",
         "compare",
     ]
-    assert pages["explore"]["open_links"] == ["viewer", "analysis"]
+    assert pages["explore"]["open_links"] == ["viewer", "analysis", "inspect"]
 
 
 def test_visualize_console_keeps_dataset_runs_explore_and_allowed_legacy_page():
@@ -417,7 +417,7 @@ def test_visualize_console_keeps_dataset_runs_explore_and_allowed_legacy_page():
     assert [tab["key"] for tab in pages["preprocessing"]["tabs"]] == ["cache"]
     assert [tab["key"] for tab in pages["explore"]["tabs"]] == ["explore_overview"]
     assert [tab["key"] for tab in pages["admin_operations"]["tabs"]] == ["dataset_ops"]
-    assert pages["explore"]["open_links"] == ["viewer", "analysis"]
+    assert pages["explore"]["open_links"] == ["viewer", "analysis", "inspect"]
     assert next(group for group in groups if group["key"] == "legacy_admin")["label"] == "Admin"
 
 
@@ -533,6 +533,7 @@ def test_explore_overview_surfaces_visualizations_and_preparation_paths():
     assert "visualizationItems()" in template
     assert "openVisualizationSetup(item.key)" in template
     for label in (
+        "Data Inspect",
         "Episode Viewer",
         "Dataset Analysis",
         "Label Review",
@@ -559,7 +560,10 @@ def test_local_and_remote_datasets_use_the_shared_curation_workspace():
     assert "window.syncCurationWorkspace($refs.curationWorkspace" in template
     assert "['explore', 'quality', 'annotation', 'dataset_build'].includes(this.activePage)" in template
     assert "{location_id: this.selectedDataset.remote_location_id}" in template
-    assert "items.filter(item => ['viewer', 'analysis', 'temporal_caption'].includes(item.key))" in template
+    assert (
+        "items.filter(item => ['viewer', 'analysis', 'inspect', 'temporal_caption'].includes(item.key))"
+        in template
+    )
     assert "await this.prepareRemoteViewer(this.selectedRemoteLocation)" in template
     assert "'annotation', 'quality', 'dataset_build'].includes(pageKey)" in template
     assert "'dataset_ops', 'explore_overview'" in template

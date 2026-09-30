@@ -50,6 +50,11 @@
 
 Task definitions are configurable in the console. Existing Pick/Place/Give tasks and new task families share versioned catalogs, dataset mappings, analysis and curation filters, and portable Agent configuration snapshots. See the [task onboarding guide](docs/data_platform_task_catalog.md).
 
+**Data Inspect:** Select a dataset and open **Explore → Inspect → Open data inspect** to preview
+actual Parquet records or stored Viewer CSV values, 50 rows at a time (maximum 200). Fields are
+searchable, arrays expand as JSON, and previews remain read-only. Remote datasets use published CSV
+without contacting the Agent. See the [page user guide](docs/data_platform_page_user_guide.md).
+
 ### Run Analysis without preparing caches
 
 Select a dataset and open **Explore → Dataset Analysis → Open analysis**. **Refresh analysis**

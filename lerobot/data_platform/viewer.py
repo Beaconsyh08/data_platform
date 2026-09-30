@@ -243,6 +243,7 @@ from lerobot.data_platform.routes import (
     register_compare_routes,
     register_construction_routes,
     register_embedding_routes,
+    register_inspect_routes,
     register_lifecycle_routes,
     register_preprocess_routes,
     register_remote_analysis_routes,
@@ -543,7 +544,7 @@ _CONSOLE_GROUP_DEFS = [
                     {"key": "embedding", "label": "Embedding"},
                     {"key": "compare", "label": "Compare"},
                 ],
-                "open_links": ["viewer", "analysis"],
+                "open_links": ["viewer", "analysis", "inspect"],
             },
             {
                 "key": "quality",
@@ -615,6 +616,7 @@ _CONSOLE_MODE_ALLOWED_OPEN_LINKS = {
     CONSOLE_MODE_FULL: {
         "viewer",
         "analysis",
+        "inspect",
         "labeling",
         "construction",
         "tagging",
@@ -622,7 +624,7 @@ _CONSOLE_MODE_ALLOWED_OPEN_LINKS = {
         "smoothing",
         "compare",
     },
-    CONSOLE_MODE_VISUALIZE: {"viewer", "analysis"},
+    CONSOLE_MODE_VISUALIZE: {"viewer", "analysis", "inspect"},
 }
 
 
@@ -2036,7 +2038,17 @@ def run_server(
             smoothing_status = _smoothing_status(Path(dataset_obj.root), repo_id)
             smoothing_ready = smoothing_ready or smoothing_status["status"] == "ready"
             smoothing_href = smoothing_status.get("report_url") or smoothing_href
+        inspect_href = f"/{repo_id}/inspect"
+        if (datasets_index.get(dataset_key) or {}).get("internal_remote_cache"):
+            inspect_href = f"/remote/{Path(datasets_index[dataset_key]['output_dir']).name}/inspect"
         links = [
+            {
+                "key": "inspect",
+                "label": "Data Inspect",
+                "href": inspect_href,
+                "enabled": True,
+                "hint": "Preview a small window of source records or Viewer CSV.",
+            },
             {
                 "key": "viewer",
                 "label": "Viewer",
@@ -4463,6 +4475,9 @@ def run_server(
             legacy_mutations_enabled=legacy_mutations_enabled,
             task_catalog_store=_lifecycle_store().tasks,
         )
+        route_context.remote_cache_root = cache_root
+    if _open_link_enabled("inspect"):
+        register_inspect_routes(app, route_context)
     if console_mode == CONSOLE_MODE_FULL:
         from lerobot.data_platform.routes.curation import register_curation_routes
 
