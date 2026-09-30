@@ -319,6 +319,42 @@ def operation_capabilities(profile: DatasetDataProfile, features: dict) -> dict[
     return result
 
 
+def quality_check_capabilities(profile: DatasetDataProfile, features: dict) -> dict[str, dict]:
+    """Quality checks have independent requirements; legacy mutation capabilities stay unchanged."""
+    from lerobot.data_platform.precompute.quality_signals import numeric_features
+
+    legacy = profile.legacy_data_version is not None
+    joint_fields = [key for key in ("action", "state") if feature_vector_dim(features.get(key)) >= 16]
+    radians = all(
+        (features[key].get("unit") or features[key].get("units")) in (None, "rad", "radian", "radians")
+        for key in joint_fields
+    )
+    s1 = legacy and bool(joint_fields) and profile.confirmed and radians
+    return {
+        "legacy": asdict(
+            OperationCapability(legacy, None if legacy else "Requires a DVT processing profile")
+        ),
+        "s1": {
+            **asdict(OperationCapability(s1, None if s1 else "Confirm a DVT joint profile in radians")),
+            "can_confirm_profile": legacy and bool(joint_fields) and radians,
+        },
+        "s3": asdict(
+            OperationCapability(
+                bool(numeric_features(features)),
+                "Requires numeric signals" if not numeric_features(features) else None,
+            )
+        ),
+        "c3": asdict(
+            OperationCapability(
+                any(feature.get("dtype") in {"image", "video"} for feature in features.values()),
+                None
+                if any(feature.get("dtype") in {"image", "video"} for feature in features.values())
+                else "Requires an image or video feature",
+            )
+        ),
+    }
+
+
 def dataset_semantics(info: dict, profile: DatasetDataProfile | None = None) -> dict:
     profile = profile or profile_from_info(info)
     return {

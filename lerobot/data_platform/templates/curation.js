@@ -74,6 +74,25 @@ window.createCurationWorkspace = (root, initialTarget) => {
     root.querySelectorAll('[data-command]').forEach(button => {
       const capability = context.operations[`curation.${button.dataset.command}`];
       let blocked = capability?.reason || '';
+      if (button.dataset.command === 'quality') {
+        const form = button.closest('form'), confirmation = form.elements.quality_profile.value;
+        form.querySelectorAll('[name=checks]').forEach(input => {
+          const ready = context.quality_checks?.[input.value];
+          const available = ready?.available || (input.value === 's1' && ready?.can_confirm_profile && confirmation);
+          input.disabled = busy || !context.can_edit || !available;
+          input.closest('label').querySelector('small').textContent = available ? '' : ready?.reason || 'Unavailable';
+        });
+        if (!form.dataset.qualityInitialized) {
+          form.querySelectorAll('[name=checks]:disabled').forEach(input => { input.checked = false; });
+          form.dataset.qualityInitialized = 'true';
+        }
+        const selected = [...form.querySelectorAll('[name=checks]:checked')];
+        if (!blocked && (!selected.length || selected.some(input => input.disabled && !busy))) blocked = 'Select supported quality checks.';
+        form.elements.quality_profile.disabled = busy || !context.can_edit || !context.quality_checks?.s1?.can_confirm_profile;
+        const video = selected.some(input => input.value === 'c3');
+        for (const name of ['video_mode','video_workers']) form.elements[name].disabled = busy || !context.can_edit || !video;
+        form.elements.qc_config.disabled = busy || !context.can_edit || context.quality_protocol !== 1;
+      }
       if (button.dataset.command === 'labeling' && !blocked) {
         const backend = button.closest('form').elements.backend.value;
         const ready = context.backends?.labeling?.backends?.[backend];
@@ -93,6 +112,23 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('sync').title = context.operations['curation.snapshot']?.reason || '';
     $('draft-state').textContent = draft() ? `${draft().status} · revision ${draft().revision}` : 'Select or create a draft';
   }
+  function drawQualityControls(form) {
+    const checks = document.createElement('div'); checks.className = 'fields quality-checks';
+    for (const [key,label] of [['legacy','Legacy DVT checks'],['s1','S1 · Joint jumps'],['s3','S3 · Invalid values'],['c3','C3 · Source image/video quality']]) {
+      const field = text('label', label), input = document.createElement('input'); input.type = 'checkbox'; input.name = 'checks'; input.value = key; input.checked = key === 'legacy'; input.onchange = buttons; field.append(input,text('small','')); checks.append(field);
+    }
+    const details = document.createElement('details'); details.append(text('summary','Quality configuration'));
+    const grid = document.createElement('div'); grid.className = 'fields';
+    for (const [name,label,values] of [['quality_profile','Confirm joint profile (S1)',['','DVT1','DVT2']],['video_mode','Video coverage',['sampled','full']]]) {
+      const field = text('label',label), select = document.createElement('select'); select.name = name;
+      values.forEach(value => { const option = text('option',value || 'Use recorded profile'); option.value = value; select.append(option); });
+      select.onchange = buttons; field.append(select); grid.append(field);
+    }
+    const workers = text('label','Video workers (1–16)'), input = document.createElement('input'); input.type = 'number'; input.name = 'video_workers'; input.min = '1'; input.max = '16'; input.value = '2'; workers.append(input); grid.append(workers);
+    const config = text('label','Thresholds and bounds (JSON)'), editor = document.createElement('textarea'); editor.name = 'qc_config'; editor.rows = 5; editor.placeholder = '{"schema_version":1,"s1":{"max_step":0.5,"max_speed":20},"s3":{"bounds":[]},"c3":{"sample_every_seconds":1}}'; config.append(editor);
+    details.append(grid,config,text('p','S1 uses radians and radians/second after profile confirmation. S3 bounds require matching metadata units. Sampled media checks report coverage; blur and freeze candidates require review.','muted'));
+    form.append(checks,details);
+  }
   function selectPage(value, tab) {
     page = ['explore','quality','annotation','dataset_build'].includes(value) ? value : 'annotation';
     root.querySelectorAll('[data-section]').forEach(item => { item.hidden = item.dataset.section !== page; });
@@ -111,7 +147,9 @@ window.createCurationWorkspace = (root, initialTarget) => {
         field.append(input); grid.append(field);
       }
       if (operation === 'construction') { const label = text('label','Examples per scenario'); const rows = document.createElement('div'); rows.dataset.curationId = 'construction-counts'; label.append(rows); grid.append(label); }
-      const row = document.createElement('div'); row.className = 'row'; const button = text('button', operationNames[operation]); button.type = 'submit'; button.dataset.command = operation; row.append(button, text('small','','operation-reason')); form.append(grid,row); container.append(form);
+      form.append(grid);
+      if (operation === 'quality') drawQualityControls(form);
+      const row = document.createElement('div'); row.className = 'row'; const button = text('button', operationNames[operation]); button.type = 'submit'; button.dataset.command = operation; row.append(button, text('small','','operation-reason')); form.append(row); container.append(form);
       if (operation === 'labeling') form.elements.backend.onchange = buttons;
       form.addEventListener('submit', event => { event.preventDefault(); action(async () => {
         const parameters = {};
@@ -121,6 +159,16 @@ window.createCurationWorkspace = (root, initialTarget) => {
           else if (value) parameters[key] = type === 'episodes' ? indices(value) : type === 'list' ? value.split(',').map(item => item.trim()).filter(Boolean) : type === 'number' ? Number(value) : value;
         }
         if (operation === 'construction') { parameters.per_scenario_counts = {}; $('construction-counts').querySelectorAll('input').forEach(input => { parameters.per_scenario_counts[input.name] = Number(input.value); }); }
+        if (operation === 'quality') {
+          const selected = [...form.querySelectorAll('[name=checks]:checked')].map(input => input.value);
+          if (!selected.length) throw Error('Select at least one quality check.');
+          if (context.quality_protocol === 1) {
+            parameters.checks = selected;
+            if (form.elements.qc_config.value.trim()) parameters.qc_config = JSON.parse(form.elements.qc_config.value);
+            if (selected.includes('c3')) { parameters.video_mode = form.elements.video_mode.value; parameters.video_workers = Number(form.elements.video_workers.value); }
+          }
+          if (form.elements.quality_profile.value) parameters.data_version = form.elements.quality_profile.value;
+        }
         await submit(operation, parameters);
       }); });
     });
@@ -200,7 +248,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('result-body').replaceChildren(); $('artifacts').replaceChildren();
     const rows = Object.values(result.labels || {}).map(item => [item.episode_index,item.task || '',item.selected ? 'Target selected' : 'No target selected']);
     Object.values(result.tags || {}).forEach(item => rows.push([item.episode_index,'Tags',Object.entries(item.tags || {}).map(([key,value]) => `${key}: ${JSON.stringify(value)}`).join(', ')]));
-    (result.quality?.flagged_episodes || []).forEach(index => rows.push([index,'Quality issue',(result.quality.flag_reasons?.[index] || []).map(reason => reason.message || reason.reason || reason.code || String(reason)).join(', ')]));
+    if (result.quality?.flag_reasons || result.quality?.coverage?.length) drawQualityResult();
     Object.entries(result.result?.transitions || {}).forEach(([index,items]) => rows.push([index,'Stages',items.map(item => `${item.time}s → ${item.state}`).join(', ')]));
     if (rows.length) { const table = document.createElement('table'); for (const values of rows) { const tr = document.createElement('tr'); values.forEach(value => tr.append(text('td',value))); table.append(tr); } $('result-body').append(table); }
     for (const filename of result.artifacts) {
@@ -215,6 +263,39 @@ window.createCurationWorkspace = (root, initialTarget) => {
       for (const [name,item] of Object.entries(result.result.scenarios)) { const label = text('label',`${name.replaceAll('_',' ')} (${item.candidate_count} candidates)`), input = document.createElement('input'); input.name = name; input.type = 'number'; input.min = '0'; input.value = '0'; label.append(input); $('construction-counts').append(label); }
     }
     $('use-result').checked = inputRuns.has(result.run); notice('Result loaded. Select an episode to review or accept its annotations.');
+  }
+  function drawQualityResult() {
+    const container = document.createElement('div'), filters = document.createElement('div'); filters.className = 'row';
+    const issues = Object.entries(result.quality.flag_reasons || {}).flatMap(([index,reasons]) => reasons.map(issue => ({...issue,episode:Number(index),detector:issue.detector || 'legacy'})));
+    const coverage = result.quality.coverage || [];
+    const selectors = {};
+    for (const [key,label,values] of [
+      ['detector','Check',[...issues,...coverage].map(item => item.detector)],
+      ['episode','Episode',[...issues,...coverage].map(item => String(item.episode))],
+      ['stream','Signal / camera',issues.map(item => item.camera || item.field).concat(coverage.map(item => item.camera))]
+    ]) {
+      const field = text('label',label), select = document.createElement('select'); select.dataset.qualityFilter = key;
+      options(select,[...new Set(values.filter(value => value != null))].sort(),value => value,value => value,`All ${label.toLowerCase()}`); selectors[key] = select; field.append(select); filters.append(field);
+    }
+    const body = document.createElement('div'); body.className = 'scroll';
+    const matches = item => (!selectors.detector.value || selectors.detector.value === item.detector) && (!selectors.episode.value || selectors.episode.value === String(item.episode)) && (!selectors.stream.value || selectors.stream.value === (item.camera || item.field));
+    const draw = () => {
+      body.replaceChildren();
+      const table = document.createElement('table'), heading = document.createElement('tr');
+      ['Episode','Check','Signal / camera','Severity / status','Frame intervals [start, end)','Evidence'].forEach(label => heading.append(text('th',label))); table.append(heading);
+      for (const item of issues.filter(matches)) {
+        const row = document.createElement('tr');
+        [item.episode,item.detector,`${item.camera || item.field || '—'}${item.dimension != null ? '['+item.dimension+']' : ''}`,item.severity || 'issue',JSON.stringify(item.frame_intervals || item.frames || []),`${item.reason} · ${JSON.stringify(item.metrics || {})}${item.time_intervals?.length ? ' · seconds '+JSON.stringify(item.time_intervals) : ''}`].forEach(value => row.append(text('td',value))); table.append(row);
+      }
+      for (const item of coverage.filter(matches)) {
+        const row = document.createElement('tr');
+        [item.episode,'c3',item.camera,item.status,JSON.stringify(item.checked_intervals || []),`${item.mode}: ${item.checked_frames}/${item.expected_frames} frames (${(item.coverage_fraction*100).toFixed(1)}%)`].forEach(value => row.append(text('td',value))); table.append(row);
+      }
+      body.append(table);
+      if (table.rows.length === 1) body.append(text('p','No issues or media coverage match these filters.','muted'));
+    };
+    Object.values(selectors).forEach(select => { select.onchange = draw; });
+    container.append(text('h3','Quality evidence'),filters,body); $('result-body').append(container); draw();
   }
   function drawEmbedding(points) {
     const svg = $('embedding-plot'); svg.hidden = false; svg.replaceChildren(); svg.setAttribute('viewBox','0 0 800 320');

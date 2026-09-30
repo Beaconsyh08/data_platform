@@ -224,6 +224,16 @@ class JobManager:
                     and (node.capabilities or {}).get("curation_protocol") != 1
                 ):
                     continue
+                if job.operation == "curation.quality":
+                    parameters = (job.options or {}).get("parameters", {})
+                    if any(
+                        key in parameters for key in ("checks", "qc_config", "video_mode", "video_workers")
+                    ):
+                        caps = node.capabilities or {}
+                        if caps.get("quality_protocol") != 1 or not set(
+                            parameters.get("checks", ["legacy"])
+                        ).issubset(caps.get("quality_checks", [])):
+                            continue
                 required = required_data_profile_protocol(location.details or {})
                 if job.operation == "viewer.prepare" and job.options.get("force_recompute_stage"):
                     required = DATA_PROFILE_PROTOCOL

@@ -69,6 +69,78 @@ cross-node raw-file replication.
   `DATA_PLATFORM_MODEL_ROOTS`. Configure model credentials in the execution service environment;
   they are not stored in Curation commands. Dependencies and credentials differ by node.
 
+## Quality checks
+
+Quality detection uses the existing `curation.quality` operation on the dataset's owning node.
+The Quality form offers independent checks; unsupported checks show their reason. Legacy DVT
+checks remain the default. New checks require the executor to advertise `quality_protocol: 1`
+and the selected names in `quality_checks`, at both submission and claim. Calls without `checks`
+retain legacy behavior and remain compatible with older Agents.
+
+- **S1** detects jumps and excessive velocity in the first 16 DVT action/state dimensions,
+  excluding grippers 7 and 15. It requires a confirmed DVT joint profile in radians. If the
+  recorded profile is inferred, explicitly confirm DVT1/DVT2 in the form. It uses actual
+  timestamp differences and reports invalid timestamps separately; it does not smooth signals.
+  UMI pose/quaternion signals are not subject to these joint thresholds.
+- **S3** checks numeric scalar/vector features for non-finite values, missing values, and
+  shape mismatch. Optional bounds or allowed codes require a field, dimension, and unit
+  matching feature metadata. No physical limits are inferred from an unknown unit. Statistical
+  reference distributions are not implemented in this first version.
+- **C3** checks source images/videos for missing or undecodable media and black frames.
+  Blur and freeze detections are review candidates, not task-failure judgments. Pixel statistics
+  use grayscale images at 160 by 120 pixels, with thresholds recorded in the result.
+  Video decoding uses one native thread per stream and a separate pool of 1–16 video workers.
+  Pending stream tasks are bounded. v3 shared videos are inspected only within the episode's
+  `from_timestamp`/`to_timestamp` range; Viewer preview caches are not the detection source.
+
+Enable C3 explicitly. Its default `sampled` mode examines frames at one-second intervals plus
+the last frame. Videos are decoded sequentially to detect decoder failures, but visual metrics
+are computed only for sampled frames. `full` computes metrics for every frame. Coverage reports
+the checked intervals, counts, fraction, and `complete`, `sampled`, `incomplete`, or `error`
+status for every camera. Sampled results do not certify unchecked frames. Media paths must
+resolve inside the registered dataset; an external video symlink is reported as a media error.
+
+Advanced thresholds use a versioned JSON object, for example:
+
+```json
+{
+  "schema_version": 1,
+  "s1": {"max_step": 0.5, "max_speed": 20.0},
+  "s3": {"bounds": []},
+  "c3": {
+    "sample_every_seconds": 1.0,
+    "black_mean": 4.0,
+    "black_pixel": 16.0,
+    "black_fraction": 0.98,
+    "blur_variance": 20.0,
+    "freeze_delta": 0.5,
+    "freeze_seconds": 2.0
+  }
+}
+```
+
+S1 step and speed are in radians and radians/second. An S3 bound can be
+`{"field":"sensor","dimension":0,"unit":"m","min":0,"max":1}` when that feature declares
+`unit: "m"`. For coded values, declare `unit: "unitless"` in metadata and use `allowed_values`.
+Unknown options, non-finite thresholds, invalid dimensions, and mismatched units are rejected
+before a job is accepted, and validated again on the execution node.
+
+Open a generated result to filter evidence by detector, episode, and field/camera. Evidence
+includes severity, half-open frame/time intervals, and measured values/thresholds. Existing
+legacy `frames` fields keep their original semantics. Results are stored in the existing
+Curation bundle as `annotation_issues.json`, `quality_flagged_episodes.json`, and
+`quality_coverage.json`; publication still checks the source fingerprint and bundle checksums.
+
+To recompute selected checks while retaining earlier evidence, open the previous combined
+Quality result and select **Use as computation input**. A new immutable run replaces automatic
+issues only for the selected episodes and detectors; other detectors/episodes and manual
+evidence remain. Incomplete/failed media checks retain earlier camera evidence and add the
+new failure. `overwrite` does not broaden a configurable run beyond this scope. An old issue
+without `detector` is treated as legacy. Several input runs containing conflicting files are
+still rejected; choose one combined result. Computation never changes source datasets or
+draft inclusion/repair decisions. Viewer cache synchronization and interval highlighting
+remain separate workflows and are not implied by Curation result publication.
+
 ## Validation and rollout
 
 Targeted tests cover v2.1 and shared-shard v3.0 snapshots, source-change rejection,

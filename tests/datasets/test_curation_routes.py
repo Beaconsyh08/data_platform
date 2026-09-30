@@ -195,6 +195,112 @@ def test_viewer_cannot_queue_or_edit(remote):
     assert not caps["can_edit"]
 
 
+def test_quality_capability_upgrade_publication_and_partial_rerun(remote):
+    from lerobot.data_platform.precompute.preprocess.quality_flags import _write_json
+
+    before = _snapshot(remote.source)
+    job, headers = queue(remote, "curation.snapshot")
+    execute(remote, job, headers)
+    body = {
+        "target": {"location_id": remote.location["location_id"]},
+        "operation": "curation.quality",
+        "parameters": {"checks": ["s3"], "workers": 1},
+    }
+    response = remote.client.post(
+        "/api/curation/jobs", json=body, headers={"Idempotency-Key": "unsupported-quality"}
+    )
+    assert response.status_code == 409 and "Upgrade" in response.get_json()["error"]
+    caps = {
+        **remote.node["capabilities"],
+        "quality_protocol": 1,
+        "quality_checks": ["legacy", "s1", "s3", "c3"],
+    }
+    remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
+    job, headers = queue(remote, "curation.quality", parameters={"checks": ["s3"], "workers": 1})
+    # Seed unrelated detector evidence in the attempt's inputs; publication preserves it.
+    inputs = remote.tmp / "inputs"
+    _write_json(
+        inputs / "annotation_issues.json",
+        [
+            {
+                "episode": 0,
+                "detector": "c3",
+                "type": "quality_flag",
+                "reason": "black_frame",
+                "camera": "front",
+            }
+        ],
+    )
+    job["options"]["input_root"] = str(inputs)
+    job["options"]["input_files"] = {"annotation_issues.json": {}}
+    # execute() normally downloads inputs; this attempt supplies its local validated input directly.
+    from lerobot.data_platform.execution import SpoolingClient
+
+    work = remote.tmp / "work" / job["job_id"]
+    agent = SimpleNamespace(
+        client=SpoolingClient("unused", work),
+        state=None,
+        allowed_roots=[remote.tmp],
+        writable_roots=[remote.tmp],
+    )
+    execute_curation_job(agent, job, remote.source, {**job["location"], "output_dir": str(work / "staging")})
+    # Feed the actual generated bundle through the central lease/checksum publication endpoints.
+    endpoint = f"/api/agents/jobs/{job['job_id']}"
+    result = json.loads((work / "staging/curation-result/result.json").read_text())
+    for path in (work / "uploads").glob("*.json"):
+        upload = json.loads(path.read_text())
+        response = remote.client.put(
+            endpoint + "/curation-artifacts/" + upload["relative_path"],
+            headers=headers,
+            data=Path(upload["path"]).read_bytes(),
+        )
+        assert response.status_code == 200, response.get_json()
+    response = remote.client.post(
+        endpoint + "/complete",
+        headers=headers,
+        json={"status": "done", "result": {**result, "curation_protocol": 1}},
+    )
+    assert response.status_code == 200, response.get_json()
+    saved = remote.client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    assert saved["quality"]["flag_reasons"]["0"][0]["camera"] == "front"
+    assert saved["quality"]["summary"]["checks"] == ["s3"]
+    job, headers = queue(
+        remote,
+        "curation.quality",
+        delivery="quality-rerun",
+        parameters={"checks": ["s3"], "episodes": [1], "workers": 1},
+        input_runs=[job["job_id"]],
+    )
+    execute(remote, job, headers)
+    saved = remote.client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    assert saved["quality"]["flag_reasons"]["0"][0]["detector"] == "c3"
+    assert before == _snapshot(remote.source)
+
+
+def test_quality_claim_rechecks_node_protocol(remote):
+    job, headers = queue(remote, "curation.snapshot")
+    execute(remote, job, headers)
+    remote.control.heartbeat(
+        remote.node["node_id"],
+        capabilities={
+            **remote.node["capabilities"],
+            "quality_protocol": 1,
+            "quality_checks": ["legacy", "s3"],
+        },
+    )
+    body = {
+        "target": {"location_id": remote.location["location_id"]},
+        "operation": "curation.quality",
+        "parameters": {"checks": ["s3"]},
+    }
+    response = remote.client.post(
+        "/api/curation/jobs", json=body, headers={"Idempotency-Key": "quality-node-downgraded"}
+    )
+    assert response.status_code == 202, response.get_json()
+    remote.control.heartbeat(remote.node["node_id"], capabilities=remote.node["capabilities"])
+    assert remote.control.claim_job(remote.node["node_id"], worker_instance_id="downgraded") is None
+
+
 def test_changed_source_rejected_before_operator_runs(remote):
     job, headers = queue(remote, "curation.snapshot")
     execute(remote, job, headers)
@@ -362,6 +468,25 @@ def test_local_target_uses_same_durable_worker_protocol(tmp_path):
     assert context["target"]["location_id"] is None
     assert len(context["episodes"]) == 2
     assert client.post("/api/curation/drafts", json={"target": context["target"]}).status_code == 201
+    response = client.post(
+        "/api/curation/jobs",
+        json={
+            "target": context["target"],
+            "operation": "curation.quality",
+            "parameters": {"checks": ["s3"], "workers": 1},
+        },
+        headers={"Idempotency-Key": "local-quality"},
+    )
+    assert response.status_code == 202, response.get_json()
+    job = control.claim_job(state["node_id"], worker_instance_id="local-worker")
+    headers.update(
+        {"X-Job-Attempt": job["execution"]["attempt_id"], "X-Job-Credential": job["execution"]["credential"]}
+    )
+    before = _snapshot(source)
+    execute(fixture, job, headers)
+    saved = client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    assert saved["quality"]["summary"]["checks"] == ["s3"]
+    assert before == _snapshot(source)
 
 
 def test_label_review_input_and_construction_preserve_source(remote, monkeypatch):

@@ -35,7 +35,17 @@ PARAMETERS = {
     "snapshot": set(),
     "validate_source": set(),
     "stage": {"episodes", "prepare_workers", "fallback_stage_count", "data_version"},
-    "quality": {"episodes", "data_version", "workers", "overwrite", "clear_manual_flags"},
+    "quality": {
+        "episodes",
+        "data_version",
+        "workers",
+        "overwrite",
+        "clear_manual_flags",
+        "checks",
+        "qc_config",
+        "video_mode",
+        "video_workers",
+    },
     "labeling": {
         "episodes",
         "backend",
@@ -141,6 +151,10 @@ def validate_parameters(operation: str, parameters: dict) -> dict:
             raise ValueError("Invalid result variant")
     if operation == "curation.embedding" and not result.get("ckpt_path"):
         raise ValueError("Select a checkpoint on the execution node")
+    if operation == "curation.quality":
+        from lerobot.data_platform.precompute.preprocess.quality_flags import validate_quality_parameters
+
+        validate_quality_parameters(result)
     return result
 
 
@@ -160,6 +174,8 @@ def worker_capabilities() -> dict:
     return {
         "curation_protocol": CURATION_PROTOCOL,
         "curation_operations": sorted(OPERATIONS),
+        "quality_protocol": 1,
+        "quality_checks": ["legacy", "s1", "s3", "c3"],
         "curation_backends": {
             "labeling": labeling,
             "tagging": tagging,
@@ -263,7 +279,8 @@ def execute_curation_job(agent, job: dict, source: Path, location: dict) -> dict
         "embedding": "embedding",
         "project": "embedding",
     }
-    require_dataset_operation(source, aliases.get(kind, kind))
+    if kind != "quality" or "checks" not in parameters:
+        require_dataset_operation(source, aliases.get(kind, kind))
     folder = _require_within(Path(location["output_dir"]), agent.writable_roots, "Curation staging")
     bundle = folder / "curation-result"
     static = bundle / "static"

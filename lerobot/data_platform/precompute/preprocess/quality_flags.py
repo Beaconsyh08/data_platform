@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from concurrent.futures import as_completed
-from lerobot.data_platform.execution_pools import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, as_completed, wait
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
 
+from lerobot.data_platform.execution_pools import ThreadPoolExecutor
 from lerobot.data_platform.precompute.annotation import QUALITY_FLAG_TYPE, compute_quality_flags, series_to_2d
 from lerobot.data_platform.precompute.data_profile import (
+    quality_check_capabilities,
     require_dataset_operation,
+    resolve_data_profile,
     resolve_processing_profile,
 )
 from lerobot.data_platform.precompute.dataset_io import (
@@ -34,12 +37,21 @@ from lerobot.data_platform.precompute.preprocess.common import (
     load_json,
     validate_dataset_root,
 )
+from lerobot.data_platform.precompute.quality_signals import (
+    QC_CONFIG_VERSION,
+    QUALITY_CHECKS,
+    SignalQualityConfig,
+    detect_signal_quality,
+    numeric_features,
+)
+from lerobot.data_platform.precompute.quality_video import VideoQualityConfig, scan_camera_quality
 from lerobot.data_platform.precompute.tagging.review import current_tags, latest_tag_variant
 from lerobot.data_platform.precompute.timeseries import (
     DATA_VERSION_DVT1,
     DATA_VERSION_DVT2,
     feature_vector_dim,
 )
+from lerobot.data_platform.task_catalog import content_digest
 
 QUALITY_FLAGGED_EPISODES = "quality_flagged_episodes.json"
 MULTIPLE_TASK_ASSIGNMENT_REASON = "multiple_task_assignments"
@@ -60,11 +72,59 @@ PROMPT_SENTENCE_PUNCTUATION = (",", ".")
 
 
 class _LegacyMetadataPath:
-    def __init__(self, info: dict):
+    def __init__(self, info: dict, episodes_rows: list[dict] | None = None):
         self.info = info
+        self.episodes = _records_by_episode(episodes_rows or [])
 
     def get_data_file_path(self, episode_index: int) -> Path:
         return format_data_path(self.info, episode_index)
+
+    @property
+    def features(self) -> dict:
+        return self.info.get("features") or {}
+
+    def get_video_file_path(self, episode_index: int, video_key: str) -> Path:
+        return Path(
+            self.info["video_path"].format(
+                episode_index=episode_index,
+                episode_chunk=episode_index // int(self.info.get("chunks_size") or 1000),
+                video_key=video_key,
+            )
+        )
+
+    def get_video_time_range(self, episode_index: int, video_key: str) -> tuple[float, float]:
+        return 0.0, self.episodes[episode_index]["length"] / float(self.info["fps"])
+
+
+def validate_quality_parameters(
+    parameters: dict,
+) -> tuple[list[str], SignalQualityConfig, VideoQualityConfig]:
+    checks = parameters.get("checks", ["legacy"])
+    if (
+        not isinstance(checks, list)
+        or not checks
+        or any(not isinstance(check, str) or check not in QUALITY_CHECKS for check in checks)
+        or len(checks) != len(set(checks))
+    ):
+        raise ValueError("checks must be a non-empty list of unique legacy/s1/s3/c3 checks")
+    config = parameters.get("qc_config", {})
+    if not isinstance(config, dict) or set(config) - {"schema_version", "s1", "s3", "c3"}:
+        raise ValueError("Unknown quality configuration")
+    version = config.get("schema_version", QC_CONFIG_VERSION)
+    if type(version) is not int or version != QC_CONFIG_VERSION:
+        raise ValueError("Unsupported quality configuration version")
+    if parameters.get("video_mode", "sampled") not in ("sampled", "full"):
+        raise ValueError("video_mode must be sampled or full")
+    workers = parameters.get("video_workers", 2)
+    if type(workers) is not int or not 1 <= workers <= 16:
+        raise ValueError("video_workers must be an integer between 1 and 16")
+    if "data_version" in parameters and parameters["data_version"] not in ("DVT1", "DVT2", None):
+        raise ValueError("data_version must be DVT1 or DVT2")
+    return (
+        checks,
+        SignalQualityConfig.parse(config.get("s1", {}), config.get("s3", {})),
+        VideoQualityConfig.parse(config.get("c3", {})),
+    )
 
 
 def _load_json_any(path: Path):
@@ -490,7 +550,10 @@ def _scan_episode(
     data_version: str,
     tasks_by_index: dict[int, str] | None = None,
     meta: V3DatasetMetadata | None = None,
+    checks: list[str] | None = None,
+    signal_config: SignalQualityConfig | None = None,
 ) -> tuple[int, int, list[dict]]:
+    checks = checks or ["legacy"]
     episode_index = int(episode_row["episode_index"])
     parquet_path = (
         root / meta.get_data_file_path(episode_index)
@@ -504,6 +567,7 @@ def _scan_episode(
             [
                 {
                     "episode": episode_index,
+                    "detector": checks[0],
                     "type": QUALITY_FLAG_TYPE,
                     "reason": "missing_parquet",
                     "frames": [],
@@ -523,6 +587,12 @@ def _scan_episode(
         columns.append("subtask_state")
     if "task_index" in schema.names:
         columns.append("task_index")
+    if "s1" in checks or "s3" in checks:
+        columns.extend(
+            key
+            for key in numeric_features(info.get("features") or {})
+            if key in schema.names and key not in columns
+        )
     table = (
         read_episode_table(root, meta, episode_index, columns=columns)
         if meta is not None
@@ -531,23 +601,54 @@ def _scan_episode(
     timestamps = np.asarray(table["timestamp"].to_pylist(), dtype=np.float64)
 
     features = info.get("features") or {}
-    action = _array_from_column(table, "action", feature_vector_dim(features.get("action")))
-    state = _array_from_column(table, "state", feature_vector_dim(features.get("state")))
+    action = (
+        _array_from_column(table, "action", feature_vector_dim(features.get("action")))
+        if "legacy" in checks
+        else None
+    )
+    state = (
+        _array_from_column(table, "state", feature_vector_dim(features.get("state")))
+        if "legacy" in checks
+        else None
+    )
     fps = float(info.get("fps") or 0) or None
     task = _episode_task(episode_row)
     prompts = _episode_prompts(episode_row, table, tasks_by_index or {})
-    issues = compute_quality_flags(
-        timestamps,
-        action,
-        state,
-        fps=fps,
-        episode_id=episode_index,
-        task=task,
-        data_version=data_version,
+    issues = (
+        compute_quality_flags(
+            timestamps,
+            action,
+            state,
+            fps=fps,
+            episode_id=episode_index,
+            task=task,
+            data_version=data_version,
+        )
+        if "legacy" in checks
+        else []
     )
-    issues.extend(_subtask_state_issues(table, episode_index, data_version))
-    issues.extend(_prompt_issues(prompts, episode_index, data_version))
-    issues.extend(_task_assignment_issues(prompts, episode_index, data_version))
+    if "legacy" in checks:
+        issues.extend(_subtask_state_issues(table, episode_index, data_version))
+        issues.extend(_prompt_issues(prompts, episode_index, data_version))
+        issues.extend(_task_assignment_issues(prompts, episode_index, data_version))
+        for issue in issues:
+            issue["detector"] = "legacy"
+    if "s1" in checks or "s3" in checks:
+        issues.extend(
+            issue.to_dict()
+            for issue in detect_signal_quality(
+                episode_index,
+                timestamps,
+                {
+                    key: table[key].to_pylist()
+                    for key in numeric_features(features)
+                    if key in table.column_names
+                },
+                features,
+                checks,
+                signal_config or SignalQualityConfig(),
+            )
+        )
     return episode_index, int(len(timestamps)), issues
 
 
@@ -563,7 +664,9 @@ def _refresh_quality_flag_files(static_dir: Path, quality_issues: list[dict]) ->
     }
     previous_auto = _flag_set(static_dir / QUALITY_FLAGGED_EPISODES)
     existing_flagged = _flag_set(static_dir / "flagged_episodes.json")
-    manual_flagged = existing_flagged - previous_auto
+    manual_flagged = (existing_flagged - previous_auto) | _flag_set(
+        static_dir / "manual_flagged_episodes.json"
+    )
     combined = manual_flagged | quality_episodes
     reason_counts = Counter(str(issue.get("reason", "unknown")) for issue in quality_issues)
     _write_json(
@@ -864,6 +967,18 @@ def _quality_reason_map(quality_issues: list[dict]) -> dict[str, list[dict]]:
             item["frames"] = issue.get("frames") or []
         if "metrics" in issue:
             item["metrics"] = issue.get("metrics") or {}
+        for key in (
+            "detector",
+            "field",
+            "dimension",
+            "camera",
+            "unit",
+            "severity",
+            "frame_intervals",
+            "time_intervals",
+        ):
+            if key in issue:
+                item[key] = issue[key]
         reasons.setdefault(str(episode), []).append(item)
     return reasons
 
@@ -1045,24 +1160,46 @@ def run_quality_flag_detection(
     overwrite: bool = False,
     clear_manual_flags: bool = False,
     progress_callback: ProgressCallback = None,
+    checks: list[str] | None = None,
+    qc_config: dict | None = None,
+    video_mode: str = "sampled",
+    video_workers: int = 2,
 ) -> PreprocessResult:
     root = validate_dataset_root(Path(root))
-    require_dataset_operation(root, "quality_flags", data_version_override=data_version)
+    explicit_checks = checks is not None
+    parameters = {"video_mode": video_mode, "video_workers": video_workers, "data_version": data_version}
+    if explicit_checks:
+        parameters["checks"] = checks
+    if qc_config is not None:
+        parameters["qc_config"] = qc_config
+    selected_checks, signal_config, video_config = validate_quality_parameters(parameters)
     static_dir = Path(static_dir).expanduser()
     info = load_json(root / "meta" / "info.json")
+    profile = resolve_data_profile(root, info.get("features") or {}, data_version_override=data_version)
+    available = quality_check_capabilities(profile, info.get("features") or {})
+    for check in selected_checks:
+        if not available[check]["available"]:
+            raise ValueError(f"{check}: {available[check]['reason']}")
+    signal_config.validate_features(info.get("features") or {})
+    if not explicit_checks:
+        require_dataset_operation(root, "quality_flags", data_version_override=data_version)
     selected_data_version = resolve_processing_profile(
         root,
         info.get("features") or {},
         data_version_override=data_version,
     ).legacy_data_version
-    if selected_data_version not in {DATA_VERSION_DVT1, DATA_VERSION_DVT2}:
+    if "legacy" in selected_checks and selected_data_version not in {DATA_VERSION_DVT1, DATA_VERSION_DVT2}:
         raise ValueError(f"Unsupported data_version: {selected_data_version}")
 
     episode_rows = load_episode_records(root)
     by_episode = _records_by_episode(episode_rows)
     task_lookup = _tasks_by_index(root)
     meta = V3DatasetMetadata(f"local/{root.name}", root) if is_v3_dataset(root) else None
-    selected_ids = sorted({int(episode) for episode in episodes}) if episodes else sorted(by_episode)
+    selected_ids = (
+        sorted({int(episode) for episode in episodes}) if episodes is not None else sorted(by_episode)
+    )
+    if not selected_ids:
+        raise ValueError("Select at least one episode")
     missing = [episode for episode in selected_ids if episode not in by_episode]
     if missing:
         raise ValueError(f"episodes not found: {missing}")
@@ -1089,6 +1226,8 @@ def run_quality_flag_detection(
                 selected_data_version,
                 task_lookup,
                 meta,
+                selected_checks,
+                signal_config,
             )
             total_frames += frame_count
             quality_issues.extend(issues)
@@ -1111,6 +1250,8 @@ def run_quality_flag_detection(
                     selected_data_version,
                     task_lookup,
                     meta,
+                    selected_checks,
+                    signal_config,
                 ): int(row["episode_index"])
                 for row in selected_rows
             }
@@ -1127,10 +1268,71 @@ def run_quality_flag_detection(
                     message=f"Scanned episode {episode_index}",
                 )
 
+    coverage = []
+    if "c3" in selected_checks:
+        video_meta = meta or _LegacyMetadataPath(info, episode_rows)
+        cameras = [
+            key
+            for key, feature in (info.get("features") or {}).items()
+            if feature.get("dtype") in {"image", "video"}
+        ]
+
+        def camera_inputs():
+            for index in selected_ids:
+                table = read_episode_table(root, video_meta, index, columns=["timestamp"])
+                times = np.asarray(table["timestamp"].to_pylist(), dtype=np.float64)
+                for camera in cameras:
+                    yield index, camera, times
+
+        inputs = iter(camera_inputs())
+        with ThreadPoolExecutor(max_workers=video_workers) as executor:
+            pending = set()
+            completed = 0
+            while True:
+                while len(pending) < 2 * video_workers:
+                    item = next(inputs, None)
+                    if item is None:
+                        break
+                    index, camera, times = item
+                    pending.add(
+                        executor.submit(
+                            scan_camera_quality,
+                            root,
+                            video_meta,
+                            index,
+                            camera,
+                            times,
+                            video_mode,
+                            video_config,
+                        )
+                    )
+                if not pending:
+                    break
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    scan = future.result()
+                    coverage.append(scan.coverage())
+                    quality_issues.extend(issue.to_dict() for issue in scan.issues)
+                    completed += 1
+                    emit(
+                        progress_callback,
+                        status="running",
+                        phase="video",
+                        current=completed,
+                        total=total * len(cameras),
+                        episode=scan.episode,
+                        message=f"Checked episode {scan.episode}, {scan.camera} ({scan.status})",
+                    )
+
     reason_counts = Counter(str(issue.get("reason", "unknown")) for issue in quality_issues)
     scanned_episodes = set(selected_ids)
     quality_episodes = {int(issue["episode"]) for issue in quality_issues if "episode" in issue}
     manual_flags_cleared = _clear_manual_flags(static_dir) if clear_manual_flags else 0
+    resolved_config = {
+        "schema_version": QC_CONFIG_VERSION,
+        **signal_config.to_config(),
+        "c3": asdict(video_config),
+    }
     summary = {
         "data_version": selected_data_version,
         "episodes_scanned": total,
@@ -1140,21 +1342,90 @@ def run_quality_flag_detection(
         "overwrite": bool(overwrite),
         "clear_manual_flags": bool(clear_manual_flags),
         "manual_flags_cleared": manual_flags_cleared,
+        "checks": selected_checks,
+        "qc_config": resolved_config,
+        "qc_config_digest": content_digest(
+            {
+                "checks": sorted(selected_checks),
+                "qc_config": resolved_config,
+                "data_profile": profile.to_dict(),
+                "video_mode": video_mode,
+            }
+        ),
+        "video_mode": video_mode if "c3" in selected_checks else None,
     }
-    all_issues = _replace_quality_issues(static_dir, quality_issues, scanned_episodes, overwrite=overwrite)
-    combined_flags = _sync_flagged_episodes(
-        static_dir,
-        quality_episodes,
-        scanned_episodes,
-        summary,
-        quality_issues,
-        overwrite=overwrite,
-    )
-    all_issues, combined_flags = _sync_prompt_action_mismatch_from_tagging(
-        static_dir,
-        scanned_episodes,
-        overwrite=overwrite,
-    )
+    previous = _annotation_issues(static_dir)
+    if explicit_checks or any(issue.get("detector") in {"s1", "s3", "c3"} for issue in previous):
+        incomplete = {
+            (row["episode"], row["camera"]) for row in coverage if row["status"] in {"error", "incomplete"}
+        }
+        retained = [
+            issue
+            for issue in previous
+            if issue.get("type") != QUALITY_FLAG_TYPE
+            or issue.get("manual")
+            or issue.get("reason") == MANUAL_PROMPT_ERROR_REASON
+            or _issue_episode(issue) not in scanned_episodes
+            or issue.get("detector", "legacy") not in selected_checks
+            or (issue.get("detector") == "c3" and (_issue_episode(issue), issue.get("camera")) in incomplete)
+        ]
+        all_issues = sorted(
+            retained + quality_issues,
+            key=lambda issue: (
+                int(issue.get("episode", -1)),
+                str(issue.get("detector", "legacy")),
+                str(issue.get("field") or issue.get("camera") or ""),
+                str(issue.get("reason", "")),
+                str(issue.get("dimension", "")),
+            ),
+        )
+        _write_json(static_dir / "annotation_issues.json", all_issues)
+        automatic = [issue for issue in all_issues if issue.get("type") == QUALITY_FLAG_TYPE]
+        combined_flags = _refresh_quality_flag_files(static_dir, automatic)
+        automatic_payload = _load_json_any(static_dir / QUALITY_FLAGGED_EPISODES)
+        automatic_payload["summary"].update(summary)
+        automatic_payload["summary"]["quality_issue_count"] = len(automatic)
+        automatic_payload["summary"]["quality_episode_count"] = len(
+            {_issue_episode(issue) for issue in automatic}
+        )
+        automatic_payload["summary"]["reason_counts"] = dict(
+            sorted(Counter(str(issue.get("reason", "unknown")) for issue in automatic).items())
+        )
+        _write_json(static_dir / QUALITY_FLAGGED_EPISODES, automatic_payload)
+        old_coverage = _load_json_any(static_dir / "quality_coverage.json") or {}
+        retained_coverage = [
+            row
+            for row in old_coverage.get("streams", [])
+            if not (row.get("episode") in scanned_episodes and "c3" in selected_checks)
+        ]
+        _write_json(
+            static_dir / "quality_coverage.json",
+            {
+                "schema_version": QC_CONFIG_VERSION,
+                "streams": sorted(
+                    retained_coverage + coverage, key=lambda row: (row["episode"], row["camera"])
+                ),
+            },
+        )
+    else:
+        all_issues = _replace_quality_issues(
+            static_dir, quality_issues, scanned_episodes, overwrite=overwrite
+        )
+        combined_flags = _sync_flagged_episodes(
+            static_dir,
+            quality_episodes,
+            scanned_episodes,
+            summary,
+            quality_issues,
+            overwrite=overwrite,
+        )
+    if "legacy" in selected_checks:
+        all_issues, combined_flags = _sync_prompt_action_mismatch_from_tagging(
+            static_dir,
+            scanned_episodes,
+            overwrite=overwrite if not explicit_checks else False,
+        )
+    summary["video_error_streams"] = sum(row["status"] in {"error", "incomplete"} for row in coverage)
     summary["annotation_issue_count"] = len(all_issues)
     summary["flagged_episode_count"] = len(combined_flags)
     summary["prompt_action_mismatch_count"] = len(

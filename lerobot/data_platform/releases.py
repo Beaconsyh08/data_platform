@@ -25,6 +25,7 @@ VALIDATION_TESTS = [
     "tests/datasets/test_data_manager.py",
     "tests/datasets/test_curation.py",
     "tests/datasets/test_curation_routes.py",
+    "tests/datasets/test_quality_checks.py",
     "tests/datasets/test_execution_supervisor.py",
     "tests/datasets/test_environments.py",
     "tests/datasets/test_releases.py",
