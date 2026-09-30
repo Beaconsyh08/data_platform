@@ -867,10 +867,10 @@ class DataPlatformAgent:
             nonlocal last_event_at, last_stage
             now = time.monotonic()
             stage = payload.get("phase") or payload.get("step")
-            finished = payload.get("status") in {"done", "error"} or (
-                payload.get("total") and payload.get("current", 0) >= payload["total"]
-            ) or (
-                "files_total" in payload and payload.get("files_current") == payload["files_total"]
+            finished = (
+                payload.get("status") in {"done", "error"}
+                or (payload.get("total") and payload.get("current", 0) >= payload["total"])
+                or ("files_total" in payload and payload.get("files_current") == payload["files_total"])
             )
             if now - last_event_at < 1.0 and stage == last_stage and not finished:
                 return
@@ -1506,7 +1506,8 @@ class DataPlatformAgent:
                 if dispatcher is not None:
                     dispatcher.reconcile()
                 no_active_jobs = dispatcher is None or not dispatcher.threads
-                should_sync = no_active_jobs and now - last_sync_at >= max(10.0, sync_seconds)
+                # Worker threads keep running while the main loop refreshes the dataset catalog.
+                should_sync = now - last_sync_at >= max(10.0, sync_seconds)
                 worked = self.run_once(
                     sync=should_sync,
                     dispatch=dispatcher.dispatch if dispatcher is not None else None,

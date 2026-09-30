@@ -567,3 +567,98 @@ def test_caption_dispatcher_reconciles_each_attempt_once(tmp_path, monkeypatch):
         release.set()
         for thread, _ in dispatcher.threads.values():
             thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("slots", [1, 2])
+def test_agent_discovers_new_datasets_while_job_is_running(tmp_path, monkeypatch, slots):
+    from threading import Event
+    from types import SimpleNamespace
+
+    from lerobot.data_platform.agent import AgentClient, _ExecutionDispatcher
+    from lerobot.data_platform.execution import ExecutionSupervisor
+
+    monkeypatch.setenv("DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS", str(slots))
+    source = tmp_path / "datasets"
+    _make_dataset(source / "first")
+    agent = _agent(tmp_path, source, tmp_path)
+
+    class Client(AgentClient):
+        def __init__(self):
+            super().__init__("https://server-a.example")
+            self.catalogs = []
+            self.claims = 0
+            self.heartbeats = 0
+
+        def heartbeat(self, _state, _capabilities):
+            self.heartbeats += 1
+            return {"result_sync_protocol": 1}
+
+        def sync_locations(self, _state, locations):
+            self.catalogs.append({item["root"] for item in locations})
+            return locations
+
+        def claim(self, _state, *, lease_seconds):
+            self.claims += 1
+            return None
+
+    client = Client()
+    agent.client = client
+    monkeypatch.setattr(agent, "capabilities", lambda: {})
+    dispatcher = _ExecutionDispatcher(agent)
+    entered, release = Event(), Event()
+
+    def start(_supervisor, _job):
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(ExecutionSupervisor, "start", start)
+    monkeypatch.setattr(
+        dispatcher,
+        "_worker_agent",
+        lambda _job: SimpleNamespace(
+            state_path=agent.state_path,
+            client=SimpleNamespace(session=SimpleNamespace(close=lambda: None)),
+        ),
+    )
+    monkeypatch.setattr(agent_module, "_ExecutionDispatcher", lambda _agent: dispatcher)
+    sync_results = []
+    monkeypatch.setattr(
+        "lerobot.data_platform.dataset_results.sync_agent_results", lambda _agent: sync_results.append(True)
+    )
+    ticks = iter([100.0, 101.0, 111.0])
+    monkeypatch.setattr(agent_module.time, "monotonic", lambda: next(ticks))
+
+    class StopPolling(BaseException):
+        pass
+
+    polls = 0
+
+    def sleep(_seconds):
+        nonlocal polls
+        polls += 1
+        assert dispatcher.threads["busy"][0].is_alive()
+        if polls == 1:
+            _make_dataset(source / "new")
+        if polls == 3:
+            raise StopPolling
+
+    monkeypatch.setattr(agent_module.time, "sleep", sleep)
+    try:
+        dispatcher.dispatch(
+            {"job_id": "busy", "operation": "viewer.prepare", "execution": {"attempt_id": "busy"}}
+        )
+        assert entered.wait(1)
+        with pytest.raises(StopPolling):
+            agent.run_forever(poll_seconds=1, sync_seconds=10)
+        assert client.catalogs == [
+            {str(source / "first")},
+            {str(source / "first"), str(source / "new")},
+        ]
+        assert client.heartbeats == 3
+        assert client.claims == (0 if slots == 1 else 3)
+        assert sync_results == []
+    finally:
+        release.set()
+        for thread, _ in dispatcher.threads.values():
+            thread.join(timeout=5)
+        client.session.close()

@@ -194,6 +194,12 @@ sudo env -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY \
 
 ## Agent 任务并发与资源预算
 
+Agent 按 `--sync-seconds` 定期扫描 `allowed_roots` 并上报数据集目录（默认 300 秒，最短 10 秒），
+有任务运行或全部槽位占满时也继续扫描；计算与任务续租由执行线程独立处理。
+扫描只读取数据集元数据，不自动准备 Viewer。Viewer 标注结果回传仍仅在 Agent 空闲时执行，
+避免与任务缓存发布竞争。远端页面的 `Scan` / `Refresh` 只读取已上报的目录并按路径过滤，
+不会立即触发 Agent 扫描，因此新目录需等下一次自动扫描后再刷新页面列表。
+
 `workers` / `prepare_workers` 是请求值。Agent 在启动任务时结合节点上限、CPU affinity、
 cpuset 和所有父级 cgroup 限制计算实际值，并通过 Jobs 的 `resources` 事件记录请求值、
 生效值和截断原因。显式 `1` 保持串行；支持 `0` 的预处理操作继续将其解释为自动选择。

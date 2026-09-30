@@ -90,6 +90,10 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 3. 页面用一个 `Datasets` 列表显示扫描结果，不再区分 `Available` 和 `Registered`。
 4. 点击数据集即可将其设为 working dataset；如果它是首次出现，平台会在后台自动完成 Catalog 登记。页面自动补取轻量详情，具体操作在执行时按需加载数据，不需要单独执行 `Register` 或 `Load`。
 5. 选中数据集后，通过顶部功能页导航进入所需操作；后续也可使用顶部 Working dataset 选择器快速切换。
+选择 Server A 本地目录时，`Scan` 会扫描本机文件系统；选择 Agent 节点时，`Scan` 和列表的
+`Refresh` 都只刷新 Server A 已登记的数据集，并按输入路径过滤，不会立即触发远端扫盘。
+Agent 启动时及默认每 300 秒自动扫描允许读取的根目录；有任务运行时也继续扫描并上报新数据集。
+扫描完成后点击 `Refresh` 即可看到新登记的目录。Viewer 标注结果回传仍在 Agent 空闲时执行。
 
 扫描只识别存在 `meta/info.json` 的完整 LeRobot 数据集。cache-only 项目暂不出现在发现和选择界面。中央平台中，Viewer 账号只读；首次选择尚未进入 Catalog 的 Server A 数据集需要 Operator 或 Admin，Agent 数据集则由节点同步自动登记。
 
