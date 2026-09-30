@@ -469,12 +469,34 @@ Viewer 在 cache 准备完成后可打开。页面主要包含视频、时间轴
 
 ## 7. Explore 可视化中心与 Analysis
 
-进入 `Data Curation > Explore` 后，默认的 `Overview` 会集中展示 8 类可视化入口：Episode Viewer、Dataset Analysis、Label Review、Tag Review、Construction Review、Embedding Map、Dataset Compare 和 Smoothing Report。
+进入 `Data Curation > Explore` 后，默认的 `Overview` 会集中展示 9 类可视化入口：Data Inspect、Episode Viewer、Dataset Analysis、Label Review、Tag Review、Construction Review、Embedding Map、Dataset Compare 和 Smoothing Report。
 
 - `Ready`：产物存在，可直接打开；
 - `Needs cache` / `Not generated`：产物尚未生成，按钮会跳到对应的 Cache、Annotation、Dataset Build、Embedding、Compare 或 Transform 配置页；
 - 卡片只负责展示状态和引导准备流程，不会在点击时自动启动后台任务；
-- `visualize` 模式只显示该模式允许访问的 Viewer 与 Analysis，避免暴露被服务端禁用的功能。
+- `visualize` 模式显示 Data Inspect、Viewer 与 Analysis，避免暴露被服务端禁用的功能。
+
+### Data Inspect：按需查看实际记录
+
+选择数据集后，在 `Explore > Overview > Inspect` 点击 **Open data inspect**。
+本地 LeRobot v2.1/v3.0 默认查看原始 Parquet；远端 Agent 数据集只查看已发布的 Viewer CSV。
+打开 Inspect 不要求准备视频，也不会生成 CSV、启动任务或修改源数据及缓存。
+
+- 选择 episode、从 0 开始的行偏移和每页数量，默认 50 行，最多 200 行；用 Previous/Next 翻页。
+- 在 Fields 搜索并勾选需要的字段，再点 Load rows。字段信息来自实际文件 schema 和声明的 feature metadata。
+- 点击记录展开所有字段的 JSON；CSV 重复表头按列位置区分，数组保持实际结构。
+- 图片和二进制只展示字段信息，不加载媒体内容。大数组/字符串明确标记截断，单次响应不超过 2 MiB。
+- Parquet 展示存储值，不做信号归一化。v3.0 共用 shard 时只返回当前 episode 的记录。
+- CSV 展示缓存文件中的实际文本，可能已降采样或包含派生字段，与现有 Viewer 曲线接口的展示值存在差异。
+  来源栏显示文件相对路径、采样步长和源 episode 帧数；缓存行数只在读到文件结尾时可得，不额外全量计数。
+- 缺少 CSV 时可切回本地 Parquet，或通过 Open Cache 进入现有准备流程；Viewer 账户仍保持只读。
+- 远端通过 location_id 读取该位置的已发布缓存，Agent 离线时仍可查看。页面显示同步时间与缓存状态；
+  过期缓存不代表当前源数据。首版不读取远端 Parquet，也不支持 MCAP、数据编辑或全量下载。
+
+只读 API：`GET /api/datasets/{namespace}/{name}/inspect/schema`、`.../rows`；
+远端使用 `GET /api/control/locations/{location_id}/inspect/schema`、`.../rows`。
+参数为 `source=parquet|csv`、`episode_index`、`offset`、`limit`；`columns` 可重复指定 schema 返回的列 ID。
+所有接口遵守现有数据集范围权限，不能指定任意文件路径。
 
 ### Run Analysis directly
 

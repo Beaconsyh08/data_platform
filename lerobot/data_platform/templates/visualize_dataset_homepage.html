@@ -3882,6 +3882,13 @@
                     );
                     const items = [
                         {
+                            key: 'inspect', group: 'inspect', icon: 'DI', label: 'Data Inspect',
+                            output: 'Raw records · Viewer CSV · schema',
+                            description: 'Preview a small window of actual records, inspect fields, and expand arrays without preparing videos.',
+                            ready: Boolean(this.inspectUrl()), href: this.inspectUrl(), openLabel: 'Open data inspect',
+                            setupLabel: 'Select dataset', missingStatus: 'Select dataset'
+                        },
+                        {
                             key: 'viewer', group: 'inspect', icon: 'EV', label: 'Episode Viewer',
                             output: 'Video · signals · stages',
                             description: 'Inspect synchronized video, action/state curves, prompts, stages, subtasks, and episode flags.',
@@ -3956,7 +3963,7 @@
                         }
                     ];
                     const supportedItems = this.selectedDataset.remote
-                        ? items.filter(item => ['viewer', 'analysis', 'temporal_caption'].includes(item.key))
+                        ? items.filter(item => ['viewer', 'analysis', 'inspect', 'temporal_caption'].includes(item.key))
                         : items;
                     return supportedItems
                         .filter(item => this.openLinkEnabled(item.key))
@@ -7920,6 +7927,14 @@
                     if (!this.selectedDataset) return '';
                     if (this.selectedDataset.remote) return this.selectedDataset.analysis_url || '';
                     return this.selectedDataset.analysis_url || `/${this.selectedDataset.key}/analysis`;
+                },
+                inspectUrl() {
+                    if (!this.selectedDataset) return '';
+                    if (this.selectedDataset.remote) {
+                        const id = this.selectedRemoteLocation?.location_id;
+                        return id ? `/remote/${encodeURIComponent(id)}/inspect` : '';
+                    }
+                    return `/${this.selectedDataset.key}/inspect`;
                 },
                 formatDuration(seconds) {
                     if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return '-';
