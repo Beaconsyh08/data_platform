@@ -198,12 +198,13 @@
                 <span class="text-red-400">Flagged</span>
             </label>
             <select x-model="flagReasonFilter"
-                    x-show="showFlaggedOnly && (flagReasonOptions.length > 0 || flagReasonLoading)"
+                    x-show="showFlaggedOnly"
+                    :disabled="flaggedLoading || flagReasonLoading || flagLoadError || flagReasonOptions.length === 0"
                     class="text-xs bg-slate-800 border border-slate-600 rounded px-1 py-0.5 max-w-[170px] truncate"
-                    title="Filter by flag type">
-                <option value="">All flag types</option>
+                    title="Filter by flag type" aria-label="Filter by flag type">
+                <option value="" x-text="flaggedLoading || flagReasonLoading ? 'Loading flag types...' : flagLoadError ? 'Flag types unavailable' : flagReasonOptions.length ? 'All flag types' : 'No flag types'"></option>
                 <template x-for="item in flagReasonOptions" :key="item.reason">
-                    <option :value="item.reason" x-text="`${item.label} (${item.count})`"></option>
+                    <option :value="item.reason" :selected="flagReasonFilter === item.reason" x-text="`${item.label} (${item.count})`"></option>
                 </template>
             </select>
             <span x-show="showFlaggedOnly && flagReasonLoading" class="text-slate-500">flags...</span>
@@ -212,12 +213,12 @@
                    @keydown.enter="if($event.target.value!=='') jumpToEpisode($event.target.value)"
                    title="Type episode number and press Enter to jump">
             <select x-model="taskFilter"
-                    x-show="taskOptions.length > 0"
+                    :disabled="taskMapLoading || taskOptions.length === 0"
                     class="text-xs bg-slate-800 border border-slate-600 rounded px-1 py-0.5 max-w-[160px] truncate"
-                    title="Filter by task">
-                <option value="">All tasks</option>
+                    title="Filter by Instruction" aria-label="Filter by Instruction">
+                <option value="" x-text="taskMapLoading ? 'Loading Instructions...' : taskMapError ? 'Instructions unavailable' : taskOptions.length ? 'All Instructions' : 'No Instructions'"></option>
                 <template x-for="item in taskOptions" :key="item.task">
-                    <option :value="item.task" x-text="`${item.task} (${item.count})`"></option>
+                    <option :value="item.task" :selected="taskFilter === item.task" x-text="`${item.task} (${item.count})`"></option>
                 </template>
             </select>
             <span x-show="taskMapLoading" class="text-slate-500">tasks...</span>
@@ -281,6 +282,14 @@
                     class="text-[11px] bg-slate-900 border border-slate-600 text-slate-300 rounded-full px-2 py-0.5"
                     title="Clear task, tag, and flag filters"
                     x-text="'clear all'"></button>
+        </div>
+        <div x-show="taskMapError" class="mt-2 text-xs text-red-300" role="status">
+            <span x-text="taskMapError"></span>
+            <button type="button" class="underline" @click="loadTaskEpisodeMap()" :disabled="taskMapLoading">Retry Instructions</button>
+        </div>
+        <div x-show="flagLoadError" class="mt-2 text-xs text-red-300" role="status">
+            <span x-text="flagLoadError"></span>
+            <button type="button" class="underline" @click="loadFlaggedEpisodes()" :disabled="flaggedLoading || flagReasonLoading">Retry flags</button>
         </div>
         <!-- episodes menu for medium & large screens -->
         <div class="ml-2 hidden md:block" x-data="episodePagination">
@@ -917,7 +926,9 @@
                 flagReasonLoadedEpisodes: new Set(),
                 flagReasonFilter: '',
                 flagReasonOptions: [],
+                flaggedLoading: false,
                 flagReasonLoading: false,
+                flagLoadError: '',
                 flagReasonsFullyLoaded: false,
                 flagReasonRevision: 0,
                 isFlagged: false,
@@ -979,6 +990,7 @@
                 taskEpisodeMap: {{ task_episode_map | tojson }},
                 taskOptions: [],
                 taskMapLoading: false,
+                taskMapError: '',
                 taskMapUrl: "{{ task_map_url }}",
                 tagFilterName: '',
                 tagFilterValue: '',
@@ -1064,6 +1076,9 @@
                     this.$watch('showFlaggedOnly', (val) => {
                         if (!val && this.flagReasonFilter) {
                             this.flagReasonFilter = '';
+                        }
+                        if (val && this.flaggedEpisodes.size > 0 && !this.flagReasonsFullyLoaded) {
+                            this.loadAllFlagReasons();
                         }
                         window.__showFlaggedOnly = val;
                         this.publishEpisodeFilter({redirect: true});
@@ -1867,7 +1882,7 @@
                 flagReasonValues(episode) {
                     const items = this.flagReasonItems(episode);
                     if (!items.length) {
-                        if (this.flagReasonLoadedEpisodes.has(String(episode))) return ['unknown_flag_reason'];
+                        if (this.flagReasonsFullyLoaded || this.flagReasonLoadedEpisodes.has(String(episode))) return ['unknown_flag_reason'];
                         return [];
                     }
                     const reasons = items
@@ -2235,27 +2250,30 @@
                 },
 
                 scheduleFilterMapLoad() {
-                    if (this._filterMapLoadHandle || this.cacheOnly) return;
+                    if (this._filterMapLoadHandle) return;
                     this._filterMapLoadHandle = window.setTimeout(() => {
                         this._filterMapLoadHandle = null;
                         this.loadTaskEpisodeMap();
                         this.loadTagEpisodeMap();
-                    }, 6000);
+                    }, this.cacheOnly ? 0 : 6000);
                 },
 
                 async loadTaskEpisodeMap() {
-                    if (!this.taskMapUrl || Object.keys(this.taskEpisodeMap || {}).length > 0) {
+                    if (!this.taskMapUrl || this.taskMapLoading || Object.keys(this.taskEpisodeMap || {}).length > 0) {
                         return;
                     }
                     this.taskMapLoading = true;
+                    this.taskMapError = '';
                     try {
                         const resp = await fetch(this.taskMapUrl);
-                        if (!resp.ok) return;
+                        if (!resp.ok) throw new Error('Could not load Instructions. Retry to load the filter.');
                         const data = await resp.json();
                         this.taskEpisodeMap = data.task_episode_map || {};
                         this.saveFilterMapCache('task', data);
                         this.refreshTaskOptions();
                         this.initSelectedTaskAssignment();
+                    } catch (e) {
+                        this.taskMapError = 'Could not load Instructions. Retry to load the filter.';
                     } finally {
                         this.taskMapLoading = false;
                     }
@@ -3168,8 +3186,12 @@
                 },
 
                 async loadFlaggedEpisodes() {
+                    if (this.flaggedLoading) return;
+                    this.flaggedLoading = true;
+                    this.flagLoadError = '';
                     try {
                         const resp = await fetch(this.flagUrl + (this.flagUrl.includes('?') ? '&' : '?') + 'reasons=0');
+                        if (!resp.ok) throw new Error('Could not load flagged episodes. Retry to load the filter.');
                         const data = await resp.json();
                         this.flagReasonsFullyLoaded = false;
                         this._setFlagState(data);
@@ -3178,17 +3200,20 @@
                             this.loadAllFlagReasons();
                         }
                     } catch (e) {
-                        console.warn('Failed to load flagged episodes:', e);
+                        this.flagLoadError = 'Could not load flagged episodes. Retry to load the filter.';
+                    } finally {
+                        this.flaggedLoading = false;
                     }
                 },
 
                 async loadAllFlagReasons() {
                     if (!this.flagUrl || this.flagReasonLoading) return;
                     this.flagReasonLoading = true;
+                    this.flagLoadError = '';
                     try {
                         const sep = this.flagUrl.includes('?') ? '&' : '?';
                         const resp = await fetch(`${this.flagUrl}${sep}reasons=1`);
-                        if (!resp.ok) return;
+                        if (!resp.ok) throw new Error('Could not load flag types. Retry to load the filter.');
                         const data = await resp.json();
                         if (data.flag_reasons) {
                             this.flagReasons = {...(this.flagReasons || {}), ...(data.flag_reasons || {})};
@@ -3199,7 +3224,7 @@
                         this._lastEpisodeFilterSignature = '';
                         this.publishEpisodeFilter();
                     } catch (e) {
-                        console.warn('Failed to load flag reasons:', e);
+                        this.flagLoadError = 'Could not load flag types. Retry to load the filter.';
                     } finally {
                         this.flagReasonLoading = false;
                     }

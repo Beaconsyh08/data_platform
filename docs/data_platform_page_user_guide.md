@@ -422,12 +422,16 @@ Viewer 在 cache 准备完成后可打开。页面主要包含视频、时间轴
 ### 6.1 浏览与筛选
 
 - 按 episode 编号跳转；
-- 按 task 筛选；
+- 按 Instruction（task 文本）筛选；远程缓存 Viewer 也会自动加载该列表；
 - 只看 flagged episodes，或继续按 flag 原因筛选；
 - 按一个或多个 tag 名称和值组合筛选；
 - 点击曲线维度复选框控制显示；
 - 点击视频放大；
 - 播放速度支持 `0.25x`、`0.5x`、`1x`、`2x`、`3x`、`5x`。
+
+Instruction 下拉框以及勾选 `Flagged` 后的 flag 类型下拉框会显示加载或空列表状态。
+加载失败时页面会显示错误和 `Retry Instructions` / `Retry flags`，可重试读取；不会因此清除已有 flag。
+缺少具体原因的 flagged episode 可按 `Unknown flag reason` 筛选。筛选无需等待结果回传 Agent 完成。
 
 常用快捷键：
 
