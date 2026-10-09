@@ -151,7 +151,7 @@ artifact names. It checks queued dataset, episode, scheme, full frame coverage, 
 before atomically publishing a complete run. Upload/acknowledgement retries do not rerun inference.
 Existing runs remain immutable; source metadata and labels are never rewritten.
 
-Administrators can use **Import existing results** on the same page. A portable ZIP contains only
+Administrators can import existing results using the deployment CLI below. A portable ZIP contains only
 `<run-name>/episode.json`, `<run-name>/video.mp4`, and either `coarse.json` + `refined.json` or `caption.json`.
 Episode metadata must include `episode_index`, `frame_count`, and `fps`. The importer validates all runs,
 rebinds the preview dataset key to the selected registered location, and records the original key.
@@ -168,6 +168,17 @@ This command loads the selected environment configuration, switches to its servi
 the registered location, writes to the configured caption root (or console lifecycle directory), and
 records the import in the existing operation log. Do not copy the trial-key directory verbatim into a
 registered dataset's result directory: the internal dataset identity must be rebound as well.
+
+Imported `hybrid_windows` runs use `caption.json` with the same result envelope: dataset identity,
+episode index, frame count, FPS, duration, `variant: "caption"`, model, creation time, and nested
+`result` containing summary, segments, and limitations. Retain the original pipeline and source
+provenance. Segment intervals already use half-open `[start_frame, end_frame)` endpoints; do not
+apply the inclusive-end conversion from `import-demo`. The accompanying `episode.json` and video
+must describe the same episode. Flat `output/episode_*/caption.json` files need this envelope before
+ZIP import; source files stay unchanged. Review shows these results as **hybrid_windows**, while
+annotation tasks retain the three executable methods. On first load, Review selects an available
+method when its remembered method has no results, unless the URL specifies a method or the user
+changes the method while results are loading.
 
 ## Fusion + Review
 

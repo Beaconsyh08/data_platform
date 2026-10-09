@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from flask import abort, jsonify, render_template, send_file
 
 from lerobot.data_platform.temporal_caption import artifact_key, validate_result
-from lerobot.data_platform.temporal_caption_demo import SCHEMES, review_context, scheme_info
+from lerobot.data_platform.temporal_caption_demo import REVIEW_SCHEMES, SCHEMES, review_context, scheme_info
 
 
 def register_temporal_caption_routes(app, ctx) -> None:
@@ -78,7 +78,7 @@ def register_temporal_caption_routes(app, ctx) -> None:
             else "visualize_dataset_temporal_caption_annotation.html",
             page_kind="Temporal Caption Review" if review else "Data Curation / Annotation",
             page_title=name,
-            caption_schemes=list(SCHEMES.values()),
+            caption_schemes=list((REVIEW_SCHEMES if review else SCHEMES).values()),
             api_base=api,
             home_url=home,
             annotation_url=base,

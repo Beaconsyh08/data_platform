@@ -31,8 +31,18 @@ SCHEMES = {
 }
 
 
+REVIEW_SCHEMES = {
+    **SCHEMES,
+    "hybrid_windows": {
+        "id": "hybrid_windows",
+        "name": "hybrid_windows",
+        "description": "Imported hybrid-window captions; available for review only.",
+    },
+}
+
+
 def scheme_info(artifact: dict) -> dict:
-    return SCHEMES[artifact.get("scheme_id", "multiview_semantics")]
+    return REVIEW_SCHEMES[artifact.get("scheme_id", "multiview_semantics")]
 
 
 def normalize_demo(caption: dict, meta: dict, dataset_key: str) -> dict:

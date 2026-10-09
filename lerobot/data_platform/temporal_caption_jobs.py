@@ -19,6 +19,7 @@ SCHEMES = {
     "video_events": ("caption",),
     "fusion_review": ("fusion_draft", "fusion_reviewed"),
 }
+REVIEW_VARIANTS = {**SCHEMES, "hybrid_windows": ("caption",)}
 FILES = {
     "episode.json",
     "video.mp4",
@@ -69,7 +70,11 @@ def validate_run(source: Path, *, key: str | None = None, options: dict | None =
         value = json.loads(path.read_text())
         validate_result(value["result"], value["frame_count"])
         scheme = value.get("scheme_id", "multiview_semantics")
-        if scheme not in SCHEMES or variant not in SCHEMES[scheme] or value["variant"] != variant:
+        if (
+            scheme not in REVIEW_VARIANTS
+            or variant not in REVIEW_VARIANTS[scheme]
+            or value["variant"] != variant
+        ):
             raise ValueError("Invalid scheme/variant")
         if scheme == "fusion_review":
             from lerobot.data_platform.temporal_caption_fusion import validate_partition, validate_review
@@ -125,7 +130,7 @@ def validate_run(source: Path, *, key: str | None = None, options: dict | None =
     if not results:
         raise ValueError("No caption results")
     scheme = results[0].get("scheme_id", "multiview_semantics")
-    if {r["variant"] for r in results} != set(SCHEMES[scheme]):
+    if {r["variant"] for r in results} != set(REVIEW_VARIANTS[scheme]):
         raise ValueError("Incomplete or mixed caption scheme")
     return results
 

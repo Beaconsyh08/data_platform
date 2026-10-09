@@ -39,6 +39,7 @@ try { savedMethod = localStorage.getItem(methodStorageKey) || ''; } catch (_) {}
 const requested = new URLSearchParams(location.search);
 const initialMethod = requested.get('scheme') || savedMethod || 'multiview_semantics';
 let initialSelection = true;
+let initialMethodPending = !requested.has('scheme');
 const $ = id => document.getElementById(id);
 let artifact = null, active = 0, generation = 0, selectedLoop = 0, runs = [];
 const phases = {idle:'idle', approach:'approach', reach:'approach', grasp:'grasp', lift:'lift', hold:'hold', transfer:'transfer', release:'release', retreat:'retreat'};
@@ -229,9 +230,9 @@ function chooseScheme() {
     if (candidates.length) initialSelection = false;
     $('variant').disabled = !candidates.length;
     if (matching) { $('variant').value = `${matching.run}/${matching.variant}`; load(); }
-    else $('status').textContent = `No saved results for ${method.name} on this dataset. Select an episode below to create one.`;
+    else $('status').textContent = `No saved results for ${method.name} on this dataset.`;
 }
-$('scheme').onchange = chooseScheme;
+$('scheme').onchange = () => {initialMethodPending = false; chooseScheme();};
 $('episode').onchange=()=>{$('variant').value='';chooseScheme();};
 document.addEventListener('keydown',event=>{
  if(!['ArrowUp','ArrowDown'].includes(event.key)||event.altKey||event.ctrlKey||event.metaKey)return;
@@ -244,6 +245,12 @@ async function refreshRuns() {
     const data = await get(api);
     const changed = JSON.stringify(data.runs) !== JSON.stringify(runs);
     runs = data.runs;
+    if (initialMethodPending) {
+        initialMethodPending = false;
+        if (runs.length && !runs.some(run => run.scheme.id === $('scheme').value)) {
+            $('scheme').value = runs[0].scheme.id;
+        }
+    }
     if (changed || initialSelection) chooseScheme();
 }
 for(const lang of ['both','en','zh']) $(`lang-${lang}`).onclick=()=>{document.body.classList.toggle('hide-en',lang==='zh');document.body.classList.toggle('hide-zh',lang==='en');for(const key of ['both','en','zh']) $(`lang-${key}`).classList.toggle('on',key===lang);};

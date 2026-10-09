@@ -10,7 +10,7 @@ import pytest
 
 from lerobot.data_platform.execution import SpoolingClient
 from lerobot.data_platform.routes.temporal_caption import register_temporal_caption_routes
-from lerobot.data_platform.temporal_caption_jobs import import_archive, publish_run
+from lerobot.data_platform.temporal_caption_jobs import import_archive, publish_run, validate_options
 from tests.datasets.test_control_plane import _app, _bootstrap, _store
 from tests.datasets.test_temporal_caption import result
 
@@ -70,6 +70,53 @@ def test_import_rebind_is_idempotent_and_rejects_conflicts(tmp_path):
     bad.seek(0)
     with pytest.raises(ValueError):
         import_archive(bad, root, "node/source", "source")
+
+
+def make_hybrid_run(path, key="trial/source"):
+    source = make_run(path, key=key, episode=0)
+    value = json.loads((source / "coarse.json").read_text())
+    value.update(scheme_id="hybrid_windows", variant="caption", pipeline_version="hybrid-window-review-2")
+    for variant in ("coarse", "refined"):
+        (source / f"{variant}.json").unlink()
+    (source / "caption.json").write_text(json.dumps(value))
+    return source
+
+
+def test_import_hybrid_preserves_method_and_half_open_results(tmp_path):
+    source = make_hybrid_run(tmp_path / "source")
+    original = json.loads((source / "caption.json").read_text())
+    root = tmp_path / "published"
+    assert import_archive(archive(source), root, "node/source", "source") == ["imported"]
+    saved = json.loads(next(root.glob("*/imported/caption.json")).read_text())
+    assert saved["scheme_id"] == "hybrid_windows"
+    assert saved["pipeline_version"] == original["pipeline_version"]
+    assert saved["result"] == original["result"]
+    assert saved["result"]["segments"][-1]["end_frame"] == 12
+    assert saved["dataset_key"] == "node/source"
+    with pytest.raises(ValueError, match="Unknown caption scheme"):
+        validate_options({"episode_index": 0, "scheme": "hybrid_windows"})
+    original["scheme_id"] = "unrecognized"
+    (source / "caption.json").write_text(json.dumps(original))
+    with pytest.raises(ValueError, match="Invalid scheme/variant"):
+        import_archive(archive(source), root, "node/source", "source")
+
+
+def test_remote_hybrid_review_does_not_offer_execution(remote, tmp_path):
+    client, _, _, _, location, root = remote
+    source = make_hybrid_run(tmp_path / "source", key="node/source")
+    publish_run(source, root, "node/source", "hybrid_ep000")
+    base = f"/api/control/locations/{location['location_id']}/temporal-caption"
+    runs = client.get(base)
+    assert runs.status_code == 200
+    assert runs.get_json()["runs"][0]["scheme"]["id"] == "hybrid_windows"
+    response = client.get(base + "/hybrid_ep000/caption")
+    assert response.status_code == 200
+    assert response.get_json()["scheme"]["name"] == "hybrid_windows"
+    page = f"/remote/{location['location_id']}/temporal-caption"
+    assert "hybrid_windows" in client.get(page + "/review").get_data(as_text=True)
+    assert "hybrid_windows" not in client.get(page).get_data(as_text=True)
+    denied = client.post(base + "/jobs", json={"episode_index": 0, "scheme": "hybrid_windows"})
+    assert denied.status_code == 400
 
 
 def test_partial_run_not_published(tmp_path):
