@@ -57,6 +57,44 @@ def command(store, job, actor, action, **extra):
     )
 
 
+@pytest.mark.parametrize("status", ["running", "cancel_requested", "interrupted"])
+def test_deployment_drain_reports_all_blockers_without_discarding_jobs(setup, status):
+    from lerobot.data_platform.maintenance import JobDrainError, active_job_counts, wait_until_idle
+
+    store, _, _, _, _, create = setup
+    queued = create()
+    job = create()
+    with store.sessions.begin() as session:
+        session.get(RemoteJob, job["job_id"]).status = status
+    counts = active_job_counts(store)
+    assert counts.total == 1
+    assert getattr(counts, status) == 1
+    with pytest.raises(JobDrainError) as error:
+        wait_until_idle(store, timeout=0)
+    assert error.value.code == ("interrupted_jobs" if status == "interrupted" else "drain_timeout")
+    assert error.value.counts == counts
+    assert "running or finalizing" in str(error.value)
+    assert store.get_job(job["job_id"])["status"] == status
+    assert store.get_job(queued["job_id"])["status"] == "queued"
+
+
+def test_deployment_wait_finishes_after_current_job_is_acknowledged(setup, monkeypatch):
+    from lerobot.data_platform.maintenance import active_jobs, wait_until_idle
+
+    store, _, _, _, _, create = setup
+    job = create()
+    with store.sessions.begin() as session:
+        session.get(RemoteJob, job["job_id"]).status = "running"
+
+    def acknowledge(_):
+        with store.sessions.begin() as session:
+            session.get(RemoteJob, job["job_id"]).status = "done"
+
+    monkeypatch.setattr("time.sleep", acknowledge)
+    wait_until_idle(store)
+    assert active_jobs(store) == 0
+
+
 def test_owner_job_listing_sorts_ids_without_large_json(setup):
     from sqlalchemy import event
     from sqlalchemy.exc import OperationalError

@@ -240,15 +240,15 @@ def test_commands_require_environment_before_sudo_or_mutations(script, tmp_path,
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize("failure", [None, "prepare", "health", "agent"])
+@pytest.mark.parametrize("failure", [None, "prepare", "drain_timeout", "interrupted_jobs", "health", "agent"])
 @pytest.mark.parametrize("index_url", [None, "https://explicit.test/simple"])
 @pytest.mark.parametrize("environment_name,hard", [("dev", False), ("prod", True)])
 def test_deploy_order_and_failure_preserve_maintenance(
     release, tmp_path, monkeypatch, failure, environment_name, hard, index_url
 ):
-    from lerobot.data_platform import deployment_backup, environment, release_cli
+    from lerobot.data_platform import deployment_backup, environment, maintenance, release_cli
     from lerobot.data_platform.control_plane import ControlPlaneStore
-    from lerobot.data_platform.maintenance import is_maintenance
+    from lerobot.data_platform.maintenance import ActiveJobCounts, JobDrainError, is_maintenance
 
     monkeypatch.setattr(Deployment, "root", property(lambda self: tmp_path / "installed" / self.environment))
     monkeypatch.setattr(release_cli, "load_environment", lambda deployment: {})
@@ -279,6 +279,13 @@ def test_deploy_order_and_failure_preserve_maintenance(
         return target
 
     monkeypatch.setattr(releases, "prepare_server", prepare)
+    if failure in {"drain_timeout", "interrupted_jobs"}:
+        counts = ActiveJobCounts(running=1) if failure == "drain_timeout" else ActiveJobCounts(interrupted=1)
+
+        def blocked(*args):
+            raise JobDrainError(failure, counts)
+
+        monkeypatch.setattr(maintenance, "wait_until_idle", blocked)
     monkeypatch.setattr(releases, "run", lambda argv, **kwargs: events.append(list(map(str, argv))))
     monkeypatch.setattr(releases, "install_server_units", lambda deployment: events.append("units"))
     monkeypatch.setattr(deployment_backup, "backup", lambda deployment, target: events.append("backup"))
@@ -305,9 +312,11 @@ def test_deploy_order_and_failure_preserve_maintenance(
     else:
         release_cli.deploy(Deployment(environment_name), "candidate", hard=hard, index_url=index_url)
     with store.sessions() as session:
-        assert is_maintenance(session) == (failure in {"health", "agent"})
+        assert is_maintenance(session) == (
+            failure in {"drain_timeout", "interrupted_jobs", "health", "agent"}
+        )
     assert events[:2] == ["ssh", "prepare"]
-    if failure == "prepare":
+    if failure in {"prepare", "drain_timeout", "interrupted_jobs"}:
         assert events == ["ssh", "prepare"]
     else:
         assert events.index("backup") < events.index("units") < events.index("health")
@@ -324,11 +333,25 @@ def test_deploy_order_and_failure_preserve_maintenance(
     assert progress["status"] == ("failed" if failure else "installed")
     assert (
         progress["phase"]
-        == {"prepare": "dependencies", "health": "health", "agent": "agents", None: "complete"}[failure]
+        == {
+            "prepare": "dependencies",
+            "drain_timeout": "draining",
+            "interrupted_jobs": "draining",
+            "health": "health",
+            "agent": "agents",
+            None: "complete",
+        }[failure]
     )
     assert progress["steps"][0]["phase"] == "preflight"
     assert progress["finished_at"] >= progress["started_at"]
     assert not (release / "approval.json").exists()
+    if failure in {"drain_timeout", "interrupted_jobs"}:
+        assert progress["failure_code"] == failure
+        assert progress["blocking_jobs"] == {
+            "running": int(failure == "drain_timeout"),
+            "cancel_requested": 0,
+            "interrupted": int(failure == "interrupted_jobs"),
+        }
 
 
 @pytest.mark.parametrize("build", [False, True])

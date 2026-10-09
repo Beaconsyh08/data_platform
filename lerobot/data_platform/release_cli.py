@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 from lerobot.data_platform import releases
@@ -137,7 +138,7 @@ def deploy(
 
     from lerobot.data_platform.deployment_backup import backup, restore_backup, validate_backup
     from lerobot.data_platform.environment import check_server_environment
-    from lerobot.data_platform.maintenance import set_maintenance, wait_until_idle
+    from lerobot.data_platform.maintenance import JobDrainError, set_maintenance, wait_until_idle
     from lerobot.data_platform.management_storage import SchemaMigration
 
     load_environment(deployment)
@@ -270,10 +271,13 @@ def deploy(
                 with history.open("a") as stream:
                     stream.write(json.dumps(state) + "\n")
             print(json.dumps(state))
-        except BaseException:
+        except BaseException as exc:
             state["status"] = "failed"
             state["finished_at"] = time.time()
             state["updated_at"] = state["finished_at"]
+            if isinstance(exc, JobDrainError):
+                state["failure_code"] = exc.code
+                state["blocking_jobs"] = asdict(exc.counts)
             releases.atomic_json(state_path, state)
             # No automatic DB reversal and no automatic reopening after a partial upgrade.
             raise

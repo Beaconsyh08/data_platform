@@ -8,6 +8,7 @@ import posixpath
 import re
 import shutil
 import uuid
+from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable
 from urllib.parse import urlsplit
@@ -220,10 +221,13 @@ def register_control_plane_auth_routes(
     @app.route("/healthz")
     def control_plane_health():
         identity = EnvironmentIdentity.from_env()
-        from lerobot.data_platform.maintenance import active_jobs, is_maintenance
+        from lerobot.data_platform.maintenance import MaintenanceState, active_job_counts
 
         with store.sessions() as session:
-            maintenance = is_maintenance(session)
+            maintenance = session.get(MaintenanceState, 1)
+            maintenance_enabled = bool(maintenance and maintenance.enabled)
+            maintenance_release = maintenance.release if maintenance else ""
+        counts = active_job_counts(store)
         return jsonify(
             {
                 "status": "ok",
@@ -233,8 +237,10 @@ def register_control_plane_auth_routes(
                 "instance_id": identity.instance_id if identity else None,
                 "release": os.environ.get("DATA_PLATFORM_RELEASE", "legacy"),
                 "agent_manifest_sha256": os.environ.get("DATA_PLATFORM_AGENT_MANIFEST_SHA256", ""),
-                "maintenance": maintenance,
-                "active_jobs": active_jobs(store),
+                "maintenance": maintenance_enabled,
+                "maintenance_release": maintenance_release,
+                "active_jobs": counts.total,
+                "active_job_counts": asdict(counts),
             }
         )
 
