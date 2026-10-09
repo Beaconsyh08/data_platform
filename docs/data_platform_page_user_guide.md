@@ -98,7 +98,8 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 即时扫描需要管理员、Data Manager 或具有全数据集读取范围的 Operator，并要求 Agent 在线且
 支持即时扫描；Viewer 和受限 Operator 可用 `Refresh` 查看其权限范围内的已有数据集。
 切换 Server/路径不会被旧扫描结果覆盖；离开页面不会取消 Agent 已接受的扫描。
-扫描只读取源数据及元数据，不准备 Viewer，也不取消计算任务。Viewer 标注结果回传仍在 Agent 空闲时执行。
+扫描只读取源数据及元数据，不准备 Viewer，也不取消计算任务。Viewer 标注结果回传在任务运行时也继续执行；
+同一数据集正在修改源数据或发布缓存时，该位置的回传稍后自动重试，其他位置继续同步。
 
 扫描只识别存在 `meta/info.json` 的完整 LeRobot 数据集。cache-only 项目暂不出现在发现和选择界面。中央平台中，Viewer 账号只读；首次选择尚未进入 Catalog 的 Server A 数据集需要 Operator 或 Admin，Agent 数据集则由节点同步自动登记。
 

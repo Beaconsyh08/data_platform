@@ -786,19 +786,8 @@ class DataPlatformAgent:
                 return True
         if sync:
             self.sync_locations()
-        if (
-            sync_results
-            and heartbeat.get("result_sync_protocol") == 1
-            and time.monotonic() - getattr(self, "_last_result_sync_at", 0) >= 10
-        ):
-            from lerobot.data_platform.dataset_results import sync_agent_results
-
-            try:
-                sync_agent_results(self)
-            except Exception:
-                logging.exception("Dataset result synchronization will retry on the next sync poll")
-            finally:
-                self._last_result_sync_at = time.monotonic()
+        if sync_results and heartbeat.get("result_sync_protocol") == 1:
+            self._sync_results(background=dispatch is not None)
         if not allow_claim:
             return False
         job = self.client.claim(self.state, lease_seconds=self.lease_seconds)
@@ -1538,6 +1527,41 @@ class DataPlatformAgent:
         self._write_completed_mutation(job["job_id"], completed_result)
         return completed_result
 
+    def _sync_results(self, *, background: bool) -> None:
+        """Keep one result transfer independent of job claims and heartbeats."""
+        thread = getattr(self, "_result_sync_thread", None)
+        if thread is not None and thread.is_alive():
+            return
+        if time.monotonic() - getattr(self, "_last_result_sync_at", 0) < 10:
+            return
+
+        def run():
+            from lerobot.data_platform.dataset_results import sync_agent_results
+
+            worker = self
+            client = None
+            try:
+                if background:
+                    client = AgentClient(self.client.server_url, verify=self.client.verify)
+                    worker = copy.copy(self)
+                    worker.client = client
+                    worker.client.worker_instance_id = self.client.worker_instance_id
+                sync_agent_results(worker)
+            except Exception:
+                logging.exception("Dataset result synchronization will retry on the next sync poll")
+            finally:
+                if client is not None:
+                    client.session.close()
+                self._last_result_sync_at = time.monotonic()
+
+        if background:
+            self._result_sync_thread = threading.Thread(
+                target=run, daemon=True, name="data-platform-result-sync"
+            )
+            self._result_sync_thread.start()
+        else:
+            run()
+
     def run_forever(self, *, poll_seconds: float, sync_seconds: float) -> None:
         dispatcher = _ExecutionDispatcher(self) if isinstance(self.client, AgentClient) else None
         last_sync_at = 0.0
@@ -1546,14 +1570,12 @@ class DataPlatformAgent:
             try:
                 if dispatcher is not None:
                     dispatcher.reconcile()
-                no_active_jobs = dispatcher is None or not dispatcher.threads
                 # Worker threads keep running while the main loop refreshes the dataset catalog.
                 should_sync = now - last_sync_at >= max(10.0, sync_seconds)
                 worked = self.run_once(
                     sync=should_sync,
                     dispatch=dispatcher.dispatch if dispatcher is not None else None,
                     allow_claim=dispatcher.available() if dispatcher is not None else True,
-                    sync_results=no_active_jobs,
                 )
                 if should_sync:
                     last_sync_at = now

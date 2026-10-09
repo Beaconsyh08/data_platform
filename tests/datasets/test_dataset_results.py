@@ -1,6 +1,7 @@
 """Dataset result ownership, authorization, durability and Agent replication."""
 
 import base64
+import fcntl
 import hashlib
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from lerobot.data_platform.dataset_results import (
     mark_edited_csv,
     migrate_cache,
     preserve_results,
+    result_lock,
     sync_agent_results,
 )
 from lerobot.data_platform.execution import atomic_json
@@ -128,6 +130,104 @@ def test_flag_sync_round_trip_and_retry_preserves_unrelated_source(tmp_path):
     assert list((output / ".result-sync-backups").glob("*/manual_flagged_episodes.json"))
     assert source_file.read_bytes() == b"untouched-source"
     assert (output / "static/unrelated.txt").read_text() == "preserve"
+
+
+@pytest.mark.parametrize("worker_lock", [fcntl.LOCK_SH, fcntl.LOCK_EX])
+def test_results_sync_while_compute_worker_holds_node_lock(tmp_path, worker_lock):
+    _, client, token, _, cache, output = setup_results(tmp_path)
+    atomic_json(cache / "static/manual_flagged_episodes.json", {"flagged_episodes": [1]})
+    agent = SimpleNamespace(
+        client=Bridge(client, token),
+        state=None,
+        state_path=tmp_path / "agent/state.json",
+        allowed_roots=[tmp_path],
+        writable_roots=[tmp_path],
+    )
+    executions = agent.state_path.parent / "executions"
+    executions.mkdir(parents=True)
+    with (executions / ".node-lock").open("a") as handle:
+        fcntl.flock(handle, worker_lock)
+        sync_agent_results(agent)
+    assert status(client)["state"] == "synced"
+    assert json.loads((output / "static/manual_flagged_episodes.json").read_text())["flagged_episodes"] == [1]
+
+
+@pytest.mark.parametrize("busy", ["publication", "mutation"])
+def test_busy_dataset_does_not_pause_other_results_and_retries(tmp_path, busy):
+    import contextlib
+
+    fixtures = []
+    for name in ("first", "second"):
+        root = tmp_path / name
+        root.mkdir()
+        _, client, token, location, cache, output = setup_results(root)
+        atomic_json(cache / "static/flagged_episodes.json", {"flagged_episodes": [1]})
+        fixtures.append((client, Bridge(client, token), location, output))
+    bridges = {location["location_id"]: bridge for _, bridge, location, _ in fixtures}
+
+    class Combined:
+        def result_locations(self, state):
+            return [item for bridge in bridges.values() for item in bridge.result_locations(state)]
+
+        def result_bundle(self, state, location_id):
+            return bridges[location_id].result_bundle(state, location_id)
+
+        def ack_results(self, state, location_id, revision, *, error=False):
+            return bridges[location_id].ack_results(state, location_id, revision, error=error)
+
+    agent = SimpleNamespace(
+        client=Combined(),
+        state=None,
+        state_path=tmp_path / "agent/state.json",
+        allowed_roots=[tmp_path],
+        writable_roots=[tmp_path],
+    )
+    client, bridge, location, output = fixtures[0]
+    reservation = agent.state_path.parent / "executions/mutation/reservation.json"
+    if busy == "mutation":
+        atomic_json(reservation, {"operation": "mutation.delete", "source": location["root"]})
+    with result_lock(output) if busy == "publication" else contextlib.nullcontext():
+        sync_agent_results(agent)
+        assert status(client)["state"] == "pending"
+        assert bridge.downloads == 0
+        assert not (output / "static/flagged_episodes.json").exists()
+        assert status(fixtures[1][0])["state"] == "synced"
+    reservation.unlink(missing_ok=True)
+    sync_agent_results(agent)
+    assert status(client)["state"] == "synced"
+    assert json.loads((output / "static/flagged_episodes.json").read_text())["flagged_episodes"] == [1]
+
+
+def test_mutation_started_during_download_defers_write_until_acknowledged(tmp_path):
+    _, client, token, location, cache, output = setup_results(tmp_path)
+    atomic_json(cache / "static/flagged_episodes.json", {"flagged_episodes": [1]})
+    reservation = tmp_path / "agent/executions/mutation/reservation.json"
+
+    class MutatingBridge(Bridge):
+        def result_bundle(self, state, location_id):
+            # Admission must remain available throughout a network download.
+            with (reservation.parent.parent / ".resource-registry-lock").open("a") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                atomic_json(reservation, {"operation": "mutation.delete", "source": location["root"]})
+            return super().result_bundle(state, location_id)
+
+    agent = SimpleNamespace(
+        client=MutatingBridge(client, token),
+        state=None,
+        state_path=tmp_path / "agent/state.json",
+        allowed_roots=[tmp_path],
+        writable_roots=[tmp_path],
+    )
+    sync_agent_results(agent)
+    assert status(client)["state"] == "pending"
+    assert not (output / "static/flagged_episodes.json").exists()
+    # The reservation survives computation until the supervisor receives its completion ACK.
+    sync_agent_results(agent)
+    assert agent.client.downloads == 1
+    reservation.unlink()
+    agent.client = Bridge(client, token)
+    sync_agent_results(agent)
+    assert status(client)["state"] == "synced"
 
 
 def test_result_routes_reject_other_nodes_and_stale_ack(tmp_path):
