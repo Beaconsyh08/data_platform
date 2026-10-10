@@ -180,6 +180,32 @@ annotation tasks retain the three executable methods. On first load, Review sele
 method when its remembered method has no results, unless the URL specifies a method or the user
 changes the method while results are loading.
 
+### Results kept on the dataset Agent
+
+An upgraded Agent advertising `caption_read_protocol=1` also exposes existing experiment results
+directly from its registered dataset. Keep each completed episode under
+`output/<method>/episode_XXXXXX/`, with `caption.json` and a nonempty `video.mp4`. Add `episode.json`
+to display measured signals and camera metadata. The method directory name becomes the exact Review
+method ID and label; experimental methods are not added to the executable annotation task catalog.
+
+`caption.json` may use the flat experiment format (`summary`, `segments`, `limitations`) or the
+published result envelope. It must identify the matching dataset episode, frame count, FPS and model;
+segments cover the complete episode using half-open intervals. `meta/info.json` and v2.1/v3.0 episode
+metadata are checked. Incomplete or invalid episodes are omitted with a visible warning. Keep different
+experiments in separate method directories and finish writing the episode files before refreshing Review.
+The current directory contents are inspected whenever Review is opened or refreshed; no ZIP import,
+publication command, registry update or inference is needed. Old experiment registries are not used
+to discover results.
+
+The Agent reads JSON and video on demand through its authenticated outbound connection. Server A
+only relays bounded replies in memory and does not publish or save these experiment results. Video
+byte ranges are supported; any camera-order display derivative stays in the Agent's state directory.
+The original dataset and captions are unchanged. Normal web login, dataset read scopes, Agent root
+containment and Linux file permissions still apply. An offline Agent cannot serve dataset-local results.
+Existing published results remain supported; an imported copy identical to a dataset-local caption is
+hidden from the result list to avoid duplicate methods. Removing the local files can expose that older
+published copy again.
+
 ## Fusion + Review
 
 `fusion_review` adds two results, `fusion_draft` and `fusion_reviewed`, to the same UI and remote job.

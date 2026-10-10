@@ -586,6 +586,7 @@ def register_control_plane_routes(
                 "node": refreshed,
                 "result_sync_protocol": 1,
                 "scan_request": asdict(scan) if scan else None,
+                "caption_read_protocol": app.config.get("DATA_PLATFORM_CAPTION_READ_PROTOCOL", 0),
             }
         )
 

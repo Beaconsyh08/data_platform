@@ -1,4 +1,5 @@
 from lerobot.data_platform.routes.account_passwords import register_account_password_routes
+from lerobot.data_platform.routes.caption_reads import register_caption_read_routes
 from lerobot.data_platform.routes.compare import register_compare_routes
 from lerobot.data_platform.routes.construction import register_construction_routes
 from lerobot.data_platform.routes.context import RouteContext
@@ -20,6 +21,7 @@ from lerobot.data_platform.routes.tasks import register_task_routes
 from lerobot.data_platform.routes.temporal_caption import register_temporal_caption_routes
 
 __all__ = [
+    "register_caption_read_routes",
     "register_curation_routes",
     "register_dataset_result_routes",
     "register_dataset_scan_routes",

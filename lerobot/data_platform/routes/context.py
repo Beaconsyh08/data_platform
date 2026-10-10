@@ -42,6 +42,7 @@ class RouteContext:
     legacy_mutations_enabled: bool = False
     dataset_is_protected: Callable[[tuple[str, str]], bool] | None = None
     remote_cache_root: Path | None = None
+    caption_read_relay: Any | None = None
 
     def update_job(self, job: dict, payload: dict) -> None:
         import os
