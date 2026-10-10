@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from flask import request
 
 from lerobot.data_platform.caption_reads import MAX_REPLY_BYTES, CaptionReadRelay
 from lerobot.data_platform.dataset_captions import read_dataset_caption
@@ -163,6 +164,13 @@ def live(tmp_path, monkeypatch):
     published = tmp_path / "published"
     monkeypatch.setenv("DATA_PLATFORM_TEMPORAL_CAPTION_ROOT", str(published))
     register_temporal_caption_routes(app, ctx)
+
+    @app.before_request
+    def existing_audit_json_probe():
+        # The full Viewer inspects every POST body before feature handlers run.
+        if request.path.startswith("/api/agents/caption-reads/"):
+            assert request.get_json(silent=True) is None
+
     token, node = store.enroll_node(
         name="reader-node",
         hostname="localhost",
@@ -192,9 +200,9 @@ def live(tmp_path, monkeypatch):
                     status, body, binary = read_dataset_caption(worker, read)
                     response = transport.post(
                         f"/api/agents/caption-reads/{read['request_id']}?status={status}",
-                        headers=headers,
+                        headers={**headers, "X-Caption-Read-Format": "bytes" if binary else "json"},
                         data=body,
-                        content_type="application/octet-stream" if binary else "application/json",
+                        content_type="application/octet-stream",
                     )
                     assert response.status_code == 200
                 except Exception as exc:

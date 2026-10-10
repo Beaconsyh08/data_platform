@@ -196,7 +196,9 @@ def register_temporal_caption_routes(app, ctx) -> None:
         location = source_location(kwargs)
         if location and re.fullmatch(r"source-[0-9a-f]{24}", run) and variant == "caption":
             artifact = source_json(location, "result", run=run)
-            return jsonify(**artifact, video_url=f"{api}/{run}/{variant}/video")
+            response = jsonify(**artifact, video_url=f"{api}/{run}/{variant}/video")
+            response.headers.update({"X-Accel-Buffering": "no", "Cache-Control": "private, no-store"})
+            return response
         artifact = read_artifact(root, run, variant, key)
         return jsonify(
             **artifact,
@@ -218,6 +220,7 @@ def register_temporal_caption_routes(app, ctx) -> None:
                 "Accept-Ranges": "bytes",
                 "ETag": f'"{revision}"',
                 "Cache-Control": "private, no-store",
+                "X-Accel-Buffering": "no",
             }
             range_value = request.headers.get("Range")
             if range_value and request.headers.get("If-Range", headers["ETag"]) == headers["ETag"]:

@@ -1622,7 +1622,8 @@ class DataPlatformAgent:
                         data=body,
                         params={"status": status},
                         headers={
-                            "Content-Type": "application/octet-stream" if binary else "application/json"
+                            "Content-Type": "application/octet-stream",
+                            "X-Caption-Read-Format": "bytes" if binary else "json",
                         },
                         timeout=(10, 30),
                     )

@@ -27,13 +27,14 @@ def register_caption_read_routes(app, ctx) -> None:
             return jsonify(error="Invalid node token"), 401
         try:
             status = int(request.args.get("status", "200"))
-            binary = request.mimetype == "application/octet-stream"
-            if request.mimetype not in {"application/json", "application/octet-stream"}:
+            reply_format = request.headers.get("X-Caption-Read-Format")
+            binary = reply_format == "bytes"
+            if request.mimetype != "application/octet-stream" or reply_format not in {"json", "bytes"}:
                 raise ValueError("Invalid reply type")
             if request.content_length is None or request.content_length > MAX_REPLY_BYTES:
                 raise ValueError("Caption read reply is too large")
             ctx.caption_read_relay.complete(
-                request_id, actor["node_id"], status, request.stream.read(MAX_REPLY_BYTES + 1), binary=binary
+                request_id, actor["node_id"], status, request.get_data(cache=False), binary=binary
             )
         except ValueError as exc:
             return jsonify(error=str(exc)), 400
