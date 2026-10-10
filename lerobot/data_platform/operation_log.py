@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import getpass
 import hashlib
@@ -13,7 +14,6 @@ import sys
 import threading
 import time
 import uuid
-from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -25,6 +25,8 @@ except ImportError:  # pragma: no cover - Data Platform is normally run on Linux
 
 
 LOG_FILENAME = "operation_log.jsonl"
+LOG_MAX_BYTES = 32 * 1024 * 1024
+LOG_BACKUP_COUNT = 4
 SCHEMA_VERSION = 1
 _SENSITIVE_KEY_PARTS = (
     "api_key",
@@ -80,6 +82,31 @@ def sanitize_for_log(value: Any, *, _depth: int = 0) -> Any:
         return value
     except (TypeError, ValueError):
         return str(value)
+
+
+def summarize_location_sync_request(body: dict) -> dict:
+    """Keep catalog-sync identity and metadata digests without copying the entire catalog."""
+    locations = body.get("locations")
+    if not isinstance(locations, list):
+        return sanitize_for_log(body)
+    summaries = []
+    for location in locations[:500]:
+        if not isinstance(location, dict):
+            summaries.append(sanitize_for_log(location))
+            continue
+        metadata = sanitize_for_log(location.get("metadata") or {})
+        encoded = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        summaries.append(
+            {
+                **{key: location[key] for key in ("dataset_key", "root", "output_dir") if key in location},
+                "metadata_summary": {
+                    "sha256": hashlib.sha256(encoded).hexdigest(),
+                    "bytes": len(encoded),
+                    "keys": list(metadata) if isinstance(metadata, dict) else [],
+                },
+            }
+        )
+    return sanitize_for_log({**body, "locations": summaries, "location_count": len(locations)})
 
 
 def local_actor() -> dict[str, str]:
@@ -159,6 +186,54 @@ def build_operation_event(
     return payload
 
 
+@contextlib.contextmanager
+def _operation_log_lock(path: Path, *, write: bool):
+    # A stable inode is required because rotation replaces the active log file.
+    lock = path.with_name(f".{path.name}.lock")
+    with _WRITE_LOCK:
+        try:
+            stream = lock.open("ab" if write else "rb")
+        except FileNotFoundError:
+            if write:
+                raise
+            yield
+            return
+        with stream:
+            if fcntl is not None:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX if write else fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _rotate_operation_log(path: Path, incoming_bytes: int) -> None:
+    if not path.exists() or path.stat().st_size + incoming_bytes <= LOG_MAX_BYTES:
+        return
+    for index in range(LOG_BACKUP_COUNT, 0, -1):
+        previous = path if index == 1 else path.with_name(f"{path.name}.{index - 1}")
+        if previous.exists():
+            previous.replace(path.with_name(f"{path.name}.{index}"))
+
+
+def _recent_log_lines(path: Path, limit: int) -> list[str]:
+    with path.open("rb") as stream:
+        position = stream.seek(0, os.SEEK_END)
+        chunks = []
+        newlines = 0
+        while position and newlines <= limit:
+            size = min(position, 64 * 1024)
+            position -= size
+            stream.seek(position)
+            chunk = stream.read(size)
+            chunks.append(chunk)
+            newlines += chunk.count(b"\n")
+    return [
+        line.decode("utf-8", errors="replace") for line in b"".join(reversed(chunks)).splitlines()[-limit:]
+    ]
+
+
 def append_operation_event(
     log_dirs: Path | str | Iterable[Path | str | None] | None,
     operation: str,
@@ -170,13 +245,11 @@ def append_operation_event(
     for path in _normalized_paths(log_dirs):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with _WRITE_LOCK, path.open("ab") as stream:
-                if fcntl is not None:
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-                stream.write(encoded)
-                stream.flush()
-                if fcntl is not None:
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            with _operation_log_lock(path, write=True):
+                _rotate_operation_log(path, len(encoded))
+                with path.open("ab") as stream:
+                    stream.write(encoded)
+                    stream.flush()
         except OSError as exc:
             logging.warning("Could not append operation audit log %s: %s", path, exc)
     return payload
@@ -201,11 +274,15 @@ def read_operation_events(
     status_aliases = {"success": {"success", "ok"}, "failed": {"failed", "error"}}
     accepted_statuses = status_aliases.get(status, {status}) if status else None
     for path in _normalized_paths(log_dirs):
-        if not path.is_file():
-            continue
         try:
-            with path.open(encoding="utf-8") as stream:
-                lines = deque(stream, maxlen=max(5000, limit * 20))
+            with _operation_log_lock(path, write=False):
+                lines = []
+                for candidate in [
+                    path,
+                    *(path.with_name(f"{path.name}.{i}") for i in range(1, LOG_BACKUP_COUNT + 1)),
+                ]:
+                    if candidate.is_file():
+                        lines.extend(_recent_log_lines(candidate, max(5000, limit * 20)))
         except OSError:
             continue
         for line in lines:

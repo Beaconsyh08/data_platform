@@ -118,6 +118,7 @@ from lerobot.data_platform.operation_log import (
     local_actor,
     read_operation_events,
     sanitize_for_log,
+    summarize_location_sync_request,
 )
 from lerobot.data_platform.precompute.analysis import (
     build_dataset_analysis,
@@ -2736,7 +2737,9 @@ def run_server(
         g.operation_audit = {
             "event_id": uuid.uuid4().hex,
             "started_at": time.perf_counter(),
-            "body": sanitize_for_log(body),
+            "body": summarize_location_sync_request(body)
+            if request.path == "/api/agents/locations/sync"
+            else sanitize_for_log(body),
             "dataset_keys": dataset_keys,
             "static_dirs": static_dirs,
             "dataset_roots": roots,

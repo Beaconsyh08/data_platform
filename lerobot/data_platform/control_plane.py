@@ -795,17 +795,28 @@ class ControlPlaneStore:
                     )
                     session.add(location)
                 else:
-                    location.dataset_key = dataset_key
-                    location.output_dir = str(payload.get("output_dir") or location.output_dir)
-                    location.state = "available"
+                    output_dir = str(payload.get("output_dir") or location.output_dir)
                     details = dict(payload.get("metadata") or {})
                     previous_details = dict(location.details or {})
                     for key in ("viewer_ready", "viewer_url", "cache_root"):
                         if key in previous_details:
                             details[key] = previous_details[key]
-                    location.details = details
-                    location.updated_at = now
-                    location.last_seen_at = now
+                    changed = (
+                        location.dataset_key != dataset_key
+                        or location.output_dir != output_dir
+                        or location.state != "available"
+                        or location.details != details
+                    )
+                    if changed:
+                        location.dataset_key = dataset_key
+                        location.output_dir = output_dir
+                        location.state = "available"
+                        location.details = details
+                        location.updated_at = now
+                        location.last_seen_at = now
+                    elif location.last_seen_at <= now - timedelta(minutes=5):
+                        # Presence refreshes do not rewrite unchanged dataset metadata.
+                        location.last_seen_at = now
                 synced.append(location)
         return [self._location_dict(location) for location in synced]
 

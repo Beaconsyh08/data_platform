@@ -197,7 +197,18 @@ sudo journalctl -u data-platform-promotion.service --no-pager -n 50
 ```
 
 备份位于 `/opt/data-platform/dev/backups/` 和 `/opt/data-platform/prod/backups/`；
-首次生产迁移的额外备份位于 `/var/lib/data-platform-deployment/`。不要删除还需要用于恢复的旧发行包或备份。
+首次生产迁移的额外备份位于 `/var/lib/data-platform-deployment/`。
+完整升级成功后，每套环境自动保留当前程序、另外两个最近的完整安装版本和最近三份完整部署备份；
+失败或仅 Server 更新不会触发清理。未完成的安装、备份及链接目录留待人工检查。
+发行包清理须保留两套环境的当前版本和需要用于回退的包，不能仅按目录名称或磁盘大小删除。
+
+Server A 的 MySQL binlog 保留策略为 7 天，使用 `MINIMAL` 行记录、`PARTIAL_JSON` 和事务压缩；
+修改这项主机配置不会自动由代码部署完成。首次收紧期限前应完成可校验的数据库备份，并检查复制及恢复需求，
+旧 binlog 通过 MySQL 的 `PURGE BINARY LOGS` 清理，不能直接删除文件。
+文件操作日志每份达到 32 MiB 时轮转，保留当前文件和四份历史文件；审计查询包含这些近期文件，
+数据库审计记录不随文件轮转删除。数据集周期同步的审计保留登记身份和脱敏元信息摘要，不重复保存完整目录。
+元信息没有变化时不逐轮更新数据集登记表，存在时间最多每五分钟刷新一次；真正的元信息变化仍立即保存。
+Agent 节点心跳与在线判定保留原有频率。
 程序回退与数据库恢复是不同操作，具体参见 [双环境详细教程](data_platform_environments.md#查看重启与故障恢复)。
 
 ## 6. 构建遇到之前的 PyPI TLS 错误

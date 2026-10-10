@@ -170,6 +170,13 @@ H100:/srv/data-platform-dev/datasets/dev-sample-20260909_165406
 生成缓存并上传到 Server A 的 `remote-cache`，Web 再提供页面、视频和曲线。
 这里的缓存不等于源数据全集。
 
+`console/static/operation_log.jsonl` 是文件操作审计账本，不是视频或数据集副本。
+它按 32 MiB 阈值轮转，保留当前账本及 `.1` 至 `.4` 四份历史账本；单条超大事件可能超过轮转阈值。
+网页仍能查询轮转账本中的近期操作，MySQL 中的审计记录独立保留。
+`dp_dataset_locations` 保存数据集位置与元信息，登记本身必须保留；无变化的周期同步减少存在时间更新，
+避免将相同的大块元信息反复记录到数据库变更流水。数据库和发行历史的保留策略参见
+[运维手册](data_platform_operations.md#5-怎么确认更新完成)。
+
 ## 4. 配置、运行状态和备份在哪里
 
 ### Server A

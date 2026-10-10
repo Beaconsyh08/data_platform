@@ -37,6 +37,7 @@ VALIDATION_TESTS = [
     "tests/datasets/test_releases.py",
     "tests/datasets/test_deployment_progress.py",
     "tests/datasets/test_control_plane.py",
+    "tests/datasets/test_operation_log.py",
     "tests/datasets/test_job_management.py",
     "tests/datasets/test_data_platform_agent.py",
     "tests/datasets/test_management_ui.py",
@@ -317,6 +318,49 @@ def approve_release(
             "evidence": report,
         },
     )
+
+
+def prune_deployment_history(deployment: Deployment) -> list[str]:
+    """Keep the active installation, two other recent versions, and three complete backups."""
+    current = (deployment.root / "current").resolve()
+    removed = []
+    parent = deployment.root / "releases"
+    if parent.is_dir():
+        versions = [
+            path
+            for path in parent.iterdir()
+            if path.is_dir()
+            and not path.is_symlink()
+            and not path.name.startswith(".")
+            and (path / "manifest.sha256").is_file()
+        ]
+
+        def version_key(path: Path):
+            match = re.match(r"V(\d+(?:\.\d+)*)", path.name)
+            return (tuple(map(int, match.group(1).split("."))) if match else (0,), path.stat().st_mtime)
+
+        others = sorted(
+            (path for path in versions if path.resolve() != current), key=version_key, reverse=True
+        )
+        for path in others[2:]:
+            shutil.rmtree(path)
+            removed.append(str(path))
+    parent = deployment.root / "backups"
+    if parent.is_dir():
+        backups = []
+        for path in parent.iterdir():
+            if not path.is_dir() or path.is_symlink():
+                continue
+            try:
+                metadata = json.loads((path / "backup.json").read_text())
+            except (OSError, ValueError):
+                continue
+            if metadata.get("complete") and metadata.get("environment") == deployment.environment:
+                backups.append(path)
+        for path in sorted(backups, key=lambda path: path.stat().st_mtime, reverse=True)[3:]:
+            shutil.rmtree(path)
+            removed.append(str(path))
+    return removed
 
 
 def switch_current(deployment: Deployment, release: Path):

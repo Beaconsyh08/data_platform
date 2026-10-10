@@ -246,6 +246,77 @@ def test_control_plane_auth_node_location_and_viewer_job_round_trip(tmp_path: Pa
     assert "viewer_url" not in stale["metadata"]
 
 
+def test_unchanged_location_sync_avoids_rewriting_large_metadata(tmp_path: Path, monkeypatch):
+    now = datetime(2026, 10, 10, 8)
+    monkeypatch.setattr(control_plane, "_utcnow", lambda: now)
+    store = _store(tmp_path)
+    _, node = store.enroll_node(
+        name="server-b",
+        hostname="server-b.internal",
+        allowed_roots=["/datasets"],
+        writable_roots=["/datasets"],
+        capabilities={},
+        enrollment_token="secret",
+        expected_token="secret",
+    )
+    payload = {
+        "dataset_key": "shared/source",
+        "root": "/datasets/source",
+        "metadata": {"description": "x" * (64 * 1024), "total_episodes": 3},
+    }
+    original = store.sync_locations(node["node_id"], [payload])[0]
+    statements = []
+
+    def capture_updates(connection, cursor, statement, parameters, context, executemany):
+        if statement.lower().startswith("update dp_dataset_locations"):
+            statements.append(statement.lower())
+
+    event.listen(store.engine, "before_cursor_execute", capture_updates)
+    try:
+        now += timedelta(seconds=30)
+        unchanged = store.sync_locations(node["node_id"], [payload])[0]
+        assert statements == []
+        assert unchanged["last_seen_at"] == original["last_seen_at"]
+        assert unchanged["metadata"] == payload["metadata"]
+
+        now += timedelta(minutes=5)
+        refreshed = store.sync_locations(node["node_id"], [payload])[0]
+        assert len(statements) == 1
+        assert "metadata_json" not in statements[0]
+        assert refreshed["last_seen_at"] != original["last_seen_at"]
+        assert refreshed["updated_at"] == original["updated_at"]
+
+        statements.clear()
+        now += timedelta(seconds=1)
+        changed_payload = {**payload, "metadata": {"total_episodes": 4}}
+        changed = store.sync_locations(node["node_id"], [changed_payload])[0]
+        assert len(statements) == 1
+        assert changed["metadata"] == {"total_episodes": 4}
+        assert changed["updated_at"] != original["updated_at"]
+    finally:
+        event.remove(store.engine, "before_cursor_execute", capture_updates)
+
+
+def test_location_sync_immediately_restores_unavailable_locations(tmp_path: Path, monkeypatch):
+    store = _store(tmp_path)
+    _, node = store.enroll_node(
+        name="server-b",
+        hostname="server-b.internal",
+        allowed_roots=["/datasets"],
+        writable_roots=["/datasets"],
+        capabilities={},
+        enrollment_token="secret",
+        expected_token="secret",
+    )
+    payload = {"dataset_key": "shared/source", "root": "/datasets/source"}
+    location = store.sync_locations(node["node_id"], [payload])[0]
+    with store.sessions.begin() as session:
+        session.get(control_plane.DatasetLocation, location["location_id"]).state = "unavailable"
+    restored = store.sync_locations(node["node_id"], [payload])[0]
+    assert restored["state"] == "available"
+    assert restored["location_id"] == location["location_id"]
+
+
 def test_locations_with_the_same_dataset_key_include_their_node_names(tmp_path: Path):
     store = _store(tmp_path)
     for node_name in ("server-b", "server-c"):

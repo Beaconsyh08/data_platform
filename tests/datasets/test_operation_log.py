@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -72,6 +73,84 @@ def test_concurrent_appends_leave_valid_json_lines(tmp_path: Path):
     lines = (log_dir / LOG_FILENAME).read_text().splitlines()
     assert len(lines) == 40
     assert {json.loads(line)["episode_ids"][0] for line in lines} == set(range(40))
+
+
+def test_operation_logs_rotate_and_retained_events_remain_queryable(tmp_path: Path, monkeypatch):
+    from lerobot.data_platform import operation_log
+
+    monkeypatch.setattr(operation_log, "LOG_MAX_BYTES", 1200, raising=False)
+    monkeypatch.setattr(operation_log, "LOG_BACKUP_COUNT", 2, raising=False)
+    events = [
+        append_operation_event(tmp_path, "episode_update", status="success", episode_ids=[index])
+        for index in range(12)
+    ]
+    assert (tmp_path / f"{LOG_FILENAME}.1").is_file()
+    assert (tmp_path / f"{LOG_FILENAME}.2").is_file()
+    assert not (tmp_path / f"{LOG_FILENAME}.3").exists()
+    retained = read_operation_events(tmp_path)
+    assert 1 < len(retained) < len(events)
+    assert events[-1]["event_id"] in {event["event_id"] for event in retained}
+    assert events[0]["event_id"] not in {event["event_id"] for event in retained}
+    for path in (tmp_path / LOG_FILENAME, tmp_path / f"{LOG_FILENAME}.1", tmp_path / f"{LOG_FILENAME}.2"):
+        assert path.stat().st_size <= 1200
+        assert all(
+            json.loads(line)["operation"] == "episode_update" for line in path.read_text().splitlines()
+        )
+
+
+def test_catalog_sync_audit_keeps_identity_without_large_metadata():
+    from lerobot.data_platform.operation_log import summarize_location_sync_request
+
+    metadata = {"feature_" + str(index): "large-metadata-marker" * 100 for index in range(100)}
+    location = {"dataset_key": "shared/source", "root": "/datasets/source", "metadata": metadata}
+    compact = summarize_location_sync_request({"locations": [location], "token": "top-secret"})
+    assert compact["location_count"] == 1
+    assert compact["locations"][0]["dataset_key"] == location["dataset_key"]
+    assert compact["locations"][0]["root"] == location["root"]
+    assert compact["locations"][0]["metadata_summary"]["bytes"] > 100_000
+    encoded = json.dumps(compact)
+    assert len(encoded) < 3000
+    assert "large-metadata-marker" not in encoded
+    assert "top-secret" not in encoded
+    reordered = {**location, "metadata": dict(reversed(list(metadata.items())))}
+    digest = compact["locations"][0]["metadata_summary"]["sha256"]
+    assert (
+        summarize_location_sync_request({"locations": [reordered]})["locations"][0]["metadata_summary"][
+            "sha256"
+        ]
+        == digest
+    )
+    assert summarize_location_sync_request({"locations": "invalid", "password": "secret"}) == {
+        "locations": "invalid",
+        "password": "<redacted>",
+    }
+
+
+def _append_rotating_process_events(directory: Path, offset: int):
+    for index in range(offset, offset + 25):
+        append_operation_event(directory, "episode_update", status="success", episode_ids=[index])
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux workers use flock and fork")
+def test_rotation_preserves_events_across_worker_processes(tmp_path: Path, monkeypatch):
+    from lerobot.data_platform import operation_log
+
+    monkeypatch.setattr(operation_log, "LOG_MAX_BYTES", 4096)
+    monkeypatch.setattr(operation_log, "LOG_BACKUP_COUNT", 32)
+    context = multiprocessing.get_context("fork")
+    processes = [
+        context.Process(target=_append_rotating_process_events, args=(tmp_path, index * 25))
+        for index in range(4)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=15)
+        assert process.exitcode == 0
+    events = read_operation_events(tmp_path, limit=200)
+    assert len(events) == 100
+    assert {event["episode_ids"][0] for event in events} == set(range(100))
+    assert (tmp_path / f"{LOG_FILENAME}.1").is_file()
 
 
 def test_audit_cli_main_records_failure_and_redacts_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

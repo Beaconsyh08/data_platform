@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import shlex
 import subprocess
 import tarfile
@@ -597,3 +598,37 @@ def test_agent_install_forwards_mirror_after_privilege_boundary(release, monkeyp
 def test_unsafe_package_index_is_rejected_before_archiving(tmp_path, index_url):
     with pytest.raises(ValueError, match="Package index"):
         releases.build_release(tmp_path, "candidate", index_url=index_url)
+
+
+def test_history_retention_keeps_running_version_and_numeric_recent_versions(tmp_path, monkeypatch):
+    monkeypatch.setattr(Deployment, "root", property(lambda self: tmp_path / self.environment))
+    deployment = Deployment("dev")
+    parent = deployment.root / "releases"
+    for version in ("V0.0.6.9_Old", "V0.0.6.10_Current", "V0.0.6.11_Recent", "V0.0.6.12_Newer"):
+        path = parent / version
+        path.mkdir(parents=True)
+        (path / "manifest.sha256").write_text("manifest")
+    active = parent / "V0.0.6.10_Current"
+    (deployment.root / "current").symlink_to(active)
+    incomplete = parent / ".incomplete-installation"
+    incomplete.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (parent / "linked").symlink_to(external, target_is_directory=True)
+    backups = deployment.root / "backups"
+    for index in range(5):
+        path = backups / str(index)
+        path.mkdir(parents=True)
+        (path / "backup.json").write_text(json.dumps({"complete": True, "environment": "dev"}))
+        os.utime(path, (index, index))
+    unfinished = backups / "unfinished"
+    unfinished.mkdir()
+    (unfinished / "backup.json").write_text(json.dumps({"complete": False, "environment": "dev"}))
+    removed = releases.prune_deployment_history(deployment)
+    assert str(parent / "V0.0.6.9_Old") in removed
+    assert (deployment.root / "current").resolve() == active
+    assert active.exists()
+    assert (parent / "V0.0.6.11_Recent").exists()
+    assert (parent / "V0.0.6.12_Newer").exists()
+    assert incomplete.exists() and external.exists()
+    assert {path.name for path in backups.iterdir()} == {"2", "3", "4", "unfinished"}

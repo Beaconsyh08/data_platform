@@ -263,6 +263,12 @@ def deploy(
                 progress("reopening")
                 set_maintenance(store, False, release=version)
                 deployment.maintenance_file.unlink(missing_ok=True)
+            if with_agent:
+                try:
+                    state["history_cleanup"] = releases.prune_deployment_history(deployment)
+                except OSError as exc:
+                    # A cleanup failure does not turn a healthy installation into a failed deployment.
+                    state["history_cleanup_error"] = type(exc).__name__
             state["status"] = "installed" if with_agent else "server-installed"
             state["finished_at"] = time.time()
             progress("complete" if with_agent else "server-only")
