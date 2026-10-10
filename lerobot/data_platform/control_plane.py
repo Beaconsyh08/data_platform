@@ -9,6 +9,7 @@ import re
 import secrets
 import uuid
 from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (
@@ -37,6 +38,12 @@ SCOPED_SOURCE_OPERATIONS = {
 JOB_STATES = {"queued", "running", "done", "error", "cancelled", "cancel_requested", "interrupted"}
 _PASSWORD_ITERATIONS = 310_000
 _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
+
+
+@dataclass
+class LocationSyncChanges:
+    created: int = 0
+    updated: int = 0
 
 
 def _utcnow() -> datetime:
@@ -739,11 +746,23 @@ class ControlPlaneStore:
             if node is None:
                 raise KeyError(node_id)
             now = _utcnow()
-            node.status = "online"
-            node.last_seen_at = now
-            node.updated_at = now
-            if capabilities is not None:
-                node.capabilities = dict(capabilities)
+            reported = dict(capabilities) if capabilities is not None else dict(node.capabilities or {})
+            previous = dict(node.capabilities or {})
+            # Free disk space is telemetry; protocol/release/authorization changes remain immediate.
+            stable_changed = {key: value for key, value in reported.items() if key != "disk"} != {
+                key: value for key, value in previous.items() if key != "disk"
+            }
+            if (
+                node.status != "online"
+                or node.last_seen_at is None
+                or node.last_seen_at <= now - timedelta(seconds=30)
+                or stable_changed
+            ):
+                node.status = "online"
+                node.last_seen_at = now
+                node.updated_at = now
+                if capabilities is not None:
+                    node.capabilities = reported
             return self._node_dict(node)
 
     def configure_local_execution_roots(
@@ -761,7 +780,9 @@ class ControlPlaneStore:
             node.allowed_roots = list(allowed_roots)
             node.writable_roots = list(writable_roots)
 
-    def sync_locations(self, node_id: str, locations: list[dict]) -> list[dict]:
+    def sync_locations(
+        self, node_id: str, locations: list[dict], *, changes: LocationSyncChanges | None = None
+    ) -> list[dict]:
         now = _utcnow()
         synced = []
         with self.sessions.begin() as session:
@@ -794,6 +815,8 @@ class ControlPlaneStore:
                         last_seen_at=now,
                     )
                     session.add(location)
+                    if changes is not None:
+                        changes.created += 1
                 else:
                     output_dir = str(payload.get("output_dir") or location.output_dir)
                     details = dict(payload.get("metadata") or {})
@@ -808,6 +831,8 @@ class ControlPlaneStore:
                         or location.details != details
                     )
                     if changed:
+                        if changes is not None:
+                            changes.updated += 1
                         location.dataset_key = dataset_key
                         location.output_dir = output_dir
                         location.state = "available"

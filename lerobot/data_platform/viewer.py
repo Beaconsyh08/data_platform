@@ -124,6 +124,7 @@ from lerobot.data_platform.operation_log import (
     local_actor,
     read_operation_events,
     sanitize_for_log,
+    should_audit_agent_request,
     summarize_location_sync_request,
 )
 from lerobot.data_platform.precompute.analysis import (
@@ -2763,6 +2764,13 @@ def run_server(
             return response
         try:
             response_payload = response.get_json(silent=True) if response.is_json else None
+            if not should_audit_agent_request(
+                request.path,
+                response.status_code,
+                response_payload,
+                catalog_changed=getattr(g, "operation_catalog_changed", True),
+            ):
+                return response
             job_payload = response_payload.get("job") if isinstance(response_payload, dict) else None
             job_id = (
                 (job_payload.get("id") or job_payload.get("job_id"))

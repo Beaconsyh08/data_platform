@@ -49,10 +49,18 @@ class JobConflictError(ValueError):
 
 
 def scheduler_lock(session):
-    # An actual UPDATE acquires a write lock on SQLite as well as an InnoDB row lock.
-    session.execute(
-        update(SchedulerLock).where(SchedulerLock.lock_id == 1).values(revision=SchedulerLock.revision + 1)
-    )
+    if session.get_bind().dialect.name == "mysql":
+        # InnoDB can serialize scheduling without generating a row-change binlog event.
+        session.execute(
+            select(SchedulerLock.lock_id).where(SchedulerLock.lock_id == 1).with_for_update()
+        ).scalar_one()
+    else:
+        # SQLite needs an actual write to acquire its database write lock.
+        session.execute(
+            update(SchedulerLock)
+            .where(SchedulerLock.lock_id == 1)
+            .values(revision=SchedulerLock.revision + 1)
+        )
 
 
 class JobManager:

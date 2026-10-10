@@ -46,6 +46,27 @@ _SENSITIVE_KEY_PARTS = (
 _WRITE_LOCK = threading.Lock()
 
 
+def should_audit_agent_request(
+    path: str, status_code: int, payload: object, *, catalog_changed: bool = True
+) -> bool:
+    """Keep failures and real work while omitting successful control-plane polling."""
+    import re
+
+    if status_code >= 400:
+        return True
+    if path == "/api/agents/heartbeat":
+        return False
+    if path == "/api/agents/locations/sync":
+        return catalog_changed
+    if not isinstance(payload, dict):
+        return True
+    if path == "/api/agents/jobs/claim":
+        return bool(payload.get("job"))
+    if re.fullmatch(r"/api/agents/jobs/[^/]+/heartbeat", path):
+        return bool(payload.get("stop_mode"))
+    return True
+
+
 def _is_sensitive_key(key: object) -> bool:
     normalized = str(key).strip().lower().replace("-", "_")
     return any(part in normalized for part in _SENSITIVE_KEY_PARTS)

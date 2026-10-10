@@ -234,3 +234,67 @@ def test_legacy_plain_archive_is_compressed_and_remains_queryable(tmp_path):
     assert not (tmp_path / f"{LOG_FILENAME}.1").exists()
     assert (tmp_path / f"{LOG_FILENAME}.1.gz").is_file()
     assert read_operation_events(tmp_path, operation="old_operation")[0]["event_id"] == event["event_id"]
+
+
+def test_web_routine_polls_skip_audit_but_changes_and_failures_remain(tmp_path, monkeypatch):
+    from flask import g, jsonify, request
+
+    from lerobot.data_platform import viewer
+
+    captured = {}
+    monkeypatch.setattr(viewer.Flask, "run", lambda app, **kwargs: captured.update(app=app))
+    static_dir = tmp_path / "console/static"
+    static_dir.mkdir(parents=True)
+    viewer.run_server(
+        dataset=None,
+        episodes=None,
+        max_frames=None,
+        prepare_videos=False,
+        downsample=None,
+        precompute_csv=False,
+        precomputed_only=True,
+        host="127.0.0.1",
+        port=0,
+        static_folder=static_dir,
+        template_folder=Path(viewer.__file__).resolve().parent / "templates",
+    )
+    app = captured["app"]
+
+    def heartbeat():
+        return jsonify({"node": {"status": "online"}}), (403 if request.json.get("denied") else 200)
+
+    def claim():
+        return jsonify({"job": {"job_id": "job-one"} if request.json.get("claim") else None})
+
+    def catalog():
+        g.operation_catalog_changed = bool(request.json.get("changed"))
+        return jsonify({"locations": []})
+
+    def lease():
+        return jsonify({"renewed": True, "stop_mode": request.json.get("stop_mode")})
+
+    app.add_url_rule("/api/agents/heartbeat", "poll_heartbeat", heartbeat, methods=["POST"])
+    app.add_url_rule("/api/agents/jobs/claim", "poll_claim", claim, methods=["POST"])
+    app.add_url_rule("/api/agents/locations/sync", "poll_catalog", catalog, methods=["POST"])
+    app.add_url_rule("/api/agents/jobs/job-one/heartbeat", "poll_lease", lease, methods=["POST"])
+    client = app.test_client()
+    for path, body in (
+        ("/api/agents/heartbeat", {}),
+        ("/api/agents/jobs/claim", {}),
+        ("/api/agents/locations/sync", {}),
+        ("/api/agents/jobs/job-one/heartbeat", {}),
+    ):
+        assert client.post(path, json=body).status_code == 200
+    assert read_operation_events(static_dir) == []
+    assert client.post("/api/agents/heartbeat", json={"denied": True}).status_code == 403
+    client.post("/api/agents/jobs/claim", json={"claim": True})
+    client.post("/api/agents/locations/sync", json={"changed": True})
+    client.post("/api/agents/jobs/job-one/heartbeat", json={"stop_mode": "cancel"})
+    events = read_operation_events(static_dir)
+    assert {item["operation"] for item in events} == {
+        "poll_heartbeat",
+        "poll_claim",
+        "poll_catalog",
+        "poll_lease",
+    }
+    assert next(item for item in events if item["operation"] == "poll_heartbeat")["status"] == "failed"

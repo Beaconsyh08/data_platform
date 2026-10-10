@@ -1000,3 +1000,82 @@ def test_wsgi_factory_trusts_only_explicit_proxy_configuration(tmp_path: Path, m
 
     assert response.status_code == 200
     assert "Secure" in response.headers["Set-Cookie"]
+
+
+def test_heartbeat_coalesces_presence_and_disk_but_keeps_capability_changes(tmp_path, monkeypatch):
+    now = datetime(2026, 10, 10, 10)
+    monkeypatch.setattr(control_plane, "_utcnow", lambda: now)
+    store = _store(tmp_path)
+    caps = {"release": "test-release", "disk": {"/datasets": {"total": 1000, "free": 900}}}
+    _, node = store.enroll_node(
+        name="test-node",
+        hostname="localhost",
+        allowed_roots=["/datasets"],
+        writable_roots=[],
+        capabilities=caps,
+        enrollment_token="test",
+        expected_token="test",
+    )
+    updates = []
+
+    def capture(connection, cursor, statement, parameters, context, executemany):
+        if statement.lower().startswith("update dp_nodes"):
+            updates.append(statement.lower())
+
+    event.listen(store.engine, "before_cursor_execute", capture)
+    try:
+        for seconds in (5, 10, 20, 29):
+            now = datetime(2026, 10, 10, 10) + timedelta(seconds=seconds)
+            reported = {**caps, "disk": {"/datasets": {"total": 1000, "free": 900 - seconds}}}
+            current = store.heartbeat(node["node_id"], capabilities=reported)
+            assert current["status"] == "online"
+            assert updates == []
+        now += timedelta(seconds=1)
+        current = store.heartbeat(node["node_id"], capabilities=reported)
+        assert len(updates) == 1
+        assert current["capabilities"]["disk"] == reported["disk"]
+        now += timedelta(seconds=1)
+        current = store.heartbeat(node["node_id"], capabilities={**reported, "release": "new-release"})
+        assert len(updates) == 2
+        assert current["capabilities"]["release"] == "new-release"
+        now += timedelta(minutes=3)
+        assert store.list_nodes()[0]["status"] == "offline"
+        current = store.heartbeat(node["node_id"])
+        assert current["status"] == "online"
+        assert current["capabilities"]["release"] == "new-release"
+    finally:
+        event.remove(store.engine, "before_cursor_execute", capture)
+
+
+def test_catalog_sync_reports_real_changes_without_counting_presence_refresh(tmp_path, monkeypatch):
+    from lerobot.data_platform.control_plane import LocationSyncChanges
+
+    now = datetime(2026, 10, 10, 10)
+    monkeypatch.setattr(control_plane, "_utcnow", lambda: now)
+    store = _store(tmp_path)
+    _, node = store.enroll_node(
+        name="test-node",
+        hostname="localhost",
+        allowed_roots=["/datasets"],
+        writable_roots=[],
+        capabilities={},
+        enrollment_token="test",
+        expected_token="test",
+    )
+    payload = {"dataset_key": "sample", "root": "/datasets/sample", "metadata": {"total_frames": 2}}
+    changes = LocationSyncChanges()
+    original = store.sync_locations(node["node_id"], [payload], changes=changes)[0]
+    assert (changes.created, changes.updated) == (1, 0)
+    changes = LocationSyncChanges()
+    now += timedelta(minutes=6)
+    refreshed = store.sync_locations(node["node_id"], [payload], changes=changes)[0]
+    assert (changes.created, changes.updated) == (0, 0)
+    assert refreshed["last_seen_at"] != original["last_seen_at"]
+    changes = LocationSyncChanges()
+    refreshed = store.sync_locations(
+        node["node_id"],
+        [{**payload, "metadata": {"total_frames": 3}}],
+        changes=changes,
+    )[0]
+    assert (changes.created, changes.updated) == (0, 1)
+    assert refreshed["metadata"]["total_frames"] == 3

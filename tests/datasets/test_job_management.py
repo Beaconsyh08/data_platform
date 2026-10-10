@@ -547,3 +547,59 @@ def test_four_node_slots_keep_two_per_user(setup):
     status = store.job_manager.decorate(store.get_job(jobs[5]["job_id"]))
     assert status["node_slots"] == {"used": 4, "limit": 4}
     assert status["queue_wait_reason"] == "node_capacity"
+
+
+def test_mysql_scheduler_lock_serializes_claims_without_row_changes():
+    import os
+
+    from sqlalchemy import select
+    from sqlalchemy.engine import make_url
+
+    from lerobot.data_platform.management_storage import SchedulerLock
+
+    url = os.environ.get("DATA_PLATFORM_TEST_MYSQL_URL")
+    if not url:
+        pytest.skip("Requires an isolated native MySQL acceptance database")
+    assert make_url(url).database.startswith("dp_test_")
+    store = ControlPlaneStore(url)
+    owner = store.bootstrap_admin(
+        username="native-admin",
+        password="long-native-password",
+        display_name="Native Admin",
+        bootstrap_token="test",
+        expected_token="test",
+    )
+    _, node = store.enroll_node(
+        name="native-node",
+        hostname="localhost",
+        allowed_roots=["/data"],
+        writable_roots=[],
+        capabilities={"job_protocol": 2, "data_profile_protocol": 100},
+        enrollment_token="test",
+        expected_token="test",
+    )
+    location = store.sync_locations(node["node_id"], [{"root": "/data/source", "dataset_key": "source"}])[0]
+
+    def revision():
+        with store.sessions() as session:
+            return session.scalar(select(SchedulerLock.revision).where(SchedulerLock.lock_id == 1))
+
+    before = revision()
+    for index in range(5):
+        assert store.claim_job(node["node_id"], worker_instance_id=str(index)) is None
+    assert revision() == before
+    store.create_job(
+        location_id=location["location_id"],
+        requested_by=owner["user_id"],
+        operation="viewer.prepare",
+    )
+    with ThreadPoolExecutor(8) as pool:
+        claims = list(
+            pool.map(
+                lambda index: store.claim_job(node["node_id"], worker_instance_id=str(index)),
+                range(8),
+            )
+        )
+    assert sum(claim is not None for claim in claims) == 1
+    assert revision() == before
+    store.engine.dispose()

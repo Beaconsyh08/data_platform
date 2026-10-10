@@ -600,10 +600,14 @@ def register_control_plane_routes(
         locations = body.get("locations") or []
         if not isinstance(locations, list):
             return jsonify({"error": "locations must be a list"}), 400
+        from lerobot.data_platform.control_plane import LocationSyncChanges
+
+        changes = LocationSyncChanges()
         try:
-            synced = store.sync_locations(node["node_id"], locations)
+            synced = store.sync_locations(node["node_id"], locations, changes=changes)
         except (KeyError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 400
+        g.operation_catalog_changed = bool(changes.created or changes.updated)
         return jsonify({"locations": synced})
 
     @app.route("/api/agents/jobs/claim", methods=["POST"])
