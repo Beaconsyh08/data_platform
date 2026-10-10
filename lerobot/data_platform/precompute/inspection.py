@@ -14,6 +14,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from lerobot.data_platform.cache_files import cached_csv_files, logical_csv_path, open_cached_csv
 from lerobot.data_platform.precompute.dataset_io import is_v3_info
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -144,12 +145,12 @@ class DatasetInspection:
         if self.static_dir is None:
             return files
         directory = contained_path(self.static_dir, self.static_dir / "csv")
-        for path in directory.glob("episode_*_ds*.csv"):
-            match = re.fullmatch(r"episode_(\d+)_ds([1-9]\d*)\.csv", path.name)
+        for path in cached_csv_files(directory, "episode_*_ds*.csv"):
+            match = re.fullmatch(r"episode_(\d+)_ds([1-9]\d*)\.csv(?:\.gz)?", path.name)
             if match:
                 episode, step = map(int, match.groups())
                 current = files.get(episode)
-                if current is None or step < int(current.stem.rsplit("_ds", 1)[1]):
+                if current is None or step < int(logical_csv_path(current).stem.rsplit("_ds", 1)[1]):
                     files[episode] = path
         return files
 
@@ -178,7 +179,7 @@ class DatasetInspection:
     def columns(self, source: str, episode: int, path: Path | None = None) -> list[InspectColumn]:
         path = path if path is not None else self._file(source, episode)
         if source == "csv":
-            with path.open(newline="") as handle:
+            with open_cached_csv(path, newline="") as handle:
                 header = next(csv.reader(handle), [])
             return [InspectColumn(str(index), name, "CSV text") for index, name in enumerate(header)]
         features = self.info.get("features") or {}
@@ -306,7 +307,7 @@ class DatasetInspection:
                     result["cache_rows"] = position + 1 if "position" in locals() else 0
 
         if source == "csv":
-            with path.open(newline="") as handle:
+            with open_cached_csv(path, newline="") as handle:
                 reader = csv.reader(handle)
                 if next(reader, []) != [column.name for column in available]:
                     raise ValueError("CSV schema changed while loading the preview. Reload the data source.")

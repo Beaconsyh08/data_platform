@@ -16,6 +16,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 from PIL import Image
 
+from lerobot.data_platform.cache_files import resolve_cached_csv
 from lerobot.data_platform.execution_resources import video_threads
 from lerobot.data_platform.precompute.annotation import write_episode_csv
 from lerobot.data_platform.precompute.data_profile import (
@@ -382,7 +383,7 @@ def run_v3_viewer_precompute(
     for _, episode in selected.iterrows():
         episode_index = int(episode["episode_index"])
         if prepare_csv:
-            csv_path = csv_dir / f"episode_{episode_index:06d}_ds{downsample or 1}.csv"
+            csv_path = resolve_cached_csv(csv_dir / f"episode_{episode_index:06d}_ds{downsample or 1}.csv")
             if overwrite_csv or not _has_nonempty_cache(csv_path):
                 run = partial(
                     _write_episode_csv,

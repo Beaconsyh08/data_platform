@@ -139,6 +139,15 @@ Agent 的 `viewer.prepare` 执行期间先写入 `vis/.dp-<job_id>-<attempt_id>/
 只有 Agent 确认写入成功后，Viewer 才显示“Results synced”；离线、权限不足或网络失败会保持待同步
 或显示失败，随后自动重试。旧 Agent 会提示需要升级。回传不修改源 Parquet、视频或 `meta/`；
 将标注应用到源数据仍是独立操作。已同步文件被删除时只删除对应受同步管理的文件，覆盖前保留备份。
+Server A 发布远端 Viewer 缓存时，将 `static/csv/episode_*_ds*.csv` 原子压缩为 `.csv.gz`，
+并逐文件校验解压内容后移除原 CSV。旧 CSV 与 gzip CSV 可以混用；Viewer 的 `data.csv` 和
+`assets/.../csv/*.csv` 地址保持不变，读取、阶段编辑、分析和缓存失效支持两种格式。
+编辑已压缩 CSV 后仍保存为 gzip，阶段编码 `.stages.json`、其他标注及 MP4 保持原格式。
+结果同步沿用逻辑 `.csv` 文件名和解压内容的字节数/SHA-256；仅压缩不改变结果 revision。
+缓存重建保留已有编辑，Agent 应用结果后仍校验内容并确认相同 revision。
+在混合版本部署或回退到不支持 gzip 的版本前，须在结果锁保护下将服务器缓存解压回 CSV；
+旧版 Server 不支持读取 gzip 缓存。
+
 视频和完整 CSV 缓存不重复回传；结果同步覆盖顶层 JSON/JSONL，以及 labeling、tagging、analysis、
 annotations 下的 JSON/JSONL（不含审计日志），并包含网页阶段编辑实际修改过的 CSV 和阶段编码文件。
 单个数据集的结果文件合计上限 64 MiB；超限显示同步异常，不会误报成功。
@@ -171,7 +180,8 @@ H100:/srv/data-platform-dev/datasets/dev-sample-20260909_165406
 这里的缓存不等于源数据全集。
 
 `console/static/operation_log.jsonl` 是文件操作审计账本，不是视频或数据集副本。
-它按 32 MiB 阈值轮转，保留当前账本及 `.1` 至 `.4` 四份历史账本；单条超大事件可能超过轮转阈值。
+它按解压后 32 MiB 阈值轮转，当前账本保持 JSONL，历史账本无损压缩为 `.1.gz` 至 `.4.gz`；
+读取兼容旧的 `.1` 至 `.4`，单条超大事件可能超过轮转阈值。
 网页仍能查询轮转账本中的近期操作，MySQL 中的审计记录独立保留。
 `dp_dataset_locations` 保存数据集位置与元信息，登记本身必须保留；无变化的周期同步减少存在时间更新，
 避免将相同的大块元信息反复记录到数据库变更流水。数据库和发行历史的保留策略参见

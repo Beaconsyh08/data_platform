@@ -12,6 +12,7 @@ from dataclasses import asdict, is_dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from lerobot.data_platform.cache_files import cached_csv_files, logical_csv_path, open_cached_csv
 from lerobot.data_platform.curation import (
     CURATION_PROTOCOL,
     OPERATIONS,
@@ -344,15 +345,15 @@ def execute_curation_job(agent, job: dict, source: Path, location: dict) -> dict
         )
         transitions = {}
         skipped = []
-        for path in (static / "csv").glob("episode_*_ds1.csv"):
-            metadata_path = path.with_suffix(".stages.json")
+        for path in cached_csv_files(static / "csv", "episode_*_ds1.csv"):
+            metadata_path = logical_csv_path(path).with_suffix(".stages.json")
             if not metadata_path.is_file():
                 skipped.append(int(path.name.split("_")[1]))
                 continue
             profile = json.loads(metadata_path.read_text())
             maximum = max(1, int(profile["stage_count"]) - 1)
             rows = []
-            with path.open() as handle:
+            with open_cached_csv(path) as handle:
                 for row in csv.DictReader(handle):
                     if "stage" not in row:
                         continue

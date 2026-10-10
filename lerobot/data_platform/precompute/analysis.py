@@ -10,6 +10,7 @@ from typing import Any
 
 import pandas as pd
 
+from lerobot.data_platform.cache_files import cached_csv_files, logical_csv_path
 from lerobot.data_platform.precompute.signal_columns import signal_columns
 from lerobot.data_platform.task_catalog import TaskConfigSnapshot, content_digest
 
@@ -411,12 +412,12 @@ def find_cached_episode_csv(static_dir: Path, episode_id: int) -> Path | None:
     csv_dir = static_dir / "csv"
     if not csv_dir.is_dir():
         return None
-    candidates = list(csv_dir.glob(f"episode_{episode_id:06d}_ds*.csv"))
+    candidates = list(cached_csv_files(csv_dir, f"episode_{episode_id:06d}_ds*.csv"))
     if not candidates:
         return None
 
     def ds_value(path: Path) -> int:
-        match = re.search(r"_ds(\d+)\.csv$", path.name)
+        match = re.search(r"_ds(\d+)\.csv(?:\.gz)?$", path.name)
         return int(match.group(1)) if match else 10**9
 
     return min(candidates, key=ds_value)
@@ -527,7 +528,7 @@ def analysis_input_digest(meta: Any, static_dir: Path | None, episodes: list[int
     if static_dir is not None:
         paths = [*(static_dir / "csv").glob("episode_*"), static_dir / "viewer_manifest.json"]
         for path in sorted(paths):
-            if path.suffix not in {".csv", ".json"}:
+            if logical_csv_path(path).suffix not in {".csv", ".json"}:
                 continue
             try:
                 stat = path.stat()
@@ -812,14 +813,14 @@ def build_dataset_analysis(
         frame_count = int(len(df))
         seconds_per_frame = duration_seconds / frame_count if frame_count else 0.0
 
-        ds_match = re.search(r"_ds(\d+)\.csv$", csv_path.name)
+        ds_match = re.search(r"_ds(\d+)\.csv(?:\.gz)?$", csv_path.name)
         csv_downsample = int(ds_match.group(1)) if ds_match else None
         if csv_downsample and csv_downsample > 1:
             sampled_csv.append(episode_id)
 
         max_stage = resolved.stage_count - 1
         try:
-            stage_metadata = json.loads(csv_path.with_suffix(".stages.json").read_text())
+            stage_metadata = json.loads(logical_csv_path(csv_path).with_suffix(".stages.json").read_text())
             max_stage = max(1, int(stage_metadata["stage_count"]) - 1)
         except (OSError, ValueError, KeyError, TypeError):
             pass

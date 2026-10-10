@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 
 from lerobot.common.datasets.compute_stats import aggregate_stats
 from lerobot.common.datasets.utils import cast_stats_to_numpy, serialize_dict
+from lerobot.data_platform.cache_files import cached_csv_files, open_cached_csv
 from lerobot.data_platform.execution_pools import ThreadPoolExecutor, map_completed
 from lerobot.data_platform.precompute.data_profile import (
     resolve_data_profile,
@@ -423,17 +424,17 @@ def _copy_cached_csvs(
     csv_dir = Path(src_static) / "csv"
     if not csv_dir.is_dir():
         return copied
-    for path in csv_dir.glob(f"episode_{old_idx:06d}_ds*.csv"):
+    for path in cached_csv_files(csv_dir, f"episode_{old_idx:06d}_ds*.csv"):
         dst = out_static / "csv" / _remap_episode_filename(path.name, old_idx, new_idx)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        with path.open(newline="") as src_handle:
+        with open_cached_csv(path, newline="") as src_handle:
             reader = csv.DictReader(src_handle)
             if reader.fieldnames is None:
                 _copy_file(path, dst)
                 copied += 1
                 continue
             rows = list(reader)
-        with dst.open("w", newline="") as dst_handle:
+        with open_cached_csv(dst, "w", newline="") as dst_handle:
             writer = csv.DictWriter(dst_handle, fieldnames=reader.fieldnames)
             writer.writeheader()
             for row in rows:

@@ -105,6 +105,12 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatas
 from lerobot.common.datasets.utils import IterableNamespace
 from lerobot.common.utils.utils import init_logging
 from lerobot.data_platform.admin_auth import ADMIN_SESSION_COOKIE, AdminAuthStore
+from lerobot.data_platform.cache_files import (
+    cached_csv_files,
+    logical_csv_path,
+    open_cached_csv,
+    resolve_cached_csv,
+)
 from lerobot.data_platform.cli import get_default_output_dir, run_precompute
 from lerobot.data_platform.data_protection import (
     evaluate_dataset_protection,
@@ -367,12 +373,12 @@ def _read_parquet_head(parquet_path: Path, columns: list[str], max_rows: int) ->
 
 def _find_any_cached_csv(cache_dir: Path, episode_id: int) -> Path | None:
     pattern = f"episode_{episode_id:06d}_ds*.csv"
-    candidates = list(cache_dir.glob(pattern))
+    candidates = cached_csv_files(cache_dir, pattern)
     if not candidates:
         return None
 
     def _ds_value(path: Path) -> int:
-        match = re.search(r"_ds(\d+)\.csv$", path.name)
+        match = re.search(r"_ds(\d+)\.csv(?:\.gz)?$", path.name)
         return int(match.group(1)) if match else 10**9
 
     return min(candidates, key=_ds_value)
@@ -382,7 +388,7 @@ def _get_csv_cache_path(
     cache_dir: Path, episode_id: int, downsample: int | None, precomputed_only: bool
 ) -> Path | None:
     ds = downsample if downsample and downsample > 1 else 1
-    preferred = cache_dir / f"episode_{episode_id:06d}_ds{ds}.csv"
+    preferred = resolve_cached_csv(cache_dir / f"episode_{episode_id:06d}_ds{ds}.csv")
     if preferred.is_file():
         return preferred
     if precomputed_only:
@@ -392,7 +398,7 @@ def _get_csv_cache_path(
 
 def _columns_from_csv_header(csv_path: Path, features: dict | None = None) -> list[dict]:
     try:
-        with csv_path.open("r") as f:
+        with open_cached_csv(csv_path) as f:
             header_line = f.readline().strip()
     except OSError:
         return []
@@ -428,7 +434,8 @@ def _normalize_data_version(value: str | None) -> str:
 
 def _serve_csv_stripped(csv_path: Path, data_version: str | None = None, features: dict | None = None):
     """Serve a CSV file, stripping subtask_state* and normalizing legacy gripper values."""
-    text = csv_path.read_text()
+    with open_cached_csv(csv_path) as stream:
+        text = stream.read()
     if not text:
         return Response(text, mimetype="text/csv")
 
@@ -459,7 +466,7 @@ def _serve_csv_stripped(csv_path: Path, data_version: str | None = None, feature
         if scalar_exist_label_alias and field.strip() == "exist_label_0"
     }
     if not drop_idx and not normalize_idx and not rename_idx and not header_changed:
-        return send_file(csv_path.resolve(), mimetype="text/csv")
+        return Response(text, mimetype="text/csv")
 
     out = StringIO()
     writer = csv.writer(out)
@@ -958,8 +965,8 @@ def run_server(
 
         csv_episode_ids: set[int] = set()
         if csv_dir.is_dir():
-            for csv_path in csv_dir.glob("episode_*_ds*.csv"):
-                match = re.match(r"episode_(\d+)_ds\d+\.csv$", csv_path.name)
+            for csv_path in cached_csv_files(csv_dir):
+                match = re.match(r"episode_(\d+)_ds\d+\.csv(?:\.gz)?$", csv_path.name)
                 if match:
                     csv_episode_ids.add(int(match.group(1)))
 
@@ -1601,8 +1608,8 @@ def run_server(
         ds = (
             server_state["downsample"] if server_state["downsample"] and server_state["downsample"] > 1 else 1
         )
-        preferred_csv = csv_dir / f"episode_{episode_id:06d}_ds{ds}.csv"
-        default_csv = csv_dir / f"episode_{episode_id:06d}_ds1.csv"
+        preferred_csv = resolve_cached_csv(csv_dir / f"episode_{episode_id:06d}_ds{ds}.csv")
+        default_csv = resolve_cached_csv(csv_dir / f"episode_{episode_id:06d}_ds1.csv")
         if preferred_csv.is_file() or default_csv.is_file():
             csv_cached = 1
         elif csv_dir.is_dir():
@@ -2981,6 +2988,17 @@ def run_server(
         ds_static = _static_dir_for_key((dataset_namespace, dataset_name))
         if ds_static is None:
             abort(404)
+        if filename.startswith("csv/") and filename.endswith(".csv"):
+            from werkzeug.utils import safe_join
+
+            joined = safe_join(str(ds_static), filename)
+            if joined is None:
+                abort(404)
+            path = resolve_cached_csv(Path(joined))
+            if not path.is_file() or not path.resolve().is_relative_to(ds_static.resolve()):
+                abort(404)
+            with open_cached_csv(path) as stream:
+                return Response(stream.read(), mimetype="text/csv")
         return send_from_directory(ds_static, filename)
 
     @app.route("/")
@@ -6192,7 +6210,7 @@ def run_server(
         if not csv_path.is_file():
             return False
 
-        with csv_path.open(newline="") as f:
+        with open_cached_csv(csv_path, newline="") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
             fieldnames = list(reader.fieldnames or [])
@@ -6203,7 +6221,7 @@ def run_server(
         timestamps = [float(r["timestamp"]) for r in rows]
         states = _compute_subtask_states(timestamps, transitions)
         max_stage = max(1, max((int(item["state"]) for item in transitions), default=4))
-        csv_path.with_suffix(".stages.json").write_text(
+        logical_csv_path(csv_path).with_suffix(".stages.json").write_text(
             json.dumps(
                 {
                     "stage_count": max_stage + 1,
@@ -6223,7 +6241,7 @@ def run_server(
                 row["subtask_state"] = st
             row["stage"] = st / float(max_stage)
 
-        with csv_path.open("w", newline="") as f:
+        with open_cached_csv(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
@@ -6998,7 +7016,7 @@ def run_server(
 
             cache_dir = static_folder / "csv"
             if cache_dir.is_dir():
-                for csv_file in cache_dir.glob(f"episode_{episode_id:06d}_ds*.csv"):
+                for csv_file in cached_csv_files(cache_dir, f"episode_{episode_id:06d}_ds*.csv"):
                     csv_file.unlink()
                     logging.info("Deleted cached CSV: %s", csv_file.name)
             try:
@@ -7215,7 +7233,7 @@ def run_server(
                         c.unlink()
                 cache_dir = static_folder / "csv"
                 if cache_dir.is_dir():
-                    for f in cache_dir.glob(f"episode_{episode_id:06d}_ds*.csv"):
+                    for f in cached_csv_files(cache_dir, f"episode_{episode_id:06d}_ds*.csv"):
                         f.unlink()
             except Exception:
                 logging.exception("Failed to delete files for episode %s", episode_id)
@@ -7293,7 +7311,7 @@ def run_server(
 
                     # Rename cached CSV files
                     if cache_dir.is_dir():
-                        for csv_f in cache_dir.glob(f"episode_{old_idx:06d}_ds*.csv"):
+                        for csv_f in cached_csv_files(cache_dir, f"episode_{old_idx:06d}_ds*.csv"):
                             new_name = csv_f.name.replace(f"episode_{old_idx:06d}", f"episode_{new_idx:06d}")
                             csv_f.rename(cache_dir / new_name)
             except Exception:
@@ -7516,7 +7534,7 @@ def run_server(
                 if cached_video.is_file():
                     cached_video.unlink()
             if cache_dir.is_dir():
-                for csv_file in cache_dir.glob(f"episode_{episode_id:06d}_ds*.csv"):
+                for csv_file in cached_csv_files(cache_dir, f"episode_{episode_id:06d}_ds*.csv"):
                     csv_file.unlink()
             _log(f"Deleted files for episode {episode_id}")
         except Exception as exc:
@@ -7575,7 +7593,7 @@ def run_server(
                         old_cached.rename(new_cached)
 
                 if cache_dir.is_dir():
-                    for csv_file in cache_dir.glob(f"episode_{old_idx:06d}_ds*.csv"):
+                    for csv_file in cached_csv_files(cache_dir, f"episode_{old_idx:06d}_ds*.csv"):
                         new_name = csv_file.name.replace(f"episode_{old_idx:06d}", f"episode_{new_idx:06d}")
                         csv_file.rename(cache_dir / new_name)
             _log(f"Reindexed {len(indices_to_shift)} following episodes")
@@ -7862,7 +7880,7 @@ def run_server(
             target_episodes = range(total_eps)
         ds = downsample if downsample and downsample > 1 else 1
         for ep_id in target_episodes:
-            cache_path = cache_dir / f"episode_{ep_id:06d}_ds{ds}.csv"
+            cache_path = resolve_cached_csv(cache_dir / f"episode_{ep_id:06d}_ds{ds}.csv")
             if cache_path.is_file():
                 continue
             csv_string, _, _, _ = get_episode_data(

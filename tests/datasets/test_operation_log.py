@@ -1,3 +1,4 @@
+import gzip
 import json
 import multiprocessing
 import sys
@@ -84,17 +85,24 @@ def test_operation_logs_rotate_and_retained_events_remain_queryable(tmp_path: Pa
         append_operation_event(tmp_path, "episode_update", status="success", episode_ids=[index])
         for index in range(12)
     ]
-    assert (tmp_path / f"{LOG_FILENAME}.1").is_file()
-    assert (tmp_path / f"{LOG_FILENAME}.2").is_file()
-    assert not (tmp_path / f"{LOG_FILENAME}.3").exists()
+    assert (tmp_path / f"{LOG_FILENAME}.1.gz").is_file()
+    assert (tmp_path / f"{LOG_FILENAME}.2.gz").is_file()
+    assert not (tmp_path / f"{LOG_FILENAME}.3.gz").exists()
     retained = read_operation_events(tmp_path)
     assert 1 < len(retained) < len(events)
     assert events[-1]["event_id"] in {event["event_id"] for event in retained}
     assert events[0]["event_id"] not in {event["event_id"] for event in retained}
-    for path in (tmp_path / LOG_FILENAME, tmp_path / f"{LOG_FILENAME}.1", tmp_path / f"{LOG_FILENAME}.2"):
+    for path in (
+        tmp_path / LOG_FILENAME,
+        tmp_path / f"{LOG_FILENAME}.1.gz",
+        tmp_path / f"{LOG_FILENAME}.2.gz",
+    ):
         assert path.stat().st_size <= 1200
         assert all(
-            json.loads(line)["operation"] == "episode_update" for line in path.read_text().splitlines()
+            json.loads(line)["operation"] == "episode_update"
+            for line in (
+                gzip.decompress(path.read_bytes()).decode() if path.suffix == ".gz" else path.read_text()
+            ).splitlines()
         )
 
 
@@ -150,7 +158,7 @@ def test_rotation_preserves_events_across_worker_processes(tmp_path: Path, monke
     events = read_operation_events(tmp_path, limit=200)
     assert len(events) == 100
     assert {event["episode_ids"][0] for event in events} == set(range(100))
-    assert (tmp_path / f"{LOG_FILENAME}.1").is_file()
+    assert (tmp_path / f"{LOG_FILENAME}.1.gz").is_file()
 
 
 def test_audit_cli_main_records_failure_and_redacts_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -217,3 +225,12 @@ def test_web_mutation_failure_is_queryable_and_redacted(tmp_path: Path, monkeypa
     assert event["status"] == "failed"
     assert event["details"]["parameters"]["token"] == "<redacted>"
     assert "web-secret" not in json.dumps(history)
+
+
+def test_legacy_plain_archive_is_compressed_and_remains_queryable(tmp_path):
+    event = append_operation_event(tmp_path, "old_operation", status="success")
+    (tmp_path / LOG_FILENAME).rename(tmp_path / f"{LOG_FILENAME}.1")
+    append_operation_event(tmp_path, "new_operation", status="success")
+    assert not (tmp_path / f"{LOG_FILENAME}.1").exists()
+    assert (tmp_path / f"{LOG_FILENAME}.1.gz").is_file()
+    assert read_operation_events(tmp_path, operation="old_operation")[0]["event_id"] == event["event_id"]

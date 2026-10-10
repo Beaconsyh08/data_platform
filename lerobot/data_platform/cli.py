@@ -29,6 +29,7 @@ from tqdm.auto import tqdm
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.common.utils.utils import init_logging
+from lerobot.data_platform.cache_files import resolve_cached_csv
 from lerobot.data_platform.operation_log import audit_cli_main
 from lerobot.data_platform.precompute.annotation import (
     DEFAULT_FALLBACK_STAGE_COUNT,
@@ -180,7 +181,8 @@ def _all_precomputed_files_exist(
         except FileNotFoundError:
             return False
         for episode_id in episodes:
-            size = csv_sizes.get(f"episode_{episode_id:06d}_ds{downsample_value}.csv")
+            name = f"episode_{episode_id:06d}_ds{downsample_value}.csv"
+            size = csv_sizes.get(name + ".gz") or csv_sizes.get(name)
             if not size or size <= 0:
                 return False
 
@@ -613,7 +615,7 @@ def run_precompute(
                                 ViewerWork(episode_id, target, partial(prepare_video, episode_id, image_key))
                             )
                 if prepare_csv:
-                    csv_path = (
+                    csv_path = resolve_cached_csv(
                         csv_dir
                         / f"episode_{episode_id:06d}_ds{downsample if downsample and downsample > 1 else 1}.csv"
                     )

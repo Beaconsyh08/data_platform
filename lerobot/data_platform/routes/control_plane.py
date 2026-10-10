@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from flask import Flask, g, jsonify, redirect, render_template, request
 
+from lerobot.data_platform.cache_files import compress_viewer_csvs
 from lerobot.data_platform.environment import EnvironmentIdentity, session_cookie_name
 from lerobot.data_platform.precompute.data_profile import (
     DATA_PROFILE_PROTOCOL,
@@ -723,6 +724,7 @@ def register_control_plane_routes(
             if not previous.resolve().is_relative_to(remote_cache_root):
                 raise ValueError("Registered cache is outside the configured cache root")
             preserve_results(previous, staged_cache)
+        compress_viewer_csvs(staged_cache / "static")
         (staged_cache / ".execution-owner.json").write_text(json.dumps(owner))
         backup = cache_output_dir.with_name(f".{cache_output_dir.name}.backup-{uuid.uuid4().hex}")
         if cache_output_dir.exists():

@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import fcntl
+import gzip
 import hashlib
 import json
 import logging
@@ -20,6 +21,13 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from lerobot.data_platform.cache_files import (
+    cached_csv_files,
+    logical_csv_path,
+    open_cached_csv,
+    read_cache_bytes,
+    resolve_cached_csv,
+)
 from lerobot.data_platform.execution import atomic_json
 
 MAX_RESULT_BYTES = 64 * 1024 * 1024
@@ -59,8 +67,8 @@ def result_lock(cache: Path, *, blocking: bool = True):
 def result_path(static: Path, name: str) -> Path:
     if not is_result_file(name):
         raise ValueError("Unsupported result path")
-    path = static / name
-    if any(parent.is_symlink() for parent in [path, *path.parents] if parent != static.parent):
+    path = resolve_cached_csv(static / name) if name.endswith(".csv") else static / name
+    if any(parent.is_symlink() for parent in [static / name, path, *path.parents] if parent != static.parent):
         raise ValueError("Result paths must not contain symbolic links")
     if not path.resolve().is_relative_to(static.resolve()):
         raise ValueError("Result path escapes the dataset cache")
@@ -86,14 +94,12 @@ class ResultSnapshot:
                 paths.extend(root.rglob("*.json"))
                 paths.extend(root.rglob("*.jsonl"))
         for path in sorted(set(paths)):
-            name = path.relative_to(static).as_posix()
+            name = logical_csv_path(path).relative_to(static).as_posix()
             if not is_result_file(name):
                 continue
             path = result_path(static, name)
-            total += path.stat().st_size
-            if max_bytes is not None and total > max_bytes:
-                raise ValueError("Dataset result sidecars exceed the synchronization size limit")
-            content = path.read_bytes()
+            content = read_cache_bytes(path, max_bytes=None if max_bytes is None else max_bytes - total)
+            total += len(content)
             # Reject partially written results from an asynchronous producer; retry on the next poll.
             if path.suffix == ".json":
                 json.loads(content)
@@ -130,7 +136,14 @@ def preserve_results(previous: Path, staged: Path) -> None:
             or name.startswith("csv/")
         ):
             new.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(old, new)
+            if name.endswith(".csv"):
+                with (
+                    open_cached_csv(old, newline="") as source,
+                    open_cached_csv(new, "w", newline="") as target,
+                ):
+                    shutil.copyfileobj(source, target)
+            else:
+                shutil.copy2(old, new)
     edited = previous / ".edited-csv.json"
     if edited.is_file() and same_stages:
         shutil.copy2(edited, staged / edited.name)
@@ -143,10 +156,10 @@ def preserve_results(previous: Path, staged: Path) -> None:
 def mark_edited_csv(cache: Path, episode_id: int) -> None:
     path = cache / ".edited-csv.json"
     edited = set(json.loads(path.read_text())) if path.is_file() else set()
-    for csv in (cache / "static/csv").glob(f"episode_{episode_id:06d}*.csv"):
-        for file in (csv, csv.with_suffix(".stages.json")):
+    for csv in cached_csv_files(cache / "static/csv", f"episode_{episode_id:06d}*.csv"):
+        for file in (csv, logical_csv_path(csv).with_suffix(".stages.json")):
             if file.is_file():
-                name = file.relative_to(cache / "static").as_posix()
+                name = logical_csv_path(file).relative_to(cache / "static").as_posix()
                 result_path(cache / "static", name)
                 edited.add(name)
     atomic_json(path, sorted(edited))
@@ -218,13 +231,14 @@ def apply_results(cache: Path, bundle: dict, receipt: Path) -> None:
     if any(path.is_symlink() for path in [backup, backup.parent]):
         raise ValueError("Result backup directory must not be a symbolic link")
     for name in set(snapshot.files) | set(previous.get("files", {})):
-        saved = backup / name
+        target = result_path(cache / "static", name)
+        saved = backup / (name + ".gz" if target.name.endswith(".csv.gz") else name)
         if any(path.is_symlink() for path in [saved, *saved.parents] if path.is_relative_to(backup)):
             raise ValueError("Result backup paths must not contain symbolic links")
     for name in set(snapshot.files) | set(previous.get("files", {})):
         target = result_path(cache / "static", name)
         target.parent.mkdir(parents=True, exist_ok=True)
-        saved = backup / name
+        saved = backup / (name + ".gz" if target.name.endswith(".csv.gz") else name)
         if target.is_file() and not saved.exists():
             saved.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(target, saved)
@@ -233,15 +247,23 @@ def apply_results(cache: Path, bundle: dict, receipt: Path) -> None:
             continue
         temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
-            with temporary.open("wb") as handle:
+            with (
+                gzip.open(temporary, "wb", compresslevel=6)
+                if target.name.endswith(".csv.gz")
+                else temporary.open("wb")
+            ) as handle:
                 handle.write(content[name])
                 handle.flush()
+            with temporary.open("rb") as handle:
                 os.fsync(handle.fileno())
             os.replace(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
     for name, expected in snapshot.files.items():
-        if hashlib.sha256(result_path(cache / "static", name).read_bytes()).hexdigest() != expected["sha256"]:
+        if (
+            hashlib.sha256(read_cache_bytes(result_path(cache / "static", name))).hexdigest()
+            != expected["sha256"]
+        ):
             raise ValueError("Published result checksum mismatch")
     atomic_json(
         cache / ".edited-csv.json", sorted(name for name in snapshot.files if name.startswith("csv/"))
@@ -284,7 +306,7 @@ def _local_result_intact(source: Path, cache: Path, location: dict, receipt: Pat
     recorded = json.loads(receipt.read_text()) if receipt.is_file() else {}
     return recorded.get("revision") == location["revision"] and all(
         (path := result_path(cache / "static", name)).is_file()
-        and hashlib.sha256(path.read_bytes()).hexdigest() == item["sha256"]
+        and hashlib.sha256(read_cache_bytes(path)).hexdigest() == item["sha256"]
         for name, item in location["files"].items()
     )
 

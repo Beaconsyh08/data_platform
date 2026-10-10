@@ -443,3 +443,43 @@ def test_viewer_completion_publishes_stable_dataset_cache_and_preserves_flags(tm
         ).status_code
         == 200
     )
+
+
+def test_compression_keeps_revision_and_syncs_edits_to_compressed_agent_cache(tmp_path):
+    from lerobot.data_platform.cache_files import compress_viewer_csvs, open_cached_csv, read_cache_bytes
+
+    _, client, token, location, cache, output = setup_results(tmp_path)
+    for static in (cache / "static", output / "static"):
+        (static / "csv").mkdir()
+        (static / "csv/episode_000000_ds1.csv").write_text("timestamp,stage\n0,0\n")
+    mark_edited_csv(cache, 0)
+    before = ResultSnapshot.read(cache / "static")
+    compress_viewer_csvs(cache / "static")
+    compress_viewer_csvs(output / "static")
+    assert ResultSnapshot.read(cache / "static") == before
+    with open_cached_csv(cache / "static/csv/episode_000000_ds1.csv", "w", newline="") as stream:
+        stream.write("timestamp,stage\n0,1\n")
+    bridge = Bridge(client, token)
+    bundle = bridge.result_bundle({}, location["location_id"])
+    assert "csv/episode_000000_ds1.csv" in bundle["files"]
+    receipt = tmp_path / "receipt.json"
+    apply_results(output, bundle, receipt)
+    assert read_cache_bytes(output / "static/csv/episode_000000_ds1.csv") == b"timestamp,stage\n0,1\n"
+    assert not (output / "static/csv/episode_000000_ds1.csv").exists()
+    assert ResultSnapshot.read(output / "static") == ResultSnapshot.read(cache / "static")
+    assert list((output / ".result-sync-backups").rglob("*.csv.gz"))
+
+
+def test_rebuild_preserves_compressed_edited_csv(tmp_path):
+    from lerobot.data_platform.cache_files import compress_viewer_csvs, read_cache_bytes
+
+    _, _, _, _, cache, output = setup_results(tmp_path)
+    (cache / "static/csv").mkdir()
+    path = cache / "static/csv/episode_000000_ds1.csv"
+    path.write_bytes(b"timestamp,stage\r\n0,1\r\n")
+    mark_edited_csv(cache, 0)
+    compress_viewer_csvs(cache / "static")
+    preserve_results(cache, output)
+    compress_viewer_csvs(output / "static")
+    assert read_cache_bytes(output / "static/csv/episode_000000_ds1.csv") == b"timestamp,stage\r\n0,1\r\n"
+    assert ResultSnapshot.read(cache / "static") == ResultSnapshot.read(output / "static")

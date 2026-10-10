@@ -205,7 +205,8 @@ sudo journalctl -u data-platform-promotion.service --no-pager -n 50
 Server A 的 MySQL binlog 保留策略为 7 天，使用 `MINIMAL` 行记录、`PARTIAL_JSON` 和事务压缩；
 修改这项主机配置不会自动由代码部署完成。首次收紧期限前应完成可校验的数据库备份，并检查复制及恢复需求，
 旧 binlog 通过 MySQL 的 `PURGE BINARY LOGS` 清理，不能直接删除文件。
-文件操作日志每份达到 32 MiB 时轮转，保留当前文件和四份历史文件；审计查询包含这些近期文件，
+文件操作日志每份达到 32 MiB 时轮转，当前文件保持 JSONL，四份历史文件采用 gzip 无损压缩；
+审计查询兼容新旧格式并包含这些近期文件，
 数据库审计记录不随文件轮转删除。数据集周期同步的审计保留登记身份和脱敏元信息摘要，不重复保存完整目录。
 元信息没有变化时不逐轮更新数据集登记表，存在时间最多每五分钟刷新一次；真正的元信息变化仍立即保存。
 Agent 节点心跳与在线判定保留原有频率。
@@ -351,3 +352,14 @@ python scripts/benchmark_data_platform_matrix.py \
 
 `tests/datasets/test_job_progress.py` 已列入发行包必跑验证。接入多阶段或并发任务时补充行为测试，
 覆盖阶段切换、文本事件、真实完成计数、重试、事件顺序和最终确认；UI 改动还需浏览器验证。
+
+
+## HTTPS 地址与证书
+
+Server A 的用户入口是 `https://10.8.8.29`（开发环境端口 `8443`）。证书 SAN 必须包含
+实际访问 IP；仅信任证书不能解决 IP 不匹配。当前服务器叶子证书由原内网 CA 签发，
+包括当前 IP、已有回环及旧 IP，Agent 的 SSH 转发入口继续使用 `127.0.0.1`。
+CA 公共证书为 `/etc/nginx/tls/data-platform-ca.crt`，尚未信任该 CA 的客户端须导入它；
+不得分发任何私钥。证书更新前备份证书与密钥，验证证书链和 SAN，运行 `nginx -t` 后重载，
+等待新连接提供新证书，再使用可信 CA 正常校验开发/生产 `/healthz` 和 Agent 心跳。
+使用 `curl -k` 或浏览器忽略证书错误不构成 TLS 验证通过。

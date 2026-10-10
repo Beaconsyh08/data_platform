@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import getpass
+import gzip
 import hashlib
 import json
 import logging
@@ -14,9 +15,12 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
+
+from lerobot.data_platform.cache_files import compress_file
 
 try:
     import fcntl
@@ -208,16 +212,30 @@ def _operation_log_lock(path: Path, *, write: bool):
                     fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
+def compress_rotated_operation_logs(path: Path) -> None:
+    """Caller holds the ledger lock. Active append files remain plaintext."""
+    for index in range(1, LOG_BACKUP_COUNT + 1):
+        previous = path.with_name(f"{path.name}.{index}")
+        if previous.is_file():
+            compress_file(previous)
+
+
 def _rotate_operation_log(path: Path, incoming_bytes: int) -> None:
     if not path.exists() or path.stat().st_size + incoming_bytes <= LOG_MAX_BYTES:
         return
-    for index in range(LOG_BACKUP_COUNT, 0, -1):
-        previous = path if index == 1 else path.with_name(f"{path.name}.{index - 1}")
+    compressed = compress_file(path, remove_original=False)
+    for index in range(LOG_BACKUP_COUNT, 1, -1):
+        previous = path.with_name(f"{path.name}.{index - 1}.gz")
         if previous.exists():
-            previous.replace(path.with_name(f"{path.name}.{index}"))
+            previous.replace(path.with_name(f"{path.name}.{index}.gz"))
+    compressed.replace(path.with_name(f"{path.name}.1.gz"))
+    path.unlink()
 
 
 def _recent_log_lines(path: Path, limit: int) -> list[str]:
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding="utf-8", errors="replace") as stream:
+            return list(deque(stream, maxlen=limit))
     with path.open("rb") as stream:
         position = stream.seek(0, os.SEEK_END)
         chunks = []
@@ -246,6 +264,7 @@ def append_operation_event(
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with _operation_log_lock(path, write=True):
+                compress_rotated_operation_logs(path)
                 _rotate_operation_log(path, len(encoded))
                 with path.open("ab") as stream:
                     stream.write(encoded)
@@ -279,7 +298,14 @@ def read_operation_events(
                 lines = []
                 for candidate in [
                     path,
-                    *(path.with_name(f"{path.name}.{i}") for i in range(1, LOG_BACKUP_COUNT + 1)),
+                    *(
+                        candidate
+                        for i in range(1, LOG_BACKUP_COUNT + 1)
+                        for candidate in (
+                            path.with_name(f"{path.name}.{i}"),
+                            path.with_name(f"{path.name}.{i}.gz"),
+                        )
+                    ),
                 ]:
                     if candidate.is_file():
                         lines.extend(_recent_log_lines(candidate, max(5000, limit * 20)))

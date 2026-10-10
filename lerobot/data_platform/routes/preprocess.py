@@ -9,6 +9,7 @@ import numpy as np
 import pyarrow.parquet as pq
 from flask import jsonify, render_template, request
 
+from lerobot.data_platform.cache_files import cached_csv_files
 from lerobot.data_platform.cli import get_default_output_dir, run_precompute
 from lerobot.data_platform.local_execution import launch_background
 from lerobot.data_platform.precompute.data_profile import (
@@ -276,12 +277,12 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         if not csv_dir.is_dir():
             return 0
         paths = (
-            list(csv_dir.glob("episode_*_ds*.csv"))
+            list(cached_csv_files(csv_dir, "episode_*_ds*.csv"))
             if episode_ids is None
             else [
                 path
                 for episode_id in set(episode_ids)
-                for path in csv_dir.glob(f"episode_{episode_id:06d}_ds*.csv")
+                for path in cached_csv_files(csv_dir, f"episode_{episode_id:06d}_ds*.csv")
             ]
         )
         for path in paths:

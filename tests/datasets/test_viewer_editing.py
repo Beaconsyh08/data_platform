@@ -1,5 +1,6 @@
 """Viewer annotations work without a source dataset and retain account permissions."""
 
+import gzip
 import json
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from lerobot.data_platform import viewer
 from tests.datasets.test_control_plane import _bootstrap, _store
 
 
-@pytest.fixture(params=[1, 5])
+@pytest.fixture(params=[(1, False), (5, False), (1, True), (5, True)])
 def cached_viewer(tmp_path, monkeypatch, request):
     store = _store(tmp_path)
     _, node = store.enroll_node(
@@ -48,7 +49,13 @@ def cached_viewer(tmp_path, monkeypatch, request):
             }
         )
     )
-    (static / f"csv/episode_000000_ds{request.param}.csv").write_text("timestamp,stage\n0,0\n0.1,0\n0.2,0\n")
+    (static / f"csv/episode_000000_ds{request.param[0]}.csv").write_text(
+        "timestamp,stage\n0,0\n0.1,0\n0.2,0\n"
+    )
+    if request.param[1]:
+        path = static / f"csv/episode_000000_ds{request.param[0]}.csv"
+        path.with_name(path.name + ".gz").write_bytes(gzip.compress(path.read_bytes()))
+        path.unlink()
     store.mark_viewer_ready(
         location["location_id"], viewer_url="/remote/test/episode_0", cache_root=str(cache)
     )
@@ -113,7 +120,10 @@ def test_cache_annotations_and_reload(cached_viewer, role):
         assert "stageEditEnabled: true" in client.get("/remote/test/episode_0?direct=1").get_data(
             as_text=True
         )
-        assert "subtask_state" in next((static / "csv").glob("*.csv")).read_text()
+        from lerobot.data_platform.cache_files import cached_csv_files, open_cached_csv
+
+        with open_cached_csv(cached_csv_files(static / "csv")[0]) as stream:
+            assert "subtask_state" in stream.read()
 
 
 def test_remote_flag_save_reports_pending_and_has_persistent_status(cached_viewer):
@@ -441,7 +451,7 @@ def test_restricted_accounts_cannot_read_viewer_cache(cached_viewer, role):
     urls = [
         "/remote/test/episode_0?direct=1",
         "/remote/test/episode_0/data.csv",
-        f"/assets/remote/test/csv/{next((static / 'csv').glob('*.csv')).name}",
+        f"/assets/remote/test/csv/{next((static / 'csv').glob('*.csv*')).name.removesuffix('.gz')}",
         "/api/datasets/remote/test",
         "/api/dataset-results/status?dataset_key=remote/test",
         f"/api/control/locations/{location['location_id']}/flagged-episodes",

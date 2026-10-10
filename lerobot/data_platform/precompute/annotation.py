@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import logging
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from lerobot.data_platform.cache_files import logical_csv_path, resolve_cached_csv
 from lerobot.data_platform.precompute.data_profile import STAGE_PROFILE_EQUAL_TIME, resolve_processing_profile
 from lerobot.data_platform.precompute.dataset_io import read_episode_table
 from lerobot.data_platform.precompute.signal_columns import signal_columns
@@ -994,6 +996,7 @@ def write_episode_csv(
     stage_transitions: list[dict] | None = None,
 ) -> tuple[bool, dict | None, list[dict]]:
     """Write a precomputed CSV for one episode."""
+    out_path = resolve_cached_csv(out_path)
     if not overwrite:
         try:
             if out_path.is_file() and out_path.stat().st_size > 0:
@@ -1135,7 +1138,8 @@ def write_episode_csv(
 
     temporary = temporary_output_path(out_path)
     try:
-        with temporary.open("w", newline="") as file_obj:
+        opener = gzip.open if out_path.name.endswith(".csv.gz") else open
+        with opener(temporary, "wt", encoding="utf-8", newline="") as file_obj:
             writer = csv.writer(file_obj)
             writer.writerow(header)
             writer.writerows(rows)
@@ -1143,7 +1147,7 @@ def write_episode_csv(
         if existing_states is not None or boundaries is not None:
             import json
 
-            metadata_path = out_path.with_suffix(".stages.json")
+            metadata_path = logical_csv_path(out_path).with_suffix(".stages.json")
             metadata_temporary = temporary_output_path(metadata_path)
             try:
                 metadata_temporary.write_text(
