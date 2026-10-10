@@ -98,7 +98,8 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 即时扫描需要管理员、Data Manager 或具有全数据集读取范围的 Operator，并要求 Agent 在线且
 支持即时扫描；Viewer 和受限 Operator 可用 `Refresh` 查看其权限范围内的已有数据集。
 切换 Server/路径不会被旧扫描结果覆盖；离开页面不会取消 Agent 已接受的扫描。
-扫描只读取源数据及元数据，不准备 Viewer，也不取消计算任务。Viewer 标注结果回传仍在 Agent 空闲时执行。
+扫描只读取源数据及元数据，不准备 Viewer，也不取消计算任务。Viewer 标注结果回传在任务运行时也继续执行；
+同一数据集正在修改源数据或发布缓存时，该位置的回传稍后自动重试，其他位置继续同步。
 
 扫描只识别存在 `meta/info.json` 的完整 LeRobot 数据集。cache-only 项目暂不出现在发现和选择界面。中央平台中，Viewer 账号只读；首次选择尚未进入 Catalog 的 Server A 数据集需要 Operator 或 Admin，Agent 数据集则由节点同步自动登记。
 
@@ -422,12 +423,16 @@ Viewer 在 cache 准备完成后可打开。页面主要包含视频、时间轴
 ### 6.1 浏览与筛选
 
 - 按 episode 编号跳转；
-- 按 task 筛选；
+- 按 Instruction（task 文本）筛选；远程缓存 Viewer 也会自动加载该列表；
 - 只看 flagged episodes，或继续按 flag 原因筛选；
 - 按一个或多个 tag 名称和值组合筛选；
 - 点击曲线维度复选框控制显示；
 - 点击视频放大；
 - 播放速度支持 `0.25x`、`0.5x`、`1x`、`2x`、`3x`、`5x`。
+
+Instruction 下拉框以及勾选 `Flagged` 后的 flag 类型下拉框会显示加载或空列表状态。
+加载失败时页面会显示错误和 `Retry Instructions` / `Retry flags`，可重试读取；不会因此清除已有 flag。
+缺少具体原因的 flagged episode 可按 `Unknown flag reason` 筛选。筛选无需等待结果回传 Agent 完成。
 
 常用快捷键：
 

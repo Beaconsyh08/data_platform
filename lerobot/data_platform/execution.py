@@ -195,7 +195,12 @@ def publish_viewer_cache(cache: Path, target: Path, source: Path) -> None:
         if Path(manifest["root"]).resolve() != source:
             raise ValueError("Viewer cache manifest does not match the source dataset")
 
-    with (lock_dir / hashlib.sha256(target.name.encode()).hexdigest()).open("a") as lock:
+    from lerobot.data_platform.dataset_results import preserve_results, result_lock
+
+    with (
+        result_lock(target),
+        (lock_dir / hashlib.sha256(target.name.encode()).hexdigest()).open("a") as lock,
+    ):
         fcntl.flock(lock, fcntl.LOCK_EX)
         if not cache.exists():
             receipt = target / receipt_name
@@ -209,8 +214,6 @@ def publish_viewer_cache(cache: Path, target: Path, source: Path) -> None:
             validate(target)
             if backup.exists():
                 raise FileExistsError("Previous viewer cache backup already exists")
-            from lerobot.data_platform.dataset_results import preserve_results
-
             preserve_results(target, cache)
         atomic_json(cache / receipt_name, identity)
         if target.exists():

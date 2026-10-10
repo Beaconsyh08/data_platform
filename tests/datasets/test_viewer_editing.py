@@ -220,6 +220,129 @@ def test_remote_flag_types_use_location_cache(cached_viewer):
     assert "Prepare viewer" in response.get_json()["error"]
 
 
+@pytest.mark.parametrize("role", ["admin", "viewer"])
+def test_cached_viewer_instruction_and_flag_maps(cached_viewer, role):
+    client, store, static = cached_viewer
+    manifest_path = static / "viewer_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["episodes"] = [
+        {"episode_index": episode, "length": 3, "tasks": [task]}
+        for episode, task in enumerate(["Fold towel", "Hang towel", "Fold towel"])
+    ]
+    manifest["total_episodes"] = 3
+    manifest_path.write_text(json.dumps(manifest))
+    (static / "flagged_episodes.json").write_text(json.dumps({"flagged_episodes": [0, 2]}))
+    (static / "manual_flagged_episodes.json").write_text(
+        json.dumps({"flagged_episodes": [0], "flag_reasons": {"0": [{"reason": "wrong_prompt"}]}})
+    )
+    if role == "viewer":
+        user = store.register_user(username="scoped-viewer", password="password-123", role="viewer")
+        location = store.list_locations()[0]
+        assert (
+            client.put(
+                f"/api/auth/users/{user['user_id']}/data-scopes",
+                json={"location_ids": [location["location_id"]]},
+            ).status_code
+            == 200
+        )
+        client.post("/api/auth/logout", json={})
+        assert (
+            client.post(
+                "/api/auth/login", json={"username": "scoped-viewer", "password": "password-123"}
+            ).status_code
+            == 200
+        )
+    task_response = client.get("/api/viewer/remote/test/task_map")
+    assert task_response.status_code == 200
+    assert task_response.json["task_episode_map"] == {"Fold towel": [0, 2], "Hang towel": [1]}
+    flag_response = client.get("/remote/test/flagged_episodes?reasons=1")
+    assert flag_response.status_code == 200
+    assert flag_response.json["flagged_episodes"] == [0, 2]
+    assert flag_response.json["flag_reasons"]["0"][0]["reason"] == "wrong_prompt"
+    assert flag_response.json["flag_reasons"]["2"] == [{"reason": "unknown_flag_reason", "type": "unknown"}]
+
+
+def test_cached_viewer_filter_loading_failure_and_retry():
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for Viewer behavior checks")
+    template = (Path(viewer.__file__).parent / "templates/visualize_dataset_template.html").read_text()
+    methods = []
+    for name in (
+        "scheduleFilterMapLoad",
+        "loadTaskEpisodeMap",
+        "loadFlaggedEpisodes",
+        "loadAllFlagReasons",
+        "flagReasonValues",
+        "refreshFlagReasonOptions",
+    ):
+        match = re.search(rf"^                (?:async )?{name}\([^\n]*\) \{{", template, re.MULTILINE)
+        end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
+        methods.append(template[match.start() : match.end() + end.end()])
+    script = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
+    script += r"""
+(async () => {
+    const queued = [];
+    global.window = {setTimeout: (callback, delay) => {queued.push({callback, delay}); return 1;}};
+    Object.assign(app, {cacheOnly: true, _filterMapLoadHandle: null, taskMapLoading: false,
+        taskEpisodeMap: {}, taskMapUrl: '/task_map', taskMapError: '', flagUrl: '/flags',
+        flaggedLoading: false, flagReasonLoading: false, flagLoadError: '',
+        saveFilterMapCache() {}, refreshTaskOptions() {}, initSelectedTaskAssignment() {},
+        publishEpisodeFilter() {}, flagReasonLabel: reason => reason,
+        flagReasonItems: episode => app.flagReasons[String(episode)] || [],
+        loadTagEpisodeMap() {}});
+    const scheduledTaskLoader = app.loadTaskEpisodeMap;
+    let loads = 0;
+    app.loadTaskEpisodeMap = () => {loads += 1;};
+    app.scheduleFilterMapLoad();
+    assert.equal(queued.length, 1, 'Cache-only Viewer must schedule its filter maps');
+    assert.equal(queued[0].delay, 0);
+    queued[0].callback();
+    assert.equal(loads, 1);
+    app.loadTaskEpisodeMap = scheduledTaskLoader;
+    global.fetch = async () => ({ok: false, json: async () => ({error: 'Unavailable'})});
+    await app.loadTaskEpisodeMap();
+    assert.match(app.taskMapError, /Could not load Instructions/);
+    assert.equal(app.taskMapLoading, false);
+    global.fetch = async () => ({ok: true, json: async () => ({task_episode_map: {'Fold towel': [0, 2]}})});
+    await app.loadTaskEpisodeMap();
+    assert.deepEqual(app.taskEpisodeMap, {'Fold towel': [0, 2]});
+    assert.equal(app.taskMapError, '');
+    Object.assign(app, {flaggedEpisodes: new Set([0, 2]), flagReasons: {},
+        flagReasonLoadedEpisodes: new Set(), flagReasonsFullyLoaded: false, flagReasonRevision: 0});
+    let flagUpdates = 0;
+    app._setFlagState = () => {flagUpdates += 1;};
+    global.fetch = async () => ({ok: false, json: async () => ({error: 'Unavailable'})});
+    await app.loadFlaggedEpisodes();
+    assert.equal(flagUpdates, 0, 'A failed request must preserve the known flag state');
+    assert.deepEqual([...app.flaggedEpisodes], [0, 2]);
+    assert.match(app.flagLoadError, /Could not load flagged episodes/);
+    await app.loadAllFlagReasons();
+    assert.match(app.flagLoadError, /Could not load flag types/);
+    assert.equal(app.flagReasonsFullyLoaded, false);
+    global.fetch = async () => ({ok: true, json: async () => ({flagged_episodes: [0, 2],
+        flag_reasons: {'0': [{reason: 'wrong_prompt'}]}})});
+    await app.loadAllFlagReasons();
+    assert.equal(app.flagLoadError, '');
+    assert.equal(app.flagReasonLoading, false);
+    assert.deepEqual(app.flagReasonOptions, [
+        {reason: 'unknown_flag_reason', label: 'unknown_flag_reason', count: 1},
+        {reason: 'wrong_prompt', label: 'wrong_prompt', count: 1},
+    ]);
+    app.loadCurrentFlagReason = () => {};
+    await app.loadFlaggedEpisodes();
+    assert.equal(flagUpdates, 1);
+    assert.equal(app.flaggedLoading, false);
+})().catch(error => {console.error(error); process.exitCode = 1;});
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
 def test_delete_by_flag_type_frontend_uses_remote_location(cached_viewer):
     import re
     import shutil

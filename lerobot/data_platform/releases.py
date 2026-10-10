@@ -19,6 +19,10 @@ from lerobot.data_platform.deployment import Deployment, agent_targets, load_env
 RELEASE_ROOT = Path("/var/lib/data-platform-releases")
 SCHEMA_VERSION = 5
 VALIDATION_TESTS = [
+    "tests/datasets/test_temporal_caption_jobs.py",
+    "tests/datasets/test_dataset_results.py",
+    "tests/datasets/test_viewer_cache_publication.py",
+    "tests/datasets/test_viewer_editing.py",
     "tests/datasets/test_dataset_scans.py",
     "tests/datasets/test_job_progress.py",
     "tests/datasets/test_console_layout.py",

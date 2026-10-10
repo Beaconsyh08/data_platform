@@ -48,11 +48,11 @@ def is_result_file(name: str) -> bool:
 
 
 @contextlib.contextmanager
-def result_lock(cache: Path):
+def result_lock(cache: Path, *, blocking: bool = True):
     directory = cache.parent / ".result-locks"
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / hashlib.sha256(str(cache).encode()).hexdigest()).open("a") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        fcntl.flock(handle, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         yield
 
 
@@ -249,40 +249,72 @@ def apply_results(cache: Path, bundle: dict, receipt: Path) -> None:
     atomic_json(receipt, {"revision": snapshot.revision, "files": snapshot.files})
 
 
+@contextlib.contextmanager
+def _agent_result_guard(directory: Path, source: Path, cache: Path):
+    """Defer busy caches and source mutations, including unacknowledged attempts after restart."""
+    with (directory / ".resource-registry-lock").open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        for path in directory.glob("*/reservation.json"):
+            record = json.loads(path.read_text())
+            if not record["operation"].startswith(("mutation.", "local.request.")):
+                continue
+            reserved = Path(record["source"]).resolve()
+            if source == reserved or source.is_relative_to(reserved) or reserved.is_relative_to(source):
+                yield False
+                return
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(result_lock(cache, blocking=False))
+            except BlockingIOError:
+                yield False
+                return
+            yield True
+
+
+def _local_result_intact(source: Path, cache: Path, location: dict, receipt: Path) -> bool:
+    manifest = json.loads((cache / "static/viewer_manifest.json").read_text())
+    if manifest.get("root") != str(source):
+        raise ValueError("Local viewer cache belongs to another dataset")
+    if dataset_signature(manifest) != location["dataset"]:
+        raise ValueError("Local viewer cache has different episode metadata")
+    recorded = json.loads(receipt.read_text()) if receipt.is_file() else {}
+    return recorded.get("revision") == location["revision"] and all(
+        (path := result_path(cache / "static", name)).is_file()
+        and hashlib.sha256(path.read_bytes()).hexdigest() == item["sha256"]
+        for name, item in location["files"].items()
+    )
+
+
 def sync_agent_results(agent) -> None:
     from lerobot.data_platform.agent import _require_safe_output, _require_within
     from lerobot.data_platform.operation_log import append_operation_event
 
     directory = agent.state_path.parent / "executions"
     directory.mkdir(parents=True, exist_ok=True)
-    with (directory / ".node-lock").open("a") as lock:
+    for location in agent.client.result_locations(agent.state):
+        revision = location["revision"]
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return  # A worker owns the dataset; the next idle poll retries.
-        for location in agent.client.result_locations(agent.state):
-            revision = location["revision"]
-            try:
-                source = _require_within(Path(location["root"]), agent.allowed_roots, "result dataset")
-                cache = _require_safe_output(Path(location["output_dir"]), source, agent.writable_roots)
-                manifest = json.loads((cache / "static/viewer_manifest.json").read_text())
-                if manifest.get("root") != str(source):
-                    raise ValueError("Local viewer cache belongs to another dataset")
-                if dataset_signature(manifest) != location["dataset"]:
-                    raise ValueError("Local viewer cache has different episode metadata")
-                key = hashlib.sha256(location["location_id"].encode()).hexdigest()
-                receipt = agent.state_path.parent / "result-sync" / f"{key}.json"
-                recorded = json.loads(receipt.read_text()) if receipt.is_file() else {}
-                intact = recorded.get("revision") == revision and all(
-                    (path := result_path(cache / "static", name)).is_file()
-                    and hashlib.sha256(path.read_bytes()).hexdigest() == item["sha256"]
-                    for name, item in location["files"].items()
-                )
+            source = _require_within(Path(location["root"]), agent.allowed_roots, "result dataset")
+            cache = _require_safe_output(Path(location["output_dir"]), source, agent.writable_roots)
+            key = hashlib.sha256(location["location_id"].encode()).hexdigest()
+            receipt = agent.state_path.parent / "result-sync" / f"{key}.json"
+            with _agent_result_guard(directory, source, cache) as ready:
+                if not ready:
+                    continue
+                intact = _local_result_intact(source, cache, location, receipt)
                 if intact and location["state"] == "synced":
                     continue
-                if not intact:
-                    bundle = agent.client.result_bundle(agent.state, location["location_id"])
-                    revision = bundle["revision"]
+            if not intact:
+                # Network transfers never hold the cache or job admission locks.
+                bundle = agent.client.result_bundle(agent.state, location["location_id"])
+                revision = bundle["revision"]
+                with _agent_result_guard(directory, source, cache) as ready:
+                    if not ready:
+                        continue
                     apply_results(cache, bundle, receipt)
                     append_operation_event(
                         cache / "static",
@@ -292,10 +324,10 @@ def sync_agent_results(agent) -> None:
                         dataset_roots=[source],
                         details={"revision": revision},
                     )
-                agent.client.ack_results(agent.state, location["location_id"], revision)
+            agent.client.ack_results(agent.state, location["location_id"], revision)
+        except Exception:
+            logging.exception("Could not synchronize dataset results for %s", location["location_id"])
+            try:
+                agent.client.ack_results(agent.state, location["location_id"], revision, error=True)
             except Exception:
-                logging.exception("Could not synchronize dataset results for %s", location["location_id"])
-                try:
-                    agent.client.ack_results(agent.state, location["location_id"], revision, error=True)
-                except Exception:
-                    logging.exception("Could not report dataset result synchronization failure")
+                logging.exception("Could not report dataset result synchronization failure")
