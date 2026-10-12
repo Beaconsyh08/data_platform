@@ -1,5 +1,6 @@
 """Inspect actual source/cache values without full data loading or source mutation."""
 
+import gzip
 import hashlib
 import json
 from types import SimpleNamespace
@@ -33,10 +34,13 @@ def _ctx(inspection, store=None, remote_cache_root=None):
     )
 
 
-def test_raw_records_and_csv_values_preserved_with_paging(tmp_path):
+@pytest.mark.parametrize("compressed", [False, True])
+def test_raw_records_and_csv_values_preserved_with_paging(tmp_path, compressed):
     inspection = _local(tmp_path)
-    csv_path = inspection.static_dir / "csv/episode_000001_ds5.csv"
-    csv_path.write_text("timestamp,gripper,gripper,subtask_state\n0.000,0.123,4,2\n0.500,0.999,5,3\n")
+    suffix = ".csv.gz" if compressed else ".csv"
+    csv_path = inspection.static_dir / f"csv/episode_000001_ds5{suffix}"
+    content = b"timestamp,gripper,gripper,subtask_state\n0.000,0.123,4,2\n0.500,0.999,5,3\n"
+    csv_path.write_bytes(gzip.compress(content) if compressed else content)
     before = {
         path: hashlib.sha256(path.read_bytes()).hexdigest() for path in tmp_path.rglob("*") if path.is_file()
     }
@@ -58,6 +62,19 @@ def test_raw_records_and_csv_values_preserved_with_paging(tmp_path):
     assert end["cache_rows"] == 2 and not end["has_more"]
     assert {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in before} == before
     assert set(before) == {path for path in tmp_path.rglob("*") if path.is_file()}
+
+
+def test_csv_selects_smallest_sampling_step_with_mixed_compression(tmp_path):
+    inspection = _local(tmp_path)
+    directory = inspection.static_dir / "csv"
+    (directory / "episode_000000_ds1.csv").write_text("action\nold\n")
+    (directory / "episode_000000_ds1.csv.gz").write_bytes(gzip.compress(b"action\n0.123\n"))
+    (directory / "episode_000000_ds5.csv").write_text("action\nsampled\n")
+    (directory / "episode_000000_ds10.csv.gz").write_bytes(gzip.compress(b"action\nsampled\n"))
+    result = inspection.rows("csv", 0, 0, 50, ["0"])
+    assert result["rows"] == [["0.123"]]
+    assert result["provenance"]["downsample"] == 1
+    assert result["provenance"]["file"] == "csv/episode_000000_ds1.csv.gz"
 
 
 def test_v3_shared_shard_filters_before_offset_and_excludes_binary(tmp_path, monkeypatch):
@@ -193,7 +210,8 @@ def test_route_validation_missing_data_and_path_escape(tmp_path):
     assert client.get(base + "/schema?source=csv").status_code == 403
 
 
-def test_remote_viewer_scope_isolation_and_stale_offline_cache(tmp_path):
+@pytest.mark.parametrize("compressed", [False, True])
+def test_remote_viewer_scope_isolation_and_stale_offline_cache(tmp_path, compressed):
     inspection = _local(tmp_path)
     store = _store(tmp_path)
     app = _app(tmp_path, store)
@@ -234,11 +252,19 @@ def test_remote_viewer_scope_isolation_and_stale_offline_cache(tmp_path):
     for index, location in enumerate(locations):
         static = tmp_path / "remote-cache" / location["location_id"] / "static/csv"
         static.mkdir(parents=True)
-        (static / "episode_000003_ds5.csv").write_text(f"action,action\n{index},0.123\n")
+        suffix = ".csv.gz" if compressed else ".csv"
+        content = f"action,action\n{index},0.123\n".encode()
+        (static / f"episode_000003_ds5{suffix}").write_bytes(
+            gzip.compress(content) if compressed else content
+        )
+    schema = client.get(base + "/schema")
+    assert schema.status_code == 200
+    assert schema.get_json()["provenance"]["downsample"] == 5
     assert client.get(base + "/schema?source=parquet").status_code == 400
     result = client.get(base + "/rows?episode_index=3&columns=0&columns=1").get_json()
     assert result["rows"] == [["0", "0.123"]]
     assert result["provenance"]["cache_status"] == "stale"
+    assert result["provenance"]["downsample"] == 5
     other_cache = tmp_path / "remote-cache" / locations[1]["location_id"]
     store.mark_viewer_ready(
         locations[0]["location_id"], viewer_url="/remote/a/episode_3", cache_root=str(other_cache)

@@ -209,7 +209,7 @@ class DatasetInspection:
             "file": str(path.relative_to((self.root if source == "parquet" else self.static_dir).resolve())),
             "episode_index": episode,
             "source_frames": length,
-            "downsample": int(path.stem.rsplit("_ds", 1)[1]) if source == "csv" else 1,
+            "downsample": int(logical_csv_path(path).stem.rsplit("_ds", 1)[1]) if source == "csv" else 1,
             "cache_status": "stale" if self.remote and not self.remote.get("viewer_ready") else "available",
             "remote": self.remote,
         }
