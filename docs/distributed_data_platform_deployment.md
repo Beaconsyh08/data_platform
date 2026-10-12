@@ -123,6 +123,12 @@ legacy installation, and deploy an approved immutable release. Run `data-platfor
 Within either environment, Server A is upgraded before its Agents. A server-only update intentionally
 leaves maintenance enabled until matching Agents have been checked.
 
+Once all executors support rolling deployment, compatible updates keep old version-pinned Agent and local
+worker services alive until their attempts are acknowledged. New tasks use the new executors and share
+the same node quotas and output reservations. Bootstrap, incompatible schema/protocol changes, rollback,
+and `--wait-for-jobs` use the idle upgrade path. See the
+[operations guide](data_platform_operations.md#任务运行期间升级) for readiness checks and backup restrictions.
+
 ## 4. Install one agent on each data server
 
 The agent is installed once by an administrator, not by every platform user. Its OS account needs

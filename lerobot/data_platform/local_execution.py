@@ -359,6 +359,13 @@ def internal_execution_user(store):
 
 
 def main():
+    from lerobot.data_platform.rolling_deployment import ExecutorGeneration
+
+    with ExecutorGeneration.from_env() as generation:
+        _run(generation)
+
+
+def _run(generation):
     import argparse
     import logging
 
@@ -390,7 +397,16 @@ def main():
                     enrollment_token="",
                     allow_source_mutations=config["allow_source_mutations"],
                 )
-                agent.run_once(sync=False)
+                if generation.draining:
+                    from lerobot.data_platform.execution import ExecutionSupervisor
+
+                    supervisor = ExecutionSupervisor(agent)
+                    if not supervisor.reconcile() and not supervisor.pending_here():
+                        return
+                else:
+                    agent.run_once(sync=False)
+            elif generation.draining:
+                return
         except Exception:
             logging.exception("Local executor will retry reconciliation")
         time.sleep(3)

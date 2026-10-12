@@ -45,7 +45,7 @@ def mysql_command(url: str, executable: str, *, output=None, source=None):
         run(args, stdout=output, stdin=source)
 
 
-def backup(deployment, target: Path) -> None:
+def backup(deployment, target: Path, *, quiescent: bool = True) -> None:
     target.mkdir(parents=True, exist_ok=False, mode=0o700)
     for key, name in (
         ("DATA_PLATFORM_DATABASE_URL", "control.sql"),
@@ -96,6 +96,7 @@ def backup(deployment, target: Path) -> None:
                 str(path.relative_to(target)): digest(path) for path in target.rglob("*") if path.is_file()
             },
             "complete": True,
+            "quiescent": quiescent,
         },
     )
 
@@ -107,6 +108,10 @@ def validate_backup(deployment, target: Path) -> dict:
         os.environ["DATA_PLATFORM_INSTANCE_ID"],
     ):
         raise RuntimeError("Backup belongs to a different environment or is incomplete")
+    if value.get("quiescent") is False:
+        raise RuntimeError(
+            "Rolling deployment snapshot is not an idle restore backup; live attempts were preserved"
+        )
     if not {"control.sql", "logs.sql", "server.env"} <= value.get("files", {}).keys():
         raise RuntimeError("Backup is missing its checksums")
     for name, expected in value["files"].items():

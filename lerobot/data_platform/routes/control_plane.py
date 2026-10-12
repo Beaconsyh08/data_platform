@@ -577,6 +577,10 @@ def register_control_plane_routes(
         if error:
             return error
         body = request.get_json(silent=True) or {}
+        capabilities = body.get("capabilities") or {}
+        expected_release = os.environ.get("DATA_PLATFORM_RELEASE")
+        if expected_release and capabilities.get("release") != expected_release:
+            return jsonify({"node": node, "draining": True})
         try:
             refreshed = store.heartbeat(node["node_id"], capabilities=body.get("capabilities"))
         except KeyError:
@@ -620,6 +624,7 @@ def register_control_plane_routes(
             node["node_id"],
             lease_seconds=int(body.get("lease_seconds") or 60),
             worker_instance_id=body.get("worker_instance_id"),
+            release=body.get("release"),
         )
         return jsonify({"job": job})
 

@@ -140,8 +140,8 @@ def safe_cli(main):
         raise SystemExit(1) from None
 
 
-def server_unit(deployment: Deployment, *, worker: bool) -> str:
-    root = deployment.root / "current"
+def server_unit(deployment: Deployment, *, worker: bool, release: Path | None = None) -> str:
+    root = release or deployment.root / "current"
     command = (
         f"{root}/.venv/bin/python -m lerobot.data_platform.local_execution"
         if worker
@@ -152,6 +152,11 @@ def server_unit(deployment: Deployment, *, worker: bool) -> str:
         if worker
         else ""
     )
+    if worker and release is not None:
+        compute += (
+            f"Environment=DATA_PLATFORM_EXECUTOR_RELEASE={release}\n"
+            f"Environment=DATA_PLATFORM_EXECUTOR_CURRENT={deployment.root / 'current'}\n"
+        )
     dev = (
         "Slice=data-platform-dev.slice\nCPUWeight=10\nIOWeight=10\nProtectSystem=strict\n"
         "ReadWritePaths=/srv/data-platform-dev\n"
@@ -170,11 +175,11 @@ User={deployment.user}
 Group={deployment.user}
 WorkingDirectory={root}
 EnvironmentFile={deployment.config}
-EnvironmentFile={deployment.root}/current/release.env
+EnvironmentFile={root}/release.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=HF_HOME=/srv/{"data-platform-dev" if deployment.environment == "dev" else "data-platform"}/model-cache
 ExecStart={command}
-Restart=always
+Restart={"on-failure" if worker and release is not None else "always"}
 RestartSec=5
 PrivateTmp=true
 NoNewPrivileges=true

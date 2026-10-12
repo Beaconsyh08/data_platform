@@ -474,7 +474,11 @@ class AgentClient:
             "POST",
             "/api/agents/jobs/claim",
             token=state.node_token,
-            json={"lease_seconds": lease_seconds, "worker_instance_id": self.worker_instance_id},
+            json={
+                "lease_seconds": lease_seconds,
+                "worker_instance_id": self.worker_instance_id,
+                "release": os.environ.get("DATA_PLATFORM_RELEASE"),
+            },
         )
         job = response.get("job")
         if job:
@@ -725,6 +729,7 @@ class DataPlatformAgent:
             "caption_schemes": ["multiview_semantics", "video_events", "fusion_review"],
             "caption_configured": bool(os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_DASHSCOPE_API_KEY")),
             "job_protocol": 2,
+            "rolling_deploy_protocol": 1 if os.environ.get("DATA_PLATFORM_EXECUTOR_RELEASE") else 0,
             "environment": os.environ.get("DATA_PLATFORM_ENV", "legacy"),
             "instance_id": os.environ.get("DATA_PLATFORM_INSTANCE_ID", ""),
             "release": os.environ.get("DATA_PLATFORM_RELEASE", "legacy"),
@@ -778,6 +783,8 @@ class DataPlatformAgent:
         self, *, sync: bool = True, dispatch=None, allow_claim: bool = True, sync_results: bool = True
     ) -> bool:
         heartbeat = self.client.heartbeat(self.state, self.capabilities()) or {}
+        if heartbeat.get("draining"):
+            return False
         if isinstance(self.client, AgentClient) and heartbeat.get("caption_read_protocol") == 1:
             self._start_caption_reads()
         self._process_scan_request(heartbeat.get("scan_request"))
@@ -801,6 +808,9 @@ class DataPlatformAgent:
             return True
         job_id = job["job_id"]
         if job.get("execution"):
+            lock = supervisor.acquire_supervision(job["execution"]["attempt_id"])
+            if lock is None:
+                return False
             try:
                 supervisor.start(job)
             except Exception as exc:
@@ -814,6 +824,8 @@ class DataPlatformAgent:
                         error=str(exc),
                     )
                     supervisor._release(supervisor.root / job["execution"]["attempt_id"] / "reservation.json")
+            finally:
+                lock.close()
             return True
         stop_heartbeat = threading.Event()
         heartbeat_thread = threading.Thread(
@@ -1566,6 +1578,12 @@ class DataPlatformAgent:
             run()
 
     def run_forever(self, *, poll_seconds: float, sync_seconds: float) -> None:
+        from lerobot.data_platform.rolling_deployment import ExecutorGeneration
+
+        with ExecutorGeneration.from_env() as generation:
+            self._run_forever(generation, poll_seconds=poll_seconds, sync_seconds=sync_seconds)
+
+    def _run_forever(self, generation, *, poll_seconds: float, sync_seconds: float) -> None:
         dispatcher = _ExecutionDispatcher(self) if isinstance(self.client, AgentClient) else None
         last_sync_at = 0.0
         while True:
@@ -1573,6 +1591,16 @@ class DataPlatformAgent:
             try:
                 if dispatcher is not None:
                     dispatcher.reconcile()
+                if generation.draining:
+                    result_sync = getattr(self, "_result_sync_thread", None)
+                    if dispatcher is None or (
+                        not dispatcher.threads
+                        and not dispatcher.supervisor.pending_here()
+                        and not (result_sync and result_sync.is_alive())
+                    ):
+                        return
+                    time.sleep(max(0.5, poll_seconds))
+                    continue
                 # Worker threads keep running while the main loop refreshes the dataset catalog.
                 should_sync = now - last_sync_at >= max(10.0, sync_seconds)
                 worked = self.run_once(
@@ -1659,6 +1687,14 @@ class _ExecutionDispatcher:
         from lerobot.data_platform.execution import ExecutionSupervisor, StopRequestedError
 
         attempt_id = job["execution"]["attempt_id"]
+        lock = self.supervisor.acquire_supervision(attempt_id)
+        if lock is None:
+            return
+        if marker is not None:
+            marker = json.loads((self.supervisor.root / attempt_id / "marker.json").read_text())
+            if marker.get("acknowledged"):
+                lock.close()
+                return
         worker = self._worker_agent(job)
 
         def run() -> None:
@@ -1684,6 +1720,7 @@ class _ExecutionDispatcher:
                         logging.exception("Could not report start failure for job %s", job["job_id"])
             finally:
                 worker.client.session.close()
+                lock.close()
 
         thread = threading.Thread(target=run, daemon=True, name=f"data-platform-job-{job['job_id'][:8]}")
         self.threads[attempt_id] = (thread, job)
@@ -1691,6 +1728,7 @@ class _ExecutionDispatcher:
 
     def reconcile(self) -> None:
         from lerobot.data_platform.execution import atomic_json
+        from lerobot.data_platform.rolling_deployment import execution_belongs_here
 
         for attempt_id, (thread, _) in list(self.threads.items()):
             if not thread.is_alive():
@@ -1703,6 +1741,8 @@ class _ExecutionDispatcher:
                     atomic_json(marker_path, record)
         for path in sorted(self.supervisor.root.glob("*/marker.json")):
             marker = json.loads(path.read_text())
+            if not execution_belongs_here(marker["job"]):
+                continue
             attempt_id = marker["job"]["execution"]["attempt_id"]
             if (
                 marker.get("acknowledged")

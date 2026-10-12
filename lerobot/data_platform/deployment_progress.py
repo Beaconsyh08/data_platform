@@ -9,6 +9,7 @@ PHASES = {
     "preflight": "Checking deployment prerequisites and Agent connectivity",
     "dependencies": "Preparing the server and installing dependencies",
     "draining": "Waiting for unfinished jobs and result acknowledgement",
+    "preserving-jobs": "Keeping existing jobs on their original executor versions",
     "stopping": "Stopping production services",
     "backup": "Backing up databases and platform state",
     "restore": "Restoring the selected backup",

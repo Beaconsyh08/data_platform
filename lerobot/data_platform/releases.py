@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from lerobot.data_platform.deployment import Deployment, agent_targets, load_environment, server_unit
+from lerobot.data_platform.rolling_deployment import ROLLING_DEPLOY_PROTOCOL, release_in_use
 
 RELEASE_ROOT = Path("/var/lib/data-platform-releases")
 SCHEMA_VERSION = 5
@@ -36,6 +37,7 @@ VALIDATION_TESTS = [
     "tests/datasets/test_execution_supervisor.py",
     "tests/datasets/test_environments.py",
     "tests/datasets/test_releases.py",
+    "tests/datasets/test_rolling_deployment.py",
     "tests/datasets/test_deployment_progress.py",
     "tests/datasets/test_control_plane.py",
     "tests/datasets/test_operation_log.py",
@@ -187,6 +189,7 @@ def build_release(source: Path, version: str, *, index_url: str | None = None) -
                 "schema_min": SCHEMA_VERSION,
                 "schema_max": SCHEMA_VERSION,
                 "job_protocol": 2,
+                "rolling_deploy_protocol": ROLLING_DEPLOY_PROTOCOL,
                 "tests": VALIDATION_TESTS,
             },
         )
@@ -325,6 +328,16 @@ def prune_deployment_history(deployment: Deployment) -> list[str]:
     """Keep the active installation, two other recent versions, and three complete backups."""
     current = (deployment.root / "current").resolve()
     removed = []
+    retained = set()
+    output = os.environ.get("DATA_PLATFORM_OUTPUT_DIR")
+    if output:
+        executions = Path(output) / "management" / "executions"
+        for path in executions.glob("*/*.json"):
+            if path.name not in {"marker.json", "reservation.json"}:
+                continue
+            record = json.loads(path.read_text())
+            if not record.get("acknowledged"):
+                retained.add(record.get("job", {}).get("execution", {}).get("release"))
     parent = deployment.root / "releases"
     if parent.is_dir():
         versions = [
@@ -344,6 +357,8 @@ def prune_deployment_history(deployment: Deployment) -> list[str]:
             (path for path in versions if path.resolve() != current), key=version_key, reverse=True
         )
         for path in others[2:]:
+            if path.name in retained or release_in_use(path):
+                continue
             shutil.rmtree(path)
             removed.append(str(path))
     parent = deployment.root / "backups"
@@ -431,6 +446,15 @@ def prepare_server(
             f"DATA_PLATFORM_RELEASE={version}\nDATA_PLATFORM_AGENT_MANIFEST_SHA256={manifest['agent_manifest_sha256']}\n"
         )
         (target / "manifest.sha256").write_text(digest(root / "release.json") + "\n")
+        atomic_json(
+            target / "deployment-contract.json",
+            {
+                key: manifest.get(key)
+                for key in ("rolling_deploy_protocol", "schema_min", "schema_max", "job_protocol")
+            },
+        )
+        (target / "deployment-contract.json").chmod(0o644)
+        (target / ".executor.lock").touch(mode=0o644)
     except BaseException:
         shutil.rmtree(target)
         raise
@@ -438,14 +462,25 @@ def prepare_server(
 
 
 def install_server_units(deployment: Deployment):
-    for unit, worker in zip(deployment.units, (False, True), strict=True):
-        Path("/etc/systemd/system", unit).write_text(server_unit(deployment, worker=worker))
+    release = (deployment.root / "current").resolve()
+    directory = Path("/etc/systemd/system")
+    (directory / deployment.units[0]).write_text(server_unit(deployment, worker=False))
+    generation = f"data-platform-local-worker-{release.name}@{deployment.environment}.service"
+    (directory / generation).write_text(server_unit(deployment, worker=True, release=release))
+    alias = directory / deployment.units[1]
+    previous = alias.resolve().name if alias.is_symlink() else None
+    pointer = alias.with_suffix(".service-next")
+    pointer.unlink(missing_ok=True)
+    pointer.symlink_to(generation)
+    pointer.replace(alias)
     if deployment.environment == "dev":
         Path("/etc/systemd/system/data-platform-dev.slice").write_text(
             "[Slice]\nCPUQuota=400%\nMemoryMax=8G\nCPUWeight=10\nIOWeight=10\n"
         )
     run(["systemctl", "daemon-reload"])
-    run(["systemctl", "enable", *deployment.units])
+    if previous and previous != generation:
+        run(["systemctl", "disable", previous])
+    run(["systemctl", "enable", deployment.units[0], generation])
 
 
 def wait_healthy(deployment: Deployment, version: str):

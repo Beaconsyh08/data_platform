@@ -129,7 +129,7 @@ class JobManager:
                 scheduler_lock(session)
                 self.expire(session)
 
-    def claim(self, node_id, lease_seconds=60, worker_instance_id=None):
+    def claim(self, node_id, lease_seconds=60, worker_instance_id=None, *, release=None):
         from lerobot.data_platform.control_plane import ControlPlaneNode, DatasetLocation, RemoteJob, _utcnow
         from lerobot.data_platform.precompute.data_profile import (
             DATA_PROFILE_PROTOCOL,
@@ -148,6 +148,11 @@ class JobManager:
             node = session.get(ControlPlaneNode, node_id)
             if node is None:
                 raise KeyError(node_id)
+            if node.capabilities.get("rolling_deploy_protocol") and (
+                release != node.capabilities.get("release")
+                or release != os.environ.get("DATA_PLATFORM_RELEASE")
+            ):
+                return None
             from lerobot.data_platform.environment import EnvironmentIdentity
 
             identity = EnvironmentIdentity.from_env()
@@ -293,6 +298,7 @@ class JobManager:
                         "attempt_id": attempt.attempt_id,
                         "credential": token,
                         "worker_instance_id": attempt.worker_instance_id,
+                        "release": node.capabilities.get("release"),
                         "final_output": control.final_output,
                         "input_fingerprint": control.input_fingerprint,
                     }

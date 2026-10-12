@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import os
 import re
 import secrets
 import uuid
@@ -748,6 +749,10 @@ class ControlPlaneStore:
             now = _utcnow()
             reported = dict(capabilities) if capabilities is not None else dict(node.capabilities or {})
             previous = dict(node.capabilities or {})
+            expected_release = os.environ.get("DATA_PLATFORM_RELEASE")
+            if expected_release and reported.get("release") != expected_release:
+                # An old executor may finish its attempts but must not replace the active node's capabilities.
+                reported = previous
             # Free disk space is telemetry; protocol/release/authorization changes remain immediate.
             stable_changed = {key: value for key, value in reported.items() if key != "disk"} != {
                 key: value for key, value in previous.items() if key != "disk"
@@ -1008,8 +1013,10 @@ class ControlPlaneStore:
             self.job_manager.on_create(session, job)
         return self._job_dict(job)
 
-    def claim_job(self, node_id: str, *, lease_seconds: int = 60, worker_instance_id=None) -> dict | None:
-        return self.job_manager.claim(str(node_id), lease_seconds, worker_instance_id)
+    def claim_job(
+        self, node_id: str, *, lease_seconds: int = 60, worker_instance_id=None, release=None
+    ) -> dict | None:
+        return self.job_manager.claim(str(node_id), lease_seconds, worker_instance_id, release=release)
 
     def heartbeat_job(
         self, job_id: str, *, node_id: str, lease_seconds: int = 60, attempt_id=None, credential=None

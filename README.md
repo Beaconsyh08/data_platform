@@ -319,6 +319,12 @@ data-platform-update-all --env prod --release RELEASE
 命令需要本机 sudo；SSH 使用发起者身份。Server 的依赖同步保持 `--frozen`，先离线、再在线，
 可追加 `--index-url https://pypi.tuna.tsinghua.edu.cn/simple`。常规生产更新使用已经验收的安装包，不重新构建。
 
+首次升级到支持滚动部署的版本仍需等待已有任务完成。之后，兼容版本默认保留旧 Agent 和本地执行器，
+已有任务用原版本运行到上传与完成确认结束，新任务由新版本执行；网页切换期间短暂维护。
+新旧版本共享节点任务配额和输出锁。数据库结构、执行协议或滚动兼容契约变化时自动等待任务结束；
+也可追加 `--wait-for-jobs` 强制等待。操作和备份限制见
+[运维手册](docs/data_platform_operations.md#任务运行期间升级)。
+
 保留两个环境一起硬升级的入口（两套环境需已初始化并接入新部署流程）：
 
 ```bash

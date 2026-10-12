@@ -177,6 +177,45 @@ bash deploy/data-platform/update-all.sh --env prod --release "$RELEASE"
 
 ## 5. 怎么确认更新完成
 
+### 任务运行期间升级
+
+首次安装支持滚动部署的版本，或现有 Agent 尚未报告 `rolling_deploy_protocol=1` 时，仍会等待所有活动任务
+结束，默认等待上限 5 分钟；超时保留维护状态，任务完成后复用同一个发行包重试。
+
+Server、Agent、本地执行器均已安装这套机制后，`update-all.sh` 和网页的生产发布会自动检查兼容性。
+管理数据库版本、任务协议和滚动兼容契约完全一致，且 Agent 心跳有效、没有 interrupted 任务时，
+升级保留旧版执行服务及其计算进程。旧任务继续原有 attempt 的心跳、事件上传、结果发布与完成确认，
+完成后旧执行服务自动退出；新版本恢复接收新任务。部署期间暂停用户写入和新任务领取，网页仍有短暂维护。
+旧版本的节点心跳不会覆盖新版能力；新旧版本共享节点/用户配额、任务槽和数据路径锁。
+
+兼容检查不通过会自动等待任务结束。需要强制使用等待流程时：
+
+```bash
+bash deploy/data-platform/update-all.sh --env dev --release "$RELEASE" --wait-for-jobs
+```
+
+正在使用或仍有未确认本地任务的发行目录不会被历史清理删除。执行服务固定到发行目录，不从 `current`
+动态加载任务代码。保持管理员的开发验收、生产批准、Server 先于 Agent 升级的流程。
+
+滚动升级的备份记录 `quiescent: false`，表示备份期间任务仍在写入；只能用于诊断，自动数据库/状态恢复
+会拒绝这类快照。需要可直接恢复的完整备份，应使用 `--wait-for-jobs`。程序回退和显式数据库恢复都会
+等待活动任务结束。升级失败仍保留维护状态和任务产物，需要核对部署进度后恢复；不得直接停止旧执行服务。
+
+核对当前别名与各版执行服务：
+
+```bash
+systemctl status data-platform-local-worker@dev.service
+systemctl list-units --all 'data-platform-local-worker-*@dev.service'
+# 在对应 Agent 主机检查：
+systemctl status data-platform-agent@dev.service
+systemctl list-units --all 'data-platform-agent-*@dev.service'
+```
+
+`@prod.service` 对应生产环境。当前别名指向新版本，旧服务运行中表示还有任务收尾；完整部署成功仍需
+新版 Server/Agent 心跳、维护关闭以及受影响功能验证，不能仅凭旧任务仍在运行就认定升级完成。
+
+### 更新后的检查
+
 ```bash
 bash deploy/data-platform/release.sh status --env dev
 bash deploy/data-platform/release.sh status --env prod

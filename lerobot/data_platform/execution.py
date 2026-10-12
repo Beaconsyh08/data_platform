@@ -353,6 +353,27 @@ class ExecutionSupervisor:
         self.root = agent.state_path.parent / "executions"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
 
+    def acquire_supervision(self, attempt_id):
+        handle = (self.root / f".supervisor-{attempt_id}.lock").open("a")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            return None
+        return handle
+
+    def pending_here(self):
+        from lerobot.data_platform.rolling_deployment import execution_belongs_here
+
+        for path in self.root.glob("*/marker.json"):
+            marker = json.loads(path.read_text())
+            if not marker.get("acknowledged") and execution_belongs_here(marker["job"]):
+                return True
+        return any(
+            execution_belongs_here(json.loads(path.read_text())["job"])
+            for path in self.root.glob("*/reservation.json")
+        )
+
     def flush_events(self, job, work, *, drain=False):
         # EventSpool filenames are UUID hashes, not delivery order.
         pending = [(path, json.loads(path.read_text())) for path in (work / "events").glob("*.json")]
@@ -377,6 +398,8 @@ class ExecutionSupervisor:
 
     def reconcile(self):
         """Pending executions always take precedence over claiming more work."""
+        from lerobot.data_platform.rolling_deployment import execution_belongs_here
+
         for launch in sorted(self.root.glob("*/launch.json")):
             marker_path = launch.parent / "marker.json"
             if not marker_path.exists():
@@ -385,31 +408,48 @@ class ExecutionSupervisor:
                     atomic_json(marker_path, record)
         for path in sorted(self.root.glob("*/marker.json")):
             marker = json.loads(path.read_text())
+            if not execution_belongs_here(marker["job"]):
+                continue
             if marker.get("acknowledged"):
                 if marker.get("reservation") and Path(marker["reservation"]).exists():
                     self._release(marker["reservation"])
                 continue
-            self.agent.client.activate(marker["job"])
-            self.monitor(marker, None)
-            return True
+            lock = self.acquire_supervision(path.parent.name)
+            if lock is not None:
+                with lock:
+                    marker = json.loads(path.read_text())
+                    if marker.get("acknowledged"):
+                        continue
+                    self.agent.client.activate(marker["job"])
+                    self.monitor(marker, None)
+                return True
         return self.reconcile_unstarted()
 
     def reconcile_unstarted(self, exclude=()):
+        from lerobot.data_platform.rolling_deployment import execution_belongs_here
+
         for path in sorted(self.root.glob("*/reservation.json")):
             if path.parent.name in exclude:
                 continue
             if (path.parent / "marker.json").exists():
                 continue
             record = json.loads(path.read_text())
-            self.agent.client.activate(record["job"])
-            self.agent.client.complete(
-                self.agent.state,
-                record["job_id"],
-                status="error",
-                error="Agent restarted before compute launch",
-            )
-            self._release(path)
-            return True
+            if not execution_belongs_here(record["job"]):
+                continue
+            lock = self.acquire_supervision(path.parent.name)
+            if lock is not None:
+                with lock:
+                    if (path.parent / "marker.json").exists() or not path.exists():
+                        continue
+                    self.agent.client.activate(record["job"])
+                    self.agent.client.complete(
+                        self.agent.state,
+                        record["job_id"],
+                        status="error",
+                        error="Agent restarted before compute launch",
+                    )
+                    self._release(path)
+                return True
         return False
 
     def _release(self, reservation):

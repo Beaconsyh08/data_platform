@@ -19,6 +19,7 @@ DEPLOY_ENV=""
 INSTANCE_ID=""
 VERIFY_ONLY=0
 NO_START=0
+ROLLING=0
 SERVER_URL=""
 NODE_NAME=$(hostname -s)
 ENROLLMENT_TOKEN_FILE=""
@@ -43,6 +44,7 @@ Options:
   --enrollment-token-file FILE
                               Read the first-enrollment token from FILE.
   --no-start                  Install files but do not start the systemd service.
+  --rolling                   Retain compatible old Agent generations until their jobs finish.
   --verify-only               Verify bundle files and exit; root is not required.
   -h, --help                  Show this help.
 
@@ -89,6 +91,7 @@ while (($#)); do
             NO_START=1
             shift
             ;;
+        --rolling) ROLLING=1; shift ;;
         --verify-only)
             VERIFY_ONLY=1
             shift
@@ -134,6 +137,7 @@ if sys.version_info < (3, 10):
 PY
 
 [[ $DEPLOY_ENV == dev || $DEPLOY_ENV == prod ]] || fail "--env dev|prod is required"
+(( !ROLLING || (!NO_START && !ADOPT_LEGACY) )) || fail "--rolling requires a normal started upgrade"
 INSTALL_ROOT="/opt/data-platform-agent/$DEPLOY_ENV"
 CONFIG_FILE="/etc/data-platform/$DEPLOY_ENV/agent.env"
 STATE_DIR="/var/lib/data-platform-agent-$DEPLOY_ENV"
@@ -259,11 +263,14 @@ fi
 "$RELEASE_DIR/.venv/bin/python" -c \
     "from lerobot.data_platform.execution import SpoolingClient; from lerobot.data_platform.management_storage import EventSpool"
 # Bind the state directory before starting, and keep credentials out of command arguments.
-"$RELEASE_DIR/.venv/bin/python" - "$CONFIG_FILE" "$STATE_DIR" "$DEPLOY_ENV" "$BUNDLE_VERSION" "$BUNDLE_DIGEST" <<'PYENV'
+"$RELEASE_DIR/.venv/bin/python" - "$CONFIG_FILE" "$STATE_DIR" "$DEPLOY_ENV" "$BUNDLE_VERSION" "$BUNDLE_DIGEST" "$ROLLING" "$INSTALL_ROOT" <<'PYENV'
 import os, sys
 from pathlib import Path
 from lerobot.data_platform.deployment import read_environment_file
 from lerobot.data_platform.environment import EnvironmentIdentity, verify_directory
+from lerobot.data_platform.rolling_deployment import ROLLING_DEPLOY_PROTOCOL, compatible_contracts
+from lerobot.data_platform.releases import SCHEMA_VERSION
+import json
 values = read_environment_file(Path(sys.argv[1]))
 if values.get("DATA_PLATFORM_ENV") != sys.argv[3]:
     raise SystemExit("Agent environment mismatch")
@@ -276,22 +283,57 @@ if (health.get("release"), health.get("agent_manifest_sha256")) != (sys.argv[4],
     raise SystemExit("Agent bundle does not match the installed server release")
 if (health.get("environment"), health.get("instance_id")) != (identity.name, identity.instance_id):
     raise SystemExit("Agent server identity mismatch")
-if (Path(sys.argv[2]) / "agent.json").exists() and (not health.get("maintenance") or health.get("active_jobs") != 0):
+candidate = {"rolling_deploy_protocol": ROLLING_DEPLOY_PROTOCOL, "schema_min": SCHEMA_VERSION,
+             "schema_max": SCHEMA_VERSION, "job_protocol": 2}
+if sys.argv[6] == "1":
+    previous = Path(sys.argv[7]) / "current" / "deployment-contract.json"
+    if not previous.is_file() or not compatible_contracts(json.loads(previous.read_text()), candidate, schema=SCHEMA_VERSION):
+        raise SystemExit("Agent generation is not compatible; bootstrap or upgrade after jobs finish")
+if (Path(sys.argv[2]) / "agent.json").exists() and (
+    not health.get("maintenance") or (sys.argv[6] != "1" and health.get("active_jobs") != 0)
+):
     raise SystemExit("Pause the selected environment before upgrading its Agent")
 verify_directory(Path(sys.argv[2]), "agent", initialize=True)
 PYENV
 chown "$SERVICE_USER:$SERVICE_USER" "$STATE_DIR/.data-platform-environment.json"
 printf 'DATA_PLATFORM_RELEASE=%s\n' "$BUNDLE_VERSION" > "$RELEASE_DIR/release.env"
+"$RELEASE_DIR/.venv/bin/python" - "$RELEASE_DIR" <<'PYCONTRACT'
+import json, sys
+from pathlib import Path
+from lerobot.data_platform.releases import SCHEMA_VERSION
+from lerobot.data_platform.rolling_deployment import ROLLING_DEPLOY_PROTOCOL
+root = Path(sys.argv[1])
+(root / "deployment-contract.json").write_text(json.dumps({
+    "rolling_deploy_protocol": ROLLING_DEPLOY_PROTOCOL, "schema_min": SCHEMA_VERSION,
+    "schema_max": SCHEMA_VERSION, "job_protocol": 2,
+}) + "\n")
+(root / ".executor.lock").touch(mode=0o644)
+PYCONTRACT
+GENERATION_UNIT="data-platform-agent-$BUNDLE_VERSION@$DEPLOY_ENV.service"
+GENERATION_FILE="/etc/systemd/system/$GENERATION_UNIT"
+PREVIOUS_UNIT=""
+if [[ -L "$SERVICE_FILE" ]]; then
+    PREVIOUS_UNIT=$(basename "$(readlink -f "$SERVICE_FILE")")
+elif [[ -e "$SERVICE_FILE" ]]; then
+    (( !ROLLING )) || fail "The legacy Agent service requires an idle bootstrap"
+fi
+if (( !ROLLING )) && [[ -e "$SERVICE_FILE" ]]; then
+    systemctl stop "data-platform-agent@$DEPLOY_ENV.service"
+fi
 # Render a separate unit; never overwrite the other environment's current pointer.
-sed -e "s|/opt/data-platform-agent/current|$INSTALL_ROOT/current|g" \
+sed -e "s|/opt/data-platform-agent/current|$RELEASE_DIR|g" \
     -e "s|/etc/data-platform/agent.env|$CONFIG_FILE|g" \
     -e "s|User=data-platform-agent$|User=$SERVICE_USER|" \
     -e "s|Group=data-platform-agent$|Group=$SERVICE_USER|" \
-    -e "/EnvironmentFile=/a EnvironmentFile=$INSTALL_ROOT/current/release.env" \
-    systemd/data-platform-agent.service > "$SERVICE_FILE"
+    -e "/EnvironmentFile=/a EnvironmentFile=$RELEASE_DIR/release.env\nEnvironment=DATA_PLATFORM_EXECUTOR_RELEASE=$RELEASE_DIR\nEnvironment=DATA_PLATFORM_EXECUTOR_CURRENT=$INSTALL_ROOT/current" \
+    -e 's/Restart=always/Restart=on-failure/' \
+    systemd/data-platform-agent.service > "$GENERATION_FILE"
 if [[ $DEPLOY_ENV == dev ]]; then
-    sed -i '/\[Service\]/a CPUQuota=200%\nMemoryMax=4G\nCPUWeight=10\nIOWeight=10\nEnvironment=DATA_PLATFORM_GPU_DEVICES=\nProtectSystem=strict\nReadWritePaths=/srv/data-platform-dev /var/lib/data-platform-agent-dev\nInaccessiblePaths=-/etc/data-platform/prod -/var/lib/data-platform-agent-prod -/var/lib/data-platform-agent' "$SERVICE_FILE"
+    printf '[Slice]\nCPUQuota=200%%\nMemoryMax=4G\nCPUWeight=10\nIOWeight=10\n' > /etc/systemd/system/data-platform-agent-dev.slice
+    sed -i '/\[Service\]/a Slice=data-platform-agent-dev.slice\nCPUQuota=200%\nMemoryMax=4G\nCPUWeight=10\nIOWeight=10\nEnvironment=DATA_PLATFORM_GPU_DEVICES=\nProtectSystem=strict\nReadWritePaths=/srv/data-platform-dev /var/lib/data-platform-agent-dev\nInaccessiblePaths=-/etc/data-platform/prod -/var/lib/data-platform-agent-prod -/var/lib/data-platform-agent' "$GENERATION_FILE"
 fi
+ln -sfnT "$GENERATION_FILE" "$SERVICE_FILE.next"
+mv -Tf "$SERVICE_FILE.next" "$SERVICE_FILE"
 ln -sfnT "$RELEASE_DIR" "$INSTALL_ROOT/.current-next"
 mv -Tf "$INSTALL_ROOT/.current-next" "$INSTALL_ROOT/current"
 systemctl daemon-reload
@@ -301,8 +343,11 @@ if ((NO_START)); then
     exit 0
 fi
 
-systemctl enable "data-platform-agent@$DEPLOY_ENV.service"
-systemctl restart "data-platform-agent@$DEPLOY_ENV.service"
+if [[ -n "$PREVIOUS_UNIT" && $PREVIOUS_UNIT != "$GENERATION_UNIT" ]]; then
+    systemctl disable "$PREVIOUS_UNIT"
+fi
+systemctl enable "$GENERATION_UNIT"
+systemctl start "$GENERATION_UNIT"
 
 if grep -q '^DATA_PLATFORM_AGENT_ENROLLMENT_TOKEN=' "$CONFIG_FILE"; then
     for _ in {1..30}; do
@@ -315,7 +360,8 @@ if grep -q '^DATA_PLATFORM_AGENT_ENROLLMENT_TOKEN=' "$CONFIG_FILE"; then
         chmod 0640 "$CONFIG_TEMP"
         chown root:"$SERVICE_USER" "$CONFIG_TEMP"
         mv "$CONFIG_TEMP" "$CONFIG_FILE"
-        systemctl restart "data-platform-agent@$DEPLOY_ENV.service"
+        # Restart only the newly enrolled generation; it has not accepted work in maintenance.
+        systemctl restart "$GENERATION_UNIT"
         echo "Agent enrolled; the one-time enrollment token was removed from $CONFIG_FILE."
     else
         echo "Agent did not enroll within 30 seconds; token retained for retry." >&2
