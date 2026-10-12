@@ -763,7 +763,14 @@ def test_temporal_caption_tab_hides_generic_review_and_restores_it():
 const assert = require('node:assert/strict');
 let page;
 const general = Array.from({length:4}, () => ({hidden:false}));
-const root = {querySelectorAll: selector => selector === '[data-curation-general]' ? general : []};
+const root = {
+  dataset: {},
+  querySelector: () => ({textContent:''}),
+  querySelectorAll: selector => selector === '[data-curation-general]' ? general : [],
+};
+const panelHomes = new Map();
+const $ = () => ({querySelectorAll: () => []});
+const drawResultOptions = () => {};
 """
             + function
             + """

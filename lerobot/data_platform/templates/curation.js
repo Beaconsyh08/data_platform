@@ -7,12 +7,17 @@ window.createCurationWorkspace = (root, initialTarget) => {
   let context = null, result = null, busy = false, jobs = [], page = new URLSearchParams(location.search).get('page') || 'annotation';
   let inputRuns = new Set(), captionRuns = [], timer = null, captionController = null, reviewRevision = null;
   const pending = JSON.parse(sessionStorage.getItem('curation-deliveries') || '{}');
+  const panelHomes = new Map();
+  root.querySelectorAll('[data-curation-panel]').forEach(panel => {
+    const home = document.createComment('Shared curation panel'); panel.before(home); panelHomes.set(panel, home);
+  });
   const text = (tag, value, className) => { const node = document.createElement(tag); node.textContent = value; if (className) node.className = className; return node; };
   const notice = (message, error = false) => { $('notice').hidden = !message; $('notice').textContent = message; $('notice').className = error ? 'error' : ''; };
   const query = () => new URLSearchParams(Object.entries(target).filter(([, value]) => value != null && value !== '')).toString();
   const draft = () => context?.workspaces.find(item => item.workspace_id === $('workspace').value);
   const episode = () => Number($('episode').value);
   const operationNames = {snapshot:'Synchronize version', validate_source:'Validate source', stage:'Compute stages', quality:'Detect quality issues', labeling:'Run object labeling', tagging:'Run auto-tagging', embedding:'Compute embeddings', project:'Project embeddings', compare_summary:'Prepare comparison summary', construction_preview:'Preview construction', construction:'Generate data', materialize:'Build dataset'};
+  const qualityNames = {legacy:'DVT checks', s1:'Joint motion · S1', s3:'Numeric values · S3', c3:'Images & video · C3'};
   const fields = {
     stage: [['episodes','Episodes','episodes'],['prepare_workers','Workers','number',4],['fallback_stage_count','Fallback stage count','number',5]],
     quality: [['episodes','Episodes','episodes'],['workers','Workers','number',4],['overwrite','Recompute automatic flags','checkbox',false]],
@@ -80,7 +85,8 @@ window.createCurationWorkspace = (root, initialTarget) => {
           const ready = context.quality_checks?.[input.value];
           const available = ready?.available || (input.value === 's1' && ready?.can_confirm_profile && confirmation);
           input.disabled = busy || !context.can_edit || !available;
-          input.closest('label').querySelector('small').textContent = available ? '' : ready?.reason || 'Unavailable';
+          const reason = input.closest('label').querySelector('.quality-check-reason');
+          reason.textContent = !context.can_edit ? 'Read-only access' : available ? 'Available' : ready?.reason || 'Unavailable';
         });
         if (!form.dataset.qualityInitialized) {
           form.querySelectorAll('[name=checks]:disabled').forEach(input => { input.checked = false; });
@@ -89,7 +95,10 @@ window.createCurationWorkspace = (root, initialTarget) => {
         const selected = [...form.querySelectorAll('[name=checks]:checked')];
         if (!blocked && (!selected.length || selected.some(input => input.disabled && !busy))) blocked = 'Select supported quality checks.';
         form.elements.quality_profile.disabled = busy || !context.can_edit || !context.quality_checks?.s1?.can_confirm_profile;
+        form.elements.quality_profile.closest('label').hidden = !context.quality_checks?.s1?.can_confirm_profile || context.quality_checks?.s1?.available;
         const video = selected.some(input => input.value === 'c3');
+        form.querySelector('.quality-video-settings').hidden = !video;
+        form.elements.video_workers.closest('label').hidden = !video;
         for (const name of ['video_mode','video_workers']) form.elements[name].disabled = busy || !context.can_edit || !video;
         form.elements.qc_config.disabled = busy || !context.can_edit || context.quality_protocol !== 1;
       }
@@ -111,26 +120,67 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('sync').disabled = busy || !context.operations['curation.snapshot']?.can_execute;
     $('sync').title = context.operations['curation.snapshot']?.reason || '';
     $('draft-state').textContent = draft() ? `${draft().status} · revision ${draft().revision}` : 'Select or create a draft';
+    updateResultVisibility();
   }
   function drawQualityControls(form) {
+    form.className = 'quality-form';
+    const scope = form.querySelector('.fields'); scope.classList.add('quality-scope');
+    const advanced = document.createElement('details'); advanced.className = 'quality-advanced'; advanced.append(text('summary','Advanced settings'));
+    const execution = document.createElement('div'); execution.className = 'fields';
+    for (const name of ['workers','overwrite']) execution.append(form.elements[name].closest('label'));
+    advanced.append(execution);
+    scope.prepend(text('h3','Episode range'));
+    scope.append(text('small','Leave blank to check all episodes. Use numbers or ranges, such as 3,7,17–19.'));
+    form.append(text('h3','Choose checks'));
     const checks = document.createElement('div'); checks.className = 'fields quality-checks';
-    for (const [key,label] of [['legacy','Legacy DVT checks'],['s1','S1 · Joint jumps'],['s3','S3 · Invalid values'],['c3','C3 · Source image/video quality']]) {
-      const field = text('label', label), input = document.createElement('input'); input.type = 'checkbox'; input.name = 'checks'; input.value = key; input.checked = key === 'legacy'; input.onchange = buttons; field.append(input,text('small','')); checks.append(field);
+    for (const [key,description] of [
+      ['legacy','Existing DVT checks for timing, action/state consistency and task annotations.'],
+      ['s1','Sudden joint jumps and excessive speed; requires a confirmed DVT joint profile.'],
+      ['s3','Missing, non-finite or malformed numeric values. Custom bounds are optional.'],
+      ['c3','Missing or unreadable media, black frames, and blur or freeze candidates.']
+    ]) {
+      const field = document.createElement('label'), input = document.createElement('input'), copy = document.createElement('span');
+      input.type = 'checkbox'; input.name = 'checks'; input.value = key; input.checked = key === 'legacy'; input.onchange = buttons;
+      copy.append(text('strong',qualityNames[key]),text('span',description,'quality-check-description'),text('small','','quality-check-reason'));
+      field.append(input,copy); checks.append(field);
     }
-    const details = document.createElement('details'); details.append(text('summary','Quality configuration'));
+    form.append(checks);
     const grid = document.createElement('div'); grid.className = 'fields';
     for (const [name,label,values] of [['quality_profile','Confirm joint profile (S1)',['','DVT1','DVT2']],['video_mode','Video coverage',['sampled','full']]]) {
       const field = text('label',label), select = document.createElement('select'); select.name = name;
-      values.forEach(value => { const option = text('option',value || 'Use recorded profile'); option.value = value; select.append(option); });
+      values.forEach(value => { const label = name === 'video_mode' ? value === 'sampled' ? 'Sampled frames' : 'Every frame' : value || 'Use recorded profile'; const option = text('option',label); option.value = value; select.append(option); });
       select.onchange = buttons; field.append(select); grid.append(field);
     }
-    const workers = text('label','Video workers (1–16)'), input = document.createElement('input'); input.type = 'number'; input.name = 'video_workers'; input.min = '1'; input.max = '16'; input.value = '2'; workers.append(input); grid.append(workers);
+    form.append(grid.firstElementChild);
+    grid.classList.add('quality-video-settings'); grid.hidden = true;
+    const workers = text('label','Video workers (1–16)'), input = document.createElement('input'); input.type = 'number'; input.name = 'video_workers'; input.min = '1'; input.max = '16'; input.value = '2'; workers.append(input); execution.append(workers);
     const config = text('label','Thresholds and bounds (JSON)'), editor = document.createElement('textarea'); editor.name = 'qc_config'; editor.rows = 5; editor.placeholder = '{"schema_version":1,"s1":{"max_step":0.5,"max_speed":20},"s3":{"bounds":[]},"c3":{"sample_every_seconds":1}}'; config.append(editor);
-    details.append(grid,config,text('p','S1 uses radians and radians/second after profile confirmation. S3 bounds require matching metadata units. Sampled media checks report coverage; blur and freeze candidates require review.','muted'));
-    form.append(checks,details);
+    form.append(grid);
+    advanced.append(config,text('p','Leave JSON blank to use default thresholds. S1 uses radians and radians/second; S3 bounds must match metadata units.','muted'));
+    form.append(advanced);
+  }
+  function drawResultOptions() {
+    if (!context) return;
+    const runs = context.runs.filter(item => page === 'quality' ? item.operation === 'curation.quality' : !['curation.snapshot','curation.validate_source'].includes(item.operation));
+    options($('result'), runs, item => item.run, item => `${operationNames[item.operation.split('.')[1]]} · ${new Date(item.created_at).toLocaleString()}`, runs.length ? 'Select a result' : 'No saved results yet');
+    updateResultVisibility();
+  }
+  function updateResultVisibility() {
+    const visible = !!result && result.run === $('result').value && (page !== 'quality' || !!result.quality);
+    $('result-body').hidden = !visible; $('artifact-downloads').hidden = !visible;
+    $('result-empty').hidden = visible;
+    $('load-result').disabled = busy || !$('result').value;
   }
   function selectPage(value, tab) {
     page = ['explore','quality','annotation','dataset_build'].includes(value) ? value : 'annotation';
+    root.dataset.curationPage = page;
+    for (const [panel,home] of panelHomes) {
+      if (page === 'quality') root.querySelector(`[data-quality-slot="${panel.dataset.curationPanel}"]`).append(panel);
+      else home.after(panel);
+    }
+    root.querySelector('[data-curation-heading=results]').textContent = page === 'quality' ? '2. Inspect results' : 'Generated results';
+    $('jobs').querySelectorAll('[data-curation-operation]').forEach(row => { row.hidden = page === 'quality' && row.dataset.curationOperation !== 'curation.quality'; });
+    drawResultOptions();
     root.querySelectorAll('[data-section]').forEach(item => { item.hidden = item.dataset.section !== page; });
     root.querySelectorAll('[data-page]').forEach(item => item.setAttribute('aria-selected', item.dataset.page === page));
     root.querySelectorAll('[data-curation-tab]').forEach(item => { item.hidden = item.dataset.curationTab !== tab; });
@@ -164,7 +214,10 @@ window.createCurationWorkspace = (root, initialTarget) => {
           if (!selected.length) throw Error('Select at least one quality check.');
           if (context.quality_protocol === 1) {
             parameters.checks = selected;
-            if (form.elements.qc_config.value.trim()) parameters.qc_config = JSON.parse(form.elements.qc_config.value);
+            if (form.elements.qc_config.value.trim()) {
+              try { parameters.qc_config = JSON.parse(form.elements.qc_config.value); }
+              catch { throw Error('Thresholds and bounds must be valid JSON.'); }
+            }
             if (selected.includes('c3')) { parameters.video_mode = form.elements.video_mode.value; parameters.video_workers = Number(form.elements.video_workers.value); }
           }
           if (form.elements.quality_profile.value) parameters.data_version = form.elements.quality_profile.value;
@@ -178,6 +231,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     if (['construction','construction_preview'].includes(operation) && draft()) { body.workspace_id = draft().workspace_id; body.expected_revision = draft().revision; }
     const data = await api('/api/curation/jobs', body);
     notice(`Task accepted: ${operationNames[operation]}. Progress is shown in Tasks.`);
+    if (operation === 'quality') root.querySelector('.quality-task-panel').open = true;
     await refreshJobs(); return data;
   }
   async function refresh() {
@@ -192,7 +246,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('analysis').href = captionBase + '/analysis';
     options($('workspace'), data.workspaces, item => item.workspace_id, item => `${item.owner} · ${item.status} · ${item.workspace_id.slice(-8)}`, 'Select a workspace');
     options($('episode'), data.episodes, item => String(item.episode_index), item => `Episode ${item.episode_index}`);
-    options($('result'), data.runs.filter(item => !['curation.snapshot','curation.validate_source'].includes(item.operation)), item => item.run, item => `${operationNames[item.operation.split('.')[1]]} · ${new Date(item.created_at).toLocaleString()}`, 'Select a result');
+    drawResultOptions();
     options($('manifest'), data.manifests.filter(item => item.status === 'published'), item => item.manifest_id, item => `Version ${item.manifest_version} · ${item.reviewer || ''}`, 'Select a published manifest');
     $('episodes').replaceChildren();
     for (const row of data.episodes) {
@@ -262,7 +316,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
       $('construction-counts').replaceChildren();
       for (const [name,item] of Object.entries(result.result.scenarios)) { const label = text('label',`${name.replaceAll('_',' ')} (${item.candidate_count} candidates)`), input = document.createElement('input'); input.name = name; input.type = 'number'; input.min = '0'; input.value = '0'; label.append(input); $('construction-counts').append(label); }
     }
-    $('use-result').checked = inputRuns.has(result.run); notice('Result loaded. Select an episode to review or accept its annotations.');
+    $('use-result').checked = inputRuns.has(result.run); updateResultVisibility(); notice(result.quality ? 'Quality result loaded. Review flagged episodes before deciding whether to keep, exclude or repair them.' : 'Result loaded. Select an episode to review or accept its annotations.');
   }
   function drawQualityResult() {
     const container = document.createElement('div'), filters = document.createElement('div'); filters.className = 'row';
@@ -275,27 +329,37 @@ window.createCurationWorkspace = (root, initialTarget) => {
       ['stream','Signal / camera',issues.map(item => item.camera || item.field).concat(coverage.map(item => item.camera))]
     ]) {
       const field = text('label',label), select = document.createElement('select'); select.dataset.qualityFilter = key;
-      options(select,[...new Set(values.filter(value => value != null))].sort(),value => value,value => value,`All ${label.toLowerCase()}`); selectors[key] = select; field.append(select); filters.append(field);
+      options(select,[...new Set(values.filter(value => value != null))].sort(),value => value,value => key === 'detector' ? qualityNames[value] || value : value,{detector:'All checks',episode:'All episodes',stream:'All signals / cameras'}[key]); selectors[key] = select; field.append(select); filters.append(field);
     }
-    const body = document.createElement('div'); body.className = 'scroll';
+    const body = document.createElement('div');
     const matches = item => (!selectors.detector.value || selectors.detector.value === item.detector) && (!selectors.episode.value || selectors.episode.value === String(item.episode)) && (!selectors.stream.value || selectors.stream.value === (item.camera || item.field));
     const draw = () => {
       body.replaceChildren();
       const table = document.createElement('table'), heading = document.createElement('tr');
-      ['Episode','Check','Signal / camera','Severity / status','Frame intervals [start, end)','Evidence'].forEach(label => heading.append(text('th',label))); table.append(heading);
+      ['Episode','Check','Signal / camera','Severity','Frame range','Evidence'].forEach(label => heading.append(text('th',label))); table.append(heading);
       for (const item of issues.filter(matches)) {
-        const row = document.createElement('tr');
-        [item.episode,item.detector,`${item.camera || item.field || '—'}${item.dimension != null ? '['+item.dimension+']' : ''}`,item.severity || 'issue',JSON.stringify(item.frame_intervals || item.frames || []),`${item.reason} · ${JSON.stringify(item.metrics || {})}${item.time_intervals?.length ? ' · seconds '+JSON.stringify(item.time_intervals) : ''}`].forEach(value => row.append(text('td',value))); table.append(row);
+        const row = document.createElement('tr'), cell = document.createElement('td'), button = text('button',`Episode ${item.episode}`);
+        button.type = 'button'; button.onclick = () => { $('episode').value = String(item.episode); loadReview(); $('review-form').scrollIntoView({behavior:'smooth'}); }; cell.append(button); row.append(cell);
+        [qualityNames[item.detector] || item.detector,`${item.camera || item.field || '—'}${item.dimension != null ? '['+item.dimension+']' : ''}`,item.severity || 'issue',JSON.stringify(item.frame_intervals || item.frames || [])].forEach(value => row.append(text('td',value)));
+        const evidence = text('td',item.message || item.reason || item.code || 'Quality issue'), details = document.createElement('details');
+        details.append(text('summary','Measurements'),text('pre',JSON.stringify({metrics:item.metrics || {},time_intervals:item.time_intervals || []},null,2))); evidence.append(details); row.append(evidence); table.append(row);
       }
+      const issueScroll = document.createElement('div'); issueScroll.className = 'scroll'; issueScroll.append(table);
+      body.append(text('h3','Detected issues'),text('p','Frame intervals use [start, end): the end frame is excluded. Legacy frame lists retain their original meaning.','muted'),issueScroll);
+      if (table.rows.length === 1) body.append(text('p','No detected issues match these filters. Check media coverage below for incomplete checks.','muted'));
+      if (!coverage.length) return;
+      const media = document.createElement('table'), mediaHeading = document.createElement('tr');
+      ['Episode','Camera','Status','Coverage','Checked frame ranges'].forEach(label => mediaHeading.append(text('th',label))); media.append(mediaHeading);
       for (const item of coverage.filter(matches)) {
         const row = document.createElement('tr');
-        [item.episode,'c3',item.camera,item.status,JSON.stringify(item.checked_intervals || []),`${item.mode}: ${item.checked_frames}/${item.expected_frames} frames (${(item.coverage_fraction*100).toFixed(1)}%)`].forEach(value => row.append(text('td',value))); table.append(row);
+        [item.episode,item.camera,item.status,`${item.mode}: ${item.checked_frames}/${item.expected_frames} frames (${(item.coverage_fraction*100).toFixed(1)}%)`,JSON.stringify(item.checked_intervals || [])].forEach(value => row.append(text('td',value))); media.append(row);
       }
-      body.append(table);
-      if (table.rows.length === 1) body.append(text('p','No issues or media coverage match these filters.','muted'));
+      const mediaScroll = document.createElement('div'); mediaScroll.className = 'scroll'; mediaScroll.append(media);
+      body.append(text('h3','Media coverage'),text('p','Sampled coverage leaves unchecked frames. Incomplete or failed checks do not mean the media passed.','muted'),mediaScroll);
+      if (media.rows.length === 1) body.append(text('p','No media coverage matches these filters.','muted'));
     };
     Object.values(selectors).forEach(select => { select.onchange = draw; });
-    container.append(text('h3','Quality evidence'),filters,body); $('result-body').append(container); draw();
+    container.append(text('p',`${new Set(issues.map(item => item.episode)).size} flagged episodes · ${issues.length} detected issues · ${coverage.length} camera coverage records`,'quality-summary'),filters,body); $('result-body').append(container); draw();
   }
   function drawEmbedding(points) {
     const svg = $('embedding-plot'); svg.hidden = false; svg.replaceChildren(); svg.setAttribute('viewBox','0 0 800 320');
@@ -308,7 +372,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     jobs = data.jobs.filter(job => target.location_id ? job.location_id === target.location_id : job.options?.target?.dataset_key === target.dataset_key && !job.options?.target?.location_id);
     $('jobs').replaceChildren();
     for (const job of jobs) {
-      const row = document.createElement('div'); row.className = 'card'; row.append(text('strong',`${operationNames[job.operation.split('.')[1]] || job.operation} · ${job.status}`),text('p',job.error || job.progress?.message || job.phase || ''));
+      const row = document.createElement('div'); row.className = 'card'; row.dataset.curationOperation = job.operation; row.hidden = page === 'quality' && job.operation !== 'curation.quality'; row.append(text('strong',`${operationNames[job.operation.split('.')[1]] || job.operation} · ${job.status}`),text('p',job.error || job.progress?.message || job.phase || ''));
       if (job.status === 'queued') row.append(text('small',`${job.queue_ahead || 0} task(s) ahead`));
       if (job.progress?.total > 0 && job.status === 'running') { const bar = document.createElement('div'); bar.className = 'progress'; const fill = document.createElement('span'); fill.style.width = `${Math.min(100,Math.max(0,100*(job.progress.current || 0)/job.progress.total))}%`; bar.append(fill); row.append(bar,text('small',`${job.progress.current || 0} / ${job.progress.total}`)); }
       row.append(text('small',`Started: ${job.started_at ? new Date(job.started_at).toLocaleString() : 'Waiting'} · Updated: ${new Date(job.updated_at).toLocaleString()}`));
@@ -334,6 +398,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('add-transition').onclick = () => addPair('transitions','','','number'); $('add-tag').onclick = () => addPair('tags','','');
     $('review-form').onsubmit = saveReview;
     $('load-result').onclick = () => action(loadResult);
+    $('result').onchange = updateResultVisibility;
     $('use-result').onchange = () => { const run = $('result').value; if (!run) return; if ($('use-result').checked) inputRuns.add(run); else inputRuns.delete(run); $('input-description').textContent = `${inputRuns.size} input result(s) selected`; };
     $('accept-result').onclick = () => action(async () => { if (!result) throw new Error('Open a generated result first.'); await api(`/api/curation/drafts/${draft().workspace_id}/accept/${result.run}/${episode()}`,{expected_revision:draft().revision}); await refresh(); loadReview(); notice('Result accepted into the draft.'); });
     $('publish').onclick = () => action(async () => { await api(`/api/curation/drafts/${draft().workspace_id}/publish`,{target, expected_revision:draft().revision,reason:$('publish-reason').value}); notice('Source validation queued. The draft will publish only if its revision and source still match.'); await refreshJobs(); });

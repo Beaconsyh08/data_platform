@@ -125,8 +125,19 @@ S1 step and speed are in radians and radians/second. An S3 bound can be
 Unknown options, non-finite thresholds, invalid dimensions, and mismatched units are rejected
 before a job is accepted, and validated again on the execution node.
 
-Open a generated result to filter evidence by detector, episode, and field/camera. Evidence
-includes severity, half-open frame/time intervals, and measured values/thresholds. Existing
+The Quality tab follows **Run quality checks → Inspect results → Review episodes**.
+Each check has a plain-language description and a visible availability reason. Episode selection
+stays in the main form; workers, recomputation and custom JSON thresholds are under **Advanced
+settings**. Joint-profile confirmation appears only when needed, and video coverage settings
+appear when C3 is selected. **Task progress** is collapsible and uses the existing Jobs flow.
+The result picker shows Quality runs on this tab. Review uses the shared workspace; switching
+tabs preserves unsaved fields. Task text, stage, tag and box annotation controls remain on
+other Curation tabs. Detection and review do not edit the source; apply reviewed changes through
+Dataset Build.
+
+Open a generated result to filter evidence by detector, episode, and field/camera. Detected issues and media coverage are displayed separately. Click an issue’s episode to open
+its review form; expand **Measurements** for metric and time details. Evidence includes severity,
+half-open frame/time intervals, and measured values/thresholds. Existing
 legacy `frames` fields keep their original semantics. Results are stored in the existing
 Curation bundle as `annotation_issues.json`, `quality_flagged_episodes.json`, and
 `quality_coverage.json`; publication still checks the source fingerprint and bundle checksums.
