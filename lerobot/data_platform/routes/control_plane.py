@@ -463,13 +463,20 @@ def register_control_plane_routes(
         try:
             with store.sessions.begin() as session:
                 job = session.get(RemoteJob, job_id)
-                store.job_manager.validate(
+                _, attempt = store.job_manager.validate(
                     session,
                     job,
                     node["node_id"],
                     **_execution_credentials(),
                     allow_terminal=request.path.endswith("/complete"),
                 )
+                if request.path.endswith("/complete"):
+                    from lerobot.data_platform.job_management import is_recovered_attempt
+
+                    if is_recovered_attempt(attempt):
+                        if (request.get_json(silent=True) or {}).get("status") != attempt.status:
+                            raise JobConflictError("Conflicting recovered attempt status")
+                        return jsonify({"job": store._job_dict(job)})
         except KeyError:
             return jsonify({"error": "job not found for this node"}), 404
         except JobConflictError as exc:

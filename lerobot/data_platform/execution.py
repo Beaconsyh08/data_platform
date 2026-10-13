@@ -102,6 +102,10 @@ def process_identity(pid):
         return None
 
 
+def boot_identity() -> str:
+    return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+
+
 def group_members(pgid):
     members = []
     for path in Path("/proc").iterdir():
@@ -810,6 +814,7 @@ class ExecutionSupervisor:
             "final": str(final) if final else None,
             "pid": process.pid,
             "process_identity": process_identity(process.pid),
+            "boot_id": boot_identity(),
             "cgroup": config["cgroup"],
             "acknowledged": False,
             "publishing": False,
@@ -828,17 +833,20 @@ class ExecutionSupervisor:
         agent, job = self.agent, marker["job"]
         work = Path(marker["work"])
         force_at = None
+        current_boot = boot_identity()
+        same_boot = marker.get("boot_id", current_boot) == current_boot
         while True:
             if process:
                 process.poll()
             pid = marker.get("pid")
             alive = (
-                pid is not None
+                same_boot
+                and pid is not None
                 and process_identity(pid) == marker["process_identity"]
                 and marker["process_identity"] is not None
             )
-            members = group_members(pid) if pid is not None else []
-            if marker.get("cgroup") and Path(marker["cgroup"]).exists():
+            members = group_members(pid) if same_boot and pid is not None else []
+            if same_boot and marker.get("cgroup") and Path(marker["cgroup"]).exists():
                 members = list(
                     set(
                         members

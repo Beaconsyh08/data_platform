@@ -27,6 +27,8 @@ from lerobot.data_platform.operation_log import build_operation_event, sanitize_
 
 JOB_PROTOCOL = 2
 ACTIVE_STATES = {"running", "cancel_requested", "interrupted"}
+MCAP_RECOVERY_LIMIT = 3
+PROCESS_LOSS_ERROR = "Compute process exited without a result"
 SAFE_OPERATIONS = {
     "import.mcap.inspect",
     "import.mcap.convert",
@@ -46,6 +48,18 @@ SAFE_OPERATIONS = {
 
 class JobConflictError(ValueError):
     pass
+
+
+def is_recovered_attempt(attempt: JobAttempt | None) -> bool:
+    recovery = (attempt.result or {}).get("auto_recovery") if attempt else None
+    return bool(
+        attempt
+        and attempt.protocol >= 2
+        and attempt.status == "error"
+        and attempt.finished_at is not None
+        and isinstance(recovery, dict)
+        and recovery.get("reason") == "compute_process_lost"
+    )
 
 
 def scheduler_lock(session):
@@ -343,6 +357,11 @@ class JobManager:
             raise KeyError("job not found for this node")
         control = self.control(session, job)
         attempt = session.get(JobAttempt, control.attempt_id) if control.attempt_id else None
+        if allow_terminal and job.operation == "import.mcap.convert" and attempt_id != control.attempt_id:
+            previous = session.get(JobAttempt, attempt_id) if attempt_id else None
+            if previous and previous.job_id == job.job_id and is_recovered_attempt(previous):
+                # Only completion acknowledgement may replay a recovered attempt; all writes stay fenced.
+                attempt = previous
         if attempt and attempt.protocol >= 2:
             digest = hashlib.sha256(str(credential or "").encode()).hexdigest()
             if attempt.attempt_id != attempt_id or not hmac.compare_digest(digest, attempt.credential_digest):
@@ -350,6 +369,32 @@ class JobManager:
         if not allow_terminal and job.status not in ACTIVE_STATES:
             raise JobConflictError("Job is not active")
         return control, attempt
+
+    def _recovery_number(self, session, job, control, attempt, status, error):
+        if (
+            job.operation != "import.mcap.convert"
+            or status != "error"
+            or not isinstance(error, str)
+            or error != PROCESS_LOSS_ERROR
+            or job.status not in {"running", "interrupted"}
+            or control.stop_mode
+            or control.phase == "finalizing"
+            or attempt is None
+            or attempt.protocol < 2
+        ):
+            return None
+        previous = session.scalars(
+            select(JobAttempt)
+            .where(JobAttempt.job_id == job.job_id, JobAttempt.attempt_no < attempt.attempt_no)
+            .order_by(JobAttempt.attempt_no.desc())
+            .limit(MCAP_RECOVERY_LIMIT)
+        )
+        number = 1
+        for record in previous:
+            if not is_recovered_attempt(record):
+                break
+            number += 1
+        return number if number <= MCAP_RECOVERY_LIMIT else None
 
     def heartbeat(self, job_id, node_id, *, lease_seconds=60, attempt_id=None, credential=None):
         from lerobot.data_platform.control_plane import ControlPlaneNode, RemoteJob, _utcnow
@@ -507,6 +552,10 @@ class JobManager:
             control, attempt = self.validate(
                 session, job, node_id, attempt_id, credential, allow_terminal=True
             )
+            if is_recovered_attempt(attempt):
+                if status != attempt.status:
+                    raise JobConflictError("Conflicting recovered attempt status")
+                return self.store._job_dict(job)
             if job.status in {"done", "error", "cancelled"}:
                 if job.status != status:
                     raise JobConflictError("Job is already terminal with a different status")
@@ -517,6 +566,7 @@ class JobManager:
                 raise JobConflictError("Stopped execution cannot publish results")
             if job.status not in ACTIVE_STATES:
                 raise JobConflictError("Job is not active")
+            recovery_number = self._recovery_number(session, job, control, attempt, status, error)
             progress = (job.result or {}).get("progress", {})
             job.status, job.result, job.error = (
                 status,
@@ -534,6 +584,28 @@ class JobManager:
                 attempt.status, attempt.finished_at = status, time.time()
                 attempt.result, attempt.error = job.result, job.error
             self.audit(session, job, "job.completed", details={"attempt_id": control.attempt_id})
+            if recovery_number is not None:
+                recovery = {
+                    "reason": "compute_process_lost",
+                    "number": recovery_number,
+                    "limit": MCAP_RECOVERY_LIMIT,
+                }
+                attempt.result = {**attempt.result, "auto_recovery": recovery}
+                job.status, control.phase = "queued", "queued"
+                job.result = {
+                    "auto_recovery": recovery,
+                    "progress": {
+                        "phase": "queued",
+                        "message": "Automatically queued to resume MCAP conversion from verified checkpoints",
+                    },
+                }
+                job.error = job.started_at = job.finished_at = None
+                self.audit(
+                    session,
+                    job,
+                    "job.auto_requeued",
+                    details={"attempt_id": attempt.attempt_id, **recovery},
+                )
             return self.store._job_dict(job)
 
     @staticmethod
