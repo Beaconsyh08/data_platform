@@ -383,33 +383,54 @@ def _run(generation):
         args.config or Path(os.environ["DATA_PLATFORM_OUTPUT_DIR"]) / "management" / "local-executor.json"
     )
     logging.basicConfig(level=logging.INFO)
-    while True:
-        try:
-            if config_path.exists():
-                config = json.loads(config_path.read_text())
-                state = json.loads(Path(config["state_file"]).read_text())
-                agent = DataPlatformAgent(
-                    client=AgentClient(state["server_url"]),
-                    state_path=Path(config["state_file"]),
-                    name=state["name"],
-                    allowed_roots=[Path(value) for value in config["allowed_roots"]],
-                    writable_roots=[Path(value) for value in config["writable_roots"]],
-                    enrollment_token="",
-                    allow_source_mutations=config["allow_source_mutations"],
-                )
-                if generation.draining:
-                    from lerobot.data_platform.execution import ExecutionSupervisor
+    agent = None
+    loaded_config = None
+    try:
+        while True:
+            try:
+                if config_path.exists():
+                    config = json.loads(config_path.read_text())
+                    state = json.loads(Path(config["state_file"]).read_text())
+                    # Retain the transport and caption readers until their configuration changes.
+                    if agent is None or loaded_config != (config, state):
+                        if agent is not None:
+                            agent.close()
+                            agent = None
+                        client = AgentClient(state["server_url"])
+                        try:
+                            agent = DataPlatformAgent(
+                                client=client,
+                                state_path=Path(config["state_file"]),
+                                name=state["name"],
+                                allowed_roots=[Path(value) for value in config["allowed_roots"]],
+                                writable_roots=[Path(value) for value in config["writable_roots"]],
+                                enrollment_token="",
+                                allow_source_mutations=config["allow_source_mutations"],
+                            )
+                        except Exception:
+                            client.session.close()
+                            raise
+                        loaded_config = config, state
+                    if generation.draining:
+                        from lerobot.data_platform.execution import ExecutionSupervisor
 
-                    supervisor = ExecutionSupervisor(agent)
-                    if not supervisor.reconcile() and not supervisor.pending_here():
-                        return
+                        supervisor = ExecutionSupervisor(agent)
+                        if not supervisor.reconcile() and not supervisor.pending_here():
+                            return
+                    else:
+                        agent.run_once(sync=False)
                 else:
-                    agent.run_once(sync=False)
-            elif generation.draining:
-                return
-        except Exception:
-            logging.exception("Local executor will retry reconciliation")
-        time.sleep(3)
+                    if agent is not None:
+                        agent.close()
+                        agent = None
+                    if generation.draining:
+                        return
+            except Exception:
+                logging.exception("Local executor will retry reconciliation")
+            time.sleep(3)
+    finally:
+        if agent is not None:
+            agent.close()
 
 
 def agent_capabilities_for_local():

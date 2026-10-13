@@ -1616,6 +1616,15 @@ class DataPlatformAgent:
             if not worked:
                 time.sleep(max(0.5, poll_seconds))
 
+    def close(self) -> None:
+        """Stop background reads and release transports when replacing a local executor Agent."""
+        stop = getattr(self, "_caption_read_stop", None)
+        if stop is not None:
+            stop.set()
+        for thread in getattr(self, "_caption_read_threads", []):
+            thread.join(timeout=45)
+        self.client.session.close()
+
     def _start_caption_reads(self) -> None:
         """Serve reads independently of model jobs, uploads, and heartbeats."""
         from lerobot.data_platform.dataset_captions import read_dataset_caption
@@ -1624,40 +1633,44 @@ class DataPlatformAgent:
             return
         self._caption_video_lock = threading.Lock()
         self._caption_read_threads = []
+        self._caption_read_stop = stop = threading.Event()
 
         def serve():
             client = AgentClient(self.client.server_url, verify=self.client.verify)
-            while True:
-                try:
-                    read = client._request(
-                        "GET", "/api/agents/caption-reads", token=self.state.node_token, timeout=(10, 30)
-                    ).get("read")
-                    if not read:
-                        time.sleep(0.5)
-                        continue
+            try:
+                while not stop.is_set():
                     try:
-                        status, body, binary = read_dataset_caption(self, read)
-                    except (OSError, ValueError, KeyError, TypeError) as exc:
-                        status = 404 if isinstance(exc, FileNotFoundError) else 422
-                        body = json.dumps(
-                            {"error": f"Invalid dataset caption: {type(exc).__name__}"}
-                        ).encode()
-                        binary = False
-                    client._request(
-                        "POST",
-                        f"/api/agents/caption-reads/{read['request_id']}",
-                        token=self.state.node_token,
-                        data=body,
-                        params={"status": status},
-                        headers={
-                            "Content-Type": "application/octet-stream",
-                            "X-Caption-Read-Format": "bytes" if binary else "json",
-                        },
-                        timeout=(10, 30),
-                    )
-                except Exception:
-                    logging.exception("Caption read transport will retry")
-                    time.sleep(5)
+                        read = client._request(
+                            "GET", "/api/agents/caption-reads", token=self.state.node_token, timeout=(10, 30)
+                        ).get("read")
+                        if not read:
+                            stop.wait(0.5)
+                            continue
+                        try:
+                            status, body, binary = read_dataset_caption(self, read)
+                        except (OSError, ValueError, KeyError, TypeError) as exc:
+                            status = 404 if isinstance(exc, FileNotFoundError) else 422
+                            body = json.dumps(
+                                {"error": f"Invalid dataset caption: {type(exc).__name__}"}
+                            ).encode()
+                            binary = False
+                        client._request(
+                            "POST",
+                            f"/api/agents/caption-reads/{read['request_id']}",
+                            token=self.state.node_token,
+                            data=body,
+                            params={"status": status},
+                            headers={
+                                "Content-Type": "application/octet-stream",
+                                "X-Caption-Read-Format": "bytes" if binary else "json",
+                            },
+                            timeout=(10, 30),
+                        )
+                    except Exception:
+                        logging.exception("Caption read transport will retry")
+                        stop.wait(5)
+            finally:
+                client.session.close()
 
         for number in range(2):
             thread = threading.Thread(target=serve, daemon=True, name=f"data-platform-caption-read-{number}")

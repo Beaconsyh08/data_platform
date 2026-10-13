@@ -37,6 +37,7 @@ VALIDATION_TESTS = [
     "tests/datasets/test_quality_checks.py",
     "tests/datasets/test_quality_eef.py",
     "tests/datasets/test_execution_supervisor.py",
+    "tests/datasets/test_local_execution.py",
     "tests/datasets/test_environments.py",
     "tests/datasets/test_releases.py",
     "tests/datasets/test_rolling_deployment.py",
