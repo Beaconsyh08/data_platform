@@ -26,6 +26,7 @@ SIGNAL_SCHEMA_STANDARD_16D = "dual_arm_standard_16d"
 # Backward-compatible import name for callers written before the Data Platform/Curation scope split.
 SIGNAL_SCHEMA_TRAIN_16D = SIGNAL_SCHEMA_STANDARD_16D
 _LEGACY_SIGNAL_SCHEMA_TRAIN_16D = "dual_arm_train_16d"
+_DVT_ROBOT_TYPES = {"h10w", "h10_w", "dvt1", "dvt2"}
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,27 @@ def _profile_from_dict(payload: dict, source: str) -> DatasetDataProfile:
     )
 
 
+def _retry_unrecognized_profile(
+    profile: DatasetDataProfile, info: dict, features: dict
+) -> DatasetDataProfile:
+    # Older Agents persisted failed h10_w recognition in metadata and Curation snapshots.
+    # Re-evaluate only failed inference; explicit and confirmed profiles remain authoritative.
+    if (
+        profile.robot_profile == "unknown"
+        and profile.resolution_source == "unrecognized"
+        and not profile.confirmed
+        and str(info.get("robot_type") or "").strip().lower() in _DVT_ROBOT_TYPES
+        and _has_legacy_signals(features)
+    ):
+        return profile_from_data_version(
+            infer_data_version_from_features(features),
+            features,
+            resolution_source="dimension_inference",
+            confirmed=False,
+        )
+    return profile
+
+
 def resolve_data_profile(
     root: Path,
     features: dict | None = None,
@@ -171,7 +193,7 @@ def resolve_data_profile(
             raise ValueError(f"Invalid data profile: {profile_path}") from exc
         if not isinstance(payload, dict):
             raise ValueError(f"Invalid data profile: {profile_path}")
-        return _profile_from_dict(payload, str(profile_path))
+        return _retry_unrecognized_profile(_profile_from_dict(payload, str(profile_path)), info, features)
 
     if not info:
         try:
@@ -180,7 +202,7 @@ def resolve_data_profile(
             info = {}
     embedded = info.get("data_profile")
     if isinstance(embedded, dict):
-        return _profile_from_dict(embedded, "meta/info.json")
+        return _retry_unrecognized_profile(_profile_from_dict(embedded, "meta/info.json"), info, features)
 
     standardize_path = root / "meta" / "preprocess_standardize.json"
     if standardize_path.is_file():
@@ -236,12 +258,12 @@ def profile_from_info(info: dict) -> DatasetDataProfile:
         )
     embedded = info.get("data_profile")
     if isinstance(embedded, dict):
-        return _profile_from_dict(embedded, "data_profile")
+        return _retry_unrecognized_profile(_profile_from_dict(embedded, "data_profile"), info, features)
     if info.get("data_version") in {DATA_VERSION_DVT1, DATA_VERSION_DVT2}:
         return profile_from_data_version(
             info["data_version"], features, resolution_source="legacy_metadata", confirmed=False
         )
-    if robot in {"h10w", "dvt1", "dvt2"} or (not robot and _has_legacy_signals(features)):
+    if robot in _DVT_ROBOT_TYPES or (not robot and _has_legacy_signals(features)):
         return profile_from_data_version(
             infer_data_version_from_features(features),
             features,
@@ -330,12 +352,18 @@ def quality_check_capabilities(profile: DatasetDataProfile, features: dict) -> d
         for key in joint_fields
     )
     s1 = legacy and bool(joint_fields) and profile.confirmed and radians
+    if not joint_fields:
+        s1_reason = "Not applicable: no joint-angle action/state signals. Use S3 or C3 for this data."
+    elif not legacy:
+        s1_reason = "The action/state signal layout is not recognized as DVT."
+    elif not radians:
+        s1_reason = "Joint angles use non-radian units; S1 requires radians."
+    else:
+        s1_reason = "Confirm the joint-angle processing profile."
     return {
-        "legacy": asdict(
-            OperationCapability(legacy, None if legacy else "Requires a DVT processing profile")
-        ),
+        "legacy": asdict(OperationCapability(legacy, None if legacy else s1_reason)),
         "s1": {
-            **asdict(OperationCapability(s1, None if s1 else "Requires DVT joint signals in radians")),
+            **asdict(OperationCapability(s1, None if s1 else s1_reason)),
             "can_confirm_profile": legacy and bool(joint_fields) and radians,
         },
         "s3": asdict(

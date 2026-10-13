@@ -196,14 +196,24 @@ def test_viewer_cannot_queue_or_edit(remote):
 
 
 @pytest.mark.parametrize("data_version", [None, "DVT1"])
-def test_s1_default_and_explicit_profile_round_trip(remote, data_version):
+@pytest.mark.parametrize("source_profile", ["dvt1", "unrecognized_h10_w"])
+def test_s1_default_and_explicit_profile_round_trip(remote, data_version, source_profile, monkeypatch):
     import pandas as pd
+
+    from lerobot.data_platform.precompute import data_profile
 
     info_path = remote.source / "meta/info.json"
     info = json.loads(info_path.read_text())
     info["data_version"] = "DVT1"
     for key in ("action", "state"):
         info["features"][key].update(shape=[16], unit="rad")
+    if source_profile == "unrecognized_h10_w":
+        info.pop("data_version")
+        info["robot_type"] = "h10_w"
+        previous_profile = data_profile.profile_from_info(
+            {"robot_type": "previously_unrecognized", "features": info["features"]}
+        )
+        info["data_profile"] = previous_profile.to_dict()
     info_path.write_text(json.dumps(info))
     for path in (remote.source / "data").rglob("*.parquet"):
         frame = pd.read_parquet(path)
@@ -216,10 +226,18 @@ def test_s1_default_and_explicit_profile_round_trip(remote, data_version):
         remote.node["node_id"],
         capabilities={**remote.node["capabilities"], "quality_protocol": 1, "quality_checks": ["s1"]},
     )
-    job, headers = queue(remote, "curation.snapshot")
-    execute(remote, job, headers)
     query = {"location_id": remote.location["location_id"]}
     context = remote.client.get("/api/curation/context", query_string=query).get_json()
+    assert context["quality_checks"]["legacy"]["available"]
+    assert context["quality_checks"]["s1"]["available"]
+    with monkeypatch.context() as old_agent:
+        if source_profile == "unrecognized_h10_w":
+            old_agent.setattr(data_profile, "resolve_data_profile", lambda *args, **kwargs: previous_profile)
+        job, headers = queue(remote, "curation.snapshot")
+        execute(remote, job, headers)
+    # Existing immutable snapshots can still contain the old failed recognition.
+    context = remote.client.get("/api/curation/context", query_string=query).get_json()
+    assert context["quality_checks"]["legacy"]["available"]
     assert context["quality_checks"]["s1"]["available"]
     parameters = {"checks": ["s1"], "workers": 1}
     if data_version:

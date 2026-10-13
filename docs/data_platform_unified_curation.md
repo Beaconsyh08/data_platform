@@ -85,6 +85,12 @@ and the selected names in `quality_checks`, at both submission and claim. Calls 
 retain legacy behavior and remain compatible with older Agents.
 For compatible DVT signals, submission records the selected processing version in the job:
 DVT2 when no version is selected, or the explicit override. Source identity metadata is unchanged.
+Both `h10w` and `h10_w` robot names are recognized. Previously saved, unconfirmed `unknown`
+profiles from failed recognition are re-evaluated for these robots when compatible action/state
+signals exist, including in older Curation snapshots; no source metadata rewrite is required.
+Explicit or confirmed profiles remain authoritative. GenRobot MCAP datasets containing only
+end-effector poses, gripper widths and video have no joint-angle action/state signals: DVT and
+S1 are not applicable, while S3 and C3 can inspect their numeric signals and media.
 
 - **S1** detects jumps and excessive velocity in the first 16 DVT action/state dimensions,
   excluding grippers 7 and 15. Compatible DVT action/state data uses DVT2 processing by default,
