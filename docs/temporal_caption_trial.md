@@ -273,6 +273,10 @@ page. Submission retains per-episode idempotency keys and a confirmed offset in 
 browser session so interrupted delivery can resume with the same selection. Changing
 the selection starts a new batch. Leaving the page stops further submissions; jobs
 already accepted continue. No new model requests are made merely by selecting all.
+The submit button previews the job count and shows confirmed submissions while sending.
+Method, episode selection and signal inputs are disabled during submission so the displayed
+settings continue to match the active batch. Submission feedback is announced to screen readers;
+execution progress remains in Jobs.
 
 `include_signals` is an optional boolean job option, defaulting to true for older
 clients. When false, inference receives no measured action/state, pose, gripper, or

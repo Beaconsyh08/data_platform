@@ -63,3 +63,5 @@
 .curation-workspace .curation-toolbar > div { min-width: 0; }
 .curation-workspace [data-curation-id=version] { overflow-wrap: anywhere; }
 @media (max-width: 640px) { .curation-workspace .quality-checks { grid-template-columns: 1fr; } }
+
+.curation-workspace .review-unsaved { color: #fcd34d; font-size: 12px; }

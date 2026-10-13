@@ -6,6 +6,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
   let destroyed = false;
   let context = null, result = null, busy = false, jobs = [], page = new URLSearchParams(location.search).get('page') || 'annotation';
   let inputRuns = new Set(), captionRuns = [], timer = null, captionController = null, reviewRevision = null;
+  let savedReview = null, reviewSelection = null;
   const pending = JSON.parse(sessionStorage.getItem('curation-deliveries') || '{}');
   const panelHomes = new Map();
   root.querySelectorAll('[data-curation-panel]').forEach(panel => {
@@ -16,6 +17,23 @@ window.createCurationWorkspace = (root, initialTarget) => {
   const query = () => new URLSearchParams(Object.entries(target).filter(([, value]) => value != null && value !== '')).toString();
   const draft = () => context?.workspaces.find(item => item.workspace_id === $('workspace').value);
   const episode = () => Number($('episode').value);
+  const reviewValue = () => JSON.stringify([...$('review-form').querySelectorAll('input,select,textarea')]
+    .map(input => [input.name, input.type === 'checkbox' ? input.checked : input.value]));
+  const reviewDirty = () => savedReview !== null && savedReview !== reviewValue();
+  function reviewStatus() {
+    $('review-save-state').textContent = reviewDirty() ? 'Unsaved changes' : 'No unsaved changes';
+    $('review-save-state').className = reviewDirty() ? 'review-unsaved' : 'muted';
+  }
+  function allowReviewChange() {
+    if (busy) { notice('Wait for the current request to finish before changing the review.', true); return false; }
+    return !reviewDirty() || window.confirm('Discard unsaved episode review changes? Choose Cancel to keep editing, then save your review.');
+  }
+  function beforeDatasetChange(event) { if (!allowReviewChange()) event.preventDefault(); }
+  function beforeUnload(event) {
+    if (!reviewDirty() && !busy) return;
+    event.preventDefault(); event.returnValue = '';
+  }
+  function reviewAction(fn) { if (allowReviewChange()) return action(fn); }
   const operationNames = {snapshot:'Synchronize version', validate_source:'Validate source', stage:'Compute stages', quality:'Detect quality issues', labeling:'Run object labeling', tagging:'Run auto-tagging', embedding:'Compute embeddings', project:'Project embeddings', compare_summary:'Prepare comparison summary', construction_preview:'Preview construction', construction:'Generate data', materialize:'Build dataset'};
   const qualityNames = {legacy:'DVT checks', s1:'Joint motion · S1', s3:'Numeric values · S3', c3:'Images & video · C3'};
   const fields = {
@@ -114,7 +132,13 @@ window.createCurationWorkspace = (root, initialTarget) => {
     });
     for (const id of ['new-draft','profile']) $(id).disabled = busy || !context.can_edit || !target.dataset_version_id;
     for (const id of ['publish','accept-result','accept-caption','import-sidecars']) $(id).disabled = busy || !context.can_edit || !draft() || draft().status !== 'open';
+    $('review-form').querySelectorAll('input,select,textarea,button').forEach(input => {
+      input.disabled = !context.can_edit || !draft() || draft().status !== 'open';
+    });
     $('review-form').querySelector('button[type=submit]').disabled = busy || !context.can_edit || !draft() || draft().status !== 'open';
+    $('review-form').inert = busy;
+    $('review-form').setAttribute('aria-busy', String(busy));
+    for (const id of ['workspace','episode','reload-review']) $(id).disabled = busy;
     $('build-form').querySelector('button[type=submit]').disabled = busy || !context.operations['curation.materialize']?.can_execute || !$('manifest').value;
     $('recipe-form').querySelector('button[type=submit]').disabled = busy || !context.can_edit || !target.dataset_version_id;
     $('sync').disabled = busy || !context.operations['curation.snapshot']?.can_execute;
@@ -263,9 +287,13 @@ window.createCurationWorkspace = (root, initialTarget) => {
   function addPair(container, left, right, type = 'text') {
     const row = document.createElement('div'); row.className = 'tag-row';
     for (const value of [left,right]) { const input = document.createElement('input'); input.type = type; if (type === 'number') { input.step = 'any'; input.min = '0'; } input.value = value ?? ''; row.append(input); }
-    const remove = text('button','Remove'); remove.type = 'button'; remove.onclick = () => row.remove(); row.append(remove); $(container).append(row);
+    const remove = text('button','Remove'); remove.type = 'button'; remove.onclick = () => { row.remove(); reviewStatus(); }; row.append(remove); $(container).append(row);
   }
-  function loadReview() {
+  function loadReview(force = false) {
+    if (!force && !allowReviewChange()) {
+      if (reviewSelection) { $('workspace').value = reviewSelection.workspace; $('episode').value = reviewSelection.episode; }
+      return false;
+    }
     reviewRevision = draft()?.revision ?? null;
     const form = $('review-form'); form.reset(); $('transitions').replaceChildren(); $('tags').replaceChildren();
     const uid = context?.episode_refs?.find(row => row.episode_index === episode())?.episode_uid;
@@ -278,11 +306,16 @@ window.createCurationWorkspace = (root, initialTarget) => {
     const box = fields.first_frame_bbox?.selected?.bbox;
     if (box) ['left','top','right','bottom'].forEach(key => { form.elements[key].value = box[key]; });
     [...$('episodes').children].forEach((row,index) => { row.lastElementChild.textContent = reviewFor(context.episodes[index].episode_index)?.decision || 'Undecided'; });
+    savedReview = reviewValue();
+    reviewSelection = {workspace: $('workspace').value, episode: $('episode').value};
+    reviewStatus();
     buttons();
+    return true;
   }
   async function saveReview(event) {
     event.preventDefault(); await action(async () => {
       const form = $('review-form'), data = new FormData(form), fields = {}, body = {expected_revision:reviewRevision, decision:data.get('decision'), reason:data.get('reason')};
+      if (data.get('reason').trim() && !data.get('decision')) throw new Error('Choose a review decision to save a reason, or clear the reason.');
       if (data.get('task').trim()) fields.task = data.get('task').trim();
       const transitions = [...$('transitions').children].map(row => ({time:Number(row.children[0].value),state:Number(row.children[1].value)}));
       if (transitions.length) fields.subtask_transitions = transitions;
@@ -293,7 +326,8 @@ window.createCurationWorkspace = (root, initialTarget) => {
       if (data.get('repair') === 'value_edit') body.repair = {op:'value_edit',params:{edits:[{field:data.get('signal'),dimension:Number(data.get('dimension')),value:Number(data.get('value'))}]}};
       if (data.get('repair') === 'clear') body.repair = null;
       await api(`/api/curation/drafts/${draft().workspace_id}/episodes/${episode()}`,body,'PATCH');
-      await refresh(); loadReview(); notice('Episode review saved.');
+      savedReview = reviewValue(); reviewStatus();
+      await refresh(); loadReview(true); notice('Episode review saved.');
     });
   }
   async function loadResult() {
@@ -391,21 +425,28 @@ window.createCurationWorkspace = (root, initialTarget) => {
     root.querySelectorAll('[data-page]').forEach(button => { button.onclick = () => selectPage(button.dataset.page); });
     $('refresh').onclick = () => action(async () => { delete target.dataset_version_id; await refresh(); await refreshJobs(); notice('Updated. Unsaved episode fields have been kept.'); });
     $('sync').onclick = () => action(() => submit('snapshot'));
-    $('import-sidecars').onclick = () => action(async () => { await api(`/api/curation/drafts/${draft().workspace_id}/import-sidecars`,{target,expected_revision:draft().revision}); await refresh(); loadReview(); notice('Existing review imported without changing source files.'); });
-    $('reload-review').onclick = loadReview; $('workspace').onchange = loadReview; $('episode').onchange = loadReview;
-    $('new-draft').onclick = () => action(async () => { const data = await api('/api/curation/drafts',{target}); await refresh(); $('workspace').value = data.workspace.workspace_id; loadReview(); notice('Draft created.'); });
+    $('import-sidecars').onclick = () => reviewAction(async () => { await api(`/api/curation/drafts/${draft().workspace_id}/import-sidecars`,{target,expected_revision:draft().revision}); await refresh(); loadReview(true); notice('Existing review imported without changing source files.'); });
+    $('reload-review').onclick = () => loadReview(); $('workspace').onchange = () => loadReview(); $('episode').onchange = () => loadReview();
+    $('new-draft').onclick = () => reviewAction(async () => { const data = await api('/api/curation/drafts',{target}); await refresh(); $('workspace').value = data.workspace.workspace_id; loadReview(true); notice('Draft created.'); });
     $('add-filter').onclick = () => addPair('cohort-filters','',''); $('add-group').onclick = () => addPair('recipe-groups','','');
-    $('add-transition').onclick = () => addPair('transitions','','','number'); $('add-tag').onclick = () => addPair('tags','','');
+    $('add-transition').onclick = () => { addPair('transitions','','','number'); reviewStatus(); }; $('add-tag').onclick = () => { addPair('tags','',''); reviewStatus(); };
     $('review-form').onsubmit = saveReview;
+    $('review-form').addEventListener('input', reviewStatus);
+    $('review-form').addEventListener('change', reviewStatus);
+    window.addEventListener('data-platform:before-dataset-change', beforeDatasetChange);
+    window.addEventListener('beforeunload', beforeUnload);
     $('load-result').onclick = () => action(loadResult);
     $('result').onchange = updateResultVisibility;
     $('use-result').onchange = () => { const run = $('result').value; if (!run) return; if ($('use-result').checked) inputRuns.add(run); else inputRuns.delete(run); $('input-description').textContent = `${inputRuns.size} input result(s) selected`; };
-    $('accept-result').onclick = () => action(async () => { if (!result) throw new Error('Open a generated result first.'); await api(`/api/curation/drafts/${draft().workspace_id}/accept/${result.run}/${episode()}`,{expected_revision:draft().revision}); await refresh(); loadReview(); notice('Result accepted into the draft.'); });
-    $('publish').onclick = () => action(async () => { await api(`/api/curation/drafts/${draft().workspace_id}/publish`,{target, expected_revision:draft().revision,reason:$('publish-reason').value}); notice('Source validation queued. The draft will publish only if its revision and source still match.'); await refreshJobs(); });
+    $('accept-result').onclick = () => reviewAction(async () => { if (!result) throw new Error('Open a generated result first.'); await api(`/api/curation/drafts/${draft().workspace_id}/accept/${result.run}/${episode()}`,{expected_revision:draft().revision}); await refresh(); loadReview(true); notice('Result accepted into the draft.'); });
+    $('publish').onclick = () => {
+      if (reviewDirty()) { notice('Save or reload your episode review before publishing the draft.', true); return; }
+      action(async () => { await api(`/api/curation/drafts/${draft().workspace_id}/publish`,{target, expected_revision:draft().revision,reason:$('publish-reason').value}); notice('Source validation queued. The draft will publish only if its revision and source still match.'); await refreshJobs(); });
+    };
     $('build-form').onsubmit = event => { event.preventDefault(); action(async () => { const values = new FormData(event.target); await submit('materialize',{workers:Number(values.get('workers'))},{manifest_id:$('manifest').value,out_root:values.get('out_root')}); }); };
     $('manifest').onchange = buttons;
     $('profile').onclick = () => action(async () => { const data = await api('/api/curation/dataset-profiles',{dataset_version_id:target.dataset_version_id}); $('profiles').textContent = `Profile created: ${data.dataset_profile?.dataset_profile_id || data.profile?.profile_id || 'ready'}`; notice('Dataset profile created.'); });
-    $('recipe-form').onsubmit = event => { event.preventDefault(); action(async () => {
+    $('recipe-form').onsubmit = event => { event.preventDefault(); reviewAction(async () => {
       const form = new FormData(event.target), body = {name:form.get('name'),base_dataset_version_id:target.dataset_version_id,include_episode_ids:indices(form.get('include')) || [],exclude_episode_ids:indices(form.get('exclude')) || [],random_seed:Number(form.get('seed')),deduplication:{mode:form.get('dedup') ? 'exact' : 'none'}};
       if (form.get('task_contains').trim()) body.cohort_query = {task_contains:form.get('task_contains').trim()};
       if (form.get('count')) { const requirement = await api('/api/curation/requirements',{name:form.get('name'),target_episode_count:Number(form.get('count'))}); body.requirement_id = requirement.requirement.requirement_id; body.composition = {max_episodes:Number(form.get('count'))}; }
@@ -432,7 +473,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
           body.composition.target_episode_count = Number(form.get('count'));
         }
       }
-      const data = await api('/api/curation/recipes',body); const compiled = await api(`/api/curation/recipes/${data.recipe.recipe_id}/compile`,{}); await refresh(); $('workspace').value = compiled.workspace.workspace_id; loadReview(); notice('Recipe compiled into a review workspace.');
+      const data = await api('/api/curation/recipes',body); const compiled = await api(`/api/curation/recipes/${data.recipe.recipe_id}/compile`,{}); await refresh(); $('workspace').value = compiled.workspace.workspace_id; loadReview(true); notice('Recipe compiled into a review workspace.');
     }); };
     $('compare').onclick = () => action(async () => { const data = await api('/api/curation/compare?' + new URLSearchParams({run_a:$('compare-a').value,run_b:$('compare-b').value})); $('comparison').replaceChildren(); const table = document.createElement('table'); for (const [field,label] of [['total_episodes','Episodes'],['total_frames','Frames'],['fps','FPS']]) { const tr=document.createElement('tr'); tr.append(text('td',label),text('td',data.summary.a.metadata[field]),text('td',data.summary.b.metadata[field])); table.append(tr); } $('comparison').append(table); for (const side of ['a','b']) { $('comparison').append(text('h3',data[side].target.dataset_key)); for (const [key,label] of [['scenarios','Scenarios'],['action','Action statistics'],['tags','Tags'],['vocab','Vocabulary']]) { const detail = document.createElement('details'); detail.append(text('summary',label),text('pre',JSON.stringify(data.summary[side][key],null,2))); $('comparison').append(detail); } $('comparison').append(text('p',`Embedding points: ${(data.summary[side].embedding?.points || data.summary[side].embedding || []).length || 0}`)); } notice('Comparison ready.'); });
     const captionApi = () => target.location_id ? `/api/control/locations/${encodeURIComponent(target.location_id)}/temporal-caption` : `/api/temporal-caption/${target.dataset_key}`;
@@ -443,8 +484,12 @@ window.createCurationWorkspace = (root, initialTarget) => {
   const captionApiBase = target.location_id ? `/api/control/locations/${encodeURIComponent(target.location_id)}/temporal-caption` : `/api/temporal-caption/${target.dataset_key}`;
   captionController = window.createTemporalCaptionTask($('caption-task'), {api:captionApiBase,reviewUrl:captionBase+'/temporal-caption/review'});
   drawForms(); bind();
-  refresh().then(refreshJobs).catch(error => notice(error.message,true));
-  return {selectPage, destroy() { destroyed = true; clearTimeout(timer); captionController?.destroy(); }};
+  refresh().then(() => { loadReview(true); return refreshJobs(); }).catch(error => notice(error.message,true));
+  return {selectPage, destroy() {
+    destroyed = true; clearTimeout(timer); captionController?.destroy();
+    window.removeEventListener('data-platform:before-dataset-change', beforeDatasetChange);
+    window.removeEventListener('beforeunload', beforeUnload);
+  }};
 };
 
 // Keep one controller per dataset, preserving unsaved fields when switching tabs.

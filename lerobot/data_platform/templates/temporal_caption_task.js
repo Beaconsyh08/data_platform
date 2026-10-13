@@ -26,10 +26,13 @@ function update(){
  const cap=readiness?.schemes?.find(x=>x.id===scheme?.id);
  const reason=!enabled?'Preview only · start annotation on the platform':cap?.unavailable_reason||readiness?.unavailable_reason||(!readiness?.signal_options?'Upgrade the executor to support action/state input selection':'');
  $('job-readiness').textContent=reason||'Ready';
- let valid=false;
- try{const episodes=selection();$('selection-summary').textContent=`${episodes.length} episode(s) · ${episodes.length} separate jobs`;valid=episodes.length>0;}
+ let valid=false, count=0;
+ try{const episodes=selection();count=episodes.length;$('selection-summary').textContent=`${episodes.length} episode(s) · ${episodes.length} separate jobs`;valid=episodes.length>0;}
  catch(error){$('selection-summary').textContent=error.message;}
  $('job-submit').disabled=submitting||!enabled||!cap?.can_submit||!!reason||!valid;
+ $('job-submit').textContent=submitting ? `Submitting ${pending?.confirmed||0}/${pending?.episodes.length||count}…` : valid ? `Submit ${count} annotation job${count===1?'':'s'}` : 'Submit annotation jobs';
+ for(const id of ['job-scheme','episode-mode','job-episode','include-signals'])$(id).disabled=submitting;
+ $('caption-job-form').setAttribute('aria-busy',String(submitting));
 }
 async function refresh(){
  try{
@@ -57,6 +60,7 @@ $('caption-job-form').onsubmit=async event=>{
    const data=await response.json();if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);
    pending.confirmed=i+1;sessionStorage.setItem(pendingKey,JSON.stringify(pending));
    $('job-status').textContent=`${pending.confirmed}/${pending.episodes.length} jobs submitted. See Jobs for execution progress.`;
+   update();
   }
   pending=null;sessionStorage.removeItem(pendingKey);
   window.dispatchEvent(new CustomEvent('caption-jobs-submitted'));

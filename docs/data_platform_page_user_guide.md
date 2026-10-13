@@ -83,9 +83,23 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 | 主操作区 | 显示当前功能的配置、预览和执行结果 |
 | 底部 Jobs 抽屉 | 按需查看最近任务、实时进度、日志和输出 |
 
+当前源码中的交互补充（部署后生效）：
+
+- 选中数据后，Datasets 页的 **Continue with** 提供 **Explore & Viewer**、**Quality review**、
+  **Temporal Caption** 和 **Jobs for this dataset**。这些入口共享 working dataset。
+- 当前会话在切换 Workspace 时保留上次页面和子页；刷新时仍按 URL 指定的页面打开。
+- 未选择数据时可直接点击 **Select a dataset**，选择后继续当前功能。选择器支持搜索、
+  Escape 关闭及键盘回焦；只读账号也可选择获授权的远程数据。
+- **viewer ready / viewer missing** 指 Viewer 缓存状态，元数据加载完成不代表 Viewer 已准备好。
+- Jobs 抽屉与 Pipeline Runs 共用数据集及状态筛选；**Active (including queued)** 包含排队任务。
+  **Queued** 表示等待执行；提交成功和排队均不代表计算完成。没有匹配项时不会显示其他任务详情。
+- Viewer、Analysis 和 Review 的 **Dataset console** 返回当前数据的工作台；键盘聚焦禁用的入口可查看原因。
+
+整体设计与验收范围见[交互优化设计](data_platform_ux_design.md)。
+
 ### 3.1 第一次加载数据集
 
-1. 打开 `Data Platform > Datasets`，在 `root_dir` 输入数据集父目录。
+1. 打开 `Data Platform > Datasets`，展开 **Change server or scan a folder**，选择 Server 并输入该服务器上的数据集父目录。已有数据时，此区域默认折叠。
 2. 点击 `Scan`。
 3. 页面用一个 `Datasets` 列表显示扫描结果，不再区分 `Available` 和 `Registered`。
 4. 点击数据集即可将其设为 working dataset；如果它是首次出现，平台会在后台自动完成 Catalog 登记。页面自动补取轻量详情，具体操作在执行时按需加载数据，不需要单独执行 `Register` 或 `Load`。

@@ -1,0 +1,185 @@
+"""Behavior checks for shared console navigation, context and task feedback."""
+
+import json
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from lerobot.data_platform import viewer
+
+TEMPLATES = Path(viewer.__file__).parent / "templates"
+
+
+def _run_methods(names: list[str], script: str) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for browser-script behavior checks")
+    source = (TEMPLATES / "visualize_dataset_homepage.html").read_text()
+    methods = []
+    for name in names:
+        match = re.search(rf"^                (?:async )?{name}\([^\n]*\) \{{", source, re.MULTILINE)
+        assert match, name
+        end = re.search(r"^                \},", source[match.end() :], re.MULTILINE)
+        assert end, name
+        methods.append(source[match.start() : match.end() + end.end()])
+    code = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
+    code += "(async () => {\n" + script + "\n})().catch(e => {console.error(e);process.exitCode=1;});"
+    result = subprocess.run([node, "-e", code], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+def test_workspace_and_page_switches_restore_the_last_subtab():
+    groups = viewer._console_groups_for_tabs(
+        viewer._CONSOLE_MODE_ALLOWED_TABS[viewer.CONSOLE_MODE_FULL],
+        allowed_open_links=viewer._CONSOLE_MODE_ALLOWED_OPEN_LINKS[viewer.CONSOLE_MODE_FULL],
+        legacy_mutations_enabled=False,
+    )
+    _run_methods(
+        [
+            "selectWorkspace",
+            "selectPage",
+            "selectTab",
+            "findPage",
+            "pageForTab",
+            "currentPage",
+            "currentSubTabs",
+        ],
+        "const groups = "
+        + json.dumps(groups)
+        + ";\n"
+        + """
+Object.assign(app, {availableGroups: () => groups, tabEnabled: () => true,
+    unifiedCurationActive: () => false, updateHomeUrl: () => {}, syncSchemaOpForTab: () => {},
+    loadPreprocessCapabilities: async () => {}, activePage: 'datasets', activeTab: ''});
+await app.selectTab('temporal_caption');
+await app.selectWorkspace('data_platform');
+assert.equal(app.activePage, 'datasets');
+await app.selectTab('split_merge');
+await app.selectWorkspace('data_curation');
+assert.equal(app.activePage, 'annotation');
+assert.equal(app.activeTab, 'temporal_caption');
+await app.selectPage('quality');
+await app.selectPage('annotation');
+assert.equal(app.activeTab, 'temporal_caption');
+await app.selectWorkspace('data_platform');
+assert.equal(app.activePage, 'preprocessing');
+assert.equal(app.activeTab, 'split_merge');
+""",
+    )
+
+
+def test_cancelled_dataset_change_preserves_local_and_remote_context():
+    _run_methods(
+        ["selectDataset", "useRemoteDataset", "confirmDatasetChange"],
+        """
+const original = {key: 'local/working'};
+Object.assign(app, {selectedDataset: original, selectedDatasetKey: original.key, selectionToken: 7});
+global.CustomEvent = class {constructor(type, options) {this.type=type;this.cancelable=options.cancelable;}};
+let requests = 0;
+global.window = {dispatchEvent: event => {
+    requests++; assert.equal(event.type, 'data-platform:before-dataset-change');
+    assert.equal(event.cancelable, true); return false;
+}};
+await app.selectDataset({key: 'local/other'});
+await app.useRemoteDataset({location_id: 'agent-dataset'});
+assert.equal(app.selectedDataset, original);
+assert.equal(app.selectedDatasetKey, original.key);
+assert.equal(app.selectionToken, 7);
+assert.equal(requests, 2);
+assert.equal(app.confirmDatasetChange(original.key), true);
+assert.equal(requests, 2);
+""",
+    )
+
+
+def test_metadata_loading_does_not_claim_viewer_cache_is_ready():
+    _run_methods(
+        ["datasetStatusText", "datasetStatusClass"],
+        """
+for (const remote of [true, false]) {
+    const dataset = {loaded: true, remote, cache: {status: 'missing'}};
+    assert.equal(app.datasetStatusText(dataset), 'viewer missing');
+    assert.ok(!app.datasetStatusClass(dataset).includes('emerald'));
+    dataset.cache.status = 'cached';
+    assert.equal(app.datasetStatusText(dataset), 'viewer ready');
+    assert.ok(app.datasetStatusClass(dataset).includes('emerald'));
+}
+""",
+    )
+
+
+def test_job_scope_keeps_unrelated_details_out_and_distinguishes_queueing():
+    _run_methods(
+        [
+            "filteredJobs",
+            "selectedJob",
+            "jobBelongsToSelectedDataset",
+            "isRunningJob",
+            "openJobDrawer",
+            "runningJobs",
+            "jobButtonSummary",
+            "jobStateText",
+        ],
+        """
+const other = {id:'other',dataset_key:'other',status:'running',progress:50};
+const current = {id:'mine',dataset_key:'source',status:'queued',progress:0};
+Object.assign(app, {jobs:[other,current], selectedDatasetKey:'source', selectedJobId:'other',
+    runsFilter:{scope:'all',status:''}, scrollLogsSoon:()=>{}, selectJob(job){this.selectedJobId=job.id;}});
+app.openJobDrawer(true);
+assert.equal(app.selectedJob(), current);
+assert.deepEqual(app.filteredJobs(), [current]);
+app.runsFilter.status = 'error';
+assert.deepEqual(app.filteredJobs(), []);
+assert.equal(app.selectedJob(), null);
+app.openJobDrawer();
+assert.equal(app.selectedJob(), current);
+assert.equal(app.runsFilter.scope, 'all');
+assert.equal(app.jobStateText(current), 'Queued');
+assert.equal(app.jobStateText(other), 'Running · 50%');
+app.jobs = [current];
+assert.equal(app.jobButtonSummary(), '1 queued');
+""",
+    )
+
+
+def test_reason_without_a_decision_is_preserved_instead_of_silently_dropped():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for browser-script behavior checks")
+    source = (TEMPLATES / "curation.js").read_text()
+    save = source.split("  async function saveReview(event) {", 1)[1].split(
+        "  async function loadResult()", 1
+    )[0]
+    script = (
+        """
+const assert = require('node:assert/strict');
+const values = {decision:'',reason:'Inspect the camera'};
+const form = {values};
+const $ = id => id === 'review-form' ? form : {children:[]};
+global.FormData = class {constructor(form){this.values=form.values;} get(key){return this.values[key] || '';}};
+let reviewRevision=1, error='', saved=false, savedReview=null;
+const action = async fn => {try{await fn();}catch(e){error=e.message;}};
+const draft=()=>({workspace_id:'draft'}), episode=()=>0;
+const api=async()=>{saved=true;}, refresh=async()=>{}, loadReview=()=>{}, notice=()=>{};
+const reviewValue=()=>JSON.stringify(values), reviewStatus=()=>{};
+async function saveReview(event) {
+"""
+        + save
+    )
+    script += """
+(async()=>{
+    await saveReview({preventDefault(){}});
+    assert.equal(saved, false);
+    assert.match(error, /Choose a review decision/);
+    assert.equal(values.reason, 'Inspect the camera');
+    values.decision = 'review'; error = '';
+    await saveReview({preventDefault(){}});
+    assert.equal(saved, true);
+    assert.equal(error, '');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr

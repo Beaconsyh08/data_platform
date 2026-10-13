@@ -9,7 +9,14 @@ these changes until a new Server/Agent release is installed.
 In the central console, select a local or Agent dataset and open **Data Curation**. Both
 use the existing console header, dataset picker, and Explore, Quality, Annotation, and Dataset Build
 navigation. Each operation opens in its original subtab without leaving the console. Switching
-tabs preserves unsaved review fields; changing datasets opens that dataset’s own workspace.
+tabs preserves unsaved review fields. **Unsaved changes** identifies an edited episode review.
+Changing the episode, draft or dataset, reloading a review, and replacing review content asks before
+discarding edits; Cancel preserves the original selection and fields. Leaving the document also
+uses the browser's unsaved-change warning. Save or reload the current review before publishing.
+Failed saves retain the fields. A reason requires a review decision; the form keeps the text
+and asks for a decision instead of silently dropping a reason on an undecided episode.
+Read-only accounts and closed drafts have disabled review inputs.
+Changing datasets opens that dataset’s own workspace.
 Legacy `/curation` links redirect into the console with the selected dataset and page.
 The standalone console without a control plane keeps its existing local workflows.
 
