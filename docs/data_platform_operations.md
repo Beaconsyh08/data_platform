@@ -57,6 +57,36 @@ H100 的 Agent 经现有 SSH 隧道连接 Server A：生产使用 H100 本地 `9
 
 以下命令全部在 **Server A** 上执行，不需要另开 H100 终端手动安装 Agent。
 
+### Server B 的密钥登录与更新连接
+
+2026-10-13 现场核验：Server B 是 `10.8.8.85`，管理账号拼写为 `maintenance`，
+注册的 Agent 名称为 `Server B (bingyu)`。Server A 使用
+`/home/yuhao.song/.ssh/id_ed25519_h100` 登录；本机 `/home/yuhao.song/.ssh/config`
+已为这个地址选择该密钥，因此可直接执行：
+
+```bash
+ssh maintenance@10.8.8.85
+```
+
+完整写法及每次更新前的非交互连接检查：
+
+```bash
+ssh -i /home/yuhao.song/.ssh/id_ed25519_h100 -o IdentitiesOnly=yes maintenance@10.8.8.85
+ssh -i /home/yuhao.song/.ssh/id_ed25519_h100 \
+  -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 root@10.8.8.85 'id -u'
+```
+
+第二条应输出 `0` 并正常退出。正式更新使用 `root@10.8.8.85` 的部署密钥通道，
+由目标环境 `/etc/data-platform/<env>/server.env` 中的 `DATA_PLATFORM_DEPLOY_AGENT_TARGETS`
+指定；`update-all.sh` 的前置检查还会核对远端环境、实例身份及 Agent 名称。SSH 免密码
+不改变管理账号原有的 sudo 规则。前置检查失败时先看日志，已有发行包用 `--release` 重试。
+
+经用户授权，现有部署密钥已移除 `from=` 来源 IP 限制；Server A 的 IP 变化不再要求修改
+这条密钥规则。root 密钥仍保留禁止端口转发、Agent 转发、X11 转发和 PTY 的限制，
+管理账号另有可正常登录的同一公钥。现有隧道继续使用 `/home/yuhao.song/.ssh/id_ed25519`，
+其转发限制及强制命令保持原样；不要用隧道密钥替代普通登录或部署密钥。
+密钥文件和配置已有备份；文档不记录密码或私钥内容。
+
 ```bash
 cd /home/yuhao.song/Codes/data_platform
 git status --short
