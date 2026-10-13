@@ -839,6 +839,7 @@ Additionally, if you are using any of the particular policy architecture, pretra
 
 支持 UMI 三路内嵌图像、头部/左右手位姿及夹爪原始信号的预览、基础分析、拆分和同结构合并。
 数据列表显示机器人类型与 LeRobot 版本；DVT1/DVT2 保留为旧处理流程的参数。
+兼容 DVT 的处理默认使用 DVT2，Quality 无需手工确认；只有需要旧规则时才主动选择 DVT1。
 UMI 不套用 DVT 归一化或自动 Stage，也不生成训练用 action/state。
 操作、来源追踪与 Server A → Agent 升级顺序见 [UMI 数据支持](docs/umi_dataset_support.md)。
 

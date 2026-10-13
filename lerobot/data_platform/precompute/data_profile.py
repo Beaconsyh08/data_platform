@@ -335,7 +335,7 @@ def quality_check_capabilities(profile: DatasetDataProfile, features: dict) -> d
             OperationCapability(legacy, None if legacy else "Requires a DVT processing profile")
         ),
         "s1": {
-            **asdict(OperationCapability(s1, None if s1 else "Confirm a DVT joint profile in radians")),
+            **asdict(OperationCapability(s1, None if s1 else "Requires DVT joint signals in radians")),
             "can_confirm_profile": legacy and bool(joint_fields) and radians,
         },
         "s3": asdict(

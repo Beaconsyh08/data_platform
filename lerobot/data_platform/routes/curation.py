@@ -31,6 +31,7 @@ from lerobot.data_platform.curation_execution import validate_parameters
 from lerobot.data_platform.lifecycle import MATERIALIZATION_COMMITTED, MaterializationRun
 from lerobot.data_platform.local_execution import enqueue_local
 from lerobot.data_platform.precompute.data_profile import (
+    default_processing_profile,
     operation_capabilities,
     profile_from_data_version,
     profile_from_info,
@@ -151,7 +152,7 @@ def register_curation_routes(app, ctx):
             user and user["role"] in {"operator", "data_manager", "admin"}
         )
         caps = node.get("capabilities", {})
-        profile = profile_from_info(info)
+        profile = default_processing_profile(profile_from_info(info), info.get("features", {}))
         parameters = parameters or {}
         if parameters.get("data_version"):
             if profile.robot_profile == "umi":
@@ -275,6 +276,10 @@ def register_curation_routes(app, ctx):
         target, location, node, snapshot, info = resolve(body)
         operation = str(body.get("operation") or "")
         parameters = validate_parameters(operation, body.get("parameters", {}))
+        if operation == "curation.quality" and not parameters.get("data_version"):
+            processing = default_processing_profile(profile_from_info(info), info.get("features", {}))
+            if processing.legacy_data_version:
+                parameters["data_version"] = processing.legacy_data_version
         available = capabilities(
             target, node, snapshot, info, parameters if operation == "curation.quality" else None
         )

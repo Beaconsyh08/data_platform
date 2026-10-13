@@ -1684,7 +1684,8 @@ def test_standardize_dataset_preserves_existing_exist_label(tmp_path: Path):
     assert out_df["exist_label"].tolist() == [0, 1, 0]
 
 
-def test_flag_fix_adds_action_lead_for_state_only_gripper_transition(tmp_path: Path):
+@pytest.mark.parametrize("data_version", [None, "DVT1"])
+def test_flag_fix_adds_action_lead_for_state_only_gripper_transition(tmp_path: Path, data_version):
     src = tmp_path / "src"
     static_dir = tmp_path / "static"
     _make_dataset(src)
@@ -1753,7 +1754,7 @@ def test_flag_fix_adds_action_lead_for_state_only_gripper_transition(tmp_path: P
     )
     (static_dir / "flagged_episodes.json").write_text(json.dumps({"flagged_episodes": [0]}))
 
-    result = run_flag_fix(src, static_dir, "fix_state_gripper_transition_action", data_version="DVT1")
+    result = run_flag_fix(src, static_dir, "fix_state_gripper_transition_action", data_version=data_version)
 
     fixed = pd.read_parquet(src / "data" / "chunk-000" / "episode_000000.parquet")
     assert fixed.iloc[8]["action"][7] == 0.0
@@ -1766,6 +1767,7 @@ def test_flag_fix_adds_action_lead_for_state_only_gripper_transition(tmp_path: P
     assert backup_manifest.is_file()
     backup = json.loads(backup_manifest.read_text())
     assert backup["episodes"] == [0]
+    assert backup["data_version"] == (data_version or "DVT2")
     assert Path(backup["details"][0]["backup_path"]).is_file()
 
 

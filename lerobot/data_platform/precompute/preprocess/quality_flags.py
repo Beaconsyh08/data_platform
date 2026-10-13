@@ -15,7 +15,6 @@ from lerobot.data_platform.precompute.annotation import QUALITY_FLAG_TYPE, compu
 from lerobot.data_platform.precompute.data_profile import (
     quality_check_capabilities,
     require_dataset_operation,
-    resolve_data_profile,
     resolve_processing_profile,
 )
 from lerobot.data_platform.precompute.dataset_io import (
@@ -1175,7 +1174,7 @@ def run_quality_flag_detection(
     selected_checks, signal_config, video_config = validate_quality_parameters(parameters)
     static_dir = Path(static_dir).expanduser()
     info = load_json(root / "meta" / "info.json")
-    profile = resolve_data_profile(root, info.get("features") or {}, data_version_override=data_version)
+    profile = resolve_processing_profile(root, info.get("features") or {}, data_version_override=data_version)
     available = quality_check_capabilities(profile, info.get("features") or {})
     for check in selected_checks:
         if not available[check]["available"]:
@@ -1183,11 +1182,7 @@ def run_quality_flag_detection(
     signal_config.validate_features(info.get("features") or {})
     if not explicit_checks:
         require_dataset_operation(root, "quality_flags", data_version_override=data_version)
-    selected_data_version = resolve_processing_profile(
-        root,
-        info.get("features") or {},
-        data_version_override=data_version,
-    ).legacy_data_version
+    selected_data_version = profile.legacy_data_version
     if "legacy" in selected_checks and selected_data_version not in {DATA_VERSION_DVT1, DATA_VERSION_DVT2}:
         raise ValueError(f"Unsupported data_version: {selected_data_version}")
 

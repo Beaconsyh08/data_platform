@@ -150,6 +150,39 @@ def test_umi_s3_allowed_but_legacy_and_s1_stay_unavailable(tmp_path):
         run_quality_flag_detection(source, tmp_path / "legacy", workers=1)
 
 
+@pytest.mark.parametrize("version", ["v2.1", "v3.0"])
+@pytest.mark.parametrize("data_version", [None, "DVT1"])
+def test_s1_defaults_to_dvt2_and_preserves_explicit_selection(tmp_path, version, data_version):
+    source = tmp_path / "source"
+    _make_dataset(source)
+    if version == "v3.0":
+        _add_v21_stat_counts(source)
+        source = run_convert_v3(source, tmp_path / "v3").out_root
+    info_path = source / "meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["data_version"] = "DVT1"
+    info_path.write_text(json.dumps(info))
+    assert not profile_from_info(info).confirmed
+    before = _snapshot(source)
+    result = run_quality_flag_detection(
+        source, tmp_path / "static", checks=["s1"], data_version=data_version, workers=1
+    )
+    assert result.summary["data_version"] == (data_version or "DVT2")
+    assert before == _snapshot(source)
+
+
+def test_default_dvt2_does_not_enable_s1_for_degrees(tmp_path):
+    source = tmp_path / "source"
+    _make_dataset(source)
+    info_path = source / "meta/info.json"
+    info = json.loads(info_path.read_text())
+    for key in ("action", "state"):
+        info["features"][key]["unit"] = "deg"
+    info_path.write_text(json.dumps(info))
+    with pytest.raises(ValueError, match="radians"):
+        run_quality_flag_detection(source, tmp_path / "static", checks=["s1"], workers=1)
+
+
 def _video(path, values):
     with av.open(str(path), "w") as container:
         stream = container.add_stream("mpeg4", rate=10)

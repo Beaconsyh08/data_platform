@@ -17,7 +17,7 @@ from lerobot.common.datasets.compute_stats import aggregate_stats, compute_episo
 from lerobot.common.datasets.utils import serialize_dict
 from lerobot.data_platform.cache_files import cached_csv_files
 from lerobot.data_platform.precompute.annotation import QUALITY_FLAG_TYPE
-from lerobot.data_platform.precompute.data_profile import resolve_data_profile
+from lerobot.data_platform.precompute.data_profile import resolve_processing_profile
 from lerobot.data_platform.precompute.dataset_io import (
     V3DatasetMetadata,
     is_v3_dataset,
@@ -736,7 +736,7 @@ def run_flag_fix(
             dry_run=False,
             summary={**legacy_result.summary, "dataset_format": "v3.0"},
         )
-    selected_data_version = resolve_data_profile(
+    selected_data_version = resolve_processing_profile(
         root,
         info.get("features") or {},
         data_version_override=data_version,

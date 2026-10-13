@@ -1020,7 +1020,8 @@ def main():
         choices=[DATA_VERSION_DVT1, DATA_VERSION_DVT2],
         default=None,
         help=(
-            "Select a legacy DVT processing policy (default: DVT2 stage v1). UMI uses equal-time Stage without "
+            "Select a legacy DVT processing policy (default: DVT2 for compatible action/state data). "
+            "UMI uses equal-time Stage without "
             "a DVT override; unknown layouts keep raw signals. Source profiles are preserved."
         ),
     )

@@ -76,10 +76,14 @@ The Quality form offers independent checks; unsupported checks show their reason
 checks remain the default. New checks require the executor to advertise `quality_protocol: 1`
 and the selected names in `quality_checks`, at both submission and claim. Calls without `checks`
 retain legacy behavior and remain compatible with older Agents.
+For compatible DVT signals, submission records the selected processing version in the job:
+DVT2 when no version is selected, or the explicit override. Source identity metadata is unchanged.
 
 - **S1** detects jumps and excessive velocity in the first 16 DVT action/state dimensions,
-  excluding grippers 7 and 15. It requires a confirmed DVT joint profile in radians. If the
-  recorded profile is inferred, explicitly confirm DVT1/DVT2 in the form. It uses actual
+  excluding grippers 7 and 15. Compatible DVT action/state data uses DVT2 processing by default,
+  including datasets with an inferred or recorded DVT1 source profile. No profile confirmation
+  is needed. Select DVT1 in Advanced settings only to use its legacy processing rules. S1 still
+  requires joint signals compatible with radians. It uses actual
   timestamp differences and reports invalid timestamps separately; it does not smooth signals.
   UMI pose/quaternion signals are not subject to these joint thresholds.
 - **S3** checks numeric scalar/vector features for non-finite values, missing values, and
