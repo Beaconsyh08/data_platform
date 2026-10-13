@@ -35,7 +35,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
   }
   function reviewAction(fn) { if (allowReviewChange()) return action(fn); }
   const operationNames = {snapshot:'Synchronize version', validate_source:'Validate source', stage:'Compute stages', quality:'Detect quality issues', labeling:'Run object labeling', tagging:'Run auto-tagging', embedding:'Compute embeddings', project:'Project embeddings', compare_summary:'Prepare comparison summary', construction_preview:'Preview construction', construction:'Generate data', materialize:'Build dataset'};
-  const qualityNames = {legacy:'DVT checks', s1:'Joint motion · S1', eef:'End-effector motion', s3:'Numeric values · S3', c3:'Images & video · C3'};
+  const qualityNames = {legacy:'Control & annotation checks (previous version)', control:'Control signal consistency', annotations:'Task & stage annotations', s1:'Joint motion', eef:'End-effector motion', s3:'Numeric validity', c3:'Image & video quality'};
   const fields = {
     stage: [['episodes','Episodes','episodes'],['prepare_workers','Workers','number',4],['fallback_stage_count','Fallback stage count','number',5]],
     quality: [['episodes','Episodes','episodes'],['workers','Workers','number',4],['overwrite','Recompute automatic flags','checkbox',false]],
@@ -116,8 +116,8 @@ window.createCurationWorkspace = (root, initialTarget) => {
         }
         const selected = [...form.querySelectorAll('[name=checks]:checked')];
         if (!blocked && (!selected.length || selected.some(input => input.disabled && !busy))) blocked = 'Select supported quality checks.';
-        form.elements.quality_profile.disabled = busy || !context.can_edit || !context.quality_checks?.legacy?.available;
-        form.elements.quality_profile.closest('label').hidden = !context.quality_checks?.legacy?.available;
+        form.elements.quality_profile.disabled = busy || !context.can_edit || !context.quality_checks?.control?.available;
+        form.elements.quality_profile.closest('label').hidden = !context.quality_checks?.control?.available;
         const video = selected.some(input => input.value === 'c3');
         form.querySelector('.quality-video-settings').hidden = !video;
         form.elements.video_workers.closest('label').hidden = !video;
@@ -150,6 +150,12 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('draft-state').textContent = draft() ? `${draft().status} · revision ${draft().revision}` : 'Select or create a draft';
     updateResultVisibility();
   }
+  function qualityDetector(issue) {
+    if (issue.detector && issue.detector !== 'legacy') return issue.detector;
+    if (['early_gripper_transition','stuck_closed_gripper_no_action','state_gripper_transition_without_action','joint_zero_reset_spike'].includes(issue.reason)) return 'control';
+    if (['missing_subtask_state','unsegmented_subtask_state','multi_sentence_prompt','multiple_task_assignments','prompt_action_mismatch'].includes(issue.reason)) return 'annotations';
+    return 'legacy';
+  }
   function drawQualityControls(form) {
     form.className = 'quality-form';
     const scope = form.querySelector('.fields'); scope.classList.add('quality-scope');
@@ -162,14 +168,15 @@ window.createCurationWorkspace = (root, initialTarget) => {
     form.append(text('h3','Choose checks'));
     const checks = document.createElement('div'); checks.className = 'fields quality-checks';
     for (const [key,description] of [
-      ['legacy','Existing DVT checks for timing, action/state consistency and task annotations.'],
+      ['control','Gripper command/state consistency, early gripper changes and brief joint resets to zero.'],
+      ['annotations','Task assignments, task-text format and existing stage labels. Stages are checked only when declared; flags need human review.'],
       ['s1','Sudden joint jumps and excessive speed in joint angles measured in radians.'],
       ['eef','Position and orientation jump candidates, invalid poses and timing. Supports UMI and GenRobot pose signals; no joint angles required.'],
       ['s3','Missing, non-finite or malformed numeric values. Custom bounds are optional.'],
       ['c3','Missing or unreadable media, black frames, and blur or freeze candidates.']
     ]) {
       const field = document.createElement('label'), input = document.createElement('input'), copy = document.createElement('span');
-      input.type = 'checkbox'; input.name = 'checks'; input.value = key; input.checked = key === 'legacy'; input.onchange = buttons;
+      input.type = 'checkbox'; input.name = 'checks'; input.value = key; input.checked = ['control','annotations'].includes(key); input.onchange = buttons;
       copy.append(text('strong',qualityNames[key]),text('span',description,'quality-check-description'),text('small','','quality-check-reason'));
       field.append(input,copy); checks.append(field);
     }
@@ -375,7 +382,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
   }
   function drawQualityResult() {
     const container = document.createElement('div'), filters = document.createElement('div'); filters.className = 'row';
-    const issues = Object.entries(result.quality.flag_reasons || {}).flatMap(([index,reasons]) => reasons.map(issue => ({...issue,episode:Number(index),detector:issue.detector || 'legacy'})));
+    const issues = Object.entries(result.quality.flag_reasons || {}).flatMap(([index,reasons]) => reasons.map(issue => ({...issue,episode:Number(index),detector:qualityDetector(issue)})));
     const coverage = result.quality.coverage || [];
     const selectors = {};
     for (const [key,label,values] of [

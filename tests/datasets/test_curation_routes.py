@@ -728,10 +728,10 @@ def test_eef_quality_publication_and_episode_review(remote, request):
         headers={"Idempotency-Key": "eef-old-agent"},
     )
     assert response.status_code == 409 and "Upgrade" in response.get_json()["error"]
-    caps["quality_checks"].append("eef")
+    caps["quality_checks"].extend(["eef", "annotations"])
     remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
     before = _snapshot(remote.source)
-    job, headers = queue(remote, "curation.quality", parameters={"checks": ["eef", "s3"]})
+    job, headers = queue(remote, "curation.quality", parameters={"checks": ["eef", "annotations", "s3"]})
     execute(remote, job, headers)
     saved = remote.client.get(f"/api/curation/runs/{job['job_id']}").get_json()
     issue = saved["quality"]["flag_reasons"]["0"][0]
@@ -740,6 +740,8 @@ def test_eef_quality_publication_and_episode_review(remote, request):
     assert issue["metrics"]["baseline_episodes"] == 2
     context = remote.client.get("/api/curation/context", query_string=target).get_json()
     assert context["quality_checks"]["eef"]["available"]
+    assert context["quality_checks"]["annotations"]["available"]
+    assert not context["quality_checks"]["control"]["available"]
     assert context["viewer_url"] == "/node/eef/episode_0"
     workspace = remote.client.post("/api/curation/drafts", json={"target": target}).get_json()["workspace"]
     response = remote.client.patch(
@@ -753,3 +755,28 @@ def test_eef_quality_publication_and_episode_review(remote, request):
     assert response.status_code == 200, response.get_json()
     assert response.get_json()["workspace"]["decisions"][0]["decision"] == "review"
     assert before == _snapshot(remote.source)
+
+
+def test_annotation_submission_and_claim_require_split_check_capability(remote):
+    job, headers = queue(remote, "curation.snapshot")
+    execute(remote, job, headers)
+    caps = {**remote.node["capabilities"], "quality_protocol": 1, "quality_checks": ["legacy"]}
+    remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
+    body = {
+        "target": {"location_id": remote.location["location_id"]},
+        "operation": "curation.quality",
+        "parameters": {"checks": ["annotations"]},
+    }
+    response = remote.client.post(
+        "/api/curation/jobs", json=body, headers={"Idempotency-Key": "split-old-node"}
+    )
+    assert response.status_code == 409 and "Upgrade" in response.get_json()["error"]
+    remote.control.heartbeat(
+        remote.node["node_id"], capabilities={**caps, "quality_checks": ["legacy", "annotations"]}
+    )
+    response = remote.client.post(
+        "/api/curation/jobs", json=body, headers={"Idempotency-Key": "split-new-node"}
+    )
+    assert response.status_code == 202, response.get_json()
+    remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
+    assert remote.control.claim_job(remote.node["node_id"], worker_instance_id="old-agent") is None

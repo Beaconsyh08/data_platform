@@ -10,7 +10,7 @@ import numpy as np
 
 from lerobot.data_platform.precompute.timeseries import GRIPPER_NORMALIZE_INDICES, feature_vector_dim
 
-QUALITY_CHECKS = ("legacy", "s1", "eef", "s3", "c3")
+QUALITY_CHECKS = ("legacy", "control", "annotations", "s1", "eef", "s3", "c3")
 QUALITY_PROTOCOL = 1
 QC_CONFIG_VERSION = 1
 INDEX_FIELDS = {"index", "frame_index", "episode_index", "task_index", "subtask_state"}

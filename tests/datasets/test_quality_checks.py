@@ -246,3 +246,78 @@ def test_c3_missing_images_are_errors_and_retain_previous_evidence(tmp_path):
     assert previous in json.loads((static / "annotation_issues.json").read_text())
     assert json.loads((static / "quality_coverage.json").read_text())["streams"][0]["status"] == "incomplete"
     assert before == _snapshot(source)
+
+
+@pytest.mark.parametrize("version", ["v2.1", "v3.0"])
+@pytest.mark.parametrize("stages", [False, True])
+def test_annotations_without_joint_profile_validate_only_declared_stages(tmp_path, version, stages):
+    from tests.datasets.test_quality_eef import make_eef
+
+    root = make_eef(tmp_path / "umi", version, "wxyz")
+    info_path = root / "meta/info.json"
+    info = json.loads(info_path.read_text())
+    # Annotation checks do not require timestamp or pose data.
+    if not stages:
+        info["features"].pop("timestamp")
+    if stages:
+        info["features"]["subtask_state"] = {"dtype": "int64", "shape": [1]}
+    info_path.write_text(json.dumps(info))
+    for path in (root / "data").rglob("*.parquet"):
+        table = pq.read_table(path).drop(["timestamp"])
+        if stages:
+            # Broken numeric data belongs to numeric checks, not annotation checks.
+            table = table.append_column("timestamp", pa.array(["invalid"] * table.num_rows))
+            table = table.append_column("subtask_state", pa.array([0] * table.num_rows))
+        pq.write_table(table, path)
+    before = _snapshot(root)
+    caps = quality_check_capabilities(profile_from_info(info), info["features"])
+    assert caps["annotations"]["available"]
+    assert not caps["control"]["available"]
+    static = tmp_path / "static"
+    result = run_quality_flag_detection(root, static, checks=["annotations"], workers=1)
+    issues = json.loads((static / "annotation_issues.json").read_text())
+    assert result.total_frames == 600
+    assert [item["reason"] for item in issues] == (["unsegmented_subtask_state"] * 2 if stages else [])
+    assert all(item["detector"] == "annotations" for item in issues)
+    assert _snapshot(root) == before
+
+
+@pytest.mark.parametrize("checks", [["control"], ["annotations"], ["legacy"]])
+def test_split_rerun_replaces_matching_legacy_evidence_only(tmp_path, checks):
+    root = tmp_path / "source"
+    _make_dataset(root, task="pick, place")
+    before = _snapshot(root)
+    static = tmp_path / "static"
+    static.mkdir()
+    previous = [
+        {
+            "episode": 0,
+            "type": "quality_flag",
+            "reason": "early_gripper_transition",
+            "metrics": {"old": True},
+        },
+        {"episode": 0, "type": "quality_flag", "reason": "multi_sentence_prompt", "metrics": {"old": True}},
+        {"episode": 0, "type": "quality_flag", "detector": "s3", "reason": "non_finite"},
+        {"episode": 0, "type": "quality_flag", "reason": "wrong_prompt", "manual": True},
+        {"episode": 1, "type": "quality_flag", "detector": "control", "reason": "early_gripper_transition"},
+    ]
+    (static / "annotation_issues.json").write_text(json.dumps(previous))
+    run_quality_flag_detection(root, static, checks=checks, episodes=[0], workers=1)
+    issues = json.loads((static / "annotation_issues.json").read_text())
+    assert (previous[0] in issues) == (checks == ["annotations"])
+    assert (previous[1] in issues) == (checks == ["control"])
+    assert all(item in issues for item in previous[2:])
+    if checks != ["control"]:
+        current = [item for item in issues if item["reason"] == "multi_sentence_prompt"]
+        assert len(current) == 1 and current[0]["detector"] == checks[0]
+    assert _snapshot(root) == before
+
+
+def test_split_checks_reject_overlapping_legacy_selection():
+    for checks in (["legacy", "control"], ["annotations", "legacy"]):
+        with pytest.raises(ValueError, match="not both"):
+            validate_parameters("curation.quality", {"checks": checks})
+    assert validate_parameters("curation.quality", {"checks": ["control", "annotations"]})["checks"] == [
+        "control",
+        "annotations",
+    ]

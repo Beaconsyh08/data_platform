@@ -356,16 +356,32 @@ def quality_check_capabilities(profile: DatasetDataProfile, features: dict) -> d
     if not joint_fields:
         s1_reason = (
             "Not applicable: no joint-angle action/state signals. "
-            "Use end-effector, S3 or C3 checks for supported signals."
+            "Use end-effector motion, numeric validity or image and video checks."
         )
     elif not legacy:
-        s1_reason = "The action/state signal layout is not recognized as DVT."
+        s1_reason = "Unsupported joint-angle action/state signal layout."
     elif not radians:
-        s1_reason = "Joint angles use non-radian units; S1 requires radians."
+        s1_reason = "Joint motion checks require angles in radians."
     else:
         s1_reason = "Confirm the joint-angle processing profile."
     return {
         "legacy": asdict(OperationCapability(legacy, None if legacy else s1_reason)),
+        "control": asdict(
+            OperationCapability(
+                legacy and bool(joint_fields),
+                None
+                if legacy and joint_fields
+                else "Requires supported joint and gripper action/state signals",
+            )
+        ),
+        "annotations": asdict(
+            OperationCapability(
+                any(key in features for key in ("task_index", "subtask_state")),
+                None
+                if any(key in features for key in ("task_index", "subtask_state"))
+                else "Requires task_index or subtask_state annotations",
+            )
+        ),
         "s1": {
             **asdict(OperationCapability(s1, None if s1 else s1_reason)),
             "can_confirm_profile": legacy and bool(joint_fields) and radians,

@@ -106,7 +106,11 @@ def validate_quality_parameters(
         or any(not isinstance(check, str) or check not in QUALITY_CHECKS for check in checks)
         or len(checks) != len(set(checks))
     ):
-        raise ValueError("checks must be a non-empty list of unique legacy/s1/eef/s3/c3 checks")
+        raise ValueError(
+            "checks must be a non-empty list of unique legacy/control/annotations/s1/eef/s3/c3 checks"
+        )
+    if "legacy" in checks and any(check in checks for check in ("control", "annotations")):
+        raise ValueError("Select control and annotations separately, or legacy, not both")
     config = parameters.get("qc_config", {})
     if not isinstance(config, dict) or set(config) - {"schema_version", "s1", "eef", "s3", "c3"}:
         raise ValueError("Unknown quality configuration")
@@ -579,11 +583,10 @@ def _scan_episode(
         )
 
     schema = pq.read_schema(parquet_path)
-    columns = ["timestamp"]
-    if "action" in schema.names:
-        columns.append("action")
-    if "state" in schema.names:
-        columns.append("state")
+    annotation_only = checks == ["annotations"]
+    columns = [] if annotation_only else ["timestamp"]
+    if {"legacy", "control", "s1", "s3"}.intersection(checks):
+        columns.extend(key for key in ("action", "state") if key in schema.names)
     if "subtask_state" in schema.names:
         columns.append("subtask_state")
     if "task_index" in schema.names:
@@ -599,17 +602,21 @@ def _scan_episode(
         if meta is not None
         else pq.read_table(parquet_path, columns=columns)
     )
-    timestamps = np.asarray(table["timestamp"].to_pylist(), dtype=np.float64)
+    timestamps = (
+        np.asarray(table["timestamp"].to_pylist(), dtype=np.float64)
+        if not annotation_only
+        else np.full(table.num_rows, np.nan)
+    )
 
     features = info.get("features") or {}
     action = (
         _array_from_column(table, "action", feature_vector_dim(features.get("action")))
-        if "legacy" in checks
+        if "legacy" in checks or "control" in checks
         else None
     )
     state = (
         _array_from_column(table, "state", feature_vector_dim(features.get("state")))
-        if "legacy" in checks
+        if "legacy" in checks or "control" in checks
         else None
     )
     fps = float(info.get("fps") or 0) or None
@@ -625,15 +632,25 @@ def _scan_episode(
             task=task,
             data_version=data_version,
         )
-        if "legacy" in checks
+        if "legacy" in checks or "control" in checks
         else []
     )
-    if "legacy" in checks:
-        issues.extend(_subtask_state_issues(table, episode_index, data_version))
-        issues.extend(_prompt_issues(prompts, episode_index, data_version))
-        issues.extend(_task_assignment_issues(prompts, episode_index, data_version))
-        for issue in issues:
-            issue["detector"] = "legacy"
+    for issue in issues:
+        issue["detector"] = "legacy" if "legacy" in checks else "control"
+        if "control" in checks:
+            issue["severity"] = "candidate"
+    if "legacy" in checks or "annotations" in checks:
+        annotations = []
+        # Stages are optional across robot types. Only validate declared stage annotations.
+        if "legacy" in checks or "subtask_state" in features:
+            annotations.extend(_subtask_state_issues(table, episode_index, data_version))
+        annotations.extend(_prompt_issues(prompts, episode_index, data_version))
+        annotations.extend(_task_assignment_issues(prompts, episode_index, data_version))
+        for issue in annotations:
+            issue["detector"] = "legacy" if "legacy" in checks else "annotations"
+            if "annotations" in checks:
+                issue["severity"] = "candidate"
+        issues.extend(annotations)
     if "s1" in checks or "s3" in checks:
         issues.extend(
             issue.to_dict()
@@ -651,6 +668,28 @@ def _scan_episode(
             )
         )
     return episode_index, int(len(timestamps)), issues
+
+
+def _issue_check(issue: dict) -> str:
+    detector = issue.get("detector", "legacy")
+    if detector != "legacy":
+        return detector
+    if issue.get("reason") in {
+        "early_gripper_transition",
+        "stuck_closed_gripper_no_action",
+        "state_gripper_transition_without_action",
+        "joint_zero_reset_spike",
+    }:
+        return "control"
+    if issue.get("reason") in {
+        "missing_subtask_state",
+        "unsegmented_subtask_state",
+        "multi_sentence_prompt",
+        MULTIPLE_TASK_ASSIGNMENT_REASON,
+        PROMPT_ACTION_MISMATCH_REASON,
+    }:
+        return "annotations"
+    return "legacy"
 
 
 def _annotation_issues(static_dir: Path) -> list[dict]:
@@ -1186,7 +1225,10 @@ def run_quality_flag_detection(
     if not explicit_checks:
         require_dataset_operation(root, "quality_flags", data_version_override=data_version)
     selected_data_version = profile.legacy_data_version
-    if "legacy" in selected_checks and selected_data_version not in {DATA_VERSION_DVT1, DATA_VERSION_DVT2}:
+    if {"legacy", "control"}.intersection(selected_checks) and selected_data_version not in {
+        DATA_VERSION_DVT1,
+        DATA_VERSION_DVT2,
+    }:
         raise ValueError(f"Unsupported data_version: {selected_data_version}")
 
     episode_rows = load_episode_records(root)
@@ -1375,7 +1417,12 @@ def run_quality_flag_detection(
         "video_mode": video_mode if "c3" in selected_checks else None,
     }
     previous = _annotation_issues(static_dir)
-    if explicit_checks or any(issue.get("detector") in {"s1", "eef", "s3", "c3"} for issue in previous):
+    replaced_checks = set(selected_checks)
+    if "legacy" in replaced_checks:
+        replaced_checks.update({"control", "annotations"})
+    if explicit_checks or any(
+        issue.get("detector") in {"control", "annotations", "s1", "eef", "s3", "c3"} for issue in previous
+    ):
         incomplete = {
             (row["episode"], row["camera"]) for row in coverage if row["status"] in {"error", "incomplete"}
         }
@@ -1386,7 +1433,7 @@ def run_quality_flag_detection(
             or issue.get("manual")
             or issue.get("reason") == MANUAL_PROMPT_ERROR_REASON
             or _issue_episode(issue) not in scanned_episodes
-            or issue.get("detector", "legacy") not in selected_checks
+            or _issue_check(issue) not in replaced_checks
             or (issue.get("detector") == "c3" and (_issue_episode(issue), issue.get("camera")) in incomplete)
         ]
         all_issues = sorted(
@@ -1439,7 +1486,7 @@ def run_quality_flag_detection(
             quality_issues,
             overwrite=overwrite,
         )
-    if "legacy" in selected_checks:
+    if {"legacy", "annotations"}.intersection(selected_checks):
         all_issues, combined_flags = _sync_prompt_action_mismatch_from_tagging(
             static_dir,
             scanned_episodes,

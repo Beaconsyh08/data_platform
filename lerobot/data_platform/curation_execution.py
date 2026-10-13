@@ -176,7 +176,7 @@ def worker_capabilities() -> dict:
         "curation_protocol": CURATION_PROTOCOL,
         "curation_operations": sorted(OPERATIONS),
         "quality_protocol": 1,
-        "quality_checks": ["legacy", "s1", "eef", "s3", "c3"],
+        "quality_checks": ["legacy", "control", "annotations", "s1", "eef", "s3", "c3"],
         "curation_backends": {
             "labeling": labeling,
             "tagging": tagging,

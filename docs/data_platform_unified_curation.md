@@ -79,9 +79,11 @@ cross-node raw-file replication.
 ## Quality checks
 
 Quality detection uses the existing `curation.quality` operation on the dataset's owning node.
-The Quality form offers independent checks; unsupported checks show their reason. Legacy DVT
-checks remain the default for DVT data. Recognized native end-effector data defaults to
-**End-effector motion** and **S3**. New checks require the executor to advertise `quality_protocol: 1`
+The Quality form offers independent checks; unsupported checks show their reason. Supported
+joint data defaults to **Control signal consistency** and **Task & stage annotations**.
+Recognized native end-effector data defaults to **End-effector motion**, **Numeric validity**,
+and **Task & stage annotations** when task/stage fields are present. New checks require the
+executor to advertise `quality_protocol: 1`
 and the selected names in `quality_checks`, at both submission and claim. Calls without `checks`
 retain legacy behavior and remain compatible with older Agents.
 For compatible DVT signals, submission records the selected processing version in the job:
@@ -90,10 +92,23 @@ Both `h10w` and `h10_w` robot names are recognized. Previously saved, unconfirme
 profiles from failed recognition are re-evaluated for these robots when compatible action/state
 signals exist, including in older Curation snapshots; no source metadata rewrite is required.
 Explicit or confirmed profiles remain authoritative. GenRobot MCAP datasets containing only
-end-effector poses, gripper widths and video have no joint-angle action/state signals: DVT and
-S1 are not applicable; End-effector motion, S3 and C3 inspect their poses, numeric signals and media.
+end-effector poses, gripper widths and video have no joint-angle action/state signals: Control
+signal consistency and Joint motion are not applicable. End-effector motion, Numeric validity
+and Image & video quality inspect their poses, numeric signals and media.
 
-- **S1** detects jumps and excessive velocity in the first 16 DVT action/state dimensions,
+- **Control signal consistency** (`control`) checks early gripper transitions (first 0.3 seconds),
+  closed-state/idle-command inconsistencies, state transitions without a nearby command change,
+  and short joint resets to zero. The supported joint/gripper layout is required; processing
+  profiles remain in Advanced settings. Flags are candidates for human review.
+- **Task & stage annotations** (`annotations`) requires `task_index` or `subtask_state`, with no
+  DVT profile or joint-angle requirement. It flags multiple task texts, English comma/period
+  characters in task text (a format heuristic, not semantic validation), and missing/constant
+  stage values only when `subtask_state` is declared. No stage field means that stage checks
+  are skipped; single-stage tasks may legitimately have constant values. Existing tagging
+  mismatch evidence is imported without running new vision inference. These flags require review.
+  The UI no longer offers the combined `legacy` option, but old API calls retain its behavior,
+  including the missing-stage rule. Do not combine `legacy` with either split check.
+- **Joint motion** (`s1`) detects jumps and excessive velocity in the first 16 DVT action/state dimensions,
   excluding grippers 7 and 15. Compatible DVT action/state data uses DVT2 processing by default,
   including datasets with an inferred or recorded DVT1 source profile. No profile confirmation
   is needed. Select DVT1 in Advanced settings only to use its legacy processing rules. S1 still
@@ -115,11 +130,11 @@ S1 are not applicable; End-effector motion, S3 and C3 inspect their poses, numer
   cannot be assessed without their source fields. The executor makes two numeric-only streaming
   passes, using temporary disk arrays for exact quantiles and preserving episode boundaries
   across v3 shards. EEF + S3 shares the second pass; no whole-dataset image load is required.
-- **S3** checks numeric scalar/vector features for non-finite values, missing values, and
+- **Numeric validity** (`s3`) checks numeric scalar/vector features for non-finite values, missing values, and
   shape mismatch. Optional bounds or allowed codes require a field, dimension, and unit
   matching feature metadata. No physical limits are inferred from an unknown unit. Statistical
   reference distributions are not implemented in this first version.
-- **C3** checks source images/videos for missing or undecodable media and black frames.
+- **Image & video quality** (`c3`) checks source images/videos for missing or undecodable media and black frames.
   Blur and freeze detections are review candidates, not task-failure judgments. Pixel statistics
   use grayscale images at 160 by 120 pixels, with thresholds recorded in the result.
   Video decoding uses one native thread per stream and a separate pool of 1–16 video workers.
@@ -187,8 +202,10 @@ Quality result and select **Use as computation input**. A new immutable run repl
 issues only for the selected episodes and detectors; other detectors/episodes and manual
 evidence remain. Incomplete/failed media checks retain earlier camera evidence and add the
 new failure. `overwrite` does not broaden a configurable run beyond this scope. An old issue
-without `detector` is treated as legacy. Several input runs containing conflicting files are
-still rejected; choose one combined result. Computation never changes source datasets or
+with a known legacy reason is matched to control or annotation checks for scoped replacement,
+including records without `detector`. Unknown legacy reasons are preserved by split reruns.
+Historical evidence is displayed under the corresponding readable check name. Several input
+runs containing conflicting files are still rejected; choose one combined result. Computation never changes source datasets or
 draft inclusion/repair decisions. Viewer cache synchronization and interval highlighting
 remain separate workflows and are not implied by Curation result publication.
 
