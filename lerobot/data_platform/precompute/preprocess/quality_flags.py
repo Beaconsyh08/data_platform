@@ -36,6 +36,7 @@ from lerobot.data_platform.precompute.preprocess.common import (
     load_json,
     validate_dataset_root,
 )
+from lerobot.data_platform.precompute.quality_eef import EefQualityConfig, scan_eef_quality
 from lerobot.data_platform.precompute.quality_signals import (
     QC_CONFIG_VERSION,
     QUALITY_CHECKS,
@@ -105,10 +106,11 @@ def validate_quality_parameters(
         or any(not isinstance(check, str) or check not in QUALITY_CHECKS for check in checks)
         or len(checks) != len(set(checks))
     ):
-        raise ValueError("checks must be a non-empty list of unique legacy/s1/s3/c3 checks")
+        raise ValueError("checks must be a non-empty list of unique legacy/s1/eef/s3/c3 checks")
     config = parameters.get("qc_config", {})
-    if not isinstance(config, dict) or set(config) - {"schema_version", "s1", "s3", "c3"}:
+    if not isinstance(config, dict) or set(config) - {"schema_version", "s1", "eef", "s3", "c3"}:
         raise ValueError("Unknown quality configuration")
+    EefQualityConfig.parse(config.get("eef", {}))
     version = config.get("schema_version", QC_CONFIG_VERSION)
     if type(version) is not int or version != QC_CONFIG_VERSION:
         raise ValueError("Unsupported quality configuration version")
@@ -1172,6 +1174,7 @@ def run_quality_flag_detection(
     if qc_config is not None:
         parameters["qc_config"] = qc_config
     selected_checks, signal_config, video_config = validate_quality_parameters(parameters)
+    eef_config = EefQualityConfig.parse((qc_config or {}).get("eef", {}))
     static_dir = Path(static_dir).expanduser()
     info = load_json(root / "meta" / "info.json")
     profile = resolve_processing_profile(root, info.get("features") or {}, data_version_override=data_version)
@@ -1206,14 +1209,22 @@ def run_quality_flag_detection(
         status="running",
         current=0,
         total=total,
-        message=f"Scanning {total} episodes for abnormal flags ({selected_data_version})",
+        message=f"Scanning {total} episodes: {', '.join(selected_checks)}",
     )
 
     quality_issues: list[dict] = []
     total_frames = 0
     worker_count = max(1, int(workers or 1))
-    if worker_count == 1 or total <= 1:
-        for idx, row in enumerate(selected_rows, start=1):
+    scan_checks = [
+        check
+        for check in selected_checks
+        if check != "eef" and not (check == "s3" and "eef" in selected_checks)
+    ]
+    signal_rows = (
+        selected_rows if scan_checks and not ("eef" in selected_checks and scan_checks == ["c3"]) else []
+    )
+    if worker_count == 1 or len(signal_rows) <= 1:
+        for idx, row in enumerate(signal_rows, start=1):
             episode_index, frame_count, issues = _scan_episode(
                 root,
                 info,
@@ -1221,7 +1232,7 @@ def run_quality_flag_detection(
                 selected_data_version,
                 task_lookup,
                 meta,
-                selected_checks,
+                scan_checks,
                 signal_config,
             )
             total_frames += frame_count
@@ -1245,10 +1256,10 @@ def run_quality_flag_detection(
                     selected_data_version,
                     task_lookup,
                     meta,
-                    selected_checks,
+                    scan_checks,
                     signal_config,
                 ): int(row["episode_index"])
-                for row in selected_rows
+                for row in signal_rows
             }
             for idx, future in enumerate(as_completed(futures), start=1):
                 episode_index, frame_count, issues = future.result()
@@ -1262,6 +1273,19 @@ def run_quality_flag_detection(
                     episode=episode_index,
                     message=f"Scanned episode {episode_index}",
                 )
+
+    if "eef" in selected_checks:
+        eef_frames, eef_issues = scan_eef_quality(
+            root,
+            info,
+            meta,
+            selected_rows,
+            eef_config,
+            progress_callback,
+            signal_config if "s3" in selected_checks else None,
+        )
+        total_frames = max(total_frames, eef_frames)
+        quality_issues.extend(eef_issues)
 
     coverage = []
     if "c3" in selected_checks:
@@ -1326,6 +1350,7 @@ def run_quality_flag_detection(
     resolved_config = {
         "schema_version": QC_CONFIG_VERSION,
         **signal_config.to_config(),
+        **({"eef": asdict(eef_config)} if "eef" in selected_checks else {}),
         "c3": asdict(video_config),
     }
     summary = {
@@ -1350,7 +1375,7 @@ def run_quality_flag_detection(
         "video_mode": video_mode if "c3" in selected_checks else None,
     }
     previous = _annotation_issues(static_dir)
-    if explicit_checks or any(issue.get("detector") in {"s1", "s3", "c3"} for issue in previous):
+    if explicit_checks or any(issue.get("detector") in {"s1", "eef", "s3", "c3"} for issue in previous):
         incomplete = {
             (row["episode"], row["camera"]) for row in coverage if row["status"] in {"error", "incomplete"}
         }

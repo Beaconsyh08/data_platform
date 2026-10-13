@@ -35,7 +35,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
   }
   function reviewAction(fn) { if (allowReviewChange()) return action(fn); }
   const operationNames = {snapshot:'Synchronize version', validate_source:'Validate source', stage:'Compute stages', quality:'Detect quality issues', labeling:'Run object labeling', tagging:'Run auto-tagging', embedding:'Compute embeddings', project:'Project embeddings', compare_summary:'Prepare comparison summary', construction_preview:'Preview construction', construction:'Generate data', materialize:'Build dataset'};
-  const qualityNames = {legacy:'DVT checks', s1:'Joint motion · S1', s3:'Numeric values · S3', c3:'Images & video · C3'};
+  const qualityNames = {legacy:'DVT checks', s1:'Joint motion · S1', eef:'End-effector motion', s3:'Numeric values · S3', c3:'Images & video · C3'};
   const fields = {
     stage: [['episodes','Episodes','episodes'],['prepare_workers','Workers','number',4],['fallback_stage_count','Fallback stage count','number',5]],
     quality: [['episodes','Episodes','episodes'],['workers','Workers','number',4],['overwrite','Recompute automatic flags','checkbox',false]],
@@ -108,6 +108,10 @@ window.createCurationWorkspace = (root, initialTarget) => {
         });
         if (!form.dataset.qualityInitialized) {
           form.querySelectorAll('[name=checks]:disabled').forEach(input => { input.checked = false; });
+          if (context.quality_checks?.eef?.available && context.can_edit) {
+            form.querySelector('[name=checks][value=eef]').checked = true;
+            if (context.quality_checks?.s3?.available) form.querySelector('[name=checks][value=s3]').checked = true;
+          }
           form.dataset.qualityInitialized = 'true';
         }
         const selected = [...form.querySelectorAll('[name=checks]:checked')];
@@ -160,6 +164,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     for (const [key,description] of [
       ['legacy','Existing DVT checks for timing, action/state consistency and task annotations.'],
       ['s1','Sudden joint jumps and excessive speed in joint angles measured in radians.'],
+      ['eef','Position and orientation jump candidates, invalid poses and timing. Supports UMI and GenRobot pose signals; no joint angles required.'],
       ['s3','Missing, non-finite or malformed numeric values. Custom bounds are optional.'],
       ['c3','Missing or unreadable media, black frames, and blur or freeze candidates.']
     ]) {
@@ -295,6 +300,8 @@ window.createCurationWorkspace = (root, initialTarget) => {
       return false;
     }
     reviewRevision = draft()?.revision ?? null;
+    const viewer = episodeViewerUrl(episode());
+    $('review-viewer').hidden = !viewer; if (viewer) $('review-viewer').href = viewer;
     const form = $('review-form'); form.reset(); $('transitions').replaceChildren(); $('tags').replaceChildren();
     const uid = context?.episode_refs?.find(row => row.episode_index === episode())?.episode_uid;
     const decision = reviewFor(episode());
@@ -352,6 +359,20 @@ window.createCurationWorkspace = (root, initialTarget) => {
     }
     $('use-result').checked = inputRuns.has(result.run); updateResultVisibility(); notice(result.quality ? 'Quality result loaded. Review flagged episodes before deciding whether to keep, exclude or repair them.' : 'Result loaded. Select an episode to review or accept its annotations.');
   }
+  function episodeViewerUrl(index, frame = 0, time = null) {
+    if (!context?.viewer_url) return '';
+    try {
+      const url = new URL(context.viewer_url, window.location.origin);
+      if (url.origin !== window.location.origin || !/\/episode_\d+\/?$/.test(url.pathname)) return '';
+      url.pathname = url.pathname.replace(/\/episode_\d+\/?$/, `/episode_${index}`);
+      url.search = ''; url.hash = '';
+      const fps = Number(context.info?.fps);
+      const seconds = time != null && Number.isFinite(Number(time)) ? Number(time) : fps > 0 ? frame / fps : 0;
+      url.searchParams.set('t', String(Math.max(0, seconds)));
+      url.searchParams.set('quality_review', '1');
+      return url.pathname + url.search;
+    } catch { return ''; }
+  }
   function drawQualityResult() {
     const container = document.createElement('div'), filters = document.createElement('div'); filters.className = 'row';
     const issues = Object.entries(result.quality.flag_reasons || {}).flatMap(([index,reasons]) => reasons.map(issue => ({...issue,episode:Number(index),detector:issue.detector || 'legacy'})));
@@ -370,16 +391,30 @@ window.createCurationWorkspace = (root, initialTarget) => {
     const draw = () => {
       body.replaceChildren();
       const table = document.createElement('table'), heading = document.createElement('tr');
-      ['Episode','Check','Signal / camera','Severity','Frame range','Evidence'].forEach(label => heading.append(text('th',label))); table.append(heading);
+      ['Episode','Check','Signal / camera','Severity','Frame range','Evidence','Review'].forEach(label => heading.append(text('th',label))); table.append(heading);
       for (const item of issues.filter(matches)) {
         const row = document.createElement('tr'), cell = document.createElement('td'), button = text('button',`Episode ${item.episode}`);
-        button.type = 'button'; button.onclick = () => { $('episode').value = String(item.episode); loadReview(); $('review-form').scrollIntoView({behavior:'smooth'}); }; cell.append(button); row.append(cell);
+        button.type = 'button'; button.onclick = () => { if (!allowReviewChange()) return; $('episode').value = String(item.episode); loadReview(true); $('review-form').scrollIntoView({behavior:'smooth'}); }; cell.append(button); row.append(cell);
         [qualityNames[item.detector] || item.detector,`${item.camera || item.field || '—'}${item.dimension != null ? '['+item.dimension+']' : ''}`,item.severity || 'issue',JSON.stringify(item.frame_intervals || item.frames || [])].forEach(value => row.append(text('td',value)));
         const evidence = text('td',item.message || item.reason || item.code || 'Quality issue'), details = document.createElement('details');
-        details.append(text('summary','Measurements'),text('pre',JSON.stringify({metrics:item.metrics || {},time_intervals:item.time_intervals || []},null,2))); evidence.append(details); row.append(evidence); table.append(row);
+        details.append(text('summary','Measurements'),text('pre',JSON.stringify({metrics:item.metrics || {},time_intervals:item.time_intervals || []},null,2))); evidence.append(details); row.append(evidence);
+        const review = document.createElement('td'), intervals = item.frame_intervals?.length ? item.frame_intervals : (item.frames || []).map(frame => [frame,frame+1]);
+        const ranges = intervals.length ? intervals : [[0,1]], first = ranges[0][0];
+        const url = episodeViewerUrl(item.episode, first, item.time_intervals?.length === ranges.length ? item.time_intervals[0][0] : null);
+        if (url) {
+          const link = text('a','Open in Viewer'); link.href = url; link.target = '_blank'; link.rel = 'noopener';
+          if (ranges.length > 1) {
+            const select = document.createElement('select'); select.setAttribute('aria-label', `Candidate range for episode ${item.episode}`);
+            ranges.forEach(([start,end],index) => { const option = text('option',`Frames ${start}–${end-1}`); option.value = index; select.append(option); });
+            select.onchange = () => { const i = Number(select.value); link.href = episodeViewerUrl(item.episode,ranges[i][0],item.time_intervals?.length === ranges.length ? item.time_intervals[i][0] : null); };
+            review.append(select);
+          }
+          review.append(link);
+        } else review.append(text('span','Prepare Viewer cache to inspect frames.','muted'));
+        row.append(review); table.append(row);
       }
       const issueScroll = document.createElement('div'); issueScroll.className = 'scroll'; issueScroll.append(table);
-      body.append(text('h3','Detected issues'),text('p','Frame intervals use [start, end): the end frame is excluded. Legacy frame lists retain their original meaning.','muted'),issueScroll);
+      body.append(text('h3','Detected issues'),text('p','Candidates need human review; they are not automatic exclusions. Open the frame in Viewer, then select the episode here and save Keep, Exclude or Needs review in a draft. Frame intervals use [start, end): the end frame is excluded.','muted'),issueScroll);
       if (table.rows.length === 1) body.append(text('p','No detected issues match these filters. Check media coverage below for incomplete checks.','muted'));
       if (!coverage.length) return;
       const media = document.createElement('table'), mediaHeading = document.createElement('tr');

@@ -32,6 +32,11 @@ Viewer 使用 `Stage 1/N` 等时间段名称，不将时间等分结果解释为
 ## 可用操作与兼容
 
 - 通用查看、元数据分析、拆分和同结构合并适用于 UMI。
+- Quality 自动提供 End-effector motion（末端位置/朝向跳变、四元数有效性、时间轴）和 S3，
+  C3 可单独选择检查图像。无需 DVT 配置；检测结果是待复核候选，不自动删除数据。
+  结果表的 Open in Viewer 可定位候选区间，返回 Episode review 保存人工决定。
+  Server 与 Agent 都需升级，Agent 必须声明 `quality_checks` 包含 `eef`。
+  阈值、单位限制和重跑规则见 [统一 Curation 文档](data_platform_unified_curation.md#quality-checks)。
 - DVT 标准化、动作维度转换、平滑、动作状态数值编辑、基于关节/夹爪事件的 DVT Stage、动作状态异常检测和
   依赖特定策略输入的 Embedding 不适用于 UMI；页面与服务端均校验，Agent 会再次检查。
 - DVT 操作默认统一使用 `h10w_dvt2_stage_v1`，包括原始记录为 DVT1 的数据；

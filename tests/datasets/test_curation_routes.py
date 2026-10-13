@@ -695,3 +695,61 @@ def test_curation_bookmark_redirects_into_console(remote, page):
     url = urlsplit(response.headers["Location"])
     assert url.path == "/"
     assert parse_qs(url.query) == {"select": [f"remote:{remote.location['location_id']}"], "page": [page]}
+
+
+def test_eef_quality_publication_and_episode_review(remote, request):
+    from tests.datasets.test_quality_eef import make_eef
+
+    remote.source = make_eef(remote.tmp / "eef", request.node.callspec.params["remote"], "wxyz")
+    info = json.loads((remote.source / "meta/info.json").read_text())
+    remote.location = remote.control.sync_locations(
+        remote.node["node_id"],
+        [
+            {
+                "dataset_key": "node/eef",
+                "root": str(remote.source),
+                "output_dir": str(remote.tmp / "eef-cache"),
+                "metadata": {**info, "viewer_url": "/node/eef/episode_0"},
+            }
+        ],
+    )[0]
+    job, headers = queue(remote, "curation.snapshot")
+    execute(remote, job, headers)
+    target = {"location_id": remote.location["location_id"]}
+    caps = {**remote.node["capabilities"], "quality_protocol": 1, "quality_checks": ["s3"]}
+    remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
+    response = remote.client.post(
+        "/api/curation/jobs",
+        json={
+            "target": target,
+            "operation": "curation.quality",
+            "parameters": {"checks": ["eef"]},
+        },
+        headers={"Idempotency-Key": "eef-old-agent"},
+    )
+    assert response.status_code == 409 and "Upgrade" in response.get_json()["error"]
+    caps["quality_checks"].append("eef")
+    remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
+    before = _snapshot(remote.source)
+    job, headers = queue(remote, "curation.quality", parameters={"checks": ["eef", "s3"]})
+    execute(remote, job, headers)
+    saved = remote.client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    issue = saved["quality"]["flag_reasons"]["0"][0]
+    assert issue["detector"] == "eef" and issue["severity"] == "candidate"
+    assert issue["frame_intervals"] == [[100, 102]]
+    assert issue["metrics"]["baseline_episodes"] == 2
+    context = remote.client.get("/api/curation/context", query_string=target).get_json()
+    assert context["quality_checks"]["eef"]["available"]
+    assert context["viewer_url"] == "/node/eef/episode_0"
+    workspace = remote.client.post("/api/curation/drafts", json={"target": target}).get_json()["workspace"]
+    response = remote.client.patch(
+        f"/api/curation/drafts/{workspace['workspace_id']}/episodes/0",
+        json={
+            "expected_revision": workspace["revision"],
+            "decision": "review",
+            "reason": "Inspect pose spike in Viewer",
+        },
+    )
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["workspace"]["decisions"][0]["decision"] == "review"
+    assert before == _snapshot(remote.source)

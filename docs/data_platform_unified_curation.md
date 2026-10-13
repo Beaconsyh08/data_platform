@@ -80,7 +80,8 @@ cross-node raw-file replication.
 
 Quality detection uses the existing `curation.quality` operation on the dataset's owning node.
 The Quality form offers independent checks; unsupported checks show their reason. Legacy DVT
-checks remain the default. New checks require the executor to advertise `quality_protocol: 1`
+checks remain the default for DVT data. Recognized native end-effector data defaults to
+**End-effector motion** and **S3**. New checks require the executor to advertise `quality_protocol: 1`
 and the selected names in `quality_checks`, at both submission and claim. Calls without `checks`
 retain legacy behavior and remain compatible with older Agents.
 For compatible DVT signals, submission records the selected processing version in the job:
@@ -90,7 +91,7 @@ profiles from failed recognition are re-evaluated for these robots when compatib
 signals exist, including in older Curation snapshots; no source metadata rewrite is required.
 Explicit or confirmed profiles remain authoritative. GenRobot MCAP datasets containing only
 end-effector poses, gripper widths and video have no joint-angle action/state signals: DVT and
-S1 are not applicable, while S3 and C3 can inspect their numeric signals and media.
+S1 are not applicable; End-effector motion, S3 and C3 inspect their poses, numeric signals and media.
 
 - **S1** detects jumps and excessive velocity in the first 16 DVT action/state dimensions,
   excluding grippers 7 and 15. Compatible DVT action/state data uses DVT2 processing by default,
@@ -99,6 +100,21 @@ S1 are not applicable, while S3 and C3 can inspect their numeric signals and med
   requires joint signals compatible with radians. It uses actual
   timestamp differences and reports invalid timestamps separately; it does not smooth signals.
   UMI pose/quaternion signals are not subject to these joint thresholds.
+- **End-effector motion** (`eef`) accepts named 7D XYZ + quaternion pose fields from UMI and
+  GenRobot without a DVT profile. It checks invalid poses, quaternion norms and timestamp gaps,
+  then marks position/orientation jumps as **candidates**, never automatic exclusions. Quaternion
+  order follows feature names; `q` and `-q` represent the same orientation. Each pose field uses
+  its own baseline: a step must exceed both the selected episodes' P99 and 8 times its local
+  31-step median. Advanced JSON accepts `eef.quantile`, `eef.local_ratio`, `eef.window` (odd,
+  3–301), and `eef.quaternion_tolerance` (default 0.001). Results record thresholds, the selected
+  baseline scope, peak frame and speed using actual time deltas. Position measurements retain
+  source units; undeclared units do not imply meters. Changing the episode selection recalibrates
+  the baseline, so partial runs can produce different candidates. Invalid-time windows do not
+  produce speed judgments. Normal gripper opening/closing is not a pose jump; use S3 for invalid
+  values and declared-unit bounds. Raw tracking confidence and cross-stream synchronization
+  cannot be assessed without their source fields. The executor makes two numeric-only streaming
+  passes, using temporary disk arrays for exact quantiles and preserving episode boundaries
+  across v3 shards. EEF + S3 shares the second pass; no whole-dataset image load is required.
 - **S3** checks numeric scalar/vector features for non-finite values, missing values, and
   shape mismatch. Optional bounds or allowed codes require a field, dimension, and unit
   matching feature metadata. No physical limits are inferred from an unknown unit. Statistical
@@ -153,7 +169,14 @@ other Curation tabs. Detection and review do not edit the source; apply reviewed
 Dataset Build.
 
 Open a generated result to filter evidence by detector, episode, and field/camera. Detected issues and media coverage are displayed separately. Click an issue’s episode to open
-its review form; expand **Measurements** for metric and time details. Evidence includes severity,
+its review form; **Open in Viewer** opens the selected candidate interval in a new tab at its
+starting time and pauses playback, preserving the Quality page and draft. Normal Viewer
+entry retains autoplay; episode navigation clears the candidate position. Choose another interval in the row to
+inspect another candidate. If no Viewer cache is registered, prepare it first. The review form
+also links to the selected episode. Save Keep, Exclude, Needs review or a repair proposal in a
+review workspace after inspection; opening Viewer alone does not save a decision. Read-only
+users can inspect results and Viewer, but cannot run checks or save decisions. Expand
+**Measurements** for metric and time details. Evidence includes severity,
 half-open frame/time intervals, and measured values/thresholds. Existing
 legacy `frames` fields keep their original semantics. Results are stored in the existing
 Curation bundle as `annotation_issues.json`, `quality_flagged_episodes.json`, and

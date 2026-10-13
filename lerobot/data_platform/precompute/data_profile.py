@@ -343,6 +343,7 @@ def operation_capabilities(profile: DatasetDataProfile, features: dict) -> dict[
 
 def quality_check_capabilities(profile: DatasetDataProfile, features: dict) -> dict[str, dict]:
     """Quality checks have independent requirements; legacy mutation capabilities stay unchanged."""
+    from lerobot.data_platform.precompute.quality_eef import pose_features
     from lerobot.data_platform.precompute.quality_signals import numeric_features
 
     legacy = profile.legacy_data_version is not None
@@ -353,7 +354,10 @@ def quality_check_capabilities(profile: DatasetDataProfile, features: dict) -> d
     )
     s1 = legacy and bool(joint_fields) and profile.confirmed and radians
     if not joint_fields:
-        s1_reason = "Not applicable: no joint-angle action/state signals. Use S3 or C3 for this data."
+        s1_reason = (
+            "Not applicable: no joint-angle action/state signals. "
+            "Use end-effector, S3 or C3 checks for supported signals."
+        )
     elif not legacy:
         s1_reason = "The action/state signal layout is not recognized as DVT."
     elif not radians:
@@ -366,6 +370,12 @@ def quality_check_capabilities(profile: DatasetDataProfile, features: dict) -> d
             **asdict(OperationCapability(s1, None if s1 else s1_reason)),
             "can_confirm_profile": legacy and bool(joint_fields) and radians,
         },
+        "eef": asdict(
+            OperationCapability(
+                bool(pose_features(features)),
+                None if pose_features(features) else "Requires named XYZ and quaternion pose signals",
+            )
+        ),
         "s3": asdict(
             OperationCapability(
                 bool(numeric_features(features)),

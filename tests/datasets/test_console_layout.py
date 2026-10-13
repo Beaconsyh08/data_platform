@@ -892,3 +892,36 @@ def test_jobs_use_durable_progress_and_ignore_stale_responses():
     assert.equal(done.message, 'Completed');
     """
     subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+
+
+def test_quality_viewer_seeks_once_pauses_and_clears_position_on_episode_navigation():
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the viewer behavior check")
+    template = (Path(viewer.__file__).parent / "templates/visualize_dataset_template.html").read_text()
+    methods = []
+    for name in ("positionQualityVideo", "videoCanPlay", "episodeHref"):
+        match = re.search(rf"^                {name}\([^\n]*\) \{{", template, re.MULTILINE)
+        end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
+        methods.append(template[match.start() : match.end() + end.end()])
+    script = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
+    script += r"""
+global.window = {location: {search:'?t=6.6666666667&quality_review=1'}, __viewerFilterQuery:'?t=6.6666666667&quality_review=1&task=pick'};
+const video = {dataset:{}, currentTime:0, duration:10, paused:false,pause(){this.paused=true;}};
+app.qualityReview=true; app.nVideoReadyToPlay=0; app.playbackRate=1;
+app.$refs={btnPlay:{classList:{contains(){return false}},click(){throw Error('Unexpected autoplay')}}};
+app.positionQualityVideo(video); app.videoCanPlay({target:video});
+assert.equal(video.paused,true); assert.ok(Math.abs(video.currentTime-200/30)<1e-6);
+video.currentTime=8;app.positionQualityVideo(video);assert.equal(video.currentTime,8);
+assert.equal(app.episodeHref(1),'./episode_1?task=pick');
+app.qualityReview=false;let played=false;app.$refs.btnPlay.click=()=>{played=true};
+app.videoCanPlay({target:video});assert.equal(played,true);
+window.location.search='?t=NaN&quality_review=1';app.qualityReview=true;
+video.dataset={};video.currentTime=0;app.positionQualityVideo(video);assert.equal(video.currentTime,0);
+"""
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
