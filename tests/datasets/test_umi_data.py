@@ -381,7 +381,8 @@ def test_umi_agent_and_remote_protocol(umi_root, tmp_path):
     client = _app(tmp_path, store).test_client()
     assert _bootstrap(client).status_code == 200
     agent = _agent(tmp_path, tmp_path, tmp_path)
-    capabilities = agent.capabilities()
+    # This inline client does not implement the protocol 2 subprocess attempt credentials.
+    capabilities = {**agent.capabilities(), "job_protocol": 1}
     token, node = store.enroll_node(
         name="umi-test",
         hostname="umi-test",
@@ -452,7 +453,8 @@ def test_umi_remote_stage_preview_forwards_count_and_force(umi_root, tmp_path):
         hostname="umi-preview",
         allowed_roots=[str(tmp_path)],
         writable_roots=[str(tmp_path)],
-        capabilities=agent.capabilities(),
+        # Match the legacy inline client used for uploads and events below.
+        capabilities={**agent.capabilities(), "job_protocol": 1},
         enrollment_token="enroll",
         expected_token="enroll",
     )

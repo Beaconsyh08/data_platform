@@ -195,6 +195,72 @@ def test_viewer_cannot_queue_or_edit(remote):
     assert not caps["can_edit"]
 
 
+@pytest.mark.parametrize("data_version", [None, "DVT1"])
+def test_s1_default_and_explicit_profile_round_trip(remote, data_version):
+    import pandas as pd
+
+    info_path = remote.source / "meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["data_version"] = "DVT1"
+    for key in ("action", "state"):
+        info["features"][key].update(shape=[16], unit="rad")
+    info_path.write_text(json.dumps(info))
+    for path in (remote.source / "data").rglob("*.parquet"):
+        frame = pd.read_parquet(path)
+        for key in ("action", "state"):
+            frame[key] = frame[key].map(lambda value: list(value) + [0.0] * (16 - len(value)))
+        frame.to_parquet(path, index=False)
+    before = _snapshot(remote.source)
+    remote.control.sync_locations(remote.node["node_id"], [{**remote.location, "metadata": info}])
+    remote.control.heartbeat(
+        remote.node["node_id"],
+        capabilities={**remote.node["capabilities"], "quality_protocol": 1, "quality_checks": ["s1"]},
+    )
+    job, headers = queue(remote, "curation.snapshot")
+    execute(remote, job, headers)
+    query = {"location_id": remote.location["location_id"]}
+    context = remote.client.get("/api/curation/context", query_string=query).get_json()
+    assert context["quality_checks"]["s1"]["available"]
+    parameters = {"checks": ["s1"], "workers": 1}
+    if data_version:
+        parameters["data_version"] = data_version
+    job, headers = queue(remote, "curation.quality", parameters=parameters)
+    assert job["options"]["parameters"]["data_version"] == (data_version or "DVT2")
+    execute(remote, job, headers)
+    saved = remote.client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    assert saved["quality"]["summary"]["data_version"] == (data_version or "DVT2")
+    assert _snapshot(remote.source) == before
+
+
+def test_umi_quality_keeps_native_profile(remote):
+    from tests.datasets.test_umi_data import umi_root
+
+    remote.source = umi_root.__wrapped__(remote.tmp / "native")
+    info = json.loads((remote.source / "meta/info.json").read_text())
+    remote.location = remote.control.sync_locations(
+        remote.node["node_id"], [{**remote.location, "root": str(remote.source), "metadata": info}]
+    )[0]
+    remote.control.heartbeat(
+        remote.node["node_id"],
+        capabilities={**remote.node["capabilities"], "quality_protocol": 1, "quality_checks": ["s3"]},
+    )
+    before = _snapshot(remote.source)
+    job, headers = queue(remote, "curation.snapshot")
+    execute(remote, job, headers)
+    context = remote.client.get(
+        "/api/curation/context", query_string={"location_id": remote.location["location_id"]}
+    ).get_json()
+    assert not context["quality_checks"]["legacy"]["available"]
+    assert not context["quality_checks"]["s1"]["available"]
+    assert context["quality_checks"]["s3"]["available"]
+    job, headers = queue(remote, "curation.quality", parameters={"checks": ["s3"], "workers": 1})
+    assert not job["options"]["parameters"].get("data_version")
+    execute(remote, job, headers)
+    saved = remote.client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    assert saved["quality"]["summary"]["data_version"] is None
+    assert _snapshot(remote.source) == before
+
+
 def test_quality_capability_upgrade_publication_and_partial_rerun(remote):
     from lerobot.data_platform.precompute.preprocess.quality_flags import _write_json
 

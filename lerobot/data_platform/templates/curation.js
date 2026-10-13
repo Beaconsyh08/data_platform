@@ -98,10 +98,10 @@ window.createCurationWorkspace = (root, initialTarget) => {
       const capability = context.operations[`curation.${button.dataset.command}`];
       let blocked = capability?.reason || '';
       if (button.dataset.command === 'quality') {
-        const form = button.closest('form'), confirmation = form.elements.quality_profile.value;
+        const form = button.closest('form');
         form.querySelectorAll('[name=checks]').forEach(input => {
           const ready = context.quality_checks?.[input.value];
-          const available = ready?.available || (input.value === 's1' && ready?.can_confirm_profile && confirmation);
+          const available = ready?.available;
           input.disabled = busy || !context.can_edit || !available;
           const reason = input.closest('label').querySelector('.quality-check-reason');
           reason.textContent = !context.can_edit ? 'Read-only access' : available ? 'Available' : ready?.reason || 'Unavailable';
@@ -112,8 +112,8 @@ window.createCurationWorkspace = (root, initialTarget) => {
         }
         const selected = [...form.querySelectorAll('[name=checks]:checked')];
         if (!blocked && (!selected.length || selected.some(input => input.disabled && !busy))) blocked = 'Select supported quality checks.';
-        form.elements.quality_profile.disabled = busy || !context.can_edit || !context.quality_checks?.s1?.can_confirm_profile;
-        form.elements.quality_profile.closest('label').hidden = !context.quality_checks?.s1?.can_confirm_profile || context.quality_checks?.s1?.available;
+        form.elements.quality_profile.disabled = busy || !context.can_edit || !context.quality_checks?.legacy?.available;
+        form.elements.quality_profile.closest('label').hidden = !context.quality_checks?.legacy?.available;
         const video = selected.some(input => input.value === 'c3');
         form.querySelector('.quality-video-settings').hidden = !video;
         form.elements.video_workers.closest('label').hidden = !video;
@@ -159,7 +159,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     const checks = document.createElement('div'); checks.className = 'fields quality-checks';
     for (const [key,description] of [
       ['legacy','Existing DVT checks for timing, action/state consistency and task annotations.'],
-      ['s1','Sudden joint jumps and excessive speed; requires a confirmed DVT joint profile.'],
+      ['s1','Sudden joint jumps and excessive speed in joint angles measured in radians.'],
       ['s3','Missing, non-finite or malformed numeric values. Custom bounds are optional.'],
       ['c3','Missing or unreadable media, black frames, and blur or freeze candidates.']
     ]) {
@@ -170,12 +170,12 @@ window.createCurationWorkspace = (root, initialTarget) => {
     }
     form.append(checks);
     const grid = document.createElement('div'); grid.className = 'fields';
-    for (const [name,label,values] of [['quality_profile','Confirm joint profile (S1)',['','DVT1','DVT2']],['video_mode','Video coverage',['sampled','full']]]) {
+    for (const [name,label,values] of [['quality_profile','Processing profile',['','DVT2','DVT1']],['video_mode','Video coverage',['sampled','full']]]) {
       const field = text('label',label), select = document.createElement('select'); select.name = name;
-      values.forEach(value => { const label = name === 'video_mode' ? value === 'sampled' ? 'Sampled frames' : 'Every frame' : value || 'Use recorded profile'; const option = text('option',label); option.value = value; select.append(option); });
+      values.forEach(value => { const label = name === 'video_mode' ? value === 'sampled' ? 'Sampled frames' : 'Every frame' : value || 'Default (DVT2)'; const option = text('option',label); option.value = value; select.append(option); });
       select.onchange = buttons; field.append(select); grid.append(field);
     }
-    form.append(grid.firstElementChild);
+    execution.append(grid.firstElementChild);
     grid.classList.add('quality-video-settings'); grid.hidden = true;
     const workers = text('label','Video workers (1–16)'), input = document.createElement('input'); input.type = 'number'; input.name = 'video_workers'; input.min = '1'; input.max = '16'; input.value = '2'; workers.append(input); execution.append(workers);
     const config = text('label','Thresholds and bounds (JSON)'), editor = document.createElement('textarea'); editor.name = 'qc_config'; editor.rows = 5; editor.placeholder = '{"schema_version":1,"s1":{"max_step":0.5,"max_speed":20},"s3":{"bounds":[]},"c3":{"sample_every_seconds":1}}'; config.append(editor);

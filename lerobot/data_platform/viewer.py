@@ -1117,7 +1117,9 @@ def run_server(
                 getattr(dataset_obj, "repo_id", None)
                 or f"local/{Path(getattr(dataset_obj, 'root', 'dataset')).name or 'dataset'}"
             )
-            data_version = _data_profile_for_dataset(dataset_obj).legacy_data_version
+            data_version = resolve_processing_profile(
+                Path(dataset_obj.root), getattr(dataset_obj, "features", {}) or {}
+            ).legacy_data_version
             write_viewer_manifest(
                 root=Path(dataset_obj.root),
                 repo_id=repo_id,
@@ -8234,7 +8236,7 @@ def visualize_dataset_html(
                         static_dir=static_dir,
                         data_version=_normalize_data_version(
                             data_version
-                            or resolve_data_profile(
+                            or resolve_processing_profile(
                                 Path(dataset.root),
                                 dataset.features,
                             ).legacy_data_version
