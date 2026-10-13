@@ -17,8 +17,9 @@ from lerobot.data_platform.deployment_network import nginx_config
 
 @pytest.mark.parametrize("index_url", [None, "https://mirror.test/simple"])
 @pytest.mark.parametrize("lock_in_archive", [False, True])
+@pytest.mark.parametrize("validation_fails", [False, True])
 def test_build_checks_archived_lock_before_tests_and_preserves_it(
-    tmp_path, monkeypatch, lock_in_archive, index_url
+    tmp_path, monkeypatch, lock_in_archive, index_url, validation_fails
 ):
     source = tmp_path / "source"
     source.mkdir()
@@ -43,6 +44,9 @@ def test_build_checks_archived_lock_before_tests_and_preserves_it(
             return
         if "pytest" in argv:
             assert (kwargs["cwd"] / "uv.lock").read_bytes() == lock
+            if validation_fails:
+                kwargs["stdout"].write("FAILED test_release_regression: useful failure detail\n")
+                raise subprocess.CalledProcessError(1, argv)
             kwargs["stdout"].write("passed")
             return
         if "--output-dir" in argv:
@@ -65,6 +69,22 @@ def test_build_checks_archived_lock_before_tests_and_preserves_it(
             releases.build_release(source, "candidate", index_url=index_url)
         assert not any("pytest" in call or "--output-dir" in call for call in calls)
         assert not (releases.RELEASE_ROOT / "candidate").exists()
+    elif validation_fails:
+        with pytest.raises(RuntimeError, match="Release validation failed.*validation.txt"):
+            releases.build_release(source, "candidate", index_url=index_url)
+        assert not (releases.RELEASE_ROOT / "candidate").exists()
+        assert not any("--output-dir" in call for call in calls)
+        assert not list(releases.RELEASE_ROOT.glob(".build-*"))
+        failures = list(releases.RELEASE_ROOT.glob(".failed-candidate-*"))
+        assert len(failures) == 1
+        assert failures[0].stat().st_mode & 0o777 == 0o700
+        assert "useful failure detail" in (failures[0] / "validation.txt").read_text()
+        assert json.loads((failures[0] / "failure.json").read_text()) == {
+            "release": "candidate",
+            "commit": "commit",
+            "stage": "validation",
+            "exit_code": 1,
+        }
     else:
         root = releases.build_release(source, "candidate", index_url=index_url)
         _, manifest = releases.verify_release("candidate")

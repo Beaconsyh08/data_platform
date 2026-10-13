@@ -530,10 +530,13 @@ def test_caption_dispatcher_reconciles_each_attempt_once(tmp_path, monkeypatch):
     agent = SimpleNamespace(state_path=tmp_path / "agent.json")
     dispatcher = _ExecutionDispatcher(agent)
     release = Event()
+    entered = {name: Event() for name in ("a", "b")}
     seen = []
 
     def monitor(_supervisor, marker, _process):
-        seen.append(marker["job"]["job_id"])
+        name = marker["job"]["job_id"]
+        seen.append(name)
+        entered[name].set()
         assert release.wait(5)
 
     monkeypatch.setattr(ExecutionSupervisor, "monitor", monitor)
@@ -560,6 +563,8 @@ def test_caption_dispatcher_reconciles_each_attempt_once(tmp_path, monkeypatch):
                 },
             )
         dispatcher.reconcile()
+        dispatcher.reconcile()
+        assert all(event.wait(5) for event in entered.values())
         dispatcher.reconcile()
         assert sorted(seen) == ["a", "b"]
         assert not dispatcher.available()

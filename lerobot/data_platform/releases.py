@@ -31,6 +31,7 @@ VALIDATION_TESTS = [
     "tests/datasets/test_console_layout.py",
     "tests/datasets/test_inspection.py",
     "tests/datasets/test_data_manager.py",
+    "tests/datasets/test_data_profile.py",
     "tests/datasets/test_curation.py",
     "tests/datasets/test_curation_routes.py",
     "tests/datasets/test_quality_checks.py",
@@ -147,14 +148,26 @@ def build_release(source: Path, version: str, *, index_url: str | None = None) -
         for key in ("HF_HOME", "HF_DATASETS_CACHE", "HF_LEROBOT_HOME", "UV_CACHE_DIR"):
             env[key] = str(root / "test-cache" / key)
         print(f"Validating {version} ({len(VALIDATION_TESTS)} test modules)", flush=True)
-        with (root / "validation.txt").open("w") as report:
-            run(
-                [python, "-m", "pytest", *VALIDATION_TESTS, "-q"],
-                cwd=snapshot,
-                env=env,
-                stdout=report,
-                stderr=subprocess.STDOUT,
+        try:
+            with (root / "validation.txt").open("w") as report:
+                run(
+                    [python, "-m", "pytest", *VALIDATION_TESTS, "-q"],
+                    cwd=snapshot,
+                    env=env,
+                    stdout=report,
+                    stderr=subprocess.STDOUT,
+                )
+        except subprocess.CalledProcessError as exc:
+            failure = Path(tempfile.mkdtemp(prefix=f".failed-{version}-", dir=RELEASE_ROOT))
+            report_path = failure / "validation.txt"
+            shutil.copyfile(root / "validation.txt", report_path)
+            atomic_json(
+                failure / "failure.json",
+                {"release": version, "commit": commit, "stage": "validation", "exit_code": exc.returncode},
             )
+            raise RuntimeError(
+                f"Release validation failed (exit {exc.returncode}). Log: {report_path}"
+            ) from None
         print(f"Release validation passed: {version}", flush=True)
         run(
             [
