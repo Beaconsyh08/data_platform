@@ -65,3 +65,6 @@
 @media (max-width: 640px) { .curation-workspace .quality-checks { grid-template-columns: 1fr; } }
 
 .curation-workspace .review-unsaved { color: #fcd34d; font-size: 12px; }
+.curation-workspace .report-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px,100%),1fr)); gap: .75rem; }
+.curation-workspace .report-metrics > div { padding: .875rem; border: 1px solid #334155; border-radius: .5rem; background: #0f172a; }
+.curation-workspace .report-metrics strong { display: block; margin-top: .375rem; font-size: 1.25rem; }

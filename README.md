@@ -518,7 +518,10 @@ Viewer cache，无需再单独执行 Prepare viewer。**Jobs** 抽屉和 **Pipel
 任务信息，统一显示服务器、进度、耗时、日志、结果摘要和输出数据集；完成后可直接切换到输出
 数据集。输出尚无 Viewer cache 时，Job 卡片可直接启动 **Prepare viewer**，完成后同一位置切换为
 **Open viewer**。本地与 Agent 数据集统一进入 **Data Curation**，包含 Explore、Quality、Annotation 和 Dataset Build；
-计算在数据所在节点执行，草稿、审核与结果保存在中心服务。详见[统一 Curation 工作流](docs/data_platform_unified_curation.md)。
+计算在数据所在节点执行，草稿、审核与结果保存在中心服务。
+**Quality → Data Report** 可查看最近或历史检测报告，包括数据规模、检测范围、异常与视频覆盖率，
+并通过 **Open Episode Viewer** 或异常行的 **Open in Viewer** 进入已准备的 Viewer。
+详见[统一 Curation 工作流](docs/data_platform_unified_curation.md)。
 在 **Explore** 可查看 Episode Viewer；
 Dataset Analysis 可直接使用 Agent 上报的元数据，无需先准备 Viewer cache。Embedding、标注和构造入口仍不显示。
 

@@ -481,6 +481,7 @@
                     <div class="mt-3 flex flex-wrap gap-2">
                         <button class="dp-btn dp-btn-primary dp-btn-inline" x-show="tabEnabled('explore_overview')" @click="selectTab('explore_overview')">Explore &amp; Viewer</button>
                         <button class="dp-btn dp-btn-secondary dp-btn-inline" x-show="tabEnabled('quality_flags')" @click="selectTab('quality_flags')">Quality review</button>
+                        <button class="dp-btn dp-btn-secondary dp-btn-inline" x-show="controlPlaneEnabled && tabEnabled('quality_report')" @click="selectTab('quality_report')">Data report</button>
                         <button class="dp-btn dp-btn-secondary dp-btn-inline" x-show="tabEnabled('temporal_caption')" @click="selectTab('temporal_caption')">Temporal Caption</button>
                         <button class="dp-btn dp-btn-secondary dp-btn-inline" @click="openJobDrawer(true)">Jobs for this dataset</button>
                     </div>

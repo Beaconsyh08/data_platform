@@ -1,7 +1,7 @@
 {# Embedded in the main console; navigation and dataset selection belong to its shell. #}
 <div class="row curation-toolbar">
   <div><div data-curation-id="dataset-name" class="muted"></div><p data-curation-id="version" class="muted"></p></div>
-  <div class="row"><button data-curation-id="refresh">Refresh</button><button data-curation-id="sync" title="Scan dataset identity and metadata for versioned review; source files are not changed.">Register dataset version</button></div>
+  <div class="row"><a data-curation-id="report-viewer" target="_blank" rel="noopener" hidden>Open Episode Viewer</a><a data-curation-id="prepare-viewer" hidden>Prepare Viewer cache</a><button data-curation-id="refresh">Refresh</button><button data-curation-id="sync" title="Scan dataset identity and metadata for versioned review; source files are not changed.">Register dataset version</button></div>
 </div>
 <p data-curation-id="notice" role="status" aria-live="polite" hidden></p>
   <section class="card" data-curation-general data-curation-panel="workspace"><div class="row"><h2>Review workspace</h2><select data-curation-id="workspace" aria-label="Review workspace"></select><button data-curation-id="new-draft">New draft</button><button data-curation-id="import-sidecars">Import existing review</button><span data-curation-id="draft-state" class="muted"></span></div><p class="muted">Review decisions are saved independently of generated results. Publish a reviewed draft to build a new dataset.</p></section>

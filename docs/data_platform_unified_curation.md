@@ -183,6 +183,18 @@ tabs preserves unsaved fields. Task text, stage, tag and box annotation controls
 other Curation tabs. Detection and review do not edit the source; apply reviewed changes through
 Dataset Build.
 
+**Quality → Data Report** opens the newest saved Quality result for the selected dataset version.
+The result picker also opens earlier runs. The report shows dataset episode/frame counts and duration,
+the number of episodes checked, flagged episodes, detected issues, the checks used, and video coverage.
+Sampled video, incomplete streams, and missing video evidence are identified separately; zero flags
+does not certify unchecked data. Saved evidence can include input results from earlier runs.
+The dataset overview has a **Data report** shortcut. **Open Episode Viewer** is available above the
+report when a Viewer cache is registered; operators without a cache get **Prepare Viewer cache**.
+Read-only users can open reports and prepared Viewer results. Clicking an issue's episode expands
+the existing review form, preserving draft edits when switching between report and review tabs.
+This report tab is available in the central full console; standalone and visualize-only modes retain
+their existing workflows. It uses the existing version-scoped Curation results and access checks.
+
 Open a generated result to filter evidence by detector, episode, and field/camera. Detected issues and media coverage are displayed separately. Click an issue’s episode to open
 its review form; **Open in Viewer** opens the selected candidate interval in a new tab at its
 starting time and pauses playback, preserving the Quality page and draft. Normal Viewer

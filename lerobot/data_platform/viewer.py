@@ -558,7 +558,10 @@ _CONSOLE_GROUP_DEFS = [
             {
                 "key": "quality",
                 "label": "Quality",
-                "tabs": [{"key": "quality_flags", "label": "Quality Review"}],
+                "tabs": [
+                    {"key": "quality_flags", "label": "Quality Review"},
+                    {"key": "quality_report", "label": "Data Report"},
+                ],
             },
             {
                 "key": "annotation",
@@ -605,6 +608,7 @@ _CONSOLE_MODE_ALLOWED_TABS = {
         "stage_subtask",
         "temporal_caption",
         "quality_flags",
+        "quality_report",
         "data_modification",
         "standardize",
         "transform",
@@ -708,6 +712,8 @@ def run_server(
     allowed_tabs = set(_CONSOLE_MODE_ALLOWED_TABS[console_mode])
     allowed_open_links = set(_CONSOLE_MODE_ALLOWED_OPEN_LINKS[console_mode])
     control_plane_store = None
+    if not database_url:
+        allowed_tabs.discard("quality_report")
     if database_url:
         from lerobot.data_platform.control_plane import ControlPlaneStore
 

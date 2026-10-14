@@ -7,6 +7,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
   let context = null, result = null, busy = false, jobs = [], page = new URLSearchParams(location.search).get('page') || 'annotation';
   let inputRuns = new Set(), captionRuns = [], timer = null, captionController = null, reviewRevision = null;
   let savedReview = null, reviewSelection = null;
+  let activeTab = '', resultRequest = 0;
   const pending = JSON.parse(sessionStorage.getItem('curation-deliveries') || '{}');
   const panelHomes = new Map();
   root.querySelectorAll('[data-curation-panel]').forEach(panel => {
@@ -197,7 +198,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
   }
   function drawResultOptions() {
     if (!context) return;
-    const runs = context.runs.filter(item => page === 'quality' ? item.operation === 'curation.quality' : !['curation.snapshot','curation.validate_source'].includes(item.operation));
+    const runs = context.runs.filter(item => page === 'quality' ? item.operation === 'curation.quality' : !['curation.snapshot','curation.validate_source'].includes(item.operation)).sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
     options($('result'), runs, item => item.run, item => `${operationNames[item.operation.split('.')[1]]} · ${new Date(item.created_at).toLocaleString()}`, runs.length ? 'Select a result' : 'No saved results yet');
     updateResultVisibility();
   }
@@ -208,19 +209,28 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('load-result').disabled = busy || !$('result').value;
   }
   function selectPage(value, tab) {
+    activeTab = tab;
     page = ['explore','quality','annotation','dataset_build'].includes(value) ? value : 'annotation';
     root.dataset.curationPage = page;
     for (const [panel,home] of panelHomes) {
       if (page === 'quality') root.querySelector(`[data-quality-slot="${panel.dataset.curationPanel}"]`).append(panel);
       else home.after(panel);
     }
-    root.querySelector('[data-curation-heading=results]').textContent = page === 'quality' ? '2. Inspect results' : 'Generated results';
+    root.querySelector('[data-curation-heading=results]').textContent = tab === 'quality_report' ? 'Data report' : page === 'quality' ? '2. Inspect results' : 'Generated results';
+    root.querySelector('.quality-task-panel').hidden = tab === 'quality_report';
+    root.querySelector('.quality-review').hidden = tab === 'quality_report';
     $('jobs').querySelectorAll('[data-curation-operation]').forEach(row => { row.hidden = page === 'quality' && row.dataset.curationOperation !== 'curation.quality'; });
     drawResultOptions();
     root.querySelectorAll('[data-section]').forEach(item => { item.hidden = item.dataset.section !== page; });
     root.querySelectorAll('[data-page]').forEach(item => item.setAttribute('aria-selected', item.dataset.page === page));
     root.querySelectorAll('[data-curation-tab]').forEach(item => { item.hidden = item.dataset.curationTab !== tab; });
     root.querySelectorAll('[data-curation-general]').forEach(item => { item.hidden = value === 'annotation' && tab === 'temporal_caption'; });
+    openLatestReport().catch(error => notice(error.message, true));
+  }
+  async function openLatestReport() {
+    if (activeTab !== 'quality_report' || !context) return;
+    if (!$('result').value) $('result').value = $('result').options[1]?.value || '';
+    if ($('result').value && result?.run !== $('result').value) await loadResult();
   }
   function drawForms() {
     root.querySelectorAll('[data-operation]').forEach(container => {
@@ -278,6 +288,9 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('version').textContent = target.dataset_version_id ? `Version ${target.dataset_version_id} · ${data.episodes.length} episodes` : 'Register a dataset version for draft review and curation. Caption tasks can run without it.';
     $('overview').textContent = `${data.info.total_frames || 0} frames · ${data.info.fps || '—'} fps · ${data.info.codebase_version || 'Unknown format'}`;
     $('viewer').hidden = !data.viewer_url; if (data.viewer_url) $('viewer').href = data.viewer_url;
+    $('report-viewer').hidden = !data.viewer_url; if (data.viewer_url) $('report-viewer').href = data.viewer_url;
+    $('prepare-viewer').hidden = !!data.viewer_url || !data.can_edit;
+    $('prepare-viewer').href = '/?' + new URLSearchParams({select:target.location_id ? `remote:${target.location_id}` : target.dataset_key,page:'preprocessing',tab:'cache'});
     const captionBase = target.location_id ? `/remote/${encodeURIComponent(target.location_id)}` : `/${target.dataset_key}`;
     $('analysis').href = captionBase + '/analysis';
     options($('workspace'), data.workspaces, item => item.workspace_id, item => `${item.owner} · ${item.status} · ${item.workspace_id.slice(-8)}`, 'Select a workspace');
@@ -294,6 +307,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     buttons();
     const summaries = await api('/api/curation/comparison-candidates');
     for (const id of ['compare-a','compare-b']) options($(id), summaries.runs, item => item.run, item => `${item.target.dataset_key} · ${new Date(item.created_at).toLocaleString()}`, 'Select a summary');
+    await openLatestReport();
   }
   function reviewFor(index) { const uid = context?.episode_refs?.find(row => row.episode_index === index)?.episode_uid; return draft()?.decisions.find(item => item.episode_ref.episode_uid === uid); }
   function addPair(container, left, right, type = 'text') {
@@ -346,11 +360,14 @@ window.createCurationWorkspace = (root, initialTarget) => {
   }
   async function loadResult() {
     if (!$('result').value) return;
-    result = await api(`/api/curation/runs/${$('result').value}`);
+    const run = $('result').value, request = ++resultRequest;
+    const loaded = await api(`/api/curation/runs/${run}`);
+    if (request !== resultRequest || $('result').value !== run) return;
+    result = loaded;
     $('result-body').replaceChildren(); $('artifacts').replaceChildren();
     const rows = Object.values(result.labels || {}).map(item => [item.episode_index,item.task || '',item.selected ? 'Target selected' : 'No target selected']);
     Object.values(result.tags || {}).forEach(item => rows.push([item.episode_index,'Tags',Object.entries(item.tags || {}).map(([key,value]) => `${key}: ${JSON.stringify(value)}`).join(', ')]));
-    if (result.quality?.flag_reasons || result.quality?.coverage?.length) drawQualityResult();
+    if (result.operation === 'curation.quality') drawQualityResult();
     Object.entries(result.result?.transitions || {}).forEach(([index,items]) => rows.push([index,'Stages',items.map(item => `${item.time}s → ${item.state}`).join(', ')]));
     if (rows.length) { const table = document.createElement('table'); for (const values of rows) { const tr = document.createElement('tr'); values.forEach(value => tr.append(text('td',value))); table.append(tr); } $('result-body').append(table); }
     for (const filename of result.artifacts) {
@@ -384,6 +401,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     const container = document.createElement('div'), filters = document.createElement('div'); filters.className = 'row';
     const issues = Object.entries(result.quality.flag_reasons || {}).flatMap(([index,reasons]) => reasons.map(issue => ({...issue,episode:Number(index),detector:qualityDetector(issue)})));
     const coverage = result.quality.coverage || [];
+    drawQualityReport(issues, coverage);
     const selectors = {};
     for (const [key,label,values] of [
       ['detector','Check',[...issues,...coverage].map(item => item.detector)],
@@ -401,7 +419,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
       ['Episode','Check','Signal / camera','Severity','Frame range','Evidence','Review'].forEach(label => heading.append(text('th',label))); table.append(heading);
       for (const item of issues.filter(matches)) {
         const row = document.createElement('tr'), cell = document.createElement('td'), button = text('button',`Episode ${item.episode}`);
-        button.type = 'button'; button.onclick = () => { if (!allowReviewChange()) return; $('episode').value = String(item.episode); loadReview(true); $('review-form').scrollIntoView({behavior:'smooth'}); }; cell.append(button); row.append(cell);
+        button.type = 'button'; button.onclick = () => { if (!allowReviewChange()) return; root.querySelector('.quality-review').hidden = false; $('episode').value = String(item.episode); loadReview(true); $('review-form').scrollIntoView({behavior:'smooth'}); }; cell.append(button); row.append(cell);
         [qualityNames[item.detector] || item.detector,`${item.camera || item.field || '—'}${item.dimension != null ? '['+item.dimension+']' : ''}`,item.severity || 'issue',JSON.stringify(item.frame_intervals || item.frames || [])].forEach(value => row.append(text('td',value)));
         const evidence = text('td',item.message || item.reason || item.code || 'Quality issue'), details = document.createElement('details');
         details.append(text('summary','Measurements'),text('pre',JSON.stringify({metrics:item.metrics || {},time_intervals:item.time_intervals || []},null,2))); evidence.append(details); row.append(evidence);
@@ -436,6 +454,27 @@ window.createCurationWorkspace = (root, initialTarget) => {
     };
     Object.values(selectors).forEach(select => { select.onchange = draw; });
     container.append(text('p',`${new Set(issues.map(item => item.episode)).size} flagged episodes · ${issues.length} detected issues · ${coverage.length} camera coverage records`,'quality-summary'),filters,body); $('result-body').append(container); draw();
+  }
+  function drawQualityReport(issues, coverage) {
+    const summary = result.result?.summary || result.quality.summary || {};
+    const info = context.info, report = document.createElement('section'); report.className = 'data-report';
+    const metrics = document.createElement('div'); metrics.className = 'report-metrics';
+    const flagged = new Set(issues.map(item => item.episode)).size;
+    const measured = coverage.reduce((sum,item) => sum + (item.checked_frames || 0),0);
+    const expected = coverage.reduce((sum,item) => sum + (item.expected_frames || 0),0);
+    const incomplete = coverage.filter(item => ['error','incomplete'].includes(item.status)).length;
+    for (const [label,value] of [
+      ['Dataset episodes',info.total_episodes ?? context.episodes.length],
+      ['Dataset frames',info.total_frames ?? '—'],
+      ['Duration',info.fps > 0 ? `${((info.total_frames || 0)/info.fps/3600).toFixed(2)} h` : '—'],
+      ['Episodes checked',summary.episodes_scanned ?? result.result?.total_episodes ?? 'Unknown'],
+      ['Flagged episodes',flagged],['Detected issues',issues.length]
+    ]) { const card = document.createElement('div'); card.append(text('small',label),text('strong',typeof value === 'number' ? value.toLocaleString() : value)); metrics.append(card); }
+    report.append(metrics,text('p',`Saved ${new Date(result.created_at).toLocaleString()} · ${info.codebase_version || 'Unknown format'} · ${info.robot_type || 'Unknown robot'} · ${info.fps || '—'} fps`,'muted'));
+    report.append(text('p',`Checks in this run: ${(summary.checks || []).map(key => qualityNames[key] || key).join(', ') || 'Not recorded'}.`));
+    report.append(text('p',coverage.length ? `Video coverage: ${measured.toLocaleString()} / ${expected.toLocaleString()} camera frames (${expected ? (measured/expected*100).toFixed(1) : '0'}%). ${incomplete} incomplete or failed streams. ${coverage.some(item => item.mode === 'sampled') ? 'Sampled frames; unchecked frames are not certified.' : ''}` : 'No video coverage recorded in this result. Video checks have not been established.','muted'));
+    report.append(text('p','Flags are review candidates, not exclusions or training acceptance. Unchecked episodes and checks are not counted as passing. Saved evidence may also include earlier input results.','muted'));
+    $('result-body').append(report);
   }
   function drawEmbedding(points) {
     const svg = $('embedding-plot'); svg.hidden = false; svg.replaceChildren(); svg.setAttribute('viewBox','0 0 800 320');
@@ -478,7 +517,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     window.addEventListener('data-platform:before-dataset-change', beforeDatasetChange);
     window.addEventListener('beforeunload', beforeUnload);
     $('load-result').onclick = () => action(loadResult);
-    $('result').onchange = updateResultVisibility;
+    $('result').onchange = () => { updateResultVisibility(); if (activeTab === 'quality_report') loadResult().catch(error => notice(error.message, true)); };
     $('use-result').onchange = () => { const run = $('result').value; if (!run) return; if ($('use-result').checked) inputRuns.add(run); else inputRuns.delete(run); $('input-description').textContent = `${inputRuns.size} input result(s) selected`; };
     $('accept-result').onclick = () => reviewAction(async () => { if (!result) throw new Error('Open a generated result first.'); await api(`/api/curation/drafts/${draft().workspace_id}/accept/${result.run}/${episode()}`,{expected_revision:draft().revision}); await refresh(); loadReview(true); notice('Result accepted into the draft.'); });
     $('publish').onclick = () => {
