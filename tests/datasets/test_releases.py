@@ -239,6 +239,10 @@ def test_ports_cookies_units_and_state_are_separate():
         assert "Host $http_host" in config  # Preserve port for browser Origin validation.
         assert f"proxy_set_header Cookie $dp_{deployment.environment}_cookie" in config
         assert "proxy_set_header Cookie $http_cookie" not in config
+        assert "gzip on;" in config
+        assert "gzip_types application/json;" in config
+        assert "gzip_min_length 1024;" in config
+        assert "gzip_vary on;" in config
         unit = server_unit(deployment, worker=True)
         assert str(deployment.config) in unit and str(deployment.root / "current") in unit
         assert "Delegate=yes" in unit

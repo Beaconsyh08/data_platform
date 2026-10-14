@@ -46,6 +46,13 @@ H100 的 Agent 经现有 SSH 隧道连接 Server A：生产使用 H100 本地 `9
 两套环境共用 MySQL 服务，但使用四个逻辑库及各自数据库账号。两套 Server、执行器、Agent 和隧道
 均已启用开机自启。开发的 8443 是当前固定配置，不会随着每次更新或服务器重启自动变化。
 
+Nginx 的开发和生产配置均须启用 `application/json` 的 gzip 压缩，并保留
+`Vary: Accept-Encoding`。数据集列表包含 Episode 元数据，任务列表包含执行结果；随着登记数量
+增加，完整响应可达数十 MB。Nginx 默认仅压缩 HTML，不能依赖全局 `gzip on` 来压缩这些 API。
+验证时检查登录后的 `/api/control/locations` 和 `/api/control/jobs?limit=200`，浏览器请求应带
+`Accept-Encoding: gzip`，响应应有 `Content-Encoding: gzip`；无需修改 API 内容或延长页面超时。
+修正现有配置后先执行 `nginx -t`，再热加载 Nginx，不需重启 Web、Agent 或中断运行任务。
+
 源码工作区是 Server A 上的 `/home/yuhao.song/Codes/data_platform`。
 修改这里的代码不会立即改变网站；需要提交、构建发行包，再部署。
 发行包统一保存于 `/var/lib/data-platform-releases/版本名`，同一名称对应一份不可变安装包。
