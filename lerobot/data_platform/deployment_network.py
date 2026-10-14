@@ -46,6 +46,11 @@ server {{
     proxy_http_version 1.1;
     proxy_read_timeout 3600s;
     proxy_send_timeout 3600s;
+    # Dataset and task lists include large metadata/results; compress browser JSON responses.
+    gzip on;
+    gzip_types application/json;
+    gzip_min_length 1024;
+    gzip_vary on;
     proxy_set_header Host $http_host;
     proxy_set_header X-Forwarded-Host $http_host;
     proxy_set_header X-Forwarded-Proto https;
