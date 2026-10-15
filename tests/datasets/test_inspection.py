@@ -64,6 +64,30 @@ def test_raw_records_and_csv_values_preserved_with_paging(tmp_path, compressed):
     assert set(before) == {path for path in tmp_path.rglob("*") if path.is_file()}
 
 
+@pytest.mark.parametrize("source", ["parquet", "csv"])
+def test_schema_defaults_select_all_fields(tmp_path, source):
+    inspection = _local(tmp_path)
+    sensors = {f"sensor_{index}": [index] for index in range(16)}
+    pq.write_table(
+        pa.table({"episode_index": [0], "timestamp": [0.0], **sensors, "camera": [b"image"]}),
+        inspection.root / "data/chunk-000/episode_000000.parquet",
+    )
+    names = ["timestamp", "gripper", "gripper", *sensors]
+    (inspection.static_dir / "csv/episode_000000_ds1.csv").write_text(
+        ",".join(names) + "\n" + ",".join(str(index) for index in range(len(names))) + "\n"
+    )
+
+    schema = inspection.schema(source)
+    expected = [column["id"] for column in schema["columns"]]
+    assert len(expected) > 12
+    assert schema["default_columns"] == expected
+    preview = inspection.rows(source, 0, 0, 50, schema["default_columns"])
+    assert [column["id"] for column in preview["columns"]] == expected
+    assert len(preview["rows"][0]) == len(expected)
+    if source == "parquet":
+        assert preview["rows"][0][-1]["omitted"]
+
+
 def test_csv_selects_smallest_sampling_step_with_mixed_compression(tmp_path):
     inspection = _local(tmp_path)
     directory = inspection.static_dir / "csv"

@@ -223,19 +223,12 @@ class DatasetInspection:
             episode = next((item for item in ids if item in cached), ids[0] if ids else None)
         path = self._file(source, episode) if episode is not None else None
         columns = self.columns(source, episode, path) if episode is not None else []
-        preferred = {"index", "episode_index", "frame_index", "timestamp", "task_index"}
-        defaults = [
-            column.id
-            for column in columns
-            if column.name in preferred
-            or re.match(r"^(action|state|observation\.state)(?:$|[_.])", column.name)
-        ][:12]
         return {
             "source": source,
             "episode_index": episode,
             "episodes": ids,
             "columns": [asdict(column) for column in columns],
-            "default_columns": defaults or [column.id for column in columns[:12]],
+            "default_columns": [column.id for column in columns],
             "dataset_format": self.info.get("codebase_version"),
             "dataset_frames": self.info.get("total_frames"),
             "provenance": self.provenance(source, episode, path) if episode is not None else None,
