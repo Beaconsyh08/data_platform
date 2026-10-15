@@ -149,7 +149,7 @@ def test_chart_zoom_and_remote_trim_submission():
     assert result.returncode == 0, result.stderr
 
 
-def test_empty_chart_highlight_does_not_clear_playback_time():
+def test_chart_hover_previews_signals_without_changing_playback_time():
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is required")
@@ -161,9 +161,8 @@ def test_empty_chart_highlight_does_not_clear_playback_time():
     script += "const app = {dygraphTime: 5, updateTableValues(value) {this.tableTime = value;}};"
     script += "const highlight = function(event, x, points, row, seriesName) {" + body + "};"
     script += "highlight.call(app, null, null, [], -1); assert.equal(app.dygraphTime, 5);"
-    script += (
-        "highlight.call(app, null, 2, [], 20); assert.equal(app.dygraphTime, 2); assert.equal(selected, 20);"
-    )
+    script += "highlight.call(app, null, 2, [], 20); assert.equal(app.dygraphTime, 5);"
+    script += "assert.equal(app.tableTime, 2); assert.equal(selected, 20);"
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
 
