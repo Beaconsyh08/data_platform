@@ -4,16 +4,22 @@
 .caption-task-form > label.caption-signal-option { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; flex-basis: 100%; cursor: pointer; }
 .caption-task-form .caption-signal-option input[type=checkbox] { flex: 0 0 16px; width: 16px; height: 16px; min-width: 16px; margin: 2px 0 0; padding: 0; }
 .caption-task-form .caption-signal-option span { min-width: 0; overflow-wrap: anywhere; }
+.caption-task-form > label:not(.caption-signal-option) { display: grid; gap: .375rem; font-size: .8125rem; color: var(--dp-muted); }
+.caption-task-form select, .caption-task-form input[type=text] { min-width: 0; max-width: 100%; padding: .5rem .75rem; border: 1px solid var(--dp-border); border-radius: var(--dp-radius); background: var(--dp-ground); color: var(--dp-text); }
+[data-caption-id=job-submit] { padding: .5rem .75rem; border: 1px solid #0284c7; border-radius: var(--dp-radius); background: var(--dp-primary); color: #f0f9ff; font-weight: 600; }
+[data-caption-id=job-submit]:disabled { opacity: .45; cursor: not-allowed; }
+[data-caption-id=method-description], [data-caption-id=selection-summary] { font-size: .8125rem; color: var(--dp-muted); }
 </style>
-<section class="card block" style="margin:16px 20px" aria-label="Annotation tasks">
-<h2>Temporal Caption</h2><div class="row"><a data-caption-id="open-review">Open Temporal Caption Review →</a></div>
+<section class="card block" aria-label="Annotation tasks">
+<h2>Temporal Caption</h2><div class="row"><a data-caption-id="open-review">Review captions →</a></div>
 <form data-caption-id="caption-job-form" class="transport caption-task-form">
-<label>Annotation method <select data-caption-id="job-scheme"></select></label>
+<label>Method <select data-caption-id="job-scheme"></select></label>
 <label>Episodes <select data-caption-id="episode-mode"><option value="range">Indices / ranges</option><option value="all">Entire dataset</option></select></label>
 <label data-caption-id="range-label">Episode indices <input data-caption-id="job-episode" type="text" value="0" placeholder="0, 5, 10-20" required></label>
 <label class="caption-signal-option"><input data-caption-id="include-signals" type="checkbox" checked><span>Include action/state, pose and gripper signals</span></label>
-<button data-caption-id="job-submit" type="submit" disabled>Submit annotation jobs</button></form>
-<p data-caption-id="method-description"></p><p data-caption-id="selection-summary"></p>
+<button data-caption-id="job-submit" type="submit" disabled>Create captions</button></form>
+<details class="dp-help"><summary>Method details</summary><p data-caption-id="method-description"></p></details>
+<p data-caption-id="selection-summary"></p>
 <p data-caption-id="job-readiness">Checking annotation executor…</p><p data-caption-id="job-status" role="status" aria-live="polite" aria-atomic="true"></p>
-<p>Each episode creates one job. Track progress, cancel, or retry in Jobs. Model API usage is charged per episode.</p>
+<p>One job per episode; API usage is charged per episode. Track or cancel in Jobs.</p>
 </section>

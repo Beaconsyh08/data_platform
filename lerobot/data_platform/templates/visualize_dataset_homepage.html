@@ -7,30 +7,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script>{% include "data_platform_interactions.js" %}</script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    {% include "data_platform_workspace_styles.html" %}
     <style>
-        :root {
-            color-scheme: dark;
-        }
-        body {
-            background:
-                radial-gradient(circle at 50% -12rem, rgba(14, 116, 144, 0.13), transparent 32rem),
-                #020617;
-            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        }
-        button,
-        input,
-        select,
-        textarea {
-            font: inherit;
-        }
-        button:focus-visible,
-        a:focus-visible,
-        input:focus-visible,
-        select:focus-visible,
-        textarea:focus-visible {
-            outline: 2px solid #38bdf8;
-            outline-offset: 2px;
-        }
         .dp-app-header {
             background: rgba(2, 6, 23, 0.94);
             border: 1px solid rgba(51, 65, 85, 0.82);
@@ -53,39 +31,6 @@
         .dp-header-grid-import { grid-template-areas: "brand jobs" "workspace workspace"; }
         .dp-workspace-nav button {
             flex: 1 1 0;
-        }
-        .dp-page-surface {
-            background: rgba(15, 23, 42, 0.86);
-            border: 1px solid #1e293b;
-            border-radius: 0.75rem;
-            box-shadow: 0 18px 50px rgba(2, 6, 23, 0.18);
-        }
-        .dp-page-header {
-            background: linear-gradient(100deg, rgba(15, 23, 42, 0.92), rgba(8, 47, 73, 0.16));
-            border-bottom: 1px solid #1e293b;
-            padding: 1.25rem;
-        }
-        .dp-page-kicker,
-        .dp-section-kicker {
-            color: #7dd3fc;
-            font-size: 0.6875rem;
-            font-weight: 700;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-        }
-        .dp-page-title {
-            color: #f8fafc;
-            font-size: 1.25rem;
-            font-weight: 650;
-            letter-spacing: -0.015em;
-            line-height: 1.4;
-        }
-        .dp-page-description {
-            color: #94a3b8;
-            font-size: 0.8125rem;
-            line-height: 1.55;
-            margin-top: 0.25rem;
-            max-width: 52rem;
         }
         .dp-section-block {
             border-bottom: 1px solid #1e293b;
@@ -113,79 +58,8 @@
         [x-ref="jobLogBox"] {
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
         }
-        .dp-btn,
-        .dp-link-btn {
-            align-items: center;
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 0.5rem;
-            color: #cbd5e1;
-            display: inline-flex;
-            font-size: 0.875rem;
-            font-weight: 600;
-            justify-content: center;
-            min-height: 2.25rem;
-            padding: 0.5rem 0.75rem;
-            text-align: center;
-            text-decoration: none;
-            transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
-            width: 100%;
-        }
-        .dp-btn:hover:not(:disabled),
-        .dp-link-btn:not(.is-disabled):hover {
-            background: #1e293b;
-            border-color: #475569;
-            color: #e2e8f0;
-            transform: translateY(-1px);
-        }
-        .dp-btn-primary {
-            background: #0369a1;
-            border-color: #0284c7;
-            color: #f0f9ff;
-        }
-        .dp-btn-primary:hover:not(:disabled),
-        .dp-link-btn.dp-btn-primary:not(.is-disabled):hover {
-            background: #0284c7;
-            border-color: #38bdf8;
-            color: #fff;
-        }
-        .dp-btn-secondary {
-            background: #172033;
-            border-color: #334155;
-            color: #cbd5e1;
-        }
-        .dp-btn-secondary:hover:not(:disabled),
-        .dp-link-btn.dp-btn-secondary:not(.is-disabled):hover {
-            background: #1e293b;
-            border-color: #0ea5e9;
-            color: #e0f2fe;
-        }
-        .dp-btn-danger {
-            background: rgba(69, 10, 10, 0.65);
-            border-color: #7f1d1d;
-            color: #fecaca;
-        }
-        .dp-btn-danger:hover:not(:disabled) {
-            background: rgba(127, 29, 29, 0.75);
-        }
-        .dp-btn-inline {
-            width: auto;
-        }
-        .dp-btn-compact {
-            font-size: 0.6875rem;
-            min-height: 0;
-            padding: 0.25rem 0.5rem;
-            width: auto;
-        }
-        .dp-btn:disabled,
-        .dp-link-btn.is-disabled {
-            background: #020617;
-            border-color: #1e293b;
-            color: #64748b;
-            cursor: not-allowed;
-            opacity: 0.9;
-            pointer-events: none;
-        }
+        .dp-main-canvas .dp-btn, .dp-main-canvas .dp-link-btn { width: 100%; }
+        .dp-main-canvas .dp-btn-inline, .dp-main-canvas .dp-btn-compact { width: auto; }
         .dp-action-row,
         .dp-open-grid {
             display: grid;
@@ -468,10 +342,10 @@
                 <div class="dp-page-header">
                     <div class="dp-page-kicker">Data Platform</div>
                     <h2 class="dp-page-title mt-1">Datasets</h2>
-                    <p class="dp-page-description">Discover datasets on Server A or connected Agents, then select one as the working dataset. Details load automatically when needed.</p>
-                    <details class="mt-3 text-xs text-slate-400">
-                        <summary class="cursor-pointer">What do Raw, Standard and Curated mean?</summary>
-                        <p class="mt-2">Raw is source data. Standard is preprocessing output. Curated is reviewed construction or Manifest output. The badge describes the dataset's origin; it is not a quality verdict.</p>
+                    <p class="dp-page-description">Find and select a dataset to start working.</p>
+                    <details class="dp-help mt-2">
+                        <summary>Lifecycle stages</summary>
+                        <p>Raw is source data. Standard is preprocessing output. Curated is reviewed construction or Manifest output. The badge describes origin, not quality.</p>
                     </details>
                 </div>
 
@@ -492,7 +366,7 @@
                     <div class="mb-3 mt-3">
                         <div class="dp-section-kicker">Discover</div>
                         <h3 class="mt-1 font-semibold text-slate-100">Scan a path on one server</h3>
-                        <p class="mt-1 text-xs text-slate-400">Choose a server and one of its known directories, or enter a custom path below. Agent scans are limited to that Agent's authorized roots.</p>
+                        <p class="mt-1 text-xs text-slate-400">Choose a server and directory, or enter a custom path.</p>
                     </div>
                     <div class="grid gap-3 lg:grid-cols-[minmax(12rem,0.35fr)_minmax(0,1fr)]">
                         <label class="block">
@@ -537,7 +411,7 @@
                         </div>
                     </div>
                     <p class="mt-2 text-[11px] text-slate-500" x-show="datasetServerFilter !== 'local'">
-                        Custom paths must be inside this Agent's allowed roots; entering a path does not authorize a new root. Scan runs now, including while tasks are running. Refresh reloads the registered list.
+                        Scan searches within the Agent’s allowed folders. Refresh updates the saved list.
                     </p>
                     <div class="mt-3 flex flex-col gap-2 rounded-lg border px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
                          :class="rootProtected ? 'border-amber-800/70 bg-amber-950/20' : 'border-slate-800 bg-slate-950/60'"
@@ -924,7 +798,7 @@
                     <div class="flex flex-col gap-3 rounded-lg border border-slate-800 bg-slate-950/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                             <h3 class="font-semibold text-slate-100">Visualization center</h3>
-                            <p class="mt-1 text-xs leading-5 text-slate-400">Inspect raw behavior, review generated artifacts, and open diagnostics from one place. Missing artifacts link to the workflow that creates them.</p>
+                            <p class="mt-1 text-xs leading-5 text-slate-400">Open a viewer or prepare the results you need.</p>
                         </div>
                         <div class="flex shrink-0 items-center gap-2 text-[11px] text-slate-400">
                             <span class="rounded-full border border-emerald-900 bg-emerald-950/50 px-2 py-1 text-emerald-300"
@@ -995,7 +869,7 @@
                 <div class="space-y-4 px-4 py-4" x-show="activeTab === 'versions'">
                     <div class="rounded border border-sky-900/70 bg-sky-950/20 px-3 py-3 text-xs text-slate-300">
                         <div class="font-semibold text-sky-200">Dataset Versions & Lineage</div>
-                        <p class="mt-2 text-slate-400">Full-hash the selected dataset and register portable episode identity artifacts plus physical replicas in the SQLite lifecycle control plane. The source dataset is not modified.</p>
+                        <p class="mt-2 text-slate-400">Register a dataset version and track its episodes and replicas. Source files stay unchanged.</p>
                     </div>
                     <div class="dp-action-row">
                         <button class="dp-btn dp-btn-primary dp-full"
@@ -1007,7 +881,7 @@
                     </div>
                     <div class="rounded border border-sky-900/70 bg-slate-950 px-3 py-3 text-xs">
                         <div class="font-semibold text-slate-200">Source Delivery</div>
-                        <p class="mt-1 text-slate-500">Describe where this delivery came from before registering its immutable Raw version. Processed versions inherit the source lineage but use managed retention.</p>
+                        <p class="mt-1 text-slate-500">Record the source before registering a Raw version.</p>
                         <div class="mt-3 grid gap-3 md:grid-cols-2">
                             <label class="block">
                                 <span class="mb-1 block text-slate-400">delivery name</span>
@@ -1156,7 +1030,7 @@
                 <div class="space-y-4 px-4 py-4" x-show="activeTab === 'curation_manifest'">
                     <div class="rounded border border-violet-900/70 bg-violet-950/20 px-3 py-3 text-xs text-slate-300">
                         <div class="font-semibold text-violet-200">Requirement → Recipe → Workspace → Manifest</div>
-                        <p class="mt-2 text-slate-400">Define the desired dataset, freeze cohort and composition choices in a Recipe, then review the compiled Workspace before publishing an immutable Manifest.</p>
+                        <p class="mt-2 text-slate-400">Set requirements, build a recipe, then review and publish your selection.</p>
                     </div>
                     <div class="grid gap-4 xl:grid-cols-2">
                         <section class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs">
@@ -1456,8 +1330,8 @@
                 <div class="space-y-4 px-4 py-4" x-show="activeTab === 'temporal_caption'">
                     <div class="dp-card p-5">
                         <h3 class="text-lg font-semibold text-slate-100">Temporal Caption</h3>
-                        <p class="mt-2 text-sm text-slate-400">Review a single episode with synchronized cameras, semantic segments, and captions. Compare Multi-view Semantics, Video + Events, and Fusion + Review, with separate episode and result selection.</p>
-                        <p class="mt-2 text-xs text-slate-500">Import existing results or submit a single-episode annotation task on a configured Agent. Review is available before preparing a full Viewer cache.</p>
+                        <p class="mt-2 text-sm text-slate-400">Review captions alongside synchronized video and signals.</p>
+                        <p class="mt-2 text-xs text-slate-500">Choose an episode and result method. No Viewer cache is required.</p>
                         <a class="dp-btn dp-btn-primary dp-btn-inline mt-4" :href="temporalCaptionUrl()" x-show="selectedDataset">Create annotation task</a>
                         <a class="dp-btn dp-btn-inline mt-4" :href="temporalCaptionUrl() + '/review'" x-show="selectedDataset">Temporal Caption Review →</a>
                     </div>
@@ -3917,15 +3791,15 @@
                 },
                 activePageDescription() {
                     if (this.activePage === 'explore' && this.selectedDataset?.remote) {
-                        return 'Run analysis from Agent metadata, or inspect episodes with the optional Viewer cache.';
+                        return 'Explore dataset statistics or prepare the Viewer to inspect episodes.';
                     }
                     const descriptions = {
-                        preprocessing: 'Prepare immutable Standard sibling datasets through explicit preprocessing steps.',
-                        versions: 'Manage source deliveries, reconciliation, portable identity, lineage, replicas, and quarantine evidence.',
-                        explore: 'Inspect episodes and distributions, then compare representation and coverage across datasets.',
-                        quality: 'Detect and review semantic quality issues without modifying the source dataset.',
-                        annotation: 'Create reviewable stage, object, and semantic annotations for curation.',
-                        dataset_build: 'Turn requirements and deterministic recipes into reviewed, versioned curation manifests.',
+                        preprocessing: 'Prepare a new dataset while preserving the source.',
+                        versions: 'Track dataset versions, sources, and storage locations.',
+                        explore: 'Explore episodes, task coverage, and dataset differences.',
+                        quality: 'Find issues to review. Detection does not change source data.',
+                        annotation: 'Create and review stage, object, and caption annotations.',
+                        dataset_build: 'Build and publish a reviewed dataset selection.',
                         admin_operations: 'Run controlled legacy operations that may modify source data. Review risk before execution.',
                     };
                     return descriptions[this.activePage] || '';
@@ -3949,7 +3823,7 @@
                         {
                             key: 'viewer', group: 'inspect', icon: 'EV', label: 'Episode Viewer',
                             output: 'Video · signals · stages',
-                            description: 'Inspect synchronized video, action/state curves, prompts, stages, subtasks, and episode flags.',
+                            description: 'Inspect video, signals, and episode annotations together.',
                             ready: this.canOpenViewer(), href: this.viewerUrl(), openLabel: 'Open viewer',
                             setupLabel: remoteViewerPending
                                 ? 'Preparing viewer…'
@@ -3965,49 +3839,49 @@
                         {
                             key: 'analysis', group: 'inspect', icon: 'AN', label: 'Dataset Analysis',
                             output: 'Distributions · coverage',
-                            description: 'Review task, scene, tag, duration, stage, cache, and annotation coverage across the dataset.',
+                            description: 'Explore task coverage and episode statistics.',
                             ready: Boolean(this.analysisUrl()), href: this.analysisUrl(), openLabel: 'Open analysis',
                             setupLabel: 'Load dataset', missingStatus: 'Not available'
                         },
                         {
                             key: 'labeling', group: 'review', icon: 'LB', label: 'Label Review',
                             output: 'Frames · boxes · decisions',
-                            description: 'Inspect detected objects and bounding boxes, then accept, reject, or correct generated labels.',
+                            description: 'Review and correct object labels and bounding boxes.',
                             ready: this.canOpenReview(), href: this.canOpenReview() ? this.reviewUrl() : '', openLabel: 'Open label review',
                             setupLabel: 'Run object labeling', missingStatus: 'Not generated'
                         },
                         {
                             key: 'temporal_caption', group: 'review', icon: 'TC', label: 'Temporal Caption Review',
                             output: 'Video · segments · captions',
-                            description: 'Review temporal captions, compare annotation methods, and inspect automatic review findings.',
+                            description: 'Review captions and compare annotation results.',
                             ready: Boolean(this.temporalCaptionUrl()), href: this.temporalCaptionUrl() + '/review', openLabel: 'Open caption review',
                             setupLabel: 'Create caption task', missingStatus: 'Select dataset'
                         },
                         {
                             key: 'tagging', group: 'review', icon: 'TG', label: 'Tag Review',
                             output: 'Trajectory · grasp heatmap',
-                            description: 'Review semantic tags, XY trajectories, grasp points, and generated heatmaps before merge.',
+                            description: 'Review tags, trajectories, and grasp locations.',
                             ready: Boolean(this.taggingReviewUrl()), href: this.taggingReviewUrl(), openLabel: 'Open tag review',
                             setupLabel: 'Run auto-tagging', missingStatus: 'Not generated'
                         },
                         {
                             key: 'construction', group: 'review', icon: 'DC', label: 'Construction Review',
                             output: 'Synthetic samples · decisions',
-                            description: 'Inspect constructed samples, source images, boxes, and review decisions before materialization.',
+                            description: 'Review constructed samples before building a dataset.',
                             ready: Boolean(this.constructionReviewUrl()), href: this.constructionReviewUrl(), openLabel: 'Open construction review',
                             setupLabel: 'Build construction plan', missingStatus: 'Not generated'
                         },
                         {
                             key: 'embedding', group: 'diagnostics', icon: 'EM', label: 'Embedding Map',
                             output: '2D scatter · clusters',
-                            description: 'Explore episode representations as an interactive scatter plot to identify clusters and outliers.',
+                            description: 'Find clusters and outliers in episode embeddings.',
                             ready: Boolean(this.embeddingUrl()), href: this.embeddingUrl(), openLabel: 'Open embedding map',
                             setupLabel: 'Create embedding', missingStatus: 'Not generated'
                         },
                         {
                             key: 'compare', group: 'diagnostics', icon: 'CP', label: 'Dataset Compare',
                             output: 'Overlap · statistics · samples',
-                            description: 'Compare schemas, statistics, episode overlap, coverage, and visual samples between two datasets.',
+                            description: 'Compare dataset structure, coverage, and samples.',
                             ready: Boolean(this.compareUrl()), href: this.compareUrl(), openLabel: 'Open comparison',
                             setupLabel: 'Select comparison dataset',
                             missingStatus: compareCount ? `${compareCount} saved · choose pair` : 'Choose dataset B'
@@ -4015,7 +3889,7 @@
                         {
                             key: 'smoothing', group: 'diagnostics', icon: 'SM', label: 'Smoothing Report',
                             output: 'Before/after curves · metrics',
-                            description: 'Compare action and state signals before and after smoothing, including quantitative diagnostics.',
+                            description: 'Compare signals before and after smoothing.',
                             ready: Boolean(this.smoothingReportUrl()), href: this.smoothingReportUrl(), openLabel: 'Open smoothing report',
                             setupLabel: 'Run action smoothing', missingStatus: 'Not generated'
                         }

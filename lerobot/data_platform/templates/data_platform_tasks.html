@@ -20,8 +20,8 @@
             <div class="dp-page-header flex flex-wrap items-start justify-between gap-4">
                 <div>
                     <p class="dp-section-kicker">Task setup</p>
-                    <h2 class="dp-page-title mt-1">Turn instructions into reusable task types</h2>
-                    <p class="dp-page-description">Match dataset instructions to tasks such as Open door or Load clothes. Use their type and attributes to explore coverage and build a balanced selection.</p>
+                    <h2 class="dp-page-title mt-1">Organize task types</h2>
+                    <p class="dp-page-description">Match instructions to task types for analysis and dataset selection.</p>
                 </div>
                 <a class="dp-btn" :href="analysisUrl" x-show="analysisUrl && datasetKey === loadedDatasetKey">Open analysis</a>
             </div>
@@ -39,7 +39,7 @@
                 <div class="flex flex-wrap items-end justify-between gap-4">
                     <div>
                         <h3 class="font-semibold text-slate-100">Match your dataset instructions</h3>
-                        <p class="dp-page-description">Review automatic matches, assign an existing task, or create a definition for a new instruction.</p>
+                        <p class="dp-page-description">Review suggested matches or assign a task type.</p>
                     </div>
                     <label class="dp-field w-full sm:w-56">Catalog version<select class="dp-input" x-model="catalogId" @change="previewResult = null; clearSuggestions()" :disabled="busy">
                         <template x-for="catalog in catalogs" :key="catalog.catalog_version_id"><option :value="catalog.catalog_version_id" x-text="catalogLabel(catalog)"></option></template>

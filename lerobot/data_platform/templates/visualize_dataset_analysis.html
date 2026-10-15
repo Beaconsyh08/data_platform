@@ -15,7 +15,7 @@
     {% include "visualize_dataset_topbar.html" %}
     <main class="dp-workspace space-y-5">
         <header class="flex flex-wrap items-center justify-between gap-3">
-            <div><h2 class="dp-page-title">Dataset overview</h2><p class="dp-page-description">Run analysis directly from dataset metadata. Video and CSV preparation is optional.</p></div>
+            <div><h2 class="dp-page-title">Dataset overview</h2><p class="dp-page-description">Explore dataset statistics. No Viewer cache is required.</p></div>
             <div class="flex flex-wrap gap-2">
                 {% if task_configuration_enabled %}<a class="dp-btn" href="/tasks?dataset_key={{ dataset_key|urlencode }}">Task setup</a>{% endif %}
                 <button class="dp-btn" @click="refreshAnalysis()" :disabled="busy" x-text="busy ? 'Loading…' : 'Refresh analysis'"></button>
@@ -43,7 +43,7 @@
         </div>
         <section class="dp-page-surface" aria-label="Episode filters">
             <div class="dp-page-header flex flex-wrap items-center justify-between gap-3">
-                <div><h2 class="font-semibold">Explore a selection</h2><p class="dp-page-description">Choose a task type, search an instruction, or click a distribution to filter episodes.</p></div>
+                <div><h2 class="font-semibold">Explore a selection</h2><p class="dp-page-description">Filter by task, instruction, or chart selection.</p></div>
                 <button class="dp-btn dp-btn-compact" @click="resetFilters()" :disabled="!hasFilters()">Reset filters</button>
             </div>
             <div class="space-y-3 p-5">

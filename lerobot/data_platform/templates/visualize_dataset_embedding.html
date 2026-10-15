@@ -14,7 +14,7 @@
   #plot, #atlasPlot { position:absolute; inset:0; width:100%; height:100%; }
   #atlasPlot { display:none; }
   aside { background:#0f172a; border-left:1px solid #1e293b; overflow:auto; padding:12px; }
-  select, input, button { border:1px solid #334155; border-radius:6px; background:#020617; color:#e2e8f0; padding:6px 8px; font:inherit; }
+  select, input, button { border:1px solid #334155; border-radius:var(--dp-radius); background:#020617; color:#e2e8f0; padding:6px 8px; font:inherit; }
   button { cursor:pointer; background:#1e293b; }
   button:hover { border-color:#38bdf8; }
   button:disabled { opacity:.45; cursor:not-allowed; }
@@ -33,6 +33,7 @@
   #hoverPreview img { display:block; width:100%; max-height:165px; object-fit:contain; background:#0f172a; }
   #hoverPreview .caption { padding:7px 8px; color:#cbd5e1; border-top:1px solid #1e293b; }
 </style>
+{% include "data_platform_workspace_styles.html" %}
 </head>
 <body>
 {% set page_kind = "Embedding" %}

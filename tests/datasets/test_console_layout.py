@@ -487,7 +487,7 @@ def test_homepage_uses_single_canvas_dataset_page_and_on_demand_job_drawer():
     assert "/api/admin/logout" in template
     assert "dataPlatform.adminModeUntil" not in template
     assert "legacyMutationsEnabled && adminModeEnabled" in template
-    assert "What do Raw, Standard and Curated mean?" in template
+    assert "<summary>Lifecycle stages</summary>" in template
     assert "Raw is source data" in template
     assert "preprocessing output" in template
     assert "reviewed construction or Manifest output" in template

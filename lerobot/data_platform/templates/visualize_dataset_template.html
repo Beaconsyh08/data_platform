@@ -10,12 +10,13 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <title>{{ dataset_info.repo_id }} episode {{ episode_id }}</title>
     <style>[x-cloak] { display: none !important; }</style>
+    {% include "data_platform_workspace_styles.html" %}
 </head>
 
 <!-- Use [Alpine.js](https://alpinejs.dev), a lightweight JavaScript framework. -->
 <!-- Use [tailwindcss](https://tailwindcss.com/), CSS classes for styling html -->
 <!-- Use [dygraphs](https://dygraphs.com/), a lightweight JS charting library -->
-<body class="flex h-screen max-h-screen flex-col overflow-hidden bg-slate-950 text-slate-200 font-mono text-sm" x-data="createAlpineData()" @keydown.window="handleFrameKey($event)">
+<body class="flex h-screen max-h-screen flex-col overflow-hidden bg-slate-950 text-slate-200 text-sm" x-data="createAlpineData()" @keydown.window="handleFrameKey($event)">
     {% set page_kind = "Episode Viewer" %}
     {% set page_title = dataset_info.repo_id %}
     {% set page_subtitle = "Episode " ~ episode_id %}
