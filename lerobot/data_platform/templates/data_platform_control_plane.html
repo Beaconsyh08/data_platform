@@ -41,6 +41,7 @@
             </div>
         </header>
 
+        <p class="mb-4 rounded-lg border border-sky-900 bg-sky-950/30 px-3 py-2 text-sm text-sky-200" role="status" x-cloak x-show="jobNotice" x-text="jobNotice"></p>
         <p class="mb-4 rounded-lg border border-red-900 bg-red-950/30 px-3 py-2 text-sm text-red-200" role="alert" x-cloak x-show="error" x-text="error"></p>
 
         <nav class="management-tabs mb-6 flex overflow-x-auto border-b border-slate-800" aria-label="Platform management sections">
@@ -301,9 +302,12 @@
                     <thead class="text-xs uppercase text-slate-500"><tr><th class="px-4 py-3">Operation</th><th class="px-4 py-3">Status</th><th class="px-4 py-3">Created</th><th class="px-4 py-3">Result</th><th class="px-4 py-3">Controls</th></tr></thead>
                     <tbody class="divide-y divide-slate-800">
                         <template x-for="job in paginatedJobs()" :key="job.job_id">
-                            <tr><td class="px-4 py-3 text-sm"><div class="font-medium" x-text="job.operation"></div><div class="mt-1 max-w-xs truncate text-xs text-slate-400" x-text="jobDataset(job)"></div><div class="mt-1 text-xs text-slate-500" x-text="job.requested_by_username || userLabel(job.requested_by)"></div></td><td class="px-4 py-3"><span class="inline-block rounded-full px-2 py-0.5 text-xs" :class="statusClass(job.status)" x-text="job.status"></span><div class="text-xs text-slate-400" x-text="job.phase"></div><div class="text-xs" x-text="job.status === 'done' ? '100%' : job.progress?.progress != null ? Math.round(job.progress.progress) + '%' : ''"></div><div class="text-xs text-amber-300" x-text="job.queue_reason"></div></td><td class="px-4 py-3 text-slate-400" x-text="formatTime(job.created_at)"></td><td class="max-w-lg truncate px-4 py-3 font-mono text-xs text-slate-400" x-text="job.error || (job.result?.viewer_url ? 'Viewer ready' : job.status === 'done' ? 'Completed' : '—')" :title="job.error || ''"></td><td class="px-4 py-3"><div class="flex flex-wrap gap-2">
+                            <tr><td class="px-4 py-3 text-sm"><div class="font-medium" x-text="job.operation"></div><div class="mt-1 max-w-xs truncate text-xs text-slate-400" x-text="jobDataset(job)"></div><div class="mt-1 text-xs text-slate-500" x-text="job.requested_by_username || userLabel(job.requested_by)"></div></td><td class="px-4 py-3"><span class="inline-block rounded-full px-2 py-0.5 text-xs" :class="statusClass(job.status)" x-text="job.status"></span><div class="text-xs text-slate-400" x-text="job.phase"></div><div class="text-xs" x-text="job.status === 'done' ? '100%' : job.progress?.progress != null ? Math.round(job.progress.progress) + '%' : ''"></div><div class="text-xs text-sky-300" x-show="job.extra_quota" x-text="['queued', 'running', 'cancel_requested', 'interrupted'].includes(job.status) ? 'Extra quota enabled' : 'Extra quota was enabled'"></div><div class="text-xs text-amber-300" x-text="job.queue_reason"></div></td><td class="px-4 py-3 text-slate-400" x-text="formatTime(job.created_at)"></td><td class="max-w-lg truncate px-4 py-3 font-mono text-xs text-slate-400" x-text="job.error || (job.result?.viewer_url ? 'Viewer ready' : job.status === 'done' ? 'Completed' : '—')" :title="job.error || ''"></td><td class="px-4 py-3"><div class="flex flex-wrap gap-2">
                                 <button @click="showJob(job.job_id)" class="text-sky-300">Details</button>
                                 <template x-for="action in ['retry', 'cancel', 'terminate'].filter(item => job.available_actions?.includes(item))" :key="action"><button :disabled="busyJob === job.job_id" @click="controlJob(job, action)" x-text="action === 'cancel' ? (job.status === 'queued' ? 'Cancel queued' : 'Request stop') : action === 'retry' ? 'Retry' : 'Force stop'" class="rounded border border-slate-700 px-2 py-1"></button></template>
+                                {% if user.role == "admin" %}
+                                <button x-show="job.available_actions?.includes('extra-quota')" :disabled="busyJob === job.job_id" @click="controlJob(job, 'extra-quota', {enabled: !job.extra_quota})" x-text="job.extra_quota ? 'Revoke extra quota' : 'Use extra quota (+1)'" title="Give only this queued task an extra user slot. Node capacity and dataset locks still apply." class="rounded border border-sky-700 px-2 py-1 text-sky-300"></button>
+                                {% endif %}
                                 <select aria-label="Job priority" x-show="job.available_actions?.includes('priority')" :value="job.priority" @change="controlJob(job, 'priority', {priority: Number($event.target.value)})" class="rounded bg-slate-950 p-1"><option value="0">Low</option><option value="1">Normal</option><option value="2">High</option></select>
                                 </div><p class="text-xs text-slate-400" x-text="job.control_reason"></p></td></tr>
                         </template>
@@ -325,7 +329,7 @@
             return {
                 scopeLocations: [], scopeAccount: null, scopeLocationIds: [], scopeBusy: false, scopeMode: 'all', scopeSearch: '',
                 nodes: [], locations: [], jobs: [], users: [], selectedNodeId: '', error: '', timer: null,
-                myJobsOnly: false, busyJob: null, jobHistory: null,
+                myJobsOnly: false, busyJob: null, jobHistory: null, jobNotice: '',
                 section: 'overview', refreshing: false, lastUpdated: null,
                 jobSearch: '', jobStatus: '', jobPage: 1, jobPageSize: 20, databaseRequest: 0,
                 userSearch: '', userStatus: '', historyRequest: 0,
@@ -435,9 +439,15 @@
                         extra = {...extra, reason, confirm: true};
                     }
                     this.busyJob = job.job_id;
+                    this.jobNotice = '';
                     try {
                         const key = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-                        await this.request(`/api/control/jobs/${job.job_id}/${action}`, {method: action === 'priority' ? 'PATCH' : 'POST', body: JSON.stringify({revision: job.revision, idempotency_key: key, ...extra})});
+                        await this.request(`/api/control/jobs/${job.job_id}/${action}`, {method: ['priority', 'extra-quota'].includes(action) ? 'PATCH' : 'POST', body: JSON.stringify({revision: job.revision, idempotency_key: key, ...extra})});
+                        if (action === 'extra-quota') {
+                            this.jobNotice = extra.enabled
+                                ? 'Extra quota enabled for this task. It will start when a node slot and dataset locks are available.'
+                                : 'Extra quota revoked. This task uses the normal user quota.';
+                        }
                         await this.load();
                     } catch (error) { this.error = error.message; } finally { this.busyJob = null; }
                 },

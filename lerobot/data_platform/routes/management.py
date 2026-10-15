@@ -129,6 +129,12 @@ def register_management_routes(app, store):
     def priority_job(job_id):
         return control(job_id, "priority")
 
+    @app.patch("/api/control/jobs/<string:job_id>/extra-quota")
+    def extra_quota_job(job_id):
+        if denied := admin():
+            return denied
+        return control(job_id, "extra-quota")
+
     @app.get("/api/control/jobs/<string:job_id>/attempts")
     def job_attempts(job_id):
         try:

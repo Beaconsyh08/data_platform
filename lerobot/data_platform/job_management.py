@@ -112,6 +112,22 @@ class JobManager:
         self.control(session, job)
         self.audit(session, job, "job.submitted")
 
+    @staticmethod
+    def user_running_count(session, user_id):
+        """Count ordinary slots across all nodes, including executions awaiting confirmed exit."""
+        from lerobot.data_platform.control_plane import RemoteJob
+
+        return session.scalar(
+            select(func.count())
+            .select_from(RemoteJob)
+            .outerjoin(JobControl, JobControl.job_id == RemoteJob.job_id)
+            .where(
+                RemoteJob.requested_by == user_id,
+                RemoteJob.status.in_(ACTIVE_STATES),
+                func.coalesce(JobControl.extra_quota, False).is_(False),
+            )
+        )
+
     def expire(self, session):
         from lerobot.data_platform.control_plane import RemoteJob, _utcnow
 
@@ -233,7 +249,8 @@ class JobManager:
                     user_limit = max(user_limit, legacy_caption_limit)
                 if (
                     len(node_active) >= node_limit
-                    or sum(row.requested_by == job.requested_by for row in active) >= user_limit
+                    or not control.extra_quota
+                    and self.user_running_count(session, job.requested_by) >= user_limit
                 ):
                     continue
                 location = session.get(DatasetLocation, job.location_id)
@@ -453,7 +470,7 @@ class JobManager:
                 actor["role"] not in {"operator", "data_manager"} or job.requested_by != actor["user_id"]
             ):
                 raise PermissionError("Only the owner or an administrator may control this job")
-            if action in {"terminate", "priority"} and actor["role"] != "admin":
+            if action in {"terminate", "priority", "extra-quota"} and actor["role"] != "admin":
                 raise PermissionError("Administrator role required")
             command_key = hashlib.sha256(f"{actor['user_id']}:{key}".encode()).hexdigest()
             request = {"action": action, **body}
@@ -467,7 +484,13 @@ class JobManager:
                 raise JobConflictError("Job changed; refresh before trying again")
             attempt = session.get(JobAttempt, control.attempt_id) if control.attempt_id else None
             safe = job.operation in SAFE_OPERATIONS and attempt is not None and attempt.protocol >= 2
-            if action == "priority":
+            if action == "extra-quota":
+                if job.status != "queued":
+                    raise JobConflictError("Only queued jobs can change extra quota")
+                if type(body.get("enabled")) is not bool:
+                    raise ValueError("enabled must be a boolean")
+                control.extra_quota = body["enabled"]
+            elif action == "priority":
                 if job.status != "queued":
                     raise JobConflictError("Only queued jobs can change priority")
                 priority = body.get("priority")
@@ -490,6 +513,7 @@ class JobManager:
                 job.result, job.error = {}, None
                 job.started_at = job.finished_at = None
                 control.stop_mode = None
+                control.extra_quota = False
             elif action in {"cancel", "terminate"}:
                 if job.status == "cancelled":
                     return self.store._job_dict(job) | self.control_dict(control)
@@ -537,7 +561,11 @@ class JobManager:
                 job,
                 f"job.{action}",
                 actor,
-                {"reason": body.get("reason"), "priority": control.priority},
+                {
+                    "reason": body.get("reason"),
+                    "priority": control.priority,
+                    "extra_quota": control.extra_quota,
+                },
             )
             return result
 
@@ -613,6 +641,7 @@ class JobManager:
         return {
             "revision": control.revision,
             "priority": control.priority,
+            "extra_quota": control.extra_quota,
             "phase": control.phase,
             "attempt_id": control.attempt_id,
             "stop_mode": control.stop_mode,
@@ -676,6 +705,7 @@ class JobManager:
                 limit = max(limit, legacy_limit)
                 user_limit = max(user_limit, legacy_limit)
             payload["node_slots"] = {"used": len(active), "limit": limit}
+            control = session.get(JobControl, payload["job_id"])
             payload["queue_wait_reason"] = None
             if payload["status"] == "queued":
                 current = session.get(RemoteJob, payload["job_id"])
@@ -689,15 +719,19 @@ class JobManager:
                     )
                 elif len(active) >= limit:
                     payload["queue_wait_reason"] = "node_capacity"
-                elif sum(row.requested_by == payload["requested_by"] for row in active) >= user_limit:
+                elif (
+                    not (control and control.extra_quota)
+                    and self.user_running_count(session, payload["requested_by"]) >= user_limit
+                ):
                     payload["queue_wait_reason"] = "user_capacity"
                 elif not node or not capability:
                     payload["queue_wait_reason"] = "agent_capacity"
-            control = session.get(JobControl, payload["job_id"])
             if control:
                 payload.update(self.control_dict(control))
             else:
-                payload.update({"revision": 0, "priority": 1, "phase": payload["status"]})
+                payload.update(
+                    {"revision": 0, "priority": 1, "phase": payload["status"], "extra_quota": False}
+                )
             attempt = session.get(JobAttempt, control.attempt_id) if control and control.attempt_id else None
             capable = payload["operation"] in SAFE_OPERATIONS and attempt and attempt.protocol >= 2
             owner = actor and (
@@ -712,7 +746,7 @@ class JobManager:
                 if payload["status"] == "queued":
                     actions.append("cancel")
                     if actor["role"] == "admin":
-                        actions.append("priority")
+                        actions.extend(["priority", "extra-quota"])
                 if (
                     capable
                     and payload["status"] in {"running", "cancel_requested"}
@@ -766,9 +800,15 @@ class JobManager:
             payload["control_reason"] = (
                 "" if actions else "No supported action for this role, execution protocol or state"
             )
-            payload["queue_reason"] = (
-                "Waiting for node capacity, user quota or data locks" if payload["status"] == "queued" else ""
-            )
+            payload["queue_reason"] = ""
+            if payload["status"] == "queued":
+                payload["queue_reason"] = {
+                    "user_capacity": "Waiting for user quota",
+                    "node_capacity": "Waiting for a free node slot",
+                    "data_path_conflict": "Waiting for conflicting dataset paths",
+                    "exclusive_job": "Waiting for an exclusive task",
+                    "agent_capacity": "Waiting for Agent capacity",
+                }.get(payload["queue_wait_reason"], "Waiting for Agent claim and admission checks")
             return payload
 
     def attempts(self, job_id):

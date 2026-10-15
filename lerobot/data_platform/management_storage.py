@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import JSON, Boolean, Float, Integer, String, Text, create_engine, func, select
+from sqlalchemy import JSON, Boolean, Float, Integer, String, Text, create_engine, func, inspect, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from lerobot.data_platform.operation_log import sanitize_for_log
@@ -37,6 +37,7 @@ class JobControl(ManagementBase):
     job_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, default=0)
     priority: Mapped[int] = mapped_column(Integer, default=1)
+    extra_quota: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     queued_at: Mapped[float] = mapped_column(Float, default=time.time, index=True)
     attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     phase: Mapped[str] = mapped_column(String(32), default="queued")
@@ -125,6 +126,14 @@ def migrate_management(engine) -> None:
                 conn.execute(SchemaMigration.__table__.insert().values(version=4))
             if conn.scalar(select(SchemaMigration.version).where(SchemaMigration.version == 5)) is None:
                 conn.execute(SchemaMigration.__table__.insert().values(version=5))
+            if conn.scalar(select(SchemaMigration.version).where(SchemaMigration.version == 6)) is None:
+                if "extra_quota" not in {
+                    column["name"] for column in inspect(conn).get_columns("dp_job_controls")
+                }:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE dp_job_controls ADD COLUMN extra_quota BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                conn.execute(SchemaMigration.__table__.insert().values(version=6))
             conn.commit()
         finally:
             if mysql:

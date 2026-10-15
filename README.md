@@ -857,6 +857,8 @@ Agent 文件权限、任务提交反馈及 operator 删除 episode 的审批流�
 
 集中部署支持在现有管理员控制面页面查看使用日志和只读数据库记录。协议 2 Agent 支持持久化执行批次、
 排队优先级、取消及符合条件的重试/终止；本地后台任务使用独立本地执行器和兼容的 `/api/jobs` 查询。
+管理员可在 Platform management → Jobs 点击 **Use extra quota (+1)**，给指定排队任务增加一个用户并发名额，
+仍遵守节点总并发和数据锁；排队时可撤回，手动重试需重新授权。
 需要配置独立日志库、安装本地执行器并升级 Agent。部署顺序、能力限制及存储分工见
 [多用户管理与任务执行](docs/data_platform_multi_user_management.md)。
 
