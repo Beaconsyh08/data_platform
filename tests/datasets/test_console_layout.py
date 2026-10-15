@@ -319,6 +319,14 @@ def test_viewer_frame_keys_pause_seek_repeat_and_ignore_editing():
         "frameToTime",
         "timeToFrame",
         "timeToGraphRow",
+        "playbackVideos",
+        "playbackVideo",
+        "playbackDuration",
+        "updatePlaybackPosition",
+        "seekVideo",
+        "seekPlayback",
+        "setPlaybackPaused",
+        "formatTime",
     ):
         match = re.search(rf"^                {name}\([^\n]*\) \{{", template, re.MULTILINE)
         assert match is not None
@@ -330,9 +338,10 @@ def test_viewer_frame_keys_pause_seek_repeat_and_ignore_editing():
 const video = () => ({currentTime: 1, duration: 2, readyState: 4, paused: false,
     pause() { this.paused = true; }});
 app.fps = 30; app.episodeLength = 60; app.dygraphTime = 1;
+app.playbackPaused = false; app._playbackRevision = 0; app._mediaSeekTargets = new WeakMap();
 app.videos = [video(), video(), video()]; app.video = app.videos[0];
 app.$refs = {zoomVideo: video()}; app.isZoomOpen = true;
-const graph = () => ({rawData_: [[0], [1], [2]], setSelection(row) { this.row = row; }});
+const graph = () => ({rawData_: [[0], [1], [2]], numRows() { return 3; }, setSelection(row) { this.row = row; }});
 app.dygraphArmJoints = graph(); app.dygraphGripperFlag = graph();
 app.updateTableValues = time => { app.tableTime = time; };
 app.updateImages = frame => { app.imageFrame = frame; };
@@ -349,7 +358,7 @@ assert.equal(app.dygraphArmJoints.row, 1); // Downsampled graph uses its timesta
 for (const v of [...app.videos, app.$refs.zoomVideo]) {
     assert.equal(v.paused, true); assert.equal(v.currentTime, 31 / 30);
 }
-assert.deepEqual(app._pausedForZoom, [true, true, true]);
+assert.equal(app.playbackPaused, true);
 for (let i = 0; i < 3; i++) press('D', {repeat: true});
 assert.equal(app.imageFrame, 34);
 press('A'); assert.equal(app.imageFrame, 33);
@@ -925,7 +934,7 @@ def test_quality_viewer_seeks_once_pauses_and_clears_position_on_episode_navigat
         pytest.skip("Node is required for the viewer behavior check")
     template = (Path(viewer.__file__).parent / "templates/visualize_dataset_template.html").read_text()
     methods = []
-    for name in ("positionQualityVideo", "videoCanPlay", "episodeHref"):
+    for name in ("positionQualityVideo", "videoCanPlay", "seekVideo", "episodeHref"):
         match = re.search(rf"^                {name}\([^\n]*\) \{{", template, re.MULTILINE)
         end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
         methods.append(template[match.start() : match.end() + end.end()])
@@ -934,12 +943,13 @@ def test_quality_viewer_seeks_once_pauses_and_clears_position_on_episode_navigat
 global.window = {location: {search:'?t=6.6666666667&quality_review=1'}, __viewerFilterQuery:'?t=6.6666666667&quality_review=1&task=pick'};
 const video = {dataset:{}, currentTime:0, duration:10, paused:false,pause(){this.paused=true;}};
 app.qualityReview=true; app.nVideoReadyToPlay=0; app.playbackRate=1;
-app.$refs={btnPlay:{classList:{contains(){return false}},click(){throw Error('Unexpected autoplay')}}};
+app.playbackPaused=true; app.dygraphTime=200/30; app._mediaSeekTargets=new WeakMap();
+app.playbackVideos=()=>[video]; app.setPlaybackPaused=()=>{throw Error('Unexpected autoplay')};
 app.positionQualityVideo(video); app.videoCanPlay({target:video});
 assert.equal(video.paused,true); assert.ok(Math.abs(video.currentTime-200/30)<1e-6);
 video.currentTime=8;app.positionQualityVideo(video);assert.equal(video.currentTime,8);
 assert.equal(app.episodeHref(1),'./episode_1?task=pick');
-app.qualityReview=false;let played=false;app.$refs.btnPlay.click=()=>{played=true};
+app.qualityReview=false;let played=false;app.setPlaybackPaused=()=>{played=true};
 app.videoCanPlay({target:video});assert.equal(played,true);
 window.location.search='?t=NaN&quality_review=1';app.qualityReview=true;
 video.dataset={};video.currentTime=0;app.positionQualityVideo(video);assert.equal(video.currentTime,0);
