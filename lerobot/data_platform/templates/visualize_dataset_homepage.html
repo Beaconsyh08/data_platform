@@ -486,12 +486,13 @@
                         <button class="dp-btn dp-btn-secondary dp-btn-inline" @click="openJobDrawer(true)">Jobs for this dataset</button>
                     </div>
                 </div>
-                <details class="dp-section-block" :open="!localDatasetCount() && remoteLocations.length === 0">
-                    <summary class="cursor-pointer text-sm font-medium text-sky-200">Change server or scan a folder</summary>
+                <details class="dp-section-block" :open="scanOptionsExpanded ?? (!localDatasetCount() && remoteLocations.length === 0)">
+                    <summary class="cursor-pointer text-sm font-medium text-sky-200"
+                             @click.prevent="scanOptionsExpanded = !$el.parentElement.open">Change server or scan a folder</summary>
                     <div class="mb-3 mt-3">
                         <div class="dp-section-kicker">Discover</div>
                         <h3 class="mt-1 font-semibold text-slate-100">Scan a path on one server</h3>
-                        <p class="mt-1 text-xs text-slate-400">Choose the server that owns the path, enter a parent folder on that server, then scan. Agent scans are limited to the roots authorized by that Agent.</p>
+                        <p class="mt-1 text-xs text-slate-400">Choose a server and one of its known directories, or enter a custom path below. Agent scans are limited to that Agent's authorized roots.</p>
                     </div>
                     <div class="grid gap-3 lg:grid-cols-[minmax(12rem,0.35fr)_minmax(0,1fr)]">
                         <label class="block">
@@ -505,24 +506,38 @@
                                 </template>
                             </select>
                         </label>
-                        <label class="block">
-                            <span class="mb-1.5 block text-xs font-medium text-slate-300">Path on selected server</span>
-                            <div class="flex flex-col gap-2 sm:flex-row">
-                                <input class="dp-mono min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-sky-500"
-                                       x-model="scanPath"
-                                       @input="remoteError = ''; rootProtected = false"
-                                       @keydown.enter.prevent="scanSelectedServer()"
-                                       :placeholder="datasetServerFilter === 'local' ? '/path/on/server-a' : '/path/on/selected-agent'">
-                                <button class="dp-btn dp-btn-primary dp-btn-inline shrink-0 sm:min-w-[7rem]"
-                                        @click="scanSelectedServer()"
-                                        :disabled="scanBusy || busy || !scanPath || Boolean(remoteScanDisabledReason())"
-                                        :title="remoteScanDisabledReason()"
-                                        x-text="scanBusy ? 'Scanning...' : 'Scan'">Scan</button>
-                            </div>
-                        </label>
+                        <div class="space-y-3">
+                            <label class="block">
+                                <span class="mb-1.5 block text-xs font-medium text-slate-300">Known directory</span>
+                                <select class="dp-mono w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 outline-none focus:border-sky-500"
+                                        :value="scanPathPreset()"
+                                        @change="selectScanPath($event.target.value)">
+                                    <option value="">Custom path…</option>
+                                    <template x-for="path in knownScanPaths()" :key="path">
+                                        <option :value="path" x-text="path"></option>
+                                    </template>
+                                </select>
+                            </label>
+                            <label class="block">
+                                <span class="mb-1.5 block text-xs font-medium text-slate-300">Scan path / custom subdirectory</span>
+                                <div class="flex flex-col gap-2 sm:flex-row">
+                                    <input class="dp-mono min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-sky-500"
+                                           x-ref="customScanPath"
+                                           x-model="scanPath"
+                                           @input="remoteError = ''; rootProtected = false"
+                                           @keydown.enter.prevent="scanSelectedServer()"
+                                           :placeholder="datasetServerFilter === 'local' ? '/path/on/server-a' : '/path/on/selected-agent'">
+                                    <button class="dp-btn dp-btn-primary dp-btn-inline shrink-0 sm:min-w-[7rem]"
+                                            @click="scanSelectedServer()"
+                                            :disabled="scanBusy || busy || !scanPath || Boolean(remoteScanDisabledReason())"
+                                            :title="remoteScanDisabledReason()"
+                                            x-text="scanBusy ? 'Scanning...' : 'Scan'">Scan</button>
+                                </div>
+                            </label>
+                        </div>
                     </div>
                     <p class="mt-2 text-[11px] text-slate-500" x-show="datasetServerFilter !== 'local'">
-                        Scan asks the selected Agent to scan this path now, including while tasks are running. Refresh reloads the registered list.
+                        Custom paths must be inside this Agent's allowed roots; entering a path does not authorize a new root. Scan runs now, including while tasks are running. Refresh reloads the registered list.
                     </p>
                     <div class="mt-3 flex flex-col gap-2 rounded-lg border px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
                          :class="rootProtected ? 'border-amber-800/70 bg-amber-950/20' : 'border-slate-800 bg-slate-950/60'"
@@ -3313,6 +3328,7 @@
                 dataVersionManual: false,
                 selectionToken: 0,
                 datasetServerFilter: 'local',
+                scanOptionsExpanded: null,
                 scanPath: {{ datasets_root|tojson }},
                 remoteScanPath: '',
                 controlPlaneNodes: [],
@@ -4813,7 +4829,26 @@
                         node => node.node_id === this.datasetServerFilter
                     ) || null;
                 },
+                knownScanPaths() {
+                    const roots = this.datasetServerFilter === 'local'
+                        ? [this.rootDir, ...this.sourceRoots]
+                        : this.selectedServerNode()?.allowed_roots || [];
+                    const paths = roots.map(root => String(root || '').trim()).filter(Boolean);
+                    return [...new Set(paths.map(path => path.replace(/\/+$/, '') || '/'))];
+                },
+                scanPathPreset() {
+                    const path = String(this.scanPath || '').trim();
+                    const normalized = path.replace(/\/+$/, '') || (path ? '/' : '');
+                    return this.knownScanPaths().includes(normalized) ? normalized : '';
+                },
+                selectScanPath(path) {
+                    this.scanPath = path;
+                    this.remoteError = '';
+                    this.rootProtected = false;
+                    if (!path) this.$nextTick(() => this.$refs.customScanPath.focus());
+                },
                 onDatasetServerChange() {
+                    this.scanOptionsExpanded = true;
                     this.remoteScanSerial += 1;
                     this.scanBusy = false;
                     this.scanMessage = '';
@@ -4858,6 +4893,7 @@
                 },
                 async scanSelectedServer() {
                     if (this.scanBusy) return;
+                    this.scanOptionsExpanded = true;
                     const requested = String(this.scanPath || '').trim();
                     if (!requested) return;
                     this.error = '';

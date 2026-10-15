@@ -353,6 +353,10 @@ Agent 按 `--sync-seconds` 定期扫描 `allowed_roots` 并上报数据集目录
 即时扫描要求节点心跳能力 `dataset_scan_protocol=1`，Server 先迁移到管理 schema 5 并升级，
 然后升级 Agent。旧 Agent 的 Scan 禁用并提示升级，Refresh 仍可使用。请求在 Server 和 Agent
 两端检查 `allowed_roots`，Agent 解析真实路径以拒绝越界软链接；读取仍受服务账号的 Linux 权限限制。
+首页 **Known directory** 按所选 Agent 的实际 `allowed_roots` 显示下拉选项；也可输入其下的自定义路径，
+不会通过网页增加授权。修改 Agent 环境配置中的根目录后，需安全重启或随正常滚动升级启动新版 Agent；
+新版 Agent 在心跳中同步实际的 `allowed_roots` / `writable_roots`，无需重新注册或轮换节点令牌。
+旧版本执行器的心跳不能覆盖当前发行版的目录配置；旧 Agent 未上报目录时保留原登记。
 只有 Admin、Data Manager 和具有全数据集读取范围的 Operator 可发起发现，Viewer 保持只读。
 权限在提交和开始扫描时复核，扫描中的任务不因范围撤销而取消。请求与结果沿用 `dataset.scan`
 操作审计，不新增独立日志系统。

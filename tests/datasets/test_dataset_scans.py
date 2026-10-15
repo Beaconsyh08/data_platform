@@ -123,6 +123,62 @@ def test_scan_old_or_offline_agent_is_not_accepted(scan_platform):
     assert client.post(url, json={"path": str(root)}).status_code == 409
 
 
+def test_agent_heartbeat_syncs_configured_roots_without_rotating_token(scan_platform, tmp_path):
+    store, _, client, root, node, headers = scan_platform
+    additional = tmp_path / "additional"
+    _make_dataset(additional / "new")
+    capabilities = {
+        "dataset_scan_protocol": 1,
+        "allowed_roots": [str(root), str(additional)],
+        "writable_roots": [str(tmp_path)],
+    }
+    url = "/api/agents/heartbeat"
+    assert client.post(url, json={"capabilities": capabilities}).status_code == 401
+    response = client.post(url, headers=headers, json={"capabilities": capabilities})
+    assert response.status_code == 200
+    assert response.get_json()["node"]["allowed_roots"] == capabilities["allowed_roots"]
+    assert client.get("/api/control/nodes").get_json()["nodes"][0]["writable_roots"] == [str(tmp_path)]
+    # The same token keeps working; a legacy heartbeat does not reset the roots.
+    assert client.post(url, headers=headers, json={}).status_code == 200
+    response = client.post(f"/api/control/nodes/{node['node_id']}/scans", json={"path": str(additional)})
+    assert response.status_code == 202
+    with store.sessions() as session:
+        events = [row.payload for row in session.scalars(select(AuditOutbox))]
+    changes = [event for event in events if event["operation"] == "agent.roots.sync"]
+    assert len(changes) == 1
+    assert changes[0]["details"]["after"]["allowed_roots"] == capabilities["allowed_roots"]
+
+
+@pytest.mark.parametrize("roots", ["/datasets", ["relative"], ["/datasets/../escape"], [None]])
+def test_invalid_heartbeat_roots_are_rejected_atomically(scan_platform, roots):
+    store, _, client, root, node, headers = scan_platform
+    response = client.post(
+        "/api/agents/heartbeat",
+        headers=headers,
+        json={"capabilities": {"allowed_roots": ["/new"], "writable_roots": roots}},
+    )
+    assert response.status_code == 400
+    assert store.list_nodes()[0]["allowed_roots"] == [str(root)]
+
+
+def test_old_generation_cannot_restore_previous_root_configuration(scan_platform, monkeypatch):
+    store, _, _, root, node, _ = scan_platform
+    monkeypatch.setenv("DATA_PLATFORM_RELEASE", "current")
+    current = {
+        "release": "current",
+        "allowed_roots": [str(root)],
+        "writable_roots": [],
+    }
+    store.heartbeat(node["node_id"], capabilities=current)
+    refreshed = store.heartbeat(
+        node["node_id"],
+        capabilities={"release": "old", "allowed_roots": ["/old"], "writable_roots": ["/old"]},
+    )
+    assert refreshed["allowed_roots"] == current["allowed_roots"]
+    assert refreshed["writable_roots"] == []
+    assert refreshed["capabilities"] == current
+
+
 def test_scoped_operator_and_revoked_queued_request_cannot_discover(scan_platform):
     from lerobot.data_platform.control_plane import ControlPlaneUser
 
