@@ -139,10 +139,16 @@ Rescan 才执行目录发现；`GET /api/dataset_roots?scan=0` 用于只读刷�
 
 ### 3.3 通用参数
 
+Curation 表单默认显示常用参数；workers、模型覆盖、阈值和试跑选项收在 **Advanced settings**。
+远端执行路径和权限说明可展开 **Execution location & access** 查看。Embedding、Compare
+不显示无关的 Episode review，Data Report 只展示质量报告；选择草稿后才显示逐 Episode 复核字段。
+结果选择器按当前操作筛选，切换结果后需重新打开，才能接受其中的标注或勾选 **Use for next run**。
+切换功能页会清除计算输入勾选，未保存的复核字段仍保留；进度可随时在顶部 **Jobs** 查看。
+
 | 参数 | 含义 | 建议 |
 |---|---|---|
 | `Robot / Stage profile` | 机器人语义、gripper 解释和 Stage 规则 | 优先读取 `meta/data_profile.json`；维度只用于旧数据兼容推断 |
-| `episodes` | 指定 episode 子集 | 留空表示全部；试跑可填 `0 1 2` |
+| `episodes` | 指定 episode 子集 | 留空表示全部；试跑可填 `0,1,2` |
 | `workers` | 并行 worker 数 | CPU/NFS 忙时调低，避免多个大任务同时跑 |
 | `downsample` | CSV 曲线显示采样步长 | 只影响浏览曲线密度；例如 5 表示每 5 行取 1 行 |
 | `output root` | 新数据集输出路径 | 优先写到源数据集旁边的独立目录 |

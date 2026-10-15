@@ -535,7 +535,6 @@ def test_homepage_uses_consistent_visual_hierarchy_and_context_states():
     assert "localRegisteredDatasets()" in template
     assert "localUncatalogedDatasets()" in template
     assert "await this.registerDataset(candidate.root)" in template
-    assert "Catalog setup happens automatically." in template
     assert ">viewer</a>" in template
     assert ">prepare viewer</button>" in template
     assert "jobOperationLabel(job)" in template
@@ -774,7 +773,7 @@ def test_agent_dataset_can_open_mcap_import_page():
     assert result.returncode == 0, result.stderr
 
 
-def test_temporal_caption_tab_hides_generic_review_and_restores_it():
+def test_curation_tabs_show_relevant_panels_and_clear_hidden_computation_inputs():
     import shutil
     import subprocess
 
@@ -791,8 +790,11 @@ def test_temporal_caption_tab_hides_generic_review_and_restores_it():
             "-e",
             """
 const assert = require('node:assert/strict');
-let page;
-const general = Array.from({length:4}, () => ({hidden:false}));
+let page, activeTab = '', resultRequest = 0, context = null;
+const inputRuns = new Set();
+const general = ['workspace','results','review','jobs'].map(curationPanel => ({
+  hidden:false, dataset:{curationPanel}
+}));
 const root = {
   dataset: {},
   querySelector: () => ({textContent:''}),
@@ -809,7 +811,18 @@ assert(general.every(item => item.hidden));
 selectPage('annotation','labeling');
 assert(general.every(item => !item.hidden));
 selectPage('dataset_build','curation_manifest');
-assert(general.every(item => !item.hidden));
+assert.deepEqual(general.filter(item=>!item.hidden).map(item=>item.dataset.curationPanel), ['workspace','review','jobs']);
+inputRuns.add('labels');
+selectPage('explore','embedding');
+assert.equal(inputRuns.size, 0);
+assert.deepEqual(general.filter(item=>!item.hidden).map(item=>item.dataset.curationPanel), ['results','jobs']);
+inputRuns.add('embeddings');
+selectPage('explore','embedding');
+assert(inputRuns.has('embeddings')); // Reactive updates within the same view retain explicit choices.
+selectPage('explore','compare');
+assert.deepEqual(general.filter(item=>!item.hidden).map(item=>item.dataset.curationPanel), ['jobs']);
+selectPage('quality','quality_report');
+assert.deepEqual(general.filter(item=>!item.hidden).map(item=>item.dataset.curationPanel), ['results']);
 """,
         ],
         check=True,

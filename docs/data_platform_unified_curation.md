@@ -20,16 +20,21 @@ Changing datasets opens that dataset’s own workspace.
 Legacy `/curation` links redirect into the console with the selected dataset and page.
 The standalone console without a control plane keeps its existing local workflows.
 
-1. **Synchronize version** scans the source on its owning node. Immutable episode identities,
+1. **Register dataset version** (or **Update dataset version**) scans the source on its owning node.
+   Immutable episode identities,
    metadata, task configuration, and content digests are registered centrally. No raw dataset
    transfer is needed. Existing versions and drafts remain immutable/revisioned respectively.
-2. Create a review workspace. Run stage detection, quality detection, labeling, tagging,
+2. Run stage detection, quality detection, labeling, tagging,
    embedding, comparison-summary preparation, or construction preview on that node.
    Availability depends on its dataset format, signal profile, packages, and model configuration.
-   Labeling/tagging support deterministic trials as well as full runs.
-3. Open a generated result. Select **Use as computation input** to reuse it in later jobs;
-   input files must belong to the same dataset version and location. Accept generated labels,
-   tags, or stage transitions into a draft, then edit task text, boxes, tags, stages, and
+   Labeling/tagging support deterministic trials as well as full runs. Workers, model overrides,
+   thresholds and trial controls are under **Advanced settings**; their defaults are unchanged.
+   Create a review workspace when you need to save episode decisions or annotations.
+3. Open a generated result. The selector offers results relevant to the current view. Select
+   **Use for next run** to reuse compatible results in this view; changing tabs clears these input
+   selections while retaining unsaved review fields. Input files must belong to the same dataset
+   version and location. Acceptance is enabled only for the currently opened annotation result.
+   Accept generated labels, tags, or stage transitions into a draft, then edit task text, boxes, tags, stages, and
    keep/exclude/repair decisions. Regeneration does not overwrite draft annotations.
 4. Existing reviewed sidecars can be imported explicitly. Conflicting existing draft fields
    are rejected. Temporal Caption retains all three baseline schemes and Fusion Review.
@@ -52,6 +57,14 @@ Operators may compute, review, publish, and build. Viewer accounts can browse sa
 analysis, and comparisons, but cannot edit or submit jobs. Compare summaries can come from
 separate nodes; builds execute against their registered source node. This does not implement
 cross-node raw-file replication.
+
+Embedding and Compare omit episode-review forms. Data Report shows saved quality evidence;
+Quality Review contains detection and review controls. Episode fields appear after a workspace is
+selected. Selecting an issue's episode in Data Report opens Quality Review for that episode.
+Recent tasks are collapsed by default; the shared **Jobs** drawer remains available.
+Temporal Caption hides version-registration controls because caption jobs do not require a
+registered lifecycle version. Execution paths and access details are available under
+**Execution location & access** in the console header.
 
 ## Execution and storage
 
@@ -210,7 +223,7 @@ Curation bundle as `annotation_issues.json`, `quality_flagged_episodes.json`, an
 `quality_coverage.json`; publication still checks the source fingerprint and bundle checksums.
 
 To recompute selected checks while retaining earlier evidence, open the previous combined
-Quality result and select **Use as computation input**. A new immutable run replaces automatic
+Quality result in Quality Review and select **Use for next run**. A new immutable run replaces automatic
 issues only for the selected episodes and detectors; other detectors/episodes and manual
 evidence remain. Incomplete/failed media checks retain earlier camera evidence and add the
 new failure. `overwrite` does not broaden a configurable run beyond this scope. An old issue

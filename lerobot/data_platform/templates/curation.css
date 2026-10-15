@@ -18,6 +18,7 @@
 .curation-workspace input[type=checkbox] { width: auto; accent-color: #0ea5e9; }
 .curation-workspace .fields { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(220px,100%),1fr)); gap: .875rem; }
 .curation-workspace form .row { margin-top: .875rem; }
+.curation-workspace form details > .fields { margin-top: .875rem; }
 .curation-workspace details { margin: .75rem 0; }
 .curation-workspace summary { cursor: pointer; color: #cbd5e1; }
 .curation-workspace table { width: 100%; border-collapse: collapse; font-size: .75rem; }
@@ -54,7 +55,7 @@
 .curation-workspace .quality-advanced textarea { font-family: monospace; resize: vertical; }
 .curation-workspace .quality-task-panel > summary { font-size: .875rem; font-weight: 600; }
 .curation-workspace .quality-task-panel [data-curation-panel=jobs] { border: 0; background: transparent; padding: 0; }
-.curation-workspace .quality-task-panel [data-curation-panel=jobs] > h2 { display: none; }
+.curation-workspace .quality-task-panel [data-curation-panel=jobs] > summary { display: none; }
 .curation-workspace .quality-review { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #334155; }
 .curation-workspace .quality-summary { padding: .75rem; border-radius: .375rem; background: #0f172a; font-size: .875rem; }
 .curation-workspace [data-curation-page=quality] [data-quality-hide] { display: none; }

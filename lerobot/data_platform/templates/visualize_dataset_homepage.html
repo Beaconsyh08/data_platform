@@ -159,7 +159,6 @@
                             <span class="sm:hidden">Data Loop</span>
                             <span class="hidden sm:inline">Embodied Data Loop</span>
                         </h1>
-                        <p class="hidden text-[11px] text-slate-400 sm:block">Versioned data supply and curation</p>
                     </div>
                     <span class="rounded-full border border-sky-800 bg-sky-950/60 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-300"
                           x-show="consoleMode !== 'full'"
@@ -351,7 +350,6 @@
 
                 <div class="dp-section-block" x-show="selectedDataset" aria-label="Continue with working dataset">
                     <p class="font-medium text-slate-100">Continue with <span x-text="selectedDataset ? datasetName(selectedDataset) : ''"></span></p>
-                    <p class="mt-1 text-xs text-slate-400">Choose what to do next. Each page keeps the same working dataset.</p>
                     <div class="mt-3 flex flex-wrap gap-2">
                         <button class="dp-btn dp-btn-primary dp-btn-inline" x-show="tabEnabled('explore_overview')" @click="selectTab('explore_overview')">Explore &amp; Viewer</button>
                         <button class="dp-btn dp-btn-secondary dp-btn-inline" x-show="tabEnabled('quality_flags')" @click="selectTab('quality_flags')">Quality review</button>
@@ -502,7 +500,6 @@
                                         <p class="dp-mono mt-1 truncate text-[11px] text-slate-500" x-text="location.root"></p>
                                         <p class="mt-2 text-xs text-slate-400"
                                            x-text="`${location.metadata?.total_episodes ?? '?'} episodes`"></p>
-                                        <p class="mt-2 text-xs text-slate-500" x-show="canOperateRemote()">Select to use; catalog synchronization is automatic.</p>
                                     </button>
                                     <div class="flex shrink-0 flex-col gap-2">
                                         <a class="dp-link-btn dp-btn-secondary dp-btn-compact"
@@ -536,7 +533,7 @@
                                        x-text="latestRemoteViewerJob(location)?.error"></p>
                                 </div>
                                 <p class="mt-2 text-[11px] text-amber-200" x-show="!canOperateRemote()">
-                                    Viewer accounts can open Analysis and prepared Viewer data. An Operator or Admin must prepare Viewer caches.
+                                    Read-only · ask an Operator to prepare missing Viewer data.
                                 </p>
                             </article>
                         </template>
@@ -549,7 +546,6 @@
                             <span class="font-semibold text-slate-200">Datasets</span>
                             <span class="ml-1 rounded-full bg-slate-800 px-2 py-0.5 text-[10px]"
                                   x-text="localDatasetCount()"></span>
-                            <p class="mt-0.5 text-[11px] text-slate-500">Choose one to make it the working dataset. Catalog setup happens automatically.</p>
                         </div>
                         <button class="text-sky-300 hover:text-sky-200"
                                 @click="loadDatasetRoots(true)">Rescan</button>
@@ -616,7 +612,6 @@
                                             <span x-text="`video ${dataset.cache.videos.cached}/${dataset.cache.videos.total}`"></span>
                                             <span x-text="`csv ${dataset.cache.csv.cached}/${dataset.cache.csv.total}`"></span>
                                         </div>
-                                        <p class="mt-2 text-xs text-slate-500" x-show="!dataset.loaded">Select to use; operation-specific data loads automatically.</p>
                                     </button>
                                     <div class="flex shrink-0 flex-col gap-2">
                                         <button class="dp-btn dp-btn-secondary dp-btn-compact"
@@ -673,7 +668,6 @@
                                             <span x-text="`video ${candidate.cache.videos.cached}/${candidate.cache.videos.total}`"></span>
                                             <span x-text="`csv ${candidate.cache.csv.cached}/${candidate.cache.csv.total}`"></span>
                                         </div>
-                                        <p class="mt-2 text-xs text-slate-500" x-show="canAutoCatalog()">Select to use; catalog setup is automatic.</p>
                                         <p class="mt-2 text-xs text-amber-200" x-show="!canAutoCatalog()">Ask an Operator or Admin to add this dataset.</p>
                                     </button>
                                 </div>
@@ -754,17 +748,16 @@
                                         @click.stop="toggleDatasetPicker(true)">Change</button>
                             </div>
                         </div>
-                        <div class="mt-3 rounded-lg border border-amber-800/70 bg-amber-950/20 px-3 py-2.5 text-xs text-amber-100"
-                             x-show="selectedDataset && selectedDataset.source_protected">
-                            This dataset is protected as source data. Review and sibling-output operations are allowed; in-place deletion, repair, and overwrite are rejected by the server.
-                        </div>
-                        <div class="mt-3 rounded-lg border border-sky-800/70 bg-sky-950/20 px-3 py-2.5 text-xs text-sky-100"
-                             x-show="selectedDataset && selectedDataset.remote">
-                            Operations run on <strong x-text="selectedDataset ? selectedDataset.server_name : ''"></strong> against
-                            <span class="dp-mono break-all" x-text="selectedDataset ? selectedDataset.root : ''"></span>.
-                            Normal preprocessing creates a timestamped sibling automatically. Source mutations require Admin or a Data manager authorized for this dataset,
-                            both legacy-mutation switches, typed confirmation, and a persistent Agent-side backup.
-                        </div>
+                        <p class="mt-2 text-xs text-amber-200"
+                           x-show="selectedDataset?.source_protected && activePage === 'admin_operations'">
+                            Source protected: in-place changes are blocked.
+                        </p>
+                        <details class="dp-help text-xs" x-show="selectedDataset?.remote">
+                            <summary>Execution location &amp; access</summary>
+                            <p><strong x-text="selectedDataset?.server_name"></strong> ·
+                               <span class="dp-mono break-all" x-text="selectedDataset?.root"></span></p>
+                            <p>Preprocessing creates a new dataset. In-place changes require authorized access, enabled source mutation, confirmation and a backup.</p>
+                        </details>
                         <div class="flex flex-wrap gap-1.5 border-t border-slate-800 pt-3 text-xs"
                              x-show="currentSubTabs().length > 1">
                             <template x-for="tab in currentSubTabs()" :key="tab.key">
@@ -781,17 +774,17 @@
                 <div class="dp-empty-state m-4 sm:m-5" x-show="!selectedDataset && activePageRequiresDataset()">
                     <div class="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-sky-950 text-sky-300">◇</div>
                     <p class="font-medium text-slate-200">Choose a working dataset first</p>
-                    <p class="mt-1 max-w-md text-xs text-slate-500">This page needs a working dataset context so outputs, jobs, and lineage stay traceable.</p>
+                    <p class="mt-1 max-w-md text-xs text-slate-500">Select an existing dataset or find one in Datasets.</p>
                     <button class="dp-btn dp-btn-primary dp-btn-inline mt-4" @click="toggleDatasetPicker(true)">Select a dataset</button>
                     <button class="mt-3 text-xs text-sky-300" @click="selectPage('datasets')">Discover more datasets</button>
                 </div>
                 <div class="curation-workspace" x-ref="curationWorkspace" x-show="unifiedCurationActive()"
+                     @curation-review-episode="selectTab('quality_flags')"
                      x-effect="window.syncCurationWorkspace($refs.curationWorkspace, curationTarget(), activePage, activeTab, unifiedCurationActive())"></div>
                 <div x-show="!unifiedCurationActive()">
                 <div class="mx-4 mt-4 rounded border border-emerald-900/60 bg-emerald-950/20 px-3 py-2 text-xs text-emerald-200"
                      x-show="activeTab === 'explore_overview' && selectedDatasetIsV3()">
-                    v3.0 viewer support uses a read-only adapter in this environment. Run Prepare video + CSV once,
-                    then open it with the same embedded viewer. The source dataset is not modified.
+                    Prepare Viewer data once to open v3.0 episodes. Source data stays unchanged.
                 </div>
                 <div class="space-y-5 px-4 py-4 sm:px-5 sm:py-5"
                      x-show="activeTab === 'explore_overview' && selectedDataset">
@@ -3816,7 +3809,7 @@
                         {
                             key: 'inspect', group: 'inspect', icon: 'DI', label: 'Data Inspect',
                             output: 'Raw records · Viewer CSV · schema',
-                            description: 'Preview a small window of actual records, inspect fields, and expand arrays without preparing videos.',
+                            description: 'Preview records and fields without preparing videos.',
                             ready: Boolean(this.inspectUrl()), href: this.inspectUrl(), openLabel: 'Open data inspect',
                             setupLabel: 'Select dataset', missingStatus: 'Select dataset'
                         },
@@ -3910,8 +3903,8 @@
                 visualizationGroups() {
                     const groups = [
                         {key: 'inspect', label: 'Inspect', description: 'Understand individual episodes and overall dataset coverage.'},
-                        {key: 'review', label: 'Review generated artifacts', description: 'Validate machine-generated labels, tags, and constructed samples before they influence a dataset version.'},
-                        {key: 'diagnostics', label: 'Compare & diagnose', description: 'Find clusters, coverage differences, and signal-processing effects.'}
+                        {key: 'review', label: 'Review generated artifacts', description: 'Check labels, tags and constructed samples.'},
+                        {key: 'diagnostics', label: 'Compare & diagnose', description: 'Explore clusters, coverage and signal changes.'}
                     ];
                     const visibleGroups = new Set(this.visualizationItems().map(item => item.group));
                     return groups.filter(group => visibleGroups.has(group.key));

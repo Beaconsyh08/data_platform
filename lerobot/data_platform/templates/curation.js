@@ -36,6 +36,17 @@ window.createCurationWorkspace = (root, initialTarget) => {
   }
   function reviewAction(fn) { if (allowReviewChange()) return action(fn); }
   const operationNames = {snapshot:'Synchronize version', validate_source:'Validate source', stage:'Compute stages', quality:'Detect quality issues', labeling:'Run object labeling', tagging:'Run auto-tagging', embedding:'Compute embeddings', project:'Project embeddings', compare_summary:'Prepare comparison summary', construction_preview:'Preview construction', construction:'Generate data', materialize:'Build dataset'};
+  const resultOperations = {
+    quality_flags: ['quality'], quality_report: ['quality'], stage_subtask: ['stage'],
+    labeling: ['labeling'], tagging: ['tagging','labeling'], embedding: ['embedding','project'],
+    construction: ['construction_preview','construction','labeling','tagging']
+  };
+  const inputOperations = {
+    quality: ['quality'], labeling: ['labeling'], tagging: ['labeling','tagging'], project: ['embedding','project'],
+    construction_preview: ['labeling','tagging'], construction: ['labeling','tagging','construction_preview']
+  };
+  const tabOperations = {quality_flags:['quality'], stage_subtask:['stage'], labeling:['labeling'], tagging:['tagging'],
+    embedding:['embedding','project'], construction:['construction_preview','construction']};
   const qualityNames = {legacy:'Control & annotation checks (previous version)', control:'Control signal consistency', annotations:'Task & stage annotations', s1:'Joint motion', eef:'End-effector motion', s3:'Numeric validity', c3:'Image & video quality'};
   const fields = {
     stage: [['episodes','Episodes','episodes'],['prepare_workers','Workers','number',4],['fallback_stage_count','Fallback stage count','number',5]],
@@ -96,6 +107,9 @@ window.createCurationWorkspace = (root, initialTarget) => {
   function buttons() {
     if (!context) return;
     root.querySelectorAll('[data-command]').forEach(button => {
+      button.closest('form').querySelectorAll('input,select,textarea').forEach(input => {
+        input.disabled = busy || !context.can_edit;
+      });
       const capability = context.operations[`curation.${button.dataset.command}`];
       let blocked = capability?.reason || '';
       if (button.dataset.command === 'quality') {
@@ -136,7 +150,8 @@ window.createCurationWorkspace = (root, initialTarget) => {
       if (reason) reason.textContent = blocked;
     });
     for (const id of ['new-draft','profile']) $(id).disabled = busy || !context.can_edit || !target.dataset_version_id;
-    for (const id of ['publish','accept-result','accept-caption','import-sidecars']) $(id).disabled = busy || !context.can_edit || !draft() || draft().status !== 'open';
+    for (const id of ['publish','accept-caption','import-sidecars']) $(id).disabled = busy || !context.can_edit || !draft() || draft().status !== 'open';
+    $('accept-caption').disabled ||= !$('caption-run').value;
     $('review-form').querySelectorAll('input,select,textarea,button').forEach(input => {
       input.disabled = !context.can_edit || !draft() || draft().status !== 'open';
     });
@@ -149,6 +164,10 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('sync').disabled = busy || !context.operations['curation.snapshot']?.can_execute;
     $('sync').title = context.operations['curation.snapshot']?.reason || '';
     $('draft-state').textContent = draft() ? `${draft().status} · revision ${draft().revision}` : 'Select or create a draft';
+    $('review-content').hidden = !draft();
+    $('review-empty').hidden = !!draft();
+    $('review-empty').textContent = !context.can_edit ? 'Read-only access. Open a workspace to view saved decisions.' : 'Create or select a draft above to review episodes.';
+    $('compare').disabled = busy || !$('compare-a').value || !$('compare-b').value || $('compare-a').value === $('compare-b').value;
     updateResultVisibility();
   }
   function qualityDetector(issue) {
@@ -198,7 +217,8 @@ window.createCurationWorkspace = (root, initialTarget) => {
   }
   function drawResultOptions() {
     if (!context) return;
-    const runs = context.runs.filter(item => page === 'quality' ? item.operation === 'curation.quality' : !['curation.snapshot','curation.validate_source'].includes(item.operation)).sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+    const allowed = (resultOperations[activeTab] || []).map(kind => `curation.${kind}`);
+    const runs = context.runs.filter(item => allowed.includes(item.operation)).sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
     options($('result'), runs, item => item.run, item => `${operationNames[item.operation.split('.')[1]]} · ${new Date(item.created_at).toLocaleString()}`, runs.length ? 'Select a result' : 'No saved results yet');
     updateResultVisibility();
   }
@@ -207,14 +227,27 @@ window.createCurationWorkspace = (root, initialTarget) => {
     $('result-body').hidden = !visible; $('artifact-downloads').hidden = !visible;
     $('result-empty').hidden = visible;
     $('load-result').disabled = busy || !$('result').value;
+    $('result-empty').textContent = $('result').options.length > 1 ? 'Select a saved result, then open it.' : 'No saved results for this view yet.';
+    const kind = result?.operation?.split('.')[1];
+    const acceptsAnnotations = visible && ['stage','labeling','tagging'].includes(kind);
+    $('accept-result').disabled = busy || !context?.can_edit || draft()?.status !== 'open' || !acceptsAnnotations;
+    $('accept-result').title = acceptsAnnotations ? '' : 'Open an annotation result for the selected episode first.';
+    const allowedInputs = new Set((tabOperations[activeTab] || []).flatMap(operation => inputOperations[operation] || []));
+    $('use-result').closest('label').hidden = !allowedInputs.size;
+    $('use-result').disabled = busy || !context?.can_edit || !visible || !allowedInputs.has(kind);
+    $('use-result').checked = inputRuns.has($('result').value);
+    $('input-description').textContent = inputRuns.size ? `${inputRuns.size} input result(s) selected for this view` : '';
   }
   function selectPage(value, tab) {
+    const previousPage = page;
+    if (activeTab !== tab) { inputRuns.clear(); resultRequest++; }
     activeTab = tab;
     page = ['explore','quality','annotation','dataset_build'].includes(value) ? value : 'annotation';
     root.dataset.curationPage = page;
     for (const [panel,home] of panelHomes) {
       if (page === 'quality') root.querySelector(`[data-quality-slot="${panel.dataset.curationPanel}"]`).append(panel);
       else home.after(panel);
+      if (panel.dataset.curationPanel === 'jobs' && (page === 'quality' || previousPage === 'quality')) panel.open = page === 'quality';
     }
     root.querySelector('[data-curation-heading=results]').textContent = tab === 'quality_report' ? 'Data report' : page === 'quality' ? '2. Inspect results' : 'Generated results';
     root.querySelector('.quality-task-panel').hidden = tab === 'quality_report';
@@ -224,7 +257,18 @@ window.createCurationWorkspace = (root, initialTarget) => {
     root.querySelectorAll('[data-section]').forEach(item => { item.hidden = item.dataset.section !== page; });
     root.querySelectorAll('[data-page]').forEach(item => item.setAttribute('aria-selected', item.dataset.page === page));
     root.querySelectorAll('[data-curation-tab]').forEach(item => { item.hidden = item.dataset.curationTab !== tab; });
-    root.querySelectorAll('[data-curation-general]').forEach(item => { item.hidden = value === 'annotation' && tab === 'temporal_caption'; });
+    const panels = {
+      quality_flags: ['workspace','results','review','jobs'], quality_report: ['results'],
+      stage_subtask: ['workspace','results','review','jobs'], labeling: ['workspace','results','review','jobs'],
+      tagging: ['workspace','results','review','jobs'], embedding: ['results','jobs'], compare: ['jobs'],
+      construction: ['workspace','results','jobs'], curation_manifest: ['workspace','review','jobs']
+    };
+    root.querySelectorAll('[data-curation-general]').forEach(item => {
+      item.hidden = !(panels[tab] || []).includes(item.dataset.curationPanel);
+    });
+    root.querySelectorAll('[data-curation-version]').forEach(item => { item.hidden = tab === 'temporal_caption'; });
+    $('report-viewer').hidden = !context?.viewer_url || !['quality_flags','quality_report'].includes(tab);
+    $('prepare-viewer').hidden = !!context?.viewer_url || !context?.can_edit || !['quality_flags','quality_report'].includes(tab);
     openLatestReport().catch(error => notice(error.message, true));
   }
   async function openLatestReport() {
@@ -245,6 +289,12 @@ window.createCurationWorkspace = (root, initialTarget) => {
       if (operation === 'construction') { const label = text('label','Examples per scenario'); const rows = document.createElement('div'); rows.dataset.curationId = 'construction-counts'; label.append(rows); grid.append(label); }
       form.append(grid);
       if (operation === 'quality') drawQualityControls(form);
+      else {
+        const basic = new Set(['episodes','backend','selected_tags','ckpt_path','method','uncertainty_threshold']);
+        const advanced = document.createElement('details'), settings = document.createElement('div'); settings.className = 'fields';
+        for (const [key] of fields[operation]) if (!basic.has(key)) settings.append(form.elements[key].closest('label'));
+        if (settings.children.length) { advanced.append(text('summary','Advanced settings'),settings); form.append(advanced); }
+      }
       const row = document.createElement('div'); row.className = 'row'; const button = text('button', operationNames[operation]); button.type = 'submit'; button.dataset.command = operation; row.append(button, text('small','','operation-reason')); form.append(row); container.append(form);
       if (operation === 'labeling') form.elements.backend.onchange = buttons;
       form.addEventListener('submit', event => { event.preventDefault(); action(async () => {
@@ -273,10 +323,12 @@ window.createCurationWorkspace = (root, initialTarget) => {
     });
   }
   async function submit(operation, parameters = {}, extra = {}) {
-    const body = {target, operation:`curation.${operation}`, parameters, input_runs:[...inputRuns], ...extra};
+    const allowed = (inputOperations[operation] || []).map(kind => `curation.${kind}`);
+    const inputs = [...inputRuns].filter(run => context.runs.some(item => item.run === run && allowed.includes(item.operation)));
+    const body = {target, operation:`curation.${operation}`, parameters, input_runs:inputs, ...extra};
     if (['construction','construction_preview'].includes(operation) && draft()) { body.workspace_id = draft().workspace_id; body.expected_revision = draft().revision; }
     const data = await api('/api/curation/jobs', body);
-    notice(`Task accepted: ${operationNames[operation]}. Progress is shown in Tasks.`);
+    notice(`Task submitted: ${operationNames[operation]}. Track progress in Jobs.`);
     if (operation === 'quality') root.querySelector('.quality-task-panel').open = true;
     await refreshJobs(); return data;
   }
@@ -284,12 +336,13 @@ window.createCurationWorkspace = (root, initialTarget) => {
     const previous = target.dataset_version_id;
     const data = await api(`/api/curation/context?${query()}`);
     context = data; Object.assign(target, data.target);
-    $('dataset-name').textContent = `${target.dataset_key.split('/').pop().replace(/-[a-f0-9]{8}$/, '')} · ${data.execution_node}`;
-    $('version').textContent = target.dataset_version_id ? `Version ${target.dataset_version_id} · ${data.episodes.length} episodes` : 'Register a dataset version for draft review and curation. Caption tasks can run without it.';
+    $('version').textContent = target.dataset_version_id ? `${data.episodes.length} episodes · Version ${target.dataset_version_id.slice(-8)}` : 'Register a version to run checks, review episodes or build datasets.';
+    $('version').title = target.dataset_version_id || '';
+    $('sync').textContent = target.dataset_version_id ? 'Update dataset version' : 'Register dataset version';
     $('overview').textContent = `${data.info.total_frames || 0} frames · ${data.info.fps || '—'} fps · ${data.info.codebase_version || 'Unknown format'}`;
     $('viewer').hidden = !data.viewer_url; if (data.viewer_url) $('viewer').href = data.viewer_url;
-    $('report-viewer').hidden = !data.viewer_url; if (data.viewer_url) $('report-viewer').href = data.viewer_url;
-    $('prepare-viewer').hidden = !!data.viewer_url || !data.can_edit;
+    $('report-viewer').hidden = !data.viewer_url || !['quality_flags','quality_report'].includes(activeTab); if (data.viewer_url) $('report-viewer').href = data.viewer_url;
+    $('prepare-viewer').hidden = !!data.viewer_url || !data.can_edit || !['quality_flags','quality_report'].includes(activeTab);
     $('prepare-viewer').href = '/?' + new URLSearchParams({select:target.location_id ? `remote:${target.location_id}` : target.dataset_key,page:'preprocessing',tab:'cache'});
     const captionBase = target.location_id ? `/remote/${encodeURIComponent(target.location_id)}` : `/${target.dataset_key}`;
     $('analysis').href = captionBase + '/analysis';
@@ -307,6 +360,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     buttons();
     const summaries = await api('/api/curation/comparison-candidates');
     for (const id of ['compare-a','compare-b']) options($(id), summaries.runs, item => item.run, item => `${item.target.dataset_key} · ${new Date(item.created_at).toLocaleString()}`, 'Select a summary');
+    buttons();
     await openLatestReport();
   }
   function reviewFor(index) { const uid = context?.episode_refs?.find(row => row.episode_index === index)?.episode_uid; return draft()?.decisions.find(item => item.episode_ref.episode_uid === uid); }
@@ -381,7 +435,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
       $('construction-counts').replaceChildren();
       for (const [name,item] of Object.entries(result.result.scenarios)) { const label = text('label',`${name.replaceAll('_',' ')} (${item.candidate_count} candidates)`), input = document.createElement('input'); input.name = name; input.type = 'number'; input.min = '0'; input.value = '0'; label.append(input); $('construction-counts').append(label); }
     }
-    $('use-result').checked = inputRuns.has(result.run); updateResultVisibility(); notice(result.quality ? 'Quality result loaded. Review flagged episodes before deciding whether to keep, exclude or repair them.' : 'Result loaded. Select an episode to review or accept its annotations.');
+    updateResultVisibility(); notice('Result loaded.');
   }
   function episodeViewerUrl(index, frame = 0, time = null) {
     if (!context?.viewer_url) return '';
@@ -419,7 +473,12 @@ window.createCurationWorkspace = (root, initialTarget) => {
       ['Episode','Check','Signal / camera','Severity','Frame range','Evidence','Review'].forEach(label => heading.append(text('th',label))); table.append(heading);
       for (const item of issues.filter(matches)) {
         const row = document.createElement('tr'), cell = document.createElement('td'), button = text('button',`Episode ${item.episode}`);
-        button.type = 'button'; button.onclick = () => { if (!allowReviewChange()) return; root.querySelector('.quality-review').hidden = false; $('episode').value = String(item.episode); loadReview(true); $('review-form').scrollIntoView({behavior:'smooth'}); }; cell.append(button); row.append(cell);
+        button.type = 'button'; button.onclick = () => {
+          if (!allowReviewChange()) return;
+          if (activeTab === 'quality_report') root.dispatchEvent(new CustomEvent('curation-review-episode', {bubbles:true}));
+          $('episode').value = String(item.episode); loadReview(true);
+          requestAnimationFrame(() => root.querySelector('.quality-review').scrollIntoView({behavior:'smooth'}));
+        }; cell.append(button); row.append(cell);
         [qualityNames[item.detector] || item.detector,`${item.camera || item.field || '—'}${item.dimension != null ? '['+item.dimension+']' : ''}`,item.severity || 'issue',JSON.stringify(item.frame_intervals || item.frames || [])].forEach(value => row.append(text('td',value)));
         const evidence = text('td',item.message || item.reason || item.code || 'Quality issue'), details = document.createElement('details');
         details.append(text('summary','Measurements'),text('pre',JSON.stringify({metrics:item.metrics || {},time_intervals:item.time_intervals || []},null,2))); evidence.append(details); row.append(evidence);
@@ -517,15 +576,16 @@ window.createCurationWorkspace = (root, initialTarget) => {
     window.addEventListener('data-platform:before-dataset-change', beforeDatasetChange);
     window.addEventListener('beforeunload', beforeUnload);
     $('load-result').onclick = () => action(loadResult);
-    $('result').onchange = () => { updateResultVisibility(); if (activeTab === 'quality_report') loadResult().catch(error => notice(error.message, true)); };
-    $('use-result').onchange = () => { const run = $('result').value; if (!run) return; if ($('use-result').checked) inputRuns.add(run); else inputRuns.delete(run); $('input-description').textContent = `${inputRuns.size} input result(s) selected`; };
-    $('accept-result').onclick = () => reviewAction(async () => { if (!result) throw new Error('Open a generated result first.'); await api(`/api/curation/drafts/${draft().workspace_id}/accept/${result.run}/${episode()}`,{expected_revision:draft().revision}); await refresh(); loadReview(true); notice('Result accepted into the draft.'); });
+    $('result').onchange = () => { resultRequest++; updateResultVisibility(); if (activeTab === 'quality_report') loadResult().catch(error => notice(error.message, true)); };
+    $('use-result').onchange = () => { const run = $('result').value; if (!run || $('use-result').disabled) return; if ($('use-result').checked) inputRuns.add(run); else inputRuns.delete(run); updateResultVisibility(); };
+    $('accept-result').onclick = () => reviewAction(async () => { if (!result || result.run !== $('result').value || !['curation.stage','curation.labeling','curation.tagging'].includes(result.operation)) throw new Error('Open the selected annotation result first.'); await api(`/api/curation/drafts/${draft().workspace_id}/accept/${result.run}/${episode()}`,{expected_revision:draft().revision}); await refresh(); loadReview(true); notice('Result accepted into the draft.'); });
     $('publish').onclick = () => {
       if (reviewDirty()) { notice('Save or reload your episode review before publishing the draft.', true); return; }
       action(async () => { await api(`/api/curation/drafts/${draft().workspace_id}/publish`,{target, expected_revision:draft().revision,reason:$('publish-reason').value}); notice('Source validation queued. The draft will publish only if its revision and source still match.'); await refreshJobs(); });
     };
     $('build-form').onsubmit = event => { event.preventDefault(); action(async () => { const values = new FormData(event.target); await submit('materialize',{workers:Number(values.get('workers'))},{manifest_id:$('manifest').value,out_root:values.get('out_root')}); }); };
     $('manifest').onchange = buttons;
+    for (const id of ['compare-a','compare-b','caption-run']) $(id).onchange = buttons;
     $('profile').onclick = () => action(async () => { const data = await api('/api/curation/dataset-profiles',{dataset_version_id:target.dataset_version_id}); $('profiles').textContent = `Profile created: ${data.dataset_profile?.dataset_profile_id || data.profile?.profile_id || 'ready'}`; notice('Dataset profile created.'); });
     $('recipe-form').onsubmit = event => { event.preventDefault(); reviewAction(async () => {
       const form = new FormData(event.target), body = {name:form.get('name'),base_dataset_version_id:target.dataset_version_id,include_episode_ids:indices(form.get('include')) || [],exclude_episode_ids:indices(form.get('exclude')) || [],random_seed:Number(form.get('seed')),deduplication:{mode:form.get('dedup') ? 'exact' : 'none'}};

@@ -13,6 +13,89 @@ from lerobot.data_platform import viewer
 TEMPLATES = Path(viewer.__file__).parent / "templates"
 
 
+def _run_curation_functions(names: list[str], script: str) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for browser-script behavior checks")
+    source = (TEMPLATES / "curation.js").read_text()
+    definitions = source.split("  const operationNames =", 1)[1].split("  const qualityNames =", 1)[0]
+    functions = []
+    for name in names:
+        match = re.search(rf"^  (?:async )?function {name}\([^\n]*\) \{{.*?^  \}}", source, re.M | re.S)
+        assert match, name
+        functions.append(match.group())
+    code = "const assert = require('node:assert/strict');\nconst operationNames =" + definitions
+    code += "\n".join(functions) + "\n(async () => {\n" + script
+    code += "\n})().catch(e => {console.error(e);process.exitCode=1;});"
+    result = subprocess.run([node, "-e", code], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+def test_result_selection_cannot_accept_or_reuse_the_previously_opened_run():
+    _run_curation_functions(
+        ["drawResultOptions", "updateResultVisibility"],
+        """
+const controls = {};
+global.$ = id => controls[id] ||= {value:'', options:[], closest:()=>controls.label ||= {}};
+global.context = {can_edit:true, runs:[['a','labeling'],['b','labeling'],['q','quality'],['e','embedding']]
+    .map(([run,kind])=>({run,operation:'curation.'+kind,created_at:'2026-10-15'}))};
+global.activeTab='labeling'; global.page='annotation'; global.busy=false;
+global.result={run:'a',operation:'curation.labeling'};
+global.draft=()=>({status:'open'});
+global.inputRuns=new Set(['a']);
+let offered=[];
+global.options=(select,items)=>{offered=items.map(item=>item.run);select.options=[{},...items];};
+$('result').value='a';
+drawResultOptions();
+assert.deepEqual(offered,['a','b']);
+assert.equal($('accept-result').disabled,false);
+assert.equal($('use-result').checked,true);
+$('result').value='b'; updateResultVisibility();
+assert.equal($('result-body').hidden,true);
+assert.equal($('accept-result').disabled,true);
+assert.equal($('use-result').disabled,true);
+assert.equal($('use-result').checked,false);
+result={run:'b',operation:'curation.labeling'}; updateResultVisibility();
+assert.equal($('accept-result').disabled,false);
+context.can_edit=false; updateResultVisibility();
+assert.equal($('accept-result').disabled,true);
+assert.equal($('use-result').disabled,true);
+context.can_edit=true; busy=true; updateResultVisibility();
+assert.equal($('accept-result').disabled,true);
+busy=false; activeTab='quality_report'; page='quality';
+$('result').value='q'; result={run:'q',operation:'curation.quality',quality:{}};
+drawResultOptions();
+assert.deepEqual(offered,['q']);
+assert.equal($('result-body').hidden,false);
+assert.equal($('use-result').closest('label').hidden,true);
+assert.equal($('accept-result').disabled,true);
+activeTab='quality_flags'; updateResultVisibility();
+assert.equal($('use-result').disabled,false); // Retain explicit reuse for scoped quality reruns.
+""",
+    )
+
+
+def test_curation_submissions_only_include_compatible_explicit_inputs():
+    _run_curation_functions(
+        ["submit"],
+        """
+global.target={dataset_version_id:'version'};
+global.context={runs:[['labels','labeling'],['quality','quality'],['embedding','embedding']]
+    .map(([run,kind])=>({run,operation:'curation.'+kind}))};
+global.inputRuns=new Set(['labels','quality','embedding','stale']);
+global.draft=()=>null;
+global.root={querySelector:()=>({})};
+global.notice=()=>{}; global.refreshJobs=async()=>{};
+let submitted;
+global.api=async(url,body)=>{submitted=body; return {};};
+await submit('quality'); assert.deepEqual(submitted.input_runs,['quality']);
+await submit('project'); assert.deepEqual(submitted.input_runs,['embedding']);
+await submit('construction'); assert.deepEqual(submitted.input_runs,['labels']);
+await submit('snapshot'); assert.deepEqual(submitted.input_runs,[]);
+""",
+    )
+
+
 def _run_methods(names: list[str], script: str) -> None:
     node = shutil.which("node")
     if not node:
