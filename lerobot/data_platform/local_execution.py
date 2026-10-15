@@ -406,6 +406,7 @@ def _run(generation):
                                 writable_roots=[Path(value) for value in config["writable_roots"]],
                                 enrollment_token="",
                                 allow_source_mutations=config["allow_source_mutations"],
+                                local_requests=True,
                             )
                         except Exception:
                             client.session.close()

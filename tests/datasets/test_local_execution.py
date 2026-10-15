@@ -46,6 +46,7 @@ def worker(tmp_path, monkeypatch):
         def __init__(self, **kwargs):
             self.client = kwargs["client"]
             self.allowed_roots = kwargs["allowed_roots"]
+            self.local_requests = kwargs.get("local_requests", False)
             self.polls = 0
             self.readers = 0
             self.closed = False
@@ -94,6 +95,7 @@ def test_idle_polls_do_not_accumulate_agents_or_caption_readers(worker, monkeypa
     )
     assert snapshots == [2, 2]
     assert len(worker.clients) == len(worker.agents) == 1
+    assert worker.agents[0].local_requests is True
     assert worker.agents[0].polls == 3
     assert worker.agents[0].closed and worker.clients[0].closed
 

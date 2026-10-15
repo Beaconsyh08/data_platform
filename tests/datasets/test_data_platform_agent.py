@@ -84,6 +84,42 @@ def test_agent_installer_uses_service_accessible_system_python_and_recovers_enro
     assert "if grep -q '^DATA_PLATFORM_AGENT_ENROLLMENT_TOKEN='" in installer
 
 
+def test_local_identity_survives_repeated_agent_heartbeats(tmp_path, monkeypatch):
+    from lerobot.data_platform import curation_execution, mcap_import
+    from lerobot.data_platform.control_plane import ControlPlaneStore
+
+    monkeypatch.setattr(curation_execution, "worker_capabilities", lambda: {"curation_operations": []})
+    monkeypatch.setattr(mcap_import, "runtime_status", lambda: {"ready": False})
+    agent = _agent(tmp_path, tmp_path, tmp_path)
+    assert not agent.capabilities().get("local_requests")
+    agent.local_requests = True
+    store = ControlPlaneStore(f"sqlite:///{tmp_path / 'control.db'}")
+    _, node = store.enroll_node(
+        name="local-worker",
+        hostname="localhost",
+        allowed_roots=[str(tmp_path)],
+        writable_roots=[str(tmp_path)],
+        capabilities={"local_requests": True},
+        enrollment_token="fixture",
+        expected_token="fixture",
+    )
+    monkeypatch.setattr(
+        agent.client,
+        "heartbeat",
+        lambda state, capabilities: store.heartbeat(node["node_id"], capabilities=capabilities),
+        raising=False,
+    )
+    for _ in range(2):
+        agent.run_once(sync=False, allow_claim=False)
+        store.configure_local_execution_roots(node["node_id"], [str(tmp_path)], [str(tmp_path)])
+    assert (
+        next(item for item in store.list_nodes() if item["node_id"] == node["node_id"])["capabilities"][
+            "local_requests"
+        ]
+        is True
+    )
+
+
 def test_discover_datasets_stops_at_dataset_roots(tmp_path: Path):
     first = tmp_path / "team" / "first"
     second = tmp_path / "team" / "nested" / "second"

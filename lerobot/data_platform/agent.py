@@ -602,6 +602,7 @@ class DataPlatformAgent:
         enrollment_token: str,
         lease_seconds: int = 300,
         allow_source_mutations: bool = False,
+        local_requests: bool = False,
     ):
         self.client = client
         self.state_path = Path(state_path).expanduser()
@@ -611,6 +612,7 @@ class DataPlatformAgent:
         self.enrollment_token = str(enrollment_token)
         self.lease_seconds = max(30, int(lease_seconds))
         self.allow_source_mutations = bool(allow_source_mutations)
+        self.local_requests = bool(local_requests)
         from lerobot.data_platform.environment import EnvironmentIdentity, validate_dev_path, verify_directory
 
         self.environment_identity = EnvironmentIdentity.from_env()
@@ -729,6 +731,7 @@ class DataPlatformAgent:
             "caption_schemes": ["multiview_semantics", "video_events", "fusion_review"],
             "caption_configured": bool(os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_DASHSCOPE_API_KEY")),
             "job_protocol": 2,
+            "local_requests": self.local_requests,
             "rolling_deploy_protocol": 1 if os.environ.get("DATA_PLATFORM_EXECUTOR_RELEASE") else 0,
             "environment": os.environ.get("DATA_PLATFORM_ENV", "legacy"),
             "instance_id": os.environ.get("DATA_PLATFORM_INSTANCE_ID", ""),
