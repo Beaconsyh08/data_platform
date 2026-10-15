@@ -942,12 +942,10 @@ def register_control_plane_routes(
     def control_jobs():
         return jsonify(
             {
-                "jobs": [
-                    store.job_manager.decorate(job, _current_user())
-                    for job in store.list_jobs(
-                        limit=int(request.args.get("limit") or 200), actor=_current_user()
-                    )
-                ]
+                "jobs": store.job_manager.decorate_many(
+                    store.list_jobs(limit=int(request.args.get("limit") or 200), actor=_current_user()),
+                    _current_user(),
+                )
             }
         )
 

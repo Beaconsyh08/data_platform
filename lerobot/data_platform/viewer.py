@@ -2151,7 +2151,7 @@ def run_server(
             return elapsed_seconds, max(0, eta_seconds)
         return elapsed_seconds, None
 
-    def _serialize_job(job: dict) -> dict:
+    def _serialize_job(job: dict, *, persistent: dict | None = None) -> dict:
         controls = {}
         control_id = job.get("control_job_id") or job.get("persistent_job_id")
         if control_plane_store is not None and control_id:
@@ -2160,9 +2160,10 @@ def run_server(
             from lerobot.data_platform.local_execution import local_job_payload
 
             actor = getattr(g, "control_plane_user", None) if has_request_context() else None
-            persistent = control_plane_store.job_manager.decorate(
-                control_plane_store.get_job(control_id), actor
-            )
+            if persistent is None:
+                persistent = control_plane_store.job_manager.decorate(
+                    control_plane_store.get_job(control_id), actor
+                )
             job = local_job_payload(control_plane_store, persistent)
             controls = {
                 key: persistent.get(key)
@@ -3665,13 +3666,17 @@ def run_server(
                 )
                 if row["operation"].startswith("local.request.")
             ]
+            rows = control_plane_store.job_manager.decorate_many(
+                rows[:20], getattr(g, "control_plane_user", None)
+            )
             return jsonify(
                 {
                     "jobs": [
                         _serialize_job(
-                            {**local_job_payload(control_plane_store, row), "persistent_job_id": None}
+                            {**local_job_payload(control_plane_store, row), "persistent_job_id": None},
+                            persistent=row,
                         )
-                        for row in rows[:20]
+                        for row in rows
                     ]
                 }
             )

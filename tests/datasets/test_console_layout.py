@@ -21,6 +21,10 @@ def test_remote_lists_load_independently_when_jobs_fail(page):
     end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
     assert end is not None
     source = template[match.start() : match.end() + end.end()]
+    if method == "loadRemoteSources":
+        jobs_match = re.search(r"^                async loadRemoteJobs\(\) \{", template, re.MULTILINE)
+        jobs_end = re.search(r"^                \},", template[jobs_match.end() :], re.MULTILINE)
+        source += template[jobs_match.start() : jobs_match.end() + jobs_end.end()]
     script = "const assert = require('node:assert/strict'); const app = {" + source + "};\n"
     script += f"const method = '{method}';\n"
     script += r"""
@@ -59,6 +63,23 @@ def test_remote_lists_load_independently_when_jobs_fail(page):
     assert.equal(app[locationsKey][0].location_id, 'dataset');
     assert.match(app[errorKey], /Nodes:/);
     assert.equal(app.refreshing, false);
+    // A task request that is still pending must not hold back a ready dataset list.
+    failing = '';
+    let finishJobs;
+    const gate = new Promise(resolve => { finishJobs = resolve; });
+    app.requestJson = app.request = async url => {
+        if (url.includes('jobs')) { await gate; return {jobs: [{job_id: 'fresh'}]}; }
+        return url.includes('nodes') ? {nodes: [{node_id: 'fresh-node'}]}
+            : {locations: [{location_id: 'fresh-dataset'}]};
+    };
+    const loading = app[method]();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(app[nodesKey][0].node_id, 'fresh-node');
+    assert.equal(app[locationsKey][0].location_id, 'fresh-dataset');
+    assert.equal(app[jobsKey][0].job_id, 'old');
+    finishJobs();
+    await loading;
+    assert.equal(app[jobsKey][0].job_id, 'fresh');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
