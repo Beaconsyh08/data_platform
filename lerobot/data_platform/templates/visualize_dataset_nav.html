@@ -1,23 +1,13 @@
-<style>
-  .dp-dataset-nav a:focus-visible, .dp-dataset-nav [aria-disabled]:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
-  .dp-nav-hint { display: none; max-width: 220px; margin-top: 4px; line-height: 1.4; color: #94a3b8; }
-  [aria-disabled]:focus .dp-nav-hint { display: block; }
-</style>
-<nav class="dp-dataset-nav" aria-label="Dataset views" style="display:flex;flex-wrap:wrap;gap:6px;margin:{{ '0' if nav_compact|default(false) else '0 0 10px' }};font-size:12px;line-height:1.2;align-items:center">
-  <a href="{{ home_url or '/' }}"
-     title="Return to the console with this dataset selected"
-     style="display:inline-block;min-width:86px;text-align:center;border:1px solid #334155;background:#0f172a;color:#e2e8f0;border-radius:6px;padding:6px 8px;text-decoration:none">Dataset console</a>
+<nav class="dp-dataset-nav{{ ' is-compact' if nav_compact|default(false) else '' }}" aria-label="Dataset views">
+  <a class="dp-btn" href="{{ home_url or '/' }}" title="Return to the console with this dataset selected">Dataset console</a>
   {% for item in nav_links or [] %}
   {% set is_active = nav_active == item.key %}
   {% set is_enabled = item.enabled or is_active %}
   {% if is_enabled %}
-  <a href="{{ item.href }}"
-     {% if is_active %}aria-current="page"{% endif %}
-     title="{{ item.hint or item.label }}"
-     style="display:inline-block;min-width:86px;text-align:center;border:1px solid {{ '#0ea5e9' if is_active else '#334155' }};background:{{ '#082f49' if is_active else '#020617' }};color:{{ '#bae6fd' if is_active else '#cbd5e1' }};border-radius:6px;padding:6px 8px;text-decoration:none">{{ item.label }}</a>
+  <a class="dp-btn" href="{{ item.href }}" title="{{ item.hint or item.label }}"
+     {% if is_active %}aria-current="page"{% endif %}>{{ item.label }}</a>
   {% else %}
-  <span title="{{ item.hint or 'Not available yet' }}" role="link" aria-disabled="true" tabindex="0"
-        style="display:inline-block;min-width:86px;text-align:center;border:1px solid #1e293b;background:#020617;color:#94a3b8;border-radius:6px;padding:6px 8px;cursor:not-allowed">{{ item.label }}<span class="dp-nav-hint">{{ item.hint or 'Not available yet' }}</span></span>
+  <span class="dp-btn" role="link" aria-disabled="true" tabindex="0" title="{{ item.hint or 'Not available yet' }}">{{ item.label }}<span class="dp-nav-hint">{{ item.hint or 'Not available yet' }}</span></span>
   {% endif %}
   {% endfor %}
 </nav>

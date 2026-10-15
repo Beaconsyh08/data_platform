@@ -10,10 +10,10 @@
 .curation-workspace a { color: #7dd3fc; }
 .curation-workspace a:hover { color: #bae6fd; }
 .curation-workspace label { display: flex; flex-direction: column; gap: .375rem; color: #94a3b8; font-size: .75rem; min-width: 0; }
-.curation-workspace input, .curation-workspace select, .curation-workspace textarea { max-width: 100%; min-width: 0; padding: .5rem .75rem; border: 1px solid #334155; border-radius: .25rem; background: #020617; color: #e2e8f0; font: inherit; }
-.curation-workspace button { padding: .5rem .75rem; border: 1px solid #334155; border-radius: .5rem; background: #0f172a; color: #e2e8f0; font-size: .75rem; font-weight: 500; cursor: pointer; }
+.curation-workspace input, .curation-workspace select, .curation-workspace textarea { max-width: 100%; min-width: 0; padding: .5rem .75rem; border: 1px solid #334155; border-radius: var(--dp-radius); background: #020617; color: #e2e8f0; font: inherit; }
+.curation-workspace button { padding: .5rem .75rem; border: 1px solid #334155; border-radius: .5rem; background: var(--dp-raised); color: var(--dp-text); font-size: .8125rem; font-weight: 600; cursor: pointer; }
 .curation-workspace button:hover { border-color: #0369a1; background: #1e293b; }
-.curation-workspace button[type=submit], .curation-workspace button.primary { border-color: #0369a1; background: #0c4a6e; color: #e0f2fe; }
+.curation-workspace button[type=submit], .curation-workspace button.primary { border-color: #0284c7; background: var(--dp-primary); color: #f0f9ff; }
 .curation-workspace button:disabled { opacity: .45; cursor: not-allowed; }
 .curation-workspace input[type=checkbox] { width: auto; accent-color: #0ea5e9; }
 .curation-workspace .fields { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(220px,100%),1fr)); gap: .875rem; }

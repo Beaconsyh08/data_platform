@@ -2,10 +2,10 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Temporal Caption · {{ page_title }}</title>{% include 'temporal_caption_styles.html' %}</head><body>
 <header class="topbar"><h1>Temporal Caption Review</h1><span class="crumb">{{ page_title }}</span><span class="spacer"></span>
-<a href="{{ annotation_url }}">Create annotation task</a><a href="{{ home_url }}">Dataset</a><span class="lang" aria-label="Caption language"><button id="lang-both" class="on">ZH + EN</button><button id="lang-en">EN</button><button id="lang-zh">ZH</button></span>
+<a href="{{ annotation_url }}">Create captions</a><a href="{{ home_url }}">Dataset</a><span class="lang" aria-label="Caption language"><button id="lang-both" class="on">ZH + EN</button><button id="lang-en">EN</button><button id="lang-zh">ZH</button></span>
 <button id="theme" title="Toggle light or dark theme">◐ Theme</button></header>
-<div class="selectors"><label>Result method<select id="scheme">{% for scheme in caption_schemes %}<option value="{{ scheme.id }}">{{ scheme.name }}</option>{% endfor %}</select></label>
-<label>Episode (↑ / ↓)<select id="episode" disabled></select></label><label>Result stage / run<select id="variant" disabled></select></label><div><p id="scheme-description"></p><span id="meta" class="crumb"></span></div></div>
+<div class="selectors"><label>Method<select id="scheme">{% for scheme in caption_schemes %}<option value="{{ scheme.id }}">{{ scheme.name }}</option>{% endfor %}</select></label>
+<label>Episode (↑ / ↓)<select id="episode" disabled></select></label><label>Result<select id="variant" disabled></select></label><div><p id="scheme-description"></p><span id="meta" class="crumb"></span></div></div>
 
 <p id="status" role="status">Loading annotation results…</p>
 <main class="wrap" id="review" hidden>
@@ -20,10 +20,11 @@
 <div class="card plot-box"><div class="track-head"><span>End-effector observations</span><span>gripper · position speed</span></div>
 <svg id="plot" class="plot" viewBox="0 0 1000 190" role="img" aria-label="Measured gripper position and motion speed"></svg>
 <div class="legend"><span><i style="background:var(--ph-approach)"></i>Left</span><span><i style="background:var(--ph-release)"></i>Right</span><span>Speed in source position units/s · click to seek</span></div></div>
-<div class="card block"><div class="sec-title">How this was produced</div><p id="method"></p><div class="usage" id="usage"></div>
-<div id="cross-modal" hidden></div><div id="fusion-audit" hidden></div><details><summary>Input provenance & limitations</summary><pre id="provenance"></pre></details><p class="note">Model drafts · not human reviewed. A second pass is not automatically more accurate.</p></div>
+<details class="card block"><summary>Method &amp; diagnostics</summary><p id="method"></p><div class="usage" id="usage"></div>
+<div id="cross-modal" hidden></div><div id="fusion-audit" hidden></div><details><summary>Input provenance & limitations</summary><pre id="provenance"></pre></details><p class="note">A second pass is not automatically more accurate.</p></details>
 </section>
 <section class="panel">
+<p class="note">Model-generated captions · human review required.</p>
 <div class="card verdict" id="quality"></div>
 <div class="card block"><div class="sec-title">Recorded task</div><div class="task-line" id="task"></div>
 <div id="scene-block"><div class="sec-title" style="margin-top:16px">What the model saw</div><div id="scene"></div><div class="objs" id="objects"></div></div>
@@ -83,7 +84,7 @@ function renderQuality(result) {
     const box=$('quality'), quality=result.quality;
     box.replaceChildren(text('div','Task outcome assessment','sec-title'));
     box.classList.toggle('quality-unknown',!quality || typeof quality.instruction_followed!=='boolean');
-    if(!quality || typeof quality.instruction_followed!=='boolean') { box.append(text('p','Task success was not assessed in this result. This is not a failure. Segmentation review findings are shown separately below.')); return; }
+    if(!quality || typeof quality.instruction_followed!=='boolean') { box.append(text('p','Task outcome not assessed. See segment review findings below.')); return; }
     box.classList.toggle('pass',quality.instruction_followed===true && quality.success===true);
     const badges=text('div','','verdict-head');
     for(const [label,value] of [['Instruction followed',quality.instruction_followed],['Task success',quality.success]]) badges.append(text('span',`${label}: ${value===true?'yes':value===false?'no':'unknown'}`,`badge ${value===true?'ok':value===false?'bad':'warn'}`));
@@ -268,7 +269,7 @@ async function refreshRuns() {
     if (changed || initialSelection) chooseScheme();
 }
 for(const lang of ['both','en','zh']) $(`lang-${lang}`).onclick=()=>{document.body.classList.toggle('hide-en',lang==='zh');document.body.classList.toggle('hide-zh',lang==='en');for(const key of ['both','en','zh']) $(`lang-${key}`).classList.toggle('on',key===lang);};
-$('theme').onclick=()=>{const dark=document.documentElement.dataset.theme==='dark'||(!document.documentElement.dataset.theme&&matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.dataset.theme=dark?'light':'dark';};
+$('theme').onclick=()=>{const dark=document.documentElement.dataset.theme!=='light';document.documentElement.dataset.theme=dark?'light':'dark';};
 
 
 

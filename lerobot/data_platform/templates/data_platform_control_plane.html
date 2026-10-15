@@ -13,19 +13,20 @@
         td { vertical-align: top; }
         button, select, input, a { outline-offset: 4px; }
         button:disabled { opacity: .4; cursor: not-allowed; }
-        .management-tabs { position: sticky; top: 0; z-index: 20; background: #080f1cf5; backdrop-filter: blur(12px); }
+        .management-tabs { position: sticky; top: 0; z-index: 20; background: rgba(2, 6, 23, .96); backdrop-filter: blur(12px); }
         .management-tabs button { border-bottom: 2px solid transparent; padding: 14px 16px; white-space: nowrap; color: #94a3b8; }
         .management-tabs button[aria-current="page"] { color: #7dd3fc; border-color: #38bdf8; }
         .management-tabs button:hover { color: #e2e8f0; }
-        .metric { border: 1px solid #263448; border-radius: 12px; padding: 20px; background: #101b2c; text-align: left; }
-        .metric strong { display: block; margin: 8px 0; font-size: 30px; color: #f1f5f9; }
+        .metric { border: 1px solid var(--dp-line); border-radius: .75rem; padding: 20px; background: var(--dp-surface); text-align: left; }
+        .metric strong { display: block; margin: 8px 0; font-size: 28px; color: #f1f5f9; }
         dialog { color: #e2e8f0; background: #0f172a; border: 1px solid #334155; border-radius: 16px; width: min(900px, 94vw); max-height: 85vh; padding: 24px; }
         dialog::backdrop { background: #020617ba; backdrop-filter: blur(3px); }
         #admin-usage-panel th, #admin-usage-panel td { padding: 12px 8px; }
     </style>
+    {% include "data_platform_workspace_styles.html" %}
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-100">
-    <main class="mx-auto max-w-7xl px-4 py-6" x-data="controlPlane()" x-init="start()">
+    <main class="dp-workspace" x-data="controlPlane()" x-init="start()">
         <header class="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-800 bg-slate-900 p-4">
             <div>
                 <div class="text-xs font-semibold uppercase tracking-wider text-sky-300">Workspace administration</div>
@@ -34,10 +35,10 @@
             </div>
             <div class="flex flex-wrap items-center gap-2">
                 <span class="mr-2 text-xs text-slate-400" aria-live="polite" x-text="refreshing ? 'Refreshing…' : lastUpdated ? 'Updated ' + formatTime(lastUpdated) : 'Connecting…'"></span>
-                <button class="rounded-lg border border-slate-700 px-3 py-2 text-sm" :disabled="refreshing" @click="refreshSection()">Refresh</button>
-                <a href="/" class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:border-sky-600">Dataset console</a>
-                <button class="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:border-red-700" @click="logout()">Sign out</button>
-                <a href="/account/password" class="rounded-lg border border-slate-700 px-3 py-2 text-sm">Change password</a>
+                <button class="dp-btn" :disabled="refreshing" @click="refreshSection()">Refresh</button>
+                <a href="/" class="dp-btn">Dataset console</a>
+                <button class="dp-btn" @click="logout()">Sign out</button>
+                <a href="/account/password" class="dp-btn">Change password</a>
             </div>
         </header>
 
@@ -48,7 +49,7 @@
             <template x-for="item in sections()" :key="item.id"><button :aria-current="section === item.id ? 'page' : null" @click="selectSection(item.id)" x-text="item.label"></button></template>
         </nav>
         <section x-show="section === 'overview'" x-cloak class="mb-6" aria-label="Platform overview">
-            <div class="mb-5"><h2 class="text-lg font-semibold">What needs attention</h2><p class="mt-1 text-sm text-slate-400">Task counts reflect the recent jobs loaded below, not lifetime totals.</p></div>
+            <div class="mb-5"><h2 class="text-lg font-semibold">What needs attention</h2><p class="mt-1 text-sm text-slate-400">Counts cover recently loaded jobs.</p></div>
             <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <button class="metric" @click="openJobs('running')"><span class="text-sm text-slate-400">Running</span><strong x-text="jobCount('running')"></strong><span class="text-xs text-sky-300">View active work →</span></button>
                 <button class="metric" @click="openJobs('queued')"><span class="text-sm text-slate-400">Queued</span><strong x-text="jobCount('queued')"></strong><span class="text-xs text-sky-300">Review waiting tasks →</span></button>
@@ -66,7 +67,7 @@
         <section x-show="section === 'users'" x-cloak class="mb-6 rounded-xl border border-slate-800 bg-slate-900">
             <div class="border-b border-slate-800 px-4 py-3">
                 <h2 class="font-semibold">Users and access</h2>
-                <p class="mt-1 text-xs text-slate-400">Self-registered accounts remain inactive until approved. New accounts start as Viewer and cannot modify or delete data.</p>
+                <p class="mt-1 text-xs text-slate-400">New accounts require approval and start with read-only Viewer access.</p>
             </div>
             <div class="flex flex-wrap gap-3 p-4">
                 <input type="search" aria-label="Search users" placeholder="Search username" x-model="userSearch" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
@@ -103,7 +104,7 @@
             </div>
             <div x-show="scopeAccount" x-cloak class="border-t border-slate-800 p-4">
                 <h3 class="font-medium" x-text="'Data permissions · ' + (scopeAccount?.username || '')"></h3>
-                <p class="my-2 text-sm text-slate-400">Defaults to all current and future registered datasets. For viewers and operators, selected datasets limit visibility and use. For data managers, they limit direct source edits and episode deletion.</p>
+                <p class="my-2 text-sm text-slate-400">Viewer / Operator: limits dataset access. Data manager: limits source edits and deletion. “All datasets” also includes future registrations.</p>
                 <label class="mr-4 text-sm"><input type="radio" x-model="scopeMode" value="all" :disabled="scopeBusy"> All datasets, including future datasets</label>
                 <label class="text-sm"><input type="radio" x-model="scopeMode" value="selected" :disabled="scopeBusy"> Selected datasets only</label>
                 <input type="search" aria-label="Search data permissions" x-model="scopeSearch" placeholder="Search dataset, Agent or path" class="my-3 block w-full rounded border border-slate-700 bg-slate-950 px-3 py-2">

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Data Platform sign in</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    {% include "data_platform_workspace_styles.html" %}
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-100">
     <main class="mx-auto flex min-h-screen max-w-md items-center px-5 py-10">
@@ -37,7 +38,7 @@
                 <p id="error" class="hidden rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-200"></p>
                 <p id="success" class="hidden rounded-lg border border-emerald-900 bg-emerald-950/50 px-3 py-2 text-sm text-emerald-200"></p>
                 <button id="submit" type="submit"
-                        class="w-full rounded-lg border border-sky-700 bg-sky-700 px-4 py-2.5 font-semibold text-white hover:bg-sky-600">
+                        class="dp-btn dp-btn-primary w-full">
                     {{ "Sign in" if configured else "Bootstrap administrator" }}
                 </button>
             </form>
