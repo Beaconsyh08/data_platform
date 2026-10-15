@@ -502,7 +502,8 @@ Instruction 下拉框以及勾选 `Flagged` 后的 flag 类型下拉框会显示
 打开 Inspect 不要求准备视频，也不会生成 CSV、启动任务或修改源数据及缓存。
 
 - 选择 episode、从 0 开始的行偏移和每页数量，默认 50 行，最多 200 行；用 Previous/Next 翻页。
-- 在 Fields 搜索并勾选需要的字段，再点 Load rows。字段信息来自实际文件 schema 和声明的 feature metadata。
+- Fields 默认勾选全部字段；切换数据源或 episode 后也会重新全选。可搜索并取消不需要的字段，再点 Load rows。
+  字段信息来自实际文件 schema 和声明的 feature metadata。
 - 点击记录展开所有字段的 JSON；CSV 重复表头按列位置区分，数组保持实际结构。
 - 图片和二进制只展示字段信息，不加载媒体内容。大数组/字符串明确标记截断，单次响应不超过 2 MiB。
 - Parquet 展示存储值，不做信号归一化。v3.0 共用 shard 时只返回当前 episode 的记录。
