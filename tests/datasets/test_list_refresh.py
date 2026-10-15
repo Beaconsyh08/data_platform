@@ -3,10 +3,113 @@
 import pytest
 from sqlalchemy import event
 
-from lerobot.data_platform.control_plane import DatasetLocation, RemoteJob
+from lerobot.data_platform.control_plane import DatasetLocation, RemoteJob, RemoteJobEvent, _utcnow
 from lerobot.data_platform.management_storage import JobControl
 from tests.datasets.test_control_plane import _app
 from tests.datasets.test_job_management import setup  # noqa: F401 -- shared fixture
+
+
+@pytest.mark.parametrize("username", ["admin-user", "owner-user"])
+def test_summary_responses_preserve_access_and_full_details(setup, tmp_path, username):  # noqa: F811
+    store, admin, owner, _, location, create = setup
+    job, foreign = create(), create(admin)
+    evidence = "per-episode-artifact-" * 50_000
+    metadata = {
+        "total_episodes": 12,
+        "features": {"action": {"shape": [2]}},
+        "viewer_url": "/remote/source/viewer",
+        "operation_capabilities": {"viewer": {"supported": True}},
+        "episodes": [{"episode_index": 0, "evidence": evidence}],
+        "stats": {"action": evidence},
+        "tasks": [{"task": evidence}],
+    }
+    output = {**location, "metadata": metadata}
+    with store.sessions.begin() as session:
+        session.get(DatasetLocation, location["location_id"]).details = metadata
+        row = session.get(RemoteJob, job["job_id"])
+        row.options = {
+            "source_root": "/data/source",
+            "snapshot": {"episodes": evidence},
+            "task_config": {"catalog": evidence},
+        }
+        row.result = {
+            "progress": {"progress": 30, "current": 3, "total": 10},
+            "viewer_url": "/remote/output/viewer",
+            "dataset_location": output,
+            "synced_location": output,
+            "mcap_import": {
+                "files": [{"report": evidence}],
+                "rejected": [{"report": evidence}],
+                "total_episodes": 12,
+            },
+            "preprocess": {
+                "out_root": "/data/output",
+                "summary": {"total_frames": 120},
+                "episode_lineage": [evidence],
+            },
+            "precompute": {"episodes": evidence},
+        }
+        session.add(
+            RemoteJobEvent(
+                job_id=row.job_id,
+                level="info",
+                message="Uploading",
+                payload={"current": 3},
+                created_at=_utcnow(),
+            )
+        )
+    client = _app(tmp_path, store).test_client()
+    assert (
+        client.post(
+            "/api/auth/login", json={"username": username, "password": "long-test-password"}
+        ).status_code
+        == 200
+    )
+    locations = client.get("/api/control/locations?summary=1")
+    assert locations.status_code == 200
+    assert locations.content_length < 20_000
+    small_metadata = locations.json["locations"][0]["metadata"]
+    assert small_metadata == {
+        key: value for key, value in metadata.items() if key not in {"episodes", "stats", "tasks"}
+    }
+    assert client.get("/api/control/locations").json["locations"][0]["metadata"] == metadata
+
+    response = client.get("/api/control/jobs?limit=200&summary=1")
+    assert response.status_code == 200
+    assert response.content_length < 20_000
+    jobs = {item["job_id"]: item for item in response.json["jobs"]}
+    assert (foreign["job_id"] in jobs) == (username == admin["username"])
+    summary = jobs[job["job_id"]]
+    assert summary["options"] == {"source_root": "/data/source"}
+    assert summary["result"]["dataset_location"]["metadata"] == small_metadata
+    assert summary["result"]["synced_location"]["metadata"] == small_metadata
+    assert summary["result"]["mcap_import"] == {"total_episodes": 12}
+    assert summary["result"]["preprocess"] == {"out_root": "/data/output", "summary": {"total_frames": 120}}
+    assert "precompute" not in summary["result"]
+    full = client.get(f"/api/control/jobs/{job['job_id']}").json["job"]
+    detail = client.get(f"/api/control/jobs/{job['job_id']}?summary=1")
+    assert detail.status_code == 200
+    assert detail.content_length < 20_000
+    assert detail.json["job"]["events"] == full["events"]
+    assert detail.json["job"]["result"] == summary["result"]
+    for key in (
+        "progress",
+        "revision",
+        "available_actions",
+        "queue_ahead",
+        "node_slots",
+        "requested_by_username",
+    ):
+        assert summary[key] == full[key]
+    assert full["options"]["snapshot"]["episodes"] == evidence
+    assert full["result"]["mcap_import"]["files"][0]["report"] == evidence
+    assert store.get_job(job["job_id"])["result"] == full["result"]
+    if username == owner["username"]:
+        assert client.get(f"/api/control/jobs/{foreign['job_id']}?summary=1").status_code == 404
+        store.set_mutation_locations(owner["user_id"], [], actor=admin)
+        assert client.get("/api/control/locations?summary=1").json["locations"] == []
+        assert client.get("/api/control/jobs?summary=1").json["jobs"] == []
+        assert client.get(f"/api/control/jobs/{job['job_id']}?summary=1").status_code == 403
 
 
 @pytest.mark.parametrize("username", ["admin-user", "owner-user"])

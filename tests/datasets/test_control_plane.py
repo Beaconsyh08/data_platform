@@ -804,7 +804,7 @@ def test_viewer_enables_central_login_without_changing_local_mode(tmp_path: Path
     assert '@click="scanSelectedServer()"' in homepage_html
     assert '<option value="all">All servers</option>' not in homepage_html
     assert "Server A (local)" in homepage_html
-    assert "this.requestJson('/api/control/locations')" in homepage_html
+    assert "this.requestJson('/api/control/locations?summary=1')" in homepage_html
     assert "async prepareRemoteViewer(location, options = {})" in homepage_html
     assert "useRemoteDataset(location)" in homepage_html
     assert "openDatasetTab(location, 'standardize')" in homepage_html
@@ -821,10 +821,10 @@ def test_viewer_enables_central_login_without_changing_local_mode(tmp_path: Path
     assert "mergeRemoteJobsIntoRuns()" in homepage_html
     assert "mergeRemoteJob(data.job)" in homepage_html
     assert "remoteViewerPending(location)" in homepage_html
-    assert "`/api/control/jobs/${this.remoteViewerJob.job_id}`" in homepage_html
+    assert "`/api/control/jobs/${this.remoteViewerJob.job_id}?summary=1`" in homepage_html
     assert '@click="selectJob(job)"' in homepage_html
     assert "async selectJob(job, remember = true)" in homepage_html
-    assert "`/api/control/jobs/${jobId}`" in homepage_html
+    assert "`/api/control/jobs/${jobId}?summary=1`" in homepage_html
     assert "dataPlatform.selectedJob" in homepage_html
     assert "scheduleSelectedRemoteJobRefresh(jobId)" in homepage_html
 

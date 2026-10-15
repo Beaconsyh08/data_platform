@@ -49,8 +49,13 @@ H100 的 Agent 经现有 SSH 隧道连接 Server A：生产使用 H100 本地 `9
 Nginx 的开发和生产配置均须启用 `application/json` 的 gzip 压缩，并保留
 `Vary: Accept-Encoding`。数据集列表包含 Episode 元数据，任务列表包含执行结果；随着登记数量
 增加，完整响应可达数十 MB。Nginx 默认仅压缩 HTML，不能依赖全局 `gzip on` 来压缩这些 API。
-验证时检查登录后的 `/api/control/locations` 和 `/api/control/jobs?limit=200`，浏览器请求应带
-`Accept-Encoding: gzip`，响应应有 `Content-Encoding: gzip`；无需修改 API 内容或延长页面超时。
+控制台列表与任务进度轮询使用 `summary=1`：`/api/control/locations?summary=1`、
+`/api/control/jobs?limit=200&summary=1` 和 `/api/control/jobs/<job_id>?summary=1`。
+摘要保留权限、操作能力、进度、队列控制和输出链接，省略逐 episode 元数据、执行快照、
+MCAP 逐文件报告和预处理 lineage。持久化记录不变，省略 `summary=1` 的原 API 仍返回完整内容。
+验证时测量登录后的实际列表耗时与大小，同时检查请求 `Accept-Encoding: gzip`、响应
+`Content-Encoding: gzip` 和 Nginx access log；200 也可能是客户端取消前已开始发送的部分响应。
+摘要需要正常升级应用发行版，不能只靠延长页面超时或 Nginx 压缩替代。
 修正现有配置后先执行 `nginx -t`，再热加载 Nginx，不需重启 Web、Agent 或中断运行任务。
 
 源码工作区是 Server A 上的 `/home/yuhao.song/Codes/data_platform`。

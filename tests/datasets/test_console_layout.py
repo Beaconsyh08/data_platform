@@ -36,7 +36,13 @@ def test_remote_lists_load_independently_when_jobs_fail(page):
         loadDeletionRequests: async () => {}, syncRemoteViewerJob: () => {},
         mergeRemoteJobsIntoRuns: () => {}, clampLocationPage: () => {}, jobPageCount: () => 1});
     let failing = 'jobs';
+    const checkSummary = url => {
+        if (/^\/api\/control\/(locations|jobs)(\?|$)/.test(url)) {
+            assert.equal(new URL(url, 'http://localhost').searchParams.get('summary'), '1');
+        }
+    };
     app.requestJson = app.request = async url => {
+        checkSummary(url);
         if (failing && url.includes(failing)) throw new Error('HTTP 500: task database unavailable');
         return url.includes('nodes') ? {nodes: [{node_id: 'h100-05'}]}
             : url.includes('locations') ? {locations: [{location_id: 'dataset'}]}
@@ -68,6 +74,7 @@ def test_remote_lists_load_independently_when_jobs_fail(page):
     let finishJobs;
     const gate = new Promise(resolve => { finishJobs = resolve; });
     app.requestJson = app.request = async url => {
+        checkSummary(url);
         if (url.includes('jobs')) { await gate; return {jobs: [{job_id: 'fresh'}]}; }
         return url.includes('nodes') ? {nodes: [{node_id: 'fresh-node'}]}
             : {locations: [{location_id: 'fresh-dataset'}]};

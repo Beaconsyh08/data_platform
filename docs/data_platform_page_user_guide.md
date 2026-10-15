@@ -120,6 +120,9 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 搜索关键词仍会继续过滤。仅新增目录或需要立即发现磁盘变化时点击 Scan。
 页面加载、返回首页和 Refresh 均读取已登记列表，不遍历 Server A 数据目录。显式点击 Scan 或本地
 Rescan 才执行目录发现；`GET /api/dataset_roots?scan=0` 用于只读刷新，省略 scan 保留原有扫描语义。
+数据集列表、任务列表及进度轮询只读取摘要，保留权限、操作能力、状态、进度和输出链接；
+不反复下载逐 episode 元数据、执行快照和完整 MCAP 文件报告，减少远程访问时的列表超时。
+完整执行证据仍保留在原记录与不带 `summary=1` 的 API 中。
 即时扫描需要管理员、Data Manager 或具有全数据集读取范围的 Operator，并要求 Agent 在线且
 支持即时扫描；Viewer 和受限 Operator 可用 `Refresh` 查看其权限范围内的已有数据集。
 切换 Server/路径不会被旧扫描结果覆盖；离开页面不会取消 Agent 已接受的扫描。

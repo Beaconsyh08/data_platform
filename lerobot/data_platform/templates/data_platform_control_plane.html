@@ -416,7 +416,7 @@
                     if (this.refreshing) return;
                     this.refreshing = true;
                     try {
-                        const requests = [this.request('/api/control/nodes'), this.request('/api/control/locations'), this.request('/api/control/jobs')];
+                        const requests = [this.request('/api/control/nodes'), this.request('/api/control/locations?summary=1'), this.request('/api/control/jobs?summary=1')];
                         if (this.isAdmin) requests.push(this.request('/api/auth/users'));
                         const keys = ['nodes', 'locations', 'jobs', 'users'];
                         const responses = await Promise.allSettled(requests.map((pending, index) => pending.then(data => {
@@ -552,7 +552,7 @@
                     try {
                         const [data, sources] = await Promise.all([
                             this.request(`/api/auth/users/${account.user_id}/data-scopes`),
-                            this.request('/api/control/locations?format=all')
+                            this.request('/api/control/locations?format=all&summary=1')
                         ]);
                         this.scopeLocations = sources.locations;
                         this.scopeMode = data.all_locations ? 'all' : 'selected';

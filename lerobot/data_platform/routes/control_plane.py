@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from flask import Flask, g, jsonify, redirect, render_template, request
 
 from lerobot.data_platform.cache_files import compress_viewer_csvs
+from lerobot.data_platform.control_plane_summaries import summarize_job, summarize_location
 from lerobot.data_platform.environment import EnvironmentIdentity, session_cookie_name
 from lerobot.data_platform.precompute.data_profile import (
     DATA_PROFILE_PROTOCOL,
@@ -915,46 +916,47 @@ def register_control_plane_routes(
 
         allowed = set(store.mutation_location_ids(_current_user()["user_id"]))
         nodes = {node["node_id"]: node for node in store.list_nodes()}
-        return jsonify(
+        locations = [
             {
-                "locations": [
+                **location,
+                "source_mutation_allowed": location["location_id"] in allowed,
+                **(
                     {
-                        **location,
-                        "source_mutation_allowed": location["location_id"] in allowed,
-                        **(
-                            {
-                                "default_import_output": default_output_root(
-                                    location["root"],
-                                    nodes.get(location["node_id"], {}).get("writable_roots") or [],
-                                )
-                            }
-                            if location.get("metadata", {}).get("source_format") == "mcap"
-                            else {}
-                        ),
+                        "default_import_output": default_output_root(
+                            location["root"],
+                            nodes.get(location["node_id"], {}).get("writable_roots") or [],
+                        )
                     }
-                    for location in store.accessible_locations(_current_user()["user_id"])
-                    if request.args.get("format") == "all"
-                    or (location.get("metadata", {}).get("source_format") == "mcap")
-                    == (request.args.get("format") == "mcap")
-                ]
+                    if location.get("metadata", {}).get("source_format") == "mcap"
+                    else {}
+                ),
             }
-        )
+            for location in store.accessible_locations(_current_user()["user_id"])
+            if request.args.get("format") == "all"
+            or (location.get("metadata", {}).get("source_format") == "mcap")
+            == (request.args.get("format") == "mcap")
+        ]
+        if request.args.get("summary") == "1":
+            locations = [summarize_location(location) for location in locations]
+        return jsonify(locations=locations)
 
     @app.route("/api/control/jobs")
     def control_jobs():
-        return jsonify(
-            {
-                "jobs": store.job_manager.decorate_many(
-                    store.list_jobs(limit=int(request.args.get("limit") or 200), actor=_current_user()),
-                    _current_user(),
-                )
-            }
+        jobs = store.job_manager.decorate_many(
+            store.list_jobs(limit=int(request.args.get("limit") or 200), actor=_current_user()),
+            _current_user(),
         )
+        if request.args.get("summary") == "1":
+            jobs = [summarize_job(job) for job in jobs]
+        return jsonify(jobs=jobs)
 
     @app.route("/api/control/jobs/<string:job_id>")
     def control_job(job_id: str):
         try:
-            return jsonify({"job": store.job_manager.decorate(store.get_job(job_id), _current_user())})
+            job = store.job_manager.decorate(store.get_job(job_id), _current_user())
+            if request.args.get("summary") == "1":
+                job = summarize_job(job)
+            return jsonify(job=job)
         except KeyError:
             return jsonify({"error": "job not found"}), 404
 

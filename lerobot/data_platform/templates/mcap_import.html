@@ -160,7 +160,7 @@ function mcapImportApp(user, onSubmitted) {
         async refresh() {
             try {
                 const [nodes, sources] = await Promise.all([
-                    this.json('/api/control/nodes'), this.json('/api/control/locations?format=mcap')
+                    this.json('/api/control/nodes'), this.json('/api/control/locations?format=mcap&summary=1')
                 ]);
                 this.nodes = nodes.nodes; this.sources = sources.locations;
                 if (!this.nodeId && this.nodes.length === 1) this.nodeId = this.nodes[0].node_id;

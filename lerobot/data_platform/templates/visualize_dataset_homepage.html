@@ -4937,7 +4937,7 @@
                 },
                 async loadRemoteJobs() {
                     const requestId = this.remoteJobsLoadRequest = (this.remoteJobsLoadRequest || 0) + 1;
-                    const data = await this.requestJson('/api/control/jobs?limit=200');
+                    const data = await this.requestJson('/api/control/jobs?limit=200&summary=1');
                     if (requestId !== this.remoteJobsLoadRequest) return;
                     const previousById = new Map(this.remoteJobs.map(job => [job.job_id, job]));
                     this.remoteJobs = (data.jobs || []).map(job => {
@@ -4963,7 +4963,7 @@
                                 }
                                 this.mergeRemoteJobsIntoRuns();
                             }),
-                            this.requestJson('/api/control/locations').then(data => {
+                            this.requestJson('/api/control/locations?summary=1').then(data => {
                                 if (requestId !== this.remoteLoadRequest) return;
                                 this.remoteLocations = data.locations || [];
                                 if (this.selectedRemoteLocation) {
@@ -5295,7 +5295,7 @@
                     if (!this.remoteViewerJob?.job_id) return;
                     try {
                         const data = await this.requestJson(
-                            `/api/control/jobs/${this.remoteViewerJob.job_id}`
+                            `/api/control/jobs/${this.remoteViewerJob.job_id}?summary=1`
                         );
                         this.mergeRemoteJob(data.job);
                         if (['done', 'error', 'cancelled'].includes(data.job.status)) {
@@ -7190,7 +7190,7 @@
                 async refreshSelectedRemoteJob(jobId) {
                     if (!jobId || this.selectedJobId !== jobId) return;
                     try {
-                        const data = await this.requestJson(`/api/control/jobs/${jobId}`);
+                        const data = await this.requestJson(`/api/control/jobs/${jobId}?summary=1`);
                         this.mergeRemoteJob(data.job);
                         this.remoteError = '';
                     } catch (err) {
