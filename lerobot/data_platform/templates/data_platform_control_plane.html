@@ -407,7 +407,7 @@
                     return body;
                 },
                 async start() {
-                    await this.load(); await this.selectSection(window.location.hash.slice(1) || 'overview');
+                    await this.selectSection(window.location.hash.slice(1) || 'overview'); await this.load();
                     this.timer = setInterval(() => { if (!document.hidden) this.load(); }, 5000);
                 },
                 destroy() { clearInterval(this.timer); },
@@ -417,17 +417,16 @@
                     try {
                         const requests = [this.request('/api/control/nodes'), this.request('/api/control/locations'), this.request('/api/control/jobs')];
                         if (this.isAdmin) requests.push(this.request('/api/auth/users'));
-                        const responses = await Promise.allSettled(requests);
                         const keys = ['nodes', 'locations', 'jobs', 'users'];
-                        responses.forEach((result, index) => {
-                            if (result.status === 'fulfilled') this[keys[index]] = result.value[keys[index]] || [];
-                        });
+                        const responses = await Promise.allSettled(requests.map((pending, index) => pending.then(data => {
+                            this[keys[index]] = data[keys[index]] || [];
+                            if (keys[index] === 'nodes' && this.selectedNodeId && !this.nodes.some(node => node.node_id === this.selectedNodeId)) this.selectedNodeId = '';
+                            if (keys[index] === 'locations') this.clampLocationPage();
+                            if (keys[index] === 'jobs') this.jobPage = Math.min(this.jobPage, this.jobPageCount());
+                        })));
                         this.error = responses.flatMap((result, index) => result.status === 'rejected'
                             ? [`${['Nodes', 'Datasets', 'Tasks', 'Users'][index]}: ${result.reason?.message || 'Request failed'}`]
                             : []).join('; ');
-                        if (this.selectedNodeId && !this.nodes.some(node => node.node_id === this.selectedNodeId)) this.selectedNodeId = '';
-                        this.clampLocationPage();
-                        this.jobPage = Math.min(this.jobPage, this.jobPageCount());
                         this.lastUpdated = new Date().toISOString();
                     } catch (error) { this.error = error.message; }
                     finally { this.refreshing = false; }

@@ -649,167 +649,255 @@ class JobManager:
             "queued_at": control.queued_at,
         }
 
-    def queue_ahead(self, session, payload):
-        """Return only a count of preceding work on this task's execution node."""
+    def queue_counts(self, session, node_ids):
+        """Read queue ranks without loading options/results or repeating a query per task."""
         from lerobot.data_platform.control_plane import RemoteJob
 
-        if payload["status"] != "queued":
-            return 0
+        if not node_ids:
+            return {}
         rows = session.execute(
-            select(RemoteJob, JobControl)
+            select(
+                RemoteJob.job_id,
+                RemoteJob.node_id,
+                RemoteJob.status,
+                JobControl.priority,
+                JobControl.queued_at,
+            )
             .join(JobControl, JobControl.job_id == RemoteJob.job_id)
-            .where(RemoteJob.node_id == payload["node_id"], RemoteJob.status.in_({"queued"} | ACTIVE_STATES))
+            .where(RemoteJob.node_id.in_(node_ids), RemoteJob.status.in_({"queued"} | ACTIVE_STATES))
         ).all()
         now = time.time()
-
-        def rank(job, control):
-            return (
-                -min(2, control.priority + int((now - control.queued_at) / 1800)),
-                control.queued_at,
-                job.job_id,
+        counts = {}
+        for node_id in node_ids:
+            active_count = sum(row.node_id == node_id and row.status in ACTIVE_STATES for row in rows)
+            queued = sorted(
+                (row for row in rows if row.node_id == node_id and row.status == "queued"),
+                key=lambda row: (
+                    -min(2, row.priority + int((now - row.queued_at) / 1800)),
+                    row.queued_at,
+                    row.job_id,
+                ),
             )
+            counts.update({row.job_id: active_count + index for index, row in enumerate(queued)})
+        return counts
 
-        current = next((rank(job, control) for job, control in rows if job.job_id == payload["job_id"]), None)
-        if current is None:
+    def queue_ahead(self, session, payload):
+        if payload["status"] != "queued":
             return 0
-        return sum(
-            job.job_id != payload["job_id"] and (job.status in ACTIVE_STATES or rank(job, control) < current)
-            for job, control in rows
-        )
+        return self.queue_counts(session, {payload["node_id"]}).get(payload["job_id"], 0)
 
     def decorate(self, payload, actor=None):
-        from lerobot.data_platform.control_plane import ControlPlaneNode, ControlPlaneUser, RemoteJob
+        return self.decorate_many([payload], actor)[0]
 
+    def decorate_many(self, payloads, actor=None):
+        """Share one request snapshot for task controls, capacity and queue positions."""
+        from lerobot.data_platform.control_plane import (
+            ControlPlaneNode,
+            ControlPlaneUser,
+            DatasetLocation,
+            RemoteJob,
+        )
+
+        if not payloads:
+            return []
         with self.store.sessions() as session:
-            submitter = (
-                session.get(ControlPlaneUser, payload["requested_by"])
-                if payload.get("requested_by")
-                else None
-            )
-            payload["requested_by_username"] = submitter.username if submitter else None
-            payload["queue_ahead"] = self.queue_ahead(session, payload)
-            node = session.get(ControlPlaneNode, payload["node_id"])
-            active = session.scalars(
-                select(RemoteJob).where(
-                    RemoteJob.node_id == payload["node_id"], RemoteJob.status.in_(ACTIVE_STATES)
-                )
-            ).all()
-            capability = (node.capabilities or {}).get("job_concurrent_limit") if node else None
-            limit = min(self.node_limit, max(1, int(capability or 1)))
-            user_limit = self.user_limit
-            if capability is None and payload["operation"] == "caption.annotate" and node:
-                legacy_limit = min(
-                    self.caption_limit,
-                    max(1, int((node.capabilities or {}).get("caption_concurrent_limit", 1))),
-                )
-                limit = max(limit, legacy_limit)
-                user_limit = max(user_limit, legacy_limit)
-            payload["node_slots"] = {"used": len(active), "limit": limit}
-            control = session.get(JobControl, payload["job_id"])
-            payload["queue_wait_reason"] = None
-            if payload["status"] == "queued":
-                current = session.get(RemoteJob, payload["job_id"])
-                conflicting = [row for row in active if current and self._conflicts(session, row, current)]
-                if conflicting:
-                    payload["queue_wait_reason"] = (
-                        "exclusive_job"
-                        if current.operation not in PARALLEL_OPERATIONS
-                        or any(row.operation not in PARALLEL_OPERATIONS for row in conflicting)
-                        else "data_path_conflict"
+            users = {
+                user.user_id: user
+                for user in session.scalars(
+                    select(ControlPlaneUser).where(
+                        ControlPlaneUser.user_id.in_(
+                            {p["requested_by"] for p in payloads if p.get("requested_by")}
+                        )
                     )
-                elif len(active) >= limit:
-                    payload["queue_wait_reason"] = "node_capacity"
-                elif (
-                    not (control and control.extra_quota)
-                    and self.user_running_count(session, payload["requested_by"]) >= user_limit
-                ):
-                    payload["queue_wait_reason"] = "user_capacity"
-                elif not node or not capability:
-                    payload["queue_wait_reason"] = "agent_capacity"
-            if control:
-                payload.update(self.control_dict(control))
-            else:
-                payload.update(
-                    {"revision": 0, "priority": 1, "phase": payload["status"], "extra_quota": False}
                 )
-            attempt = session.get(JobAttempt, control.attempt_id) if control and control.attempt_id else None
-            capable = payload["operation"] in SAFE_OPERATIONS and attempt and attempt.protocol >= 2
-            owner = actor and (
-                actor["role"] == "admin"
-                or (
-                    actor["role"] in {"operator", "data_manager"}
-                    and actor["user_id"] == payload["requested_by"]
+            }
+            nodes = {
+                node.node_id: node
+                for node in session.scalars(
+                    select(ControlPlaneNode).where(
+                        ControlPlaneNode.node_id.in_({p["node_id"] for p in payloads})
+                    )
                 )
+            }
+            active_jobs = session.scalars(select(RemoteJob).where(RemoteJob.status.in_(ACTIVE_STATES))).all()
+            controls = {
+                control.job_id: control
+                for control in session.scalars(
+                    select(JobControl).where(
+                        JobControl.job_id.in_(
+                            {p["job_id"] for p in payloads} | {job.job_id for job in active_jobs}
+                        )
+                    )
+                )
+            }
+            attempts = {
+                attempt.attempt_id: attempt
+                for attempt in session.scalars(
+                    select(JobAttempt).where(
+                        JobAttempt.attempt_id.in_(
+                            {control.attempt_id for control in controls.values() if control.attempt_id}
+                        )
+                    )
+                )
+            }
+            queued_nodes = {p["node_id"] for p in payloads if p["status"] == "queued"}
+            queue_counts = self.queue_counts(session, queued_nodes)
+            current_jobs = (
+                {
+                    job.job_id: job
+                    for job in session.scalars(
+                        select(RemoteJob).where(
+                            RemoteJob.job_id.in_({p["job_id"] for p in payloads if p["status"] == "queued"})
+                        )
+                    )
+                }
+                if active_jobs and queued_nodes
+                else {}
             )
-            actions = []
-            if owner:
+            # Keep ORM rows alive so conflict checks reuse the same session identity map.
+            location_ids = {
+                key
+                for job in [*active_jobs, *current_jobs.values()]
+                for key in [job.location_id, *(job.options or {}).get("source_location_ids", [])]
+            }
+            _locations = (
+                session.scalars(
+                    select(DatasetLocation).where(DatasetLocation.location_id.in_(location_ids))
+                ).all()
+                if current_jobs
+                else []
+            )
+            user_counts = {}
+            for job in active_jobs:
+                control = controls.get(job.job_id)
+                if not (control and control.extra_quota):
+                    user_counts[job.requested_by] = user_counts.get(job.requested_by, 0) + 1
+            for payload in payloads:
+                submitter = users.get(payload.get("requested_by"))
+                payload["requested_by_username"] = submitter.username if submitter else None
+                payload["queue_ahead"] = queue_counts.get(payload["job_id"], 0)
+                node = nodes.get(payload["node_id"])
+                active = [job for job in active_jobs if job.node_id == payload["node_id"]]
+                capability = (node.capabilities or {}).get("job_concurrent_limit") if node else None
+                limit = min(self.node_limit, max(1, int(capability or 1)))
+                user_limit = self.user_limit
+                if capability is None and payload["operation"] == "caption.annotate" and node:
+                    legacy_limit = min(
+                        self.caption_limit,
+                        max(1, int((node.capabilities or {}).get("caption_concurrent_limit", 1))),
+                    )
+                    limit = max(limit, legacy_limit)
+                    user_limit = max(user_limit, legacy_limit)
+                payload["node_slots"] = {"used": len(active), "limit": limit}
+                control = controls.get(payload["job_id"])
+                payload["queue_wait_reason"] = None
                 if payload["status"] == "queued":
-                    actions.append("cancel")
-                    if actor["role"] == "admin":
-                        actions.extend(["priority", "extra-quota"])
-                if (
-                    capable
-                    and payload["status"] in {"running", "cancel_requested"}
-                    and control.phase != "finalizing"
-                ):
-                    actions.append("cancel")
-                    if actor["role"] == "admin":
-                        from lerobot.data_platform.control_plane import ControlPlaneNode, _utcnow
-
-                        node = session.get(ControlPlaneNode, payload["node_id"])
-                        if (
-                            node
-                            and node.last_seen_at
-                            and node.last_seen_at >= _utcnow() - timedelta(minutes=2)
-                        ):
-                            actions.append("terminate")
-                if (
-                    payload["operation"] in SAFE_OPERATIONS
-                    and control
-                    and control.stop_confirmed
-                    and payload["status"] in {"error", "cancelled", "interrupted"}
-                    and (not attempt or capable)
-                ):
-                    actions.append("retry")
-            payload["progress"] = (payload.get("result") or {}).get("progress", {})
-            payload["available_actions"] = actions
-            reasons = {}
-            for action in ("retry", "cancel"):
-                if action in actions:
-                    continue
-                if not owner:
-                    reason = "Only the submitter or an administrator can control this task"
-                elif action == "retry" and payload["status"] not in {"error", "cancelled", "interrupted"}:
-                    reason = "Retry is available after a failed or cancelled execution"
-                elif action == "retry" and (not control or not control.stop_confirmed):
-                    reason = "Execution exit has not been confirmed"
-                elif action == "cancel" and payload["status"] not in {
-                    "queued",
-                    "running",
-                    "cancel_requested",
-                }:
-                    reason = "This task is no longer queued or running"
-                elif control and control.phase == "finalizing":
-                    reason = "Output is being committed; stopping is temporarily unavailable"
-                elif payload["operation"] not in SAFE_OPERATIONS:
-                    reason = "This task type has not yet been adapted for safe retry or running cancellation"
+                    current = current_jobs.get(payload["job_id"])
+                    conflicting = [
+                        row for row in active if current and self._conflicts(session, row, current)
+                    ]
+                    if conflicting:
+                        payload["queue_wait_reason"] = (
+                            "exclusive_job"
+                            if current.operation not in PARALLEL_OPERATIONS
+                            or any(row.operation not in PARALLEL_OPERATIONS for row in conflicting)
+                            else "data_path_conflict"
+                        )
+                    elif len(active) >= limit:
+                        payload["queue_wait_reason"] = "node_capacity"
+                    elif (
+                        not (control and control.extra_quota)
+                        and user_counts.get(payload["requested_by"], 0) >= user_limit
+                    ):
+                        payload["queue_wait_reason"] = "user_capacity"
+                    elif not node or not capability:
+                        payload["queue_wait_reason"] = "agent_capacity"
+                if control:
+                    payload.update(self.control_dict(control))
                 else:
-                    reason = "This execution protocol does not support the operation"
-                reasons[action] = reason
-            payload["action_reasons"] = reasons
-            payload["control_reason"] = (
-                "" if actions else "No supported action for this role, execution protocol or state"
-            )
-            payload["queue_reason"] = ""
-            if payload["status"] == "queued":
-                payload["queue_reason"] = {
-                    "user_capacity": "Waiting for user quota",
-                    "node_capacity": "Waiting for a free node slot",
-                    "data_path_conflict": "Waiting for conflicting dataset paths",
-                    "exclusive_job": "Waiting for an exclusive task",
-                    "agent_capacity": "Waiting for Agent capacity",
-                }.get(payload["queue_wait_reason"], "Waiting for Agent claim and admission checks")
-            return payload
+                    payload.update(
+                        {"revision": 0, "priority": 1, "phase": payload["status"], "extra_quota": False}
+                    )
+                attempt = attempts.get(control.attempt_id) if control else None
+                capable = payload["operation"] in SAFE_OPERATIONS and attempt and attempt.protocol >= 2
+                owner = actor and (
+                    actor["role"] == "admin"
+                    or (
+                        actor["role"] in {"operator", "data_manager"}
+                        and actor["user_id"] == payload["requested_by"]
+                    )
+                )
+                actions = []
+                if owner:
+                    if payload["status"] == "queued":
+                        actions.append("cancel")
+                        if actor["role"] == "admin":
+                            actions.extend(["priority", "extra-quota"])
+                    if (
+                        capable
+                        and payload["status"] in {"running", "cancel_requested"}
+                        and control.phase != "finalizing"
+                    ):
+                        actions.append("cancel")
+                        if actor["role"] == "admin":
+                            from lerobot.data_platform.control_plane import ControlPlaneNode, _utcnow
+
+                            node = session.get(ControlPlaneNode, payload["node_id"])
+                            if (
+                                node
+                                and node.last_seen_at
+                                and node.last_seen_at >= _utcnow() - timedelta(minutes=2)
+                            ):
+                                actions.append("terminate")
+                    if (
+                        payload["operation"] in SAFE_OPERATIONS
+                        and control
+                        and control.stop_confirmed
+                        and payload["status"] in {"error", "cancelled", "interrupted"}
+                        and (not attempt or capable)
+                    ):
+                        actions.append("retry")
+                payload["progress"] = (payload.get("result") or {}).get("progress", {})
+                payload["available_actions"] = actions
+                reasons = {}
+                for action in ("retry", "cancel"):
+                    if action in actions:
+                        continue
+                    if not owner:
+                        reason = "Only the submitter or an administrator can control this task"
+                    elif action == "retry" and payload["status"] not in {"error", "cancelled", "interrupted"}:
+                        reason = "Retry is available after a failed or cancelled execution"
+                    elif action == "retry" and (not control or not control.stop_confirmed):
+                        reason = "Execution exit has not been confirmed"
+                    elif action == "cancel" and payload["status"] not in {
+                        "queued",
+                        "running",
+                        "cancel_requested",
+                    }:
+                        reason = "This task is no longer queued or running"
+                    elif control and control.phase == "finalizing":
+                        reason = "Output is being committed; stopping is temporarily unavailable"
+                    elif payload["operation"] not in SAFE_OPERATIONS:
+                        reason = (
+                            "This task type has not yet been adapted for safe retry or running cancellation"
+                        )
+                    else:
+                        reason = "This execution protocol does not support the operation"
+                    reasons[action] = reason
+                payload["action_reasons"] = reasons
+                payload["control_reason"] = (
+                    "" if actions else "No supported action for this role, execution protocol or state"
+                )
+                payload["queue_reason"] = ""
+                if payload["status"] == "queued":
+                    payload["queue_reason"] = {
+                        "user_capacity": "Waiting for user quota",
+                        "node_capacity": "Waiting for a free node slot",
+                        "data_path_conflict": "Waiting for conflicting dataset paths",
+                        "exclusive_job": "Waiting for an exclusive task",
+                        "agent_capacity": "Waiting for Agent capacity",
+                    }.get(payload["queue_wait_reason"], "Waiting for Agent claim and admission checks")
+            return payloads
 
     def attempts(self, job_id):
         with self.store.sessions() as session:

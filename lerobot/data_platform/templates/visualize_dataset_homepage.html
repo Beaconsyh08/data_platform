@@ -3604,7 +3604,7 @@
                     }
                     const startupLoads = [
                         this.safeStartupLoad(() => this.loadDatasetRoots()),
-                        this.safeStartupLoad(() => this.loadJobs()),
+                        this.safeStartupLoad(() => this.loadJobs(false)),
                         this.safeStartupLoad(() => this.loadOperationLogs())
                     ];
                     if (this.controlPlaneEnabled) {
@@ -5010,43 +5010,52 @@
                         this.busy = false;
                     }
                 },
+                async loadRemoteJobs() {
+                    const requestId = this.remoteJobsLoadRequest = (this.remoteJobsLoadRequest || 0) + 1;
+                    const data = await this.requestJson('/api/control/jobs?limit=200');
+                    if (requestId !== this.remoteJobsLoadRequest) return;
+                    const previousById = new Map(this.remoteJobs.map(job => [job.job_id, job]));
+                    this.remoteJobs = (data.jobs || []).map(job => {
+                        const previous = previousById.get(job.job_id);
+                        if (previous?.updated_at && job.updated_at && previous.updated_at > job.updated_at) return previous;
+                        return previous?.events && previous.attempt_id === job.attempt_id ? {...job, events: previous.events} : job;
+                    });
+                    this.syncRemoteViewerJob();
+                    this.mergeRemoteJobsIntoRuns();
+                },
                 async loadRemoteSources() {
                     if (!this.controlPlaneEnabled) return;
                     const requestId = this.remoteLoadRequest = (this.remoteLoadRequest || 0) + 1;
                     try {
+                        this.loadDeletionRequests().catch(err => { this.error = err.message; });
                         const results = await Promise.allSettled([
-                            this.requestJson('/api/control/nodes'),
-                            this.requestJson('/api/control/locations'),
-                            this.requestJson('/api/control/jobs?limit=200')
+                            this.requestJson('/api/control/nodes').then(data => {
+                                if (requestId !== this.remoteLoadRequest) return;
+                                this.controlPlaneNodes = data.nodes || [];
+                                this.mergeRemoteJobsIntoRuns();
+                            }),
+                            this.requestJson('/api/control/locations').then(data => {
+                                if (requestId !== this.remoteLoadRequest) return;
+                                this.remoteLocations = data.locations || [];
+                                if (this.selectedRemoteLocation) {
+                                    this.selectedRemoteLocation = this.remoteLocations.find(
+                                        item => item.location_id === this.selectedRemoteLocation.location_id
+                                    ) || null;
+                                }
+                                if (this.selectedDataset?.remote && this.selectedRemoteLocation) {
+                                    this.selectedDataset = this.remoteDatasetRecord(this.selectedRemoteLocation);
+                                }
+                                this.syncRemoteViewerJob();
+                                this.mergeRemoteJobsIntoRuns();
+                            }),
+                            this.loadRemoteJobs()
                         ]);
                         if (requestId !== this.remoteLoadRequest) return;
-                        const [nodesResult, locationsResult, jobsResult] = results;
-                        this.loadDeletionRequests().catch(err => { this.error = err.message; });
-                        if (nodesResult.status === 'fulfilled') this.controlPlaneNodes = nodesResult.value.nodes || [];
-                        if (locationsResult.status === 'fulfilled') this.remoteLocations = locationsResult.value.locations || [];
-                        const previousById = new Map(
-                            this.remoteJobs.map(job => [job.job_id, job])
-                        );
-                        if (jobsResult.status === 'fulfilled') this.remoteJobs = (jobsResult.value.jobs || []).map(job => {
-                            const previous = previousById.get(job.job_id);
-                            if (previous?.updated_at && job.updated_at && previous.updated_at > job.updated_at) return previous;
-                            return previous?.events && previous.attempt_id === job.attempt_id ? {...job, events: previous.events} : job;
-                        });
-                        if (this.selectedRemoteLocation) {
-                            this.selectedRemoteLocation = this.remoteLocations.find(
-                                item => item.location_id === this.selectedRemoteLocation.location_id
-                            ) || null;
-                        }
-                        if (this.selectedDataset?.remote && this.selectedRemoteLocation) {
-                            this.selectedDataset = this.remoteDatasetRecord(this.selectedRemoteLocation);
-                        }
-                        this.syncRemoteViewerJob();
-                        this.mergeRemoteJobsIntoRuns();
                         this.remoteError = results.flatMap((result, index) => result.status === 'rejected'
                             ? [`${['Nodes', 'Datasets', 'Tasks'][index]}: ${result.reason?.message || 'Request failed'}`]
                             : []).join('; ');
                     } catch (err) {
-                        this.remoteError = err.message;
+                        if (requestId === this.remoteLoadRequest) this.remoteError = err.message;
                     }
                 },
                 syncRemoteViewerJob() {
@@ -6978,7 +6987,12 @@
                     } catch (error) { this.jobControlError = error.message; }
                     finally { this.jobControlBusy = ''; }
                 },
-                async loadJobs() {
+                async loadJobs(refreshRemote = true) {
+                    const remoteRefresh = refreshRemote && this.controlPlaneEnabled
+                        ? this.loadRemoteJobs().then(() => {
+                            if (this.remoteError.startsWith('Tasks:')) this.remoteError = '';
+                        }).catch(err => { this.remoteError = `Tasks: ${err.message}`; })
+                        : Promise.resolve();
                     const requestId = this.jobsLoadRequest = (this.jobsLoadRequest || 0) + 1;
                     const data = await this.requestJson('/api/jobs');
                     if (requestId !== this.jobsLoadRequest) return;
@@ -6999,6 +7013,7 @@
                             this.pollJob(this.activeJob.id);
                         }
                     }
+                    await remoteRefresh;
                 },
                 async loadOperationLogs() {
                     if (this.datasetAccessRestricted) { this.operationLogs = []; return; }

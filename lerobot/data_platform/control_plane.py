@@ -377,15 +377,26 @@ class ControlPlaneStore:
         grant = session.get(DataMutationGrant, (user.user_id, location.location_id))
         return bool(grant and grant.node_id == location.node_id and grant.root == location.root)
 
+    def _accessible_location_ids(self, session, user) -> set[str] | None:
+        """Resolve current read grants once per list; None means unrestricted."""
+        if user is None or not user.active:
+            return set()
+        if user.role not in {"viewer", "operator"} or self.all_mutation_locations(session, user.user_id):
+            return None
+        return set(
+            session.scalars(
+                select(DatasetLocation.location_id)
+                .join(DataMutationGrant, DataMutationGrant.location_id == DatasetLocation.location_id)
+                .where(
+                    DataMutationGrant.user_id == user.user_id,
+                    DataMutationGrant.node_id == DatasetLocation.node_id,
+                    DataMutationGrant.root == DatasetLocation.root,
+                )
+            )
+        )
+
     def accessible_locations(self, user_id: str) -> list[dict]:
-        with self.sessions() as session:
-            user = session.get(ControlPlaneUser, user_id)
-            allowed = {
-                location.location_id
-                for location in session.scalars(select(DatasetLocation))
-                if self.dataset_access_allowed(session, user, location)
-            }
-        return [location for location in self.list_locations() if location["location_id"] in allowed]
+        return self.list_locations(user_id=user_id)
 
     def restricted_dataset_keys(self, user_id: str) -> set[str] | None:
         """None means unrestricted; an empty set deliberately denies every dataset."""
@@ -885,20 +896,30 @@ class ControlPlaneStore:
             nodes = session.scalars(select(ControlPlaneNode).order_by(ControlPlaneNode.name)).all()
             return [self._node_dict(node) for node in nodes]
 
-    def list_locations(self) -> list[dict]:
+    def list_locations(self, *, user_id: str | None = None) -> list[dict]:
         with self.sessions() as session:
+            allowed = None
+            if user_id is not None:
+                allowed = self._accessible_location_ids(session, session.get(ControlPlaneUser, user_id))
+                if allowed == set():
+                    return []
             # MySQL filesort may copy selected JSON into its sort buffer. Sort
             # only small identifiers here, then load full metadata separately.
+            query = select(
+                DatasetLocation.location_id, ControlPlaneNode.name, ControlPlaneNode.hostname
+            ).join(ControlPlaneNode, ControlPlaneNode.node_id == DatasetLocation.node_id)
+            if allowed is not None:
+                query = query.where(DatasetLocation.location_id.in_(allowed))
             rows = session.execute(
-                select(DatasetLocation.location_id, ControlPlaneNode.name, ControlPlaneNode.hostname)
-                .join(ControlPlaneNode, ControlPlaneNode.node_id == DatasetLocation.node_id)
-                .order_by(ControlPlaneNode.name, DatasetLocation.dataset_key, DatasetLocation.root)
+                query.order_by(ControlPlaneNode.name, DatasetLocation.dataset_key, DatasetLocation.root)
             ).all()
             if not rows:
                 return []
             locations = {
                 location.location_id: self._location_dict(location)
-                for location in session.scalars(select(DatasetLocation)).all()
+                for location in session.scalars(
+                    select(DatasetLocation).where(DatasetLocation.location_id.in_([row[0] for row in rows]))
+                ).all()
             }
             return [
                 {
@@ -1166,15 +1187,19 @@ class ControlPlaneStore:
             if actor is not None and actor.get("role") != "admin":
                 details = details.where(RemoteJob.requested_by == actor.get("user_id", ""))
             jobs = {job.job_id: job for job in session.scalars(details).all()}
-            user = session.get(ControlPlaneUser, actor["user_id"]) if actor else None
+            allowed = (
+                self._accessible_location_ids(session, session.get(ControlPlaneUser, actor["user_id"]))
+                if actor is not None
+                else None
+            )
             return [
                 self._job_dict(jobs[job_id])
                 for job_id in job_ids
                 if job_id in jobs
                 and (
-                    actor is None
+                    allowed is None
                     or all(
-                        self.dataset_access_allowed(session, user, session.get(DatasetLocation, key))
+                        key in allowed
                         for key in [
                             jobs[job_id].location_id,
                             *(jobs[job_id].options or {}).get("source_location_ids", []),
