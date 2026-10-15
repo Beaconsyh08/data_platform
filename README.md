@@ -45,7 +45,8 @@
 账号统一使用 username；改密和管理员重置流程见 [账号与密码恢复](docs/data_platform_accounts.md)。
 
 **远程列表访问：** 数据集、任务列表及任务进度使用摘要响应，避免重复下载逐 episode 元数据和
-完整转换报告；进度、权限和输出链接保留。排障见 [运维手册](docs/data_platform_operations.md)。
+完整转换报告；进度、权限和输出链接保留。Datasets 页始终显示 Server 和扫描目录选项。
+排障见 [运维手册](docs/data_platform_operations.md)。
 
 **MCAP 导入：** Data Platform → Data Import 支持 GenDAS MCAP → LeRobot v3.0，
 先预检、再转换，默认每个目录最多 3 个文件。重启导致计算进程丢失时，自动重新排队并复用完整文件检查点，

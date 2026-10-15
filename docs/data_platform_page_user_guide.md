@@ -74,7 +74,7 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 
 页面上的数据集名称显示实际目录名，不显示 Agent 注册时添加的路径哈希后缀；内部标识和链接保持不变，同名数据集可通过节点和完整路径区分。
 
-主页、管理页及独立工具页共用字体、焦点提示和导航样式。页面先显示操作和简短说明；Datasets 的 `Lifecycle stages` 可展开查看阶段定义。权限限制、错误、费用及源数据修改风险仍直接显示。Temporal Caption Review 默认使用平台深色配色，可通过 `Theme` 切换浅色；`Method & diagnostics` 按需展开，视频、片段和待人工审核提示保持可见。
+主页、管理页及独立工具页共用字体、焦点提示和导航样式。页面先显示操作和简短说明。权限限制、错误、费用及源数据修改风险仍直接显示。Temporal Caption Review 默认使用平台深色配色，可通过 `Theme` 切换浅色；`Method & diagnostics` 按需展开，视频、片段和待人工审核提示保持可见。
 
 首页采用单主画布布局，不再常驻显示数据集左栏和任务右栏：
 
@@ -101,7 +101,7 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 
 ### 3.1 第一次加载数据集
 
-1. 打开 `Data Platform > Datasets`，展开 **Change server or scan a folder**，选择 Server，再从 **Known directory** 下拉菜单选择已有目录，或在 **Scan path / custom subdirectory** 输入路径。已有数据时，此区域默认折叠。
+1. 打开 `Data Platform > Datasets`，在始终显示的 **Change server or scan a folder** 区域选择 Server，再从 **Known directory** 下拉菜单选择已有目录，或在 **Scan path / custom subdirectory** 输入路径。
 2. 点击 `Scan`。
 3. 页面用一个 `Datasets` 列表显示扫描结果，不再区分 `Available` 和 `Registered`。
 4. 点击数据集即可将其设为 working dataset；如果它是首次出现，平台会在后台自动完成 Catalog 登记。页面自动补取轻量详情，具体操作在执行时按需加载数据，不需要单独执行 `Register` 或 `Load`。

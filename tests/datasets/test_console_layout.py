@@ -503,10 +503,7 @@ def test_homepage_uses_single_canvas_dataset_page_and_on_demand_job_drawer():
     assert "/api/admin/logout" in template
     assert "dataPlatform.adminModeUntil" not in template
     assert "legacyMutationsEnabled && adminModeEnabled" in template
-    assert "<summary>Lifecycle stages</summary>" in template
-    assert "Raw is source data" in template
-    assert "preprocessing output" in template
-    assert "reviewed construction or Manifest output" in template
+    assert "Lifecycle stages" not in template
     assert "datasetStageClass(item)" in template
     assert "datasetStageHint(item)" in template
     assert 'x-model="preprocess.delete_reason"' in template
