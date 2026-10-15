@@ -524,7 +524,7 @@
                                     <input class="dp-mono min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-sky-500"
                                            x-ref="customScanPath"
                                            x-model="scanPath"
-                                           @input="remoteError = ''; rootProtected = false"
+                                           @input="onScanPathInput()"
                                            @keydown.enter.prevent="scanSelectedServer()"
                                            :placeholder="datasetServerFilter === 'local' ? '/path/on/server-a' : '/path/on/selected-agent'">
                                     <button class="dp-btn dp-btn-primary dp-btn-inline shrink-0 sm:min-w-[7rem]"
@@ -567,7 +567,8 @@
                             <span class="font-semibold text-slate-200">Datasets</span>
                             <span class="ml-1 rounded-full bg-slate-800 px-2 py-0.5 text-[10px]"
                                   x-text="remoteLocationsForSelectedServer().length"></span>
-                            <p class="mt-0.5 text-[11px] text-slate-500">Agent discoveries are synchronized automatically. Choose one to make it the working dataset.</p>
+                            <p class="mt-0.5 text-[11px] text-slate-500">Changing directories shows registered datasets immediately. Scan discovers new datasets; Refresh reloads the list.</p>
+                            <p class="dp-mono mt-1 break-all text-[11px] text-slate-400" x-text="remoteScanPath || 'All registered directories on this server'"></p>
                         </div>
                         <button class="text-sky-300 hover:text-sky-200"
                                 @click="refreshSelectedServer()">Refresh</button>
@@ -3328,6 +3329,7 @@
                 dataVersionManual: false,
                 selectionToken: 0,
                 datasetServerFilter: 'local',
+                datasetBrowseRevision: 0,
                 scanOptionsExpanded: null,
                 scanPath: {{ datasets_root|tojson }},
                 remoteScanPath: '',
@@ -3597,6 +3599,7 @@
                     if (this._initialized) return;
                     this._initialized = true;
                     const startupNavigation = this.navigationRevision || 0;
+                    const startupBrowse = this.datasetBrowseRevision || 0;
                     const storedJobId = this.storedJobId();
                     await this.loadAdminStatus();
                     if (this.consoleMode === 'visualize') {
@@ -3608,7 +3611,7 @@
                         this.safeStartupLoad(() => this.loadOperationLogs())
                     ];
                     if (this.controlPlaneEnabled) {
-                        startupLoads.push(this.safeStartupLoad(() => this.loadRemoteSources()));
+                        startupLoads.push(this.safeStartupLoad(() => this.loadRemoteSources(true)));
                     }
                     if (['quality_flags', 'data_modification', 'standardize', 'transform', 'dataset_ops', 'split_merge'].some(tab => this.tabEnabled(tab))) {
                         startupLoads.push(this.safeStartupLoad(() => this.loadPreprocessCapabilities()));
@@ -3624,6 +3627,8 @@
                         this.installJobRefreshHandlers();
                         return;
                     }
+                    const browseChanged = (this.datasetBrowseRevision || 0) !== startupBrowse;
+                    const preserveBrowser = browseChanged || this.restoreDatasetBrowser();
                     const startupJob = this.jobs.find(job => job.id === storedJobId)
                         || this.jobs.find(job => job.id === this.selectedJobId)
                         || null;
@@ -3632,12 +3637,12 @@
                     if (key) {
                         const dataset = this.datasets.find(item => item.key === key);
                         if (dataset) {
-                            this.selectDataset(dataset, false, {deferDetails: true});
+                            this.selectDataset(dataset, false, {deferDetails: true, preserveBrowser});
                         } else if (key.startsWith('remote:')) {
                             const location = this.remoteLocations.find(
                                 item => `remote:${item.location_id}` === key
                             );
-                            if (location) await this.useRemoteDataset(location, false);
+                            if (location) await this.useRemoteDataset(location, false, {preserveBrowser});
                         }
                     }
                     if ((this.navigationRevision || 0) !== startupNavigation) { this.installJobRefreshHandlers(); return; }
@@ -4136,9 +4141,53 @@
                     }
                     if (updateUrl) this.updateHomeUrl();
                 },
+                datasetBrowserStorageKey() {
+                    return `dataPlatform.datasetBrowser.${this.controlPlaneUser?.user_id || 'local'}`;
+                },
+                storeDatasetBrowser() {
+                    try {
+                        window.localStorage.setItem(this.datasetBrowserStorageKey(), JSON.stringify({
+                            server: this.datasetServerFilter,
+                            path: this.datasetServerFilter === 'local' ? '' : this.remoteScanPath
+                        }));
+                    } catch (err) {
+                        // Browser storage is optional; browsing still works in the current page.
+                    }
+                },
+                restoreDatasetBrowser() {
+                    try {
+                        const saved = JSON.parse(window.localStorage.getItem(this.datasetBrowserStorageKey()) || 'null');
+                        if (!saved || typeof saved.server !== 'string' || typeof saved.path !== 'string') return false;
+                        const node = this.controlPlaneNodes.find(item => item.node_id === saved.server);
+                        if (!node) return false;
+                        const path = saved.path.replace(/\/+$/, '');
+                        if (path && !(node.allowed_roots || []).some(root => {
+                            const allowed = String(root).replace(/\/+$/, '');
+                            return path === allowed || path.startsWith(`${allowed}/`);
+                        })) return false;
+                        this.datasetServerFilter = saved.server;
+                        this.scanPath = path;
+                        this.remoteScanPath = path;
+                        return true;
+                    } catch (err) {
+                        return false;
+                    }
+                },
+                onScanPathInput() {
+                    this.datasetBrowseRevision = (this.datasetBrowseRevision || 0) + 1;
+                    this.remoteError = '';
+                    this.rootProtected = false;
+                    if (this.datasetServerFilter === 'local') return;
+                    const path = String(this.scanPath || '').trim().replace(/\/+$/, '');
+                    if (path && !this.remotePathAllowed(path)) return;
+                    this.remoteScanPath = path;
+                    this.storeDatasetBrowser();
+                },
                 storedDatasetKey() {
                     try {
-                        return window.localStorage.getItem('dataPlatform.selectedDataset') || '';
+                        const key = this.controlPlaneUser?.user_id
+                            ? `dataPlatform.selectedDataset.${this.controlPlaneUser.user_id}` : 'dataPlatform.selectedDataset';
+                        return window.localStorage.getItem(key) || '';
                     } catch (err) {
                         return '';
                     }
@@ -4160,8 +4209,10 @@
                 },
                 storeDatasetKey(key) {
                     try {
-                        if (key) window.localStorage.setItem('dataPlatform.selectedDataset', key);
-                        else window.localStorage.removeItem('dataPlatform.selectedDataset');
+                        const storageKey = this.controlPlaneUser?.user_id
+                            ? `dataPlatform.selectedDataset.${this.controlPlaneUser.user_id}` : 'dataPlatform.selectedDataset';
+                        if (key) window.localStorage.setItem(storageKey, key);
+                        else window.localStorage.removeItem(storageKey);
                     } catch (err) {
                         // localStorage can be disabled; URL state still works.
                     }
@@ -4843,11 +4894,11 @@
                 },
                 selectScanPath(path) {
                     this.scanPath = path;
-                    this.remoteError = '';
-                    this.rootProtected = false;
+                    this.onScanPathInput();
                     if (!path) this.$nextTick(() => this.$refs.customScanPath.focus());
                 },
                 onDatasetServerChange() {
+                    this.datasetBrowseRevision = (this.datasetBrowseRevision || 0) + 1;
                     this.scanOptionsExpanded = true;
                     this.remoteScanSerial += 1;
                     this.scanBusy = false;
@@ -4858,11 +4909,13 @@
                     this.remoteError = '';
                     if (this.datasetServerFilter === 'local') {
                         this.scanPath = this.rootDir;
+                        this.storeDatasetBrowser();
                         return;
                     }
                     const node = this.selectedServerNode();
                     this.scanPath = String(node?.allowed_roots?.[0] || '');
                     this.remoteScanPath = this.scanPath;
+                    this.storeDatasetBrowser();
                 },
                 remotePathAllowed(path) {
                     const node = this.selectedServerNode();
@@ -4887,8 +4940,8 @@
                         this.rootDir = requested;
                         await this.loadDatasetRoots();
                     } else {
+                        this.onScanPathInput();
                         await this.loadRemoteSources();
-                        if (!this.remoteError && this.remotePathAllowed(requested)) this.remoteScanPath = requested.replace(/\/+$/, '');
                     }
                 },
                 async scanSelectedServer() {
@@ -4930,6 +4983,7 @@
                                 if (!current()) return;
                                 if (this.remoteError) throw new Error(this.remoteError);
                                 this.remoteScanPath = requested.replace(/\/+$/, '');
+                                this.storeDatasetBrowser();
                                 this.scanMessage = `Scan completed: ${scan.dataset_count} dataset(s) discovered under this path.`;
                                 return;
                             }
@@ -5023,7 +5077,8 @@
                     this.syncRemoteViewerJob();
                     this.mergeRemoteJobsIntoRuns();
                 },
-                async loadRemoteSources() {
+                async loadRemoteSources(restoreBrowser = false) {
+                    const browseRevision = this.datasetBrowseRevision || 0;
                     if (!this.controlPlaneEnabled) return;
                     const requestId = this.remoteLoadRequest = (this.remoteLoadRequest || 0) + 1;
                     try {
@@ -5032,6 +5087,9 @@
                             this.requestJson('/api/control/nodes').then(data => {
                                 if (requestId !== this.remoteLoadRequest) return;
                                 this.controlPlaneNodes = data.nodes || [];
+                                if (restoreBrowser && (this.datasetBrowseRevision || 0) === browseRevision) {
+                                    this.restoreDatasetBrowser();
+                                }
                                 this.mergeRemoteJobsIntoRuns();
                             }),
                             this.requestJson('/api/control/locations').then(data => {
@@ -5139,19 +5197,25 @@
                 remoteDatasetName(location) {
                     return this.datasetName(this.remoteDatasetRecord(location));
                 },
-                async useRemoteDataset(location, updateUrl = true) {
+                async useRemoteDataset(location, updateUrl = true, options = {}) {
                     if (!location || !this.confirmDatasetChange(`remote:${location.location_id}`)) return;
                     if (updateUrl) this.navigationRevision = (this.navigationRevision || 0) + 1;
                     ++this.selectionToken;
-                    this.datasetServerFilter = location.node_id;
-                    const node = this.controlPlaneNodes.find(item => item.node_id === location.node_id);
                     const locationRoot = String(location.root || '');
-                    const scanRoot = (node?.allowed_roots || []).find(root => (
-                        locationRoot === String(root).replace(/\/+$/, '')
-                        || locationRoot.startsWith(`${String(root).replace(/\/+$/, '')}/`)
-                    )) || node?.allowed_roots?.[0] || '';
-                    this.scanPath = String(scanRoot);
-                    this.remoteScanPath = String(scanRoot).replace(/\/+$/, '');
+                    const base = String(this.remoteScanPath || '').replace(/\/+$/, '');
+                    const insideBrowser = this.datasetServerFilter === location.node_id
+                        && (!base || locationRoot === base || locationRoot.startsWith(`${base}/`));
+                    if (!options.preserveBrowser && !insideBrowser) {
+                        this.datasetServerFilter = location.node_id;
+                        const node = this.selectedServerNode();
+                        const scanRoot = (node?.allowed_roots || []).find(root => (
+                            locationRoot === String(root).replace(/\/+$/, '')
+                            || locationRoot.startsWith(`${String(root).replace(/\/+$/, '')}/`)
+                        )) || node?.allowed_roots?.[0] || '';
+                        this.scanPath = String(scanRoot);
+                        this.remoteScanPath = String(scanRoot).replace(/\/+$/, '');
+                    }
+                    if (!options.preserveBrowser) this.storeDatasetBrowser();
                     this.selectedRemoteLocation = location;
                     this.selectedDataset = this.remoteDatasetRecord(location);
                     this.selectedDatasetKey = this.selectedDataset.key;
@@ -5442,8 +5506,11 @@
                     if (!this.confirmDatasetChange(dataset.key)) return;
                     if (updateUrl) this.navigationRevision = (this.navigationRevision || 0) + 1;
                     const token = ++this.selectionToken;
-                    this.datasetServerFilter = 'local';
-                    this.scanPath = this.rootDir;
+                    if (!options.preserveBrowser) {
+                        this.datasetServerFilter = 'local';
+                        this.scanPath = this.rootDir;
+                        this.storeDatasetBrowser();
+                    }
                     this.selectedRemoteLocation = null;
                     this.remoteViewerJob = null;
                     const datasetChanged = this.selectedDatasetKey !== dataset.key;

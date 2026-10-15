@@ -73,7 +73,17 @@ assert.equal(app.activeTab, 'split_merge');
 
 def test_scan_directory_choices_follow_server_and_allow_custom_subdirectories():
     _run_methods(
-        ["knownScanPaths", "scanPathPreset", "selectScanPath", "selectedServerNode", "onDatasetServerChange"],
+        [
+            "knownScanPaths",
+            "scanPathPreset",
+            "selectScanPath",
+            "selectedServerNode",
+            "onDatasetServerChange",
+            "onScanPathInput",
+            "remotePathAllowed",
+            "storeDatasetBrowser",
+            "datasetBrowserStorageKey",
+        ],
         """
 let focused = false;
 Object.assign(app, {datasetServerFilter:'local', rootDir:'/local',
@@ -107,6 +117,82 @@ assert.equal(app.scanPath, '');
 app.datasetServerFilter = 'local';
 app.onDatasetServerChange();
 assert.equal(app.scanPath, '/local');
+""",
+    )
+
+
+def test_dataset_directory_browsing_restores_without_scanning():
+    _run_methods(
+        [
+            "datasetBrowserStorageKey",
+            "storeDatasetBrowser",
+            "restoreDatasetBrowser",
+            "onScanPathInput",
+            "selectScanPath",
+            "remotePathAllowed",
+            "selectedServerNode",
+            "remoteLocationsForSelectedServer",
+        ],
+        """
+const storage = new Map();
+global.window = {localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)}};
+Object.assign(app, {controlPlaneUser:{user_id:'owner'},datasetServerFilter:'agent',scanPath:'/data/team',
+    remoteScanPath:'/data/team',datasetBrowseRevision:0,
+    controlPlaneNodes:[{node_id:'agent',allowed_roots:['/data/team','/data/shared']}],
+    remoteLocations:[{node_id:'agent',root:'/data/team/first'},
+        {node_id:'agent',root:'/data/shared/second'},{node_id:'other',root:'/data/shared/third'}]});
+app.selectScanPath('/data/shared');
+assert.equal(app.remoteScanPath,'/data/shared');
+assert.equal(app.remoteLocationsForSelectedServer().length,1);
+assert.equal(app.remoteLocationsForSelectedServer()[0].root,'/data/shared/second');
+Object.assign(app,{datasetServerFilter:'local',scanPath:'/local',remoteScanPath:''});
+assert.equal(app.restoreDatasetBrowser(),true);
+assert.equal(app.datasetServerFilter,'agent');
+assert.equal(app.scanPath,'/data/shared');
+assert.equal(app.remoteScanPath,'/data/shared');
+assert.equal(app.remoteLocationsForSelectedServer().length,1);
+app.scanPath='/data/shared/subdirectory';
+app.onScanPathInput();
+assert.equal(app.remoteScanPath,'/data/shared/subdirectory');
+app.scanPath='/outside';
+app.onScanPathInput();
+assert.equal(app.remoteScanPath,'/data/shared/subdirectory');
+assert.equal(JSON.parse(storage.get(app.datasetBrowserStorageKey())).path,'/data/shared/subdirectory');
+app.controlPlaneUser={user_id:'other-user'};
+assert.equal(app.restoreDatasetBrowser(),false);
+app.controlPlaneUser={user_id:'owner'};
+app.controlPlaneNodes[0].allowed_roots=['/data/team'];
+assert.equal(app.restoreDatasetBrowser(),false);
+app.controlPlaneNodes=[];
+assert.equal(app.restoreDatasetBrowser(),false);
+window.localStorage.getItem=()=>{throw new Error('storage blocked');};
+window.localStorage.setItem=()=>{throw new Error('storage blocked');};
+assert.equal(app.restoreDatasetBrowser(),false);
+app.storeDatasetBrowser();
+""",
+    )
+
+
+def test_working_dataset_storage_is_scoped_to_the_current_account():
+    _run_methods(
+        ["storedDatasetKey", "storeDatasetKey"],
+        """
+const storage = new Map([['dataPlatform.selectedDataset','legacy/local']]);
+global.window={localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),
+    removeItem:key=>storage.delete(key)}};
+app.controlPlaneUser={user_id:'first'};
+assert.equal(app.storedDatasetKey(),'');
+app.storeDatasetKey('remote:first');
+assert.equal(app.storedDatasetKey(),'remote:first');
+app.controlPlaneUser={user_id:'second'};
+assert.equal(app.storedDatasetKey(),'');
+app.storeDatasetKey('remote:second');
+app.controlPlaneUser={user_id:'first'};
+assert.equal(app.storedDatasetKey(),'remote:first');
+app.storeDatasetKey('');
+assert.equal(app.storedDatasetKey(),'');
+app.controlPlaneUser=null;
+assert.equal(app.storedDatasetKey(),'legacy/local');
 """,
     )
 

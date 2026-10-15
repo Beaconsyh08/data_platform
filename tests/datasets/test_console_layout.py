@@ -16,7 +16,7 @@ def test_remote_lists_load_independently_when_jobs_fail(page):
         pytest.skip("Node is required for the page behavior check")
     template = (Path(viewer.__file__).parent / "templates" / page).read_text()
     method = "loadRemoteSources" if page.startswith("visualize") else "load"
-    match = re.search(rf"^                async {method}\(\) \{{", template, re.MULTILINE)
+    match = re.search(rf"^                async {method}\([^\n]*\) \{{", template, re.MULTILINE)
     assert match is not None
     end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
     assert end is not None
