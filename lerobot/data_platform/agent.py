@@ -737,6 +737,8 @@ class DataPlatformAgent:
             "platform": platform.platform(),
             "cpu_count": os.cpu_count(),
             "disk": disk,
+            "allowed_roots": [str(path) for path in self.allowed_roots],
+            "writable_roots": [str(path) for path in self.writable_roots],
             "data_profile_protocol": DATA_PROFILE_PROTOCOL,
             "operations": operations,
             "merge_alignment_protocol": 3,

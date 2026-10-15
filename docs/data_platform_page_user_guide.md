@@ -99,11 +99,15 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 
 ### 3.1 第一次加载数据集
 
-1. 打开 `Data Platform > Datasets`，展开 **Change server or scan a folder**，选择 Server 并输入该服务器上的数据集父目录。已有数据时，此区域默认折叠。
+1. 打开 `Data Platform > Datasets`，展开 **Change server or scan a folder**，选择 Server，再从 **Known directory** 下拉菜单选择已有目录，或在 **Scan path / custom subdirectory** 输入路径。已有数据时，此区域默认折叠。
 2. 点击 `Scan`。
 3. 页面用一个 `Datasets` 列表显示扫描结果，不再区分 `Available` 和 `Registered`。
 4. 点击数据集即可将其设为 working dataset；如果它是首次出现，平台会在后台自动完成 Catalog 登记。页面自动补取轻量详情，具体操作在执行时按需加载数据，不需要单独执行 `Register` 或 `Load`。
 5. 选中数据集后，通过顶部功能页导航进入所需操作；后续也可使用顶部 Working dataset 选择器快速切换。
+
+目录下拉菜单随所选 Server 更新：Server A 显示当前管理根及已标记的源目录；Agent 显示其配置的
+`allowed_roots`。选择目录后仍可编辑扫描路径，例如填写其中的子目录。选择 **Custom path…** 可清空
+输入并填写自定义路径；Agent 自定义路径必须位于其 allowed 根目录内，不会新增授权根目录。
 
 选择 Server A 本地目录时，`Scan` 扫描本机文件系统；选择 Agent 时，`Scan` 请求该节点立即扫描
 输入路径并登记新数据集，不用等待默认的 300 秒自动扫描周期，也不占计算任务槽位。

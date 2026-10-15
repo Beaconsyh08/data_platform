@@ -500,6 +500,8 @@ sudo journalctl -u data-platform-agent -n 100 --no-pager -l
 
 首页选择远端 Agent 后，**Scan** 会请求立即扫描输入路径并登记新数据集，即使计算任务正在运行；
 **Refresh** 只重新读取已登记列表。即时扫描要求支持该能力的在线 Agent 和有发现权限的账号。
+**Known directory** 下拉菜单显示所选 Agent 的授权目录；也可在 **Scan path / custom subdirectory**
+输入其下的子目录。自定义路径仍受 `allowed_roots` 校验，不会增加目录授权。
 
 在首页选择 Agent、扫描路径后，点击数据集卡片上的 **select & preprocess**，即可把该节点的
 数据设为 Working dataset。页面顶部的 **Working dataset** 下拉框也同时列出 Server A 与全部

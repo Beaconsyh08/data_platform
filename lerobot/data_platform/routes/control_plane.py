@@ -592,6 +592,8 @@ def register_control_plane_routes(
             refreshed = store.heartbeat(node["node_id"], capabilities=body.get("capabilities"))
         except KeyError:
             return jsonify({"error": "node not found"}), 404
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         scan = store.scan_manager.pending(node["node_id"])
         return jsonify(
             {

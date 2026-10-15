@@ -71,6 +71,46 @@ assert.equal(app.activeTab, 'split_merge');
     )
 
 
+def test_scan_directory_choices_follow_server_and_allow_custom_subdirectories():
+    _run_methods(
+        ["knownScanPaths", "scanPathPreset", "selectScanPath", "selectedServerNode", "onDatasetServerChange"],
+        """
+let focused = false;
+Object.assign(app, {datasetServerFilter:'local', rootDir:'/local',
+    sourceRoots:['/local/', '/protected', '', '/'], scanPath:'/local/',
+    controlPlaneNodes:[{node_id:'first', allowed_roots:['/data/team', '/data/shared/']},
+        {node_id:'second', allowed_roots:['/other']}],
+    remoteScanSerial:0, $nextTick:fn=>fn(), $refs:{customScanPath:{focus:()=>{focused=true;}}}});
+assert.deepEqual(app.knownScanPaths(), ['/local', '/protected', '/']);
+assert.equal(app.scanPathPreset(), '/local');
+app.datasetServerFilter = 'first';
+app.onDatasetServerChange();
+assert.deepEqual(app.knownScanPaths(), ['/data/team', '/data/shared']);
+assert.equal(app.scanPathPreset(), '/data/team');
+app.selectScanPath('/data/shared');
+assert.equal(app.scanPath, '/data/shared');
+app.scanPath = '/data/shared/subdirectory';
+assert.equal(app.scanPathPreset(), '');
+app.remoteError = 'previous error';
+app.selectScanPath('');
+assert.equal(app.scanPath, '');
+assert.equal(app.remoteError, '');
+assert.equal(focused, true);
+app.datasetServerFilter = 'second';
+app.onDatasetServerChange();
+assert.deepEqual(app.knownScanPaths(), ['/other']);
+assert.equal(app.scanPath, '/other');
+app.datasetServerFilter = 'missing';
+app.onDatasetServerChange();
+assert.deepEqual(app.knownScanPaths(), []);
+assert.equal(app.scanPath, '');
+app.datasetServerFilter = 'local';
+app.onDatasetServerChange();
+assert.equal(app.scanPath, '/local');
+""",
+    )
+
+
 def test_cancelled_dataset_change_preserves_local_and_remote_context():
     _run_methods(
         ["selectDataset", "useRemoteDataset", "confirmDatasetChange"],

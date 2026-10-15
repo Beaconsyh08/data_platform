@@ -12,6 +12,7 @@ import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import PurePosixPath
 
 from sqlalchemy import (
     JSON,
@@ -753,6 +754,35 @@ class ControlPlaneStore:
             if expected_release and reported.get("release") != expected_release:
                 # An old executor may finish its attempts but must not replace the active node's capabilities.
                 reported = previous
+            previous_roots = {key: list(getattr(node, key)) for key in ("allowed_roots", "writable_roots")}
+            for key in ("allowed_roots", "writable_roots"):
+                if key not in reported:
+                    continue  # Older Agents retain their enrollment-time roots.
+                roots = reported[key]
+                if not isinstance(roots, list) or any(
+                    not isinstance(root, str)
+                    or "\x00" in root
+                    or not PurePosixPath(root).is_absolute()
+                    or ".." in PurePosixPath(root).parts
+                    for root in roots
+                ):
+                    raise ValueError(f"{key} must be a list of absolute paths without '..'")
+                setattr(node, key, [str(PurePosixPath(root)) for root in roots])
+            current_roots = {key: list(getattr(node, key)) for key in previous_roots}
+            if current_roots != previous_roots:
+                from lerobot.data_platform.management_storage import enqueue_event
+                from lerobot.data_platform.operation_log import build_operation_event
+
+                enqueue_event(
+                    session,
+                    build_operation_event(
+                        "agent.roots.sync",
+                        status="success",
+                        source="agent",
+                        actor={"node_id": node.node_id, "node_name": node.name},
+                        details={"before": previous_roots, "after": current_roots},
+                    ),
+                )
             # Free disk space is telemetry; protocol/release/authorization changes remain immediate.
             stable_changed = {key: value for key, value in reported.items() if key != "disk"} != {
                 key: value for key, value in previous.items() if key != "disk"
