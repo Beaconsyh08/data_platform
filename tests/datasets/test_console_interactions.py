@@ -197,6 +197,30 @@ assert.equal(app.storedDatasetKey(),'legacy/local');
     )
 
 
+def test_dataset_refresh_reads_the_index_and_only_explicit_scan_discovers():
+    _run_methods(
+        ["loadDatasetRoots", "refreshSelectedServer", "scanSelectedServer"],
+        """
+const requests = [];
+Object.assign(app, {datasetServerFilter:'local',rootDir:'/datasets',scanPath:'/datasets',
+    datasetAccessRestricted:false,remoteScanSerial:1,scanBusy:false,
+    requestJson:async url=>{requests.push({url,busy:app.scanBusy});
+        return {root_dir:'/datasets',candidates:[]};},loadDatasets:async()=>{},loadAdminStatus:async()=>{}});
+await app.loadDatasetRoots();
+await app.refreshSelectedServer();
+await app.scanSelectedServer();
+assert.deepEqual(requests.map(row=>new URL(row.url,'http://console').searchParams.get('scan')),
+    ['0','0','1']);
+assert.deepEqual(requests.map(row=>row.busy),[false,false,true]);
+assert.equal(app.scanBusy,false);
+app.scanBusy=true;
+await app.loadDatasetRoots();
+assert.equal(app.scanBusy,true,'a passive refresh must preserve an active remote Scan');
+assert.equal(app.error,'');
+""",
+    )
+
+
 def test_cancelled_dataset_change_preserves_local_and_remote_context():
     _run_methods(
         ["selectDataset", "useRemoteDataset", "confirmDatasetChange"],

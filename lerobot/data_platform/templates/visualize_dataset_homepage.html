@@ -678,7 +678,7 @@
                             <p class="mt-0.5 text-[11px] text-slate-500">Choose one to make it the working dataset. Catalog setup happens automatically.</p>
                         </div>
                         <button class="text-sky-300 hover:text-sky-200"
-                                @click="loadDatasetRoots()">Rescan</button>
+                                @click="loadDatasetRoots(true)">Rescan</button>
                     </div>
                     <div class="mb-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                         <div class="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">
@@ -4794,12 +4794,15 @@
                         if (!this.error) this.error = err.message;
                     }
                 },
-                async loadDatasetRoots() {
+                async loadDatasetRoots(discover = false) {
                     if (this.datasetAccessRestricted) { await this.loadDatasets(); return; }
                     this.error = '';
-                    this.scanBusy = true;
+                    const scanSerial = this.remoteScanSerial;
+                    if (discover) this.scanBusy = true;
                     try {
-                        const suffix = this.rootDir ? `?root_dir=${encodeURIComponent(this.rootDir)}` : '';
+                        const params = new URLSearchParams({scan: discover ? '1' : '0'});
+                        if (this.rootDir) params.set('root_dir', this.rootDir);
+                        const suffix = `?${params}`;
                         const data = await this.requestJson(`/api/dataset_roots${suffix}`);
                         this.rootDir = data.root_dir || this.rootDir;
                         if (this.datasetServerFilter === 'local') this.scanPath = this.rootDir;
@@ -4811,7 +4814,7 @@
                     } catch (err) {
                         this.error = err.message;
                     } finally {
-                        this.scanBusy = false;
+                        if (discover && scanSerial === this.remoteScanSerial) this.scanBusy = false;
                     }
                 },
                 async loadDatasets() {
@@ -4953,7 +4956,8 @@
                     this.remoteError = '';
                     this.scanMessage = '';
                     if (this.datasetServerFilter === 'local') {
-                        await this.refreshSelectedServer();
+                        this.rootDir = requested;
+                        await this.loadDatasetRoots(true);
                         return;
                     }
                     const denied = this.remoteScanDisabledReason();

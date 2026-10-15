@@ -116,6 +116,8 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 切换 Agent 目录时，下方列表立即按目录筛选已登记数据，不需要再次 Scan。浏览器按当前账号及网页环境
 记住最后浏览的 Agent 和路径，刷新后恢复；工作数据集与浏览目录分别保留。页面会显示当前列表路径，
 搜索关键词仍会继续过滤。仅新增目录或需要立即发现磁盘变化时点击 Scan。
+页面加载、返回首页和 Refresh 均读取已登记列表，不遍历 Server A 数据目录。显式点击 Scan 或本地
+Rescan 才执行目录发现；`GET /api/dataset_roots?scan=0` 用于只读刷新，省略 scan 保留原有扫描语义。
 即时扫描需要管理员、Data Manager 或具有全数据集读取范围的 Operator，并要求 Agent 在线且
 支持即时扫描；Viewer 和受限 Operator 可用 `Refresh` 查看其权限范围内的已有数据集。
 切换 Server/路径不会被旧扫描结果覆盖；离开页面不会取消 Agent 已接受的扫描。

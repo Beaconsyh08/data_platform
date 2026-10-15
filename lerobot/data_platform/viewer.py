@@ -2549,7 +2549,7 @@ def run_server(
             )
         ]
 
-    def _dataset_candidates(root_dir: Path | None = None) -> list[dict]:
+    def _dataset_candidates(root_dir: Path | None = None, *, discover: bool = True) -> list[dict]:
         if root_dir is None:
             return []
         root_dir = Path(root_dir).expanduser()
@@ -2557,7 +2557,15 @@ def run_server(
             return []
 
         roots: list[Path] = []
-        if _is_dataset_root(root_dir):
+        if not discover:
+            base = normalized_path(root_dir)
+            roots = [
+                normalized_path(entry["root"])
+                for entry in datasets_index.values()
+                if not _is_internal_remote_cache_entry(entry)
+                and normalized_path(entry["root"]).is_relative_to(base)
+            ]
+        elif _is_dataset_root(root_dir):
             roots.append(root_dir)
         else:
             stack = [root_dir]
@@ -3166,14 +3174,20 @@ def run_server(
 
     @app.route("/api/dataset_roots")
     def api_dataset_roots():
+        scan = request.args.get("scan", "1").lower()
+        if scan not in {"0", "1", "false", "true", "no", "yes"}:
+            return jsonify({"error": "scan must be 0 or 1"}), 400
+        discover = scan in {"1", "true", "yes"}
         root_value = request.args.get("root_dir")
         root_dir = Path(root_value).expanduser() if root_value else registry_state["datasets_root"]
         if root_dir is not None and root_dir.exists():
-            _set_registry_root(root_dir)
+            _set_registry_root(
+                root_dir, load=discover or _registry_path_for_root(root_dir) != registry_state["path"]
+            )
         return jsonify(
             {
                 "root_dir": str(root_dir) if root_dir else "",
-                "candidates": _dataset_candidates(root_dir),
+                "candidates": _dataset_candidates(root_dir, discover=discover),
                 "registry_path": str(registry_state["path"]),
                 "source_roots": [str(path) for path in _protected_source_roots()],
                 "root_protected": bool(

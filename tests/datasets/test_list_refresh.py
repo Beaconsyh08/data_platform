@@ -138,3 +138,59 @@ def test_local_job_list_reuses_control_payloads(setup, tmp_path):  # noqa: F811
     assert len(statements) <= 20
     assert all(row["available_actions"] == ["cancel"] for row in result)
     assert all(row["control_job_id"] == row["id"] for row in result)
+
+
+def test_registered_directory_refresh_does_not_walk_the_filesystem(setup, tmp_path, monkeypatch):  # noqa: F811
+    from pathlib import Path
+
+    from lerobot.data_platform import viewer
+    from tests.datasets.test_data_platform_agent import _make_dataset
+
+    store, admin, _, _, _, _ = setup
+    root = tmp_path / "datasets"
+    known, unseen = root / "known", root / "nested" / "unseen"
+    _make_dataset(known)
+    _make_dataset(unseen)
+    app = viewer.run_server(
+        dataset=None,
+        episodes=None,
+        max_frames=None,
+        prepare_videos=False,
+        downsample=None,
+        precompute_csv=False,
+        precomputed_only=True,
+        host="127.0.0.1",
+        port=0,
+        static_folder=tmp_path / "console/static",
+        template_folder=Path(viewer.__file__).parent / "templates",
+        datasets_root=root,
+        database_url=str(store.engine.url),
+        start_server=False,
+    )
+    client = app.test_client()
+    assert (
+        client.post(
+            "/api/auth/login", json={"username": admin["username"], "password": "long-test-password"}
+        ).status_code
+        == 200
+    )
+    assert client.post("/api/datasets/register", json={"root": str(known)}).status_code == 200
+    walks = []
+    original = Path.iterdir
+
+    def counted(path):
+        if path == root or path == root / "nested":
+            walks.append(path)
+        return original(path)
+
+    monkeypatch.setattr(Path, "iterdir", counted)
+    response = client.get("/api/dataset_roots", query_string={"root_dir": str(root), "scan": "0"})
+    assert response.status_code == 200
+    assert walks == []
+    assert {row["root"] for row in response.json["candidates"]} == {str(known)}
+    assert client.get("/api/dataset_roots?scan=invalid").status_code == 400
+    for query in ({"scan": "1"}, {}):
+        response = client.get("/api/dataset_roots", query_string=query)
+        assert response.status_code == 200
+        assert {row["root"] for row in response.json["candidates"]} == {str(known), str(unseen)}
+    assert root in walks
