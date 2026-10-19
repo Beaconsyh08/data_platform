@@ -3,7 +3,7 @@ function mountPipelineEditor(root, options) {
   options = options || {};
   const $ = id => root.querySelector(`[id="${id}"]`);
   const canEdit = root.querySelector('main').dataset.canEdit === 'true';
-  const state = {operators: [], steps: [], pipeline: null, run: null, preview: null, epoch: 0, edit: 0, invalid: new Set(), dirty: false};
+  const state = {locations: [], reviewOptions: new Map(), savedCursor: null, runsCursor: null, savedEpoch: 0, runsEpoch: 0, operators: [], steps: [], pipeline: null, run: null, preview: null, epoch: 0, edit: 0, invalid: new Set(), dirty: false};
   let timer;
   let disposed = false;
   const controllers = new Set();
@@ -50,7 +50,7 @@ function mountPipelineEditor(root, options) {
       header.append(actions); card.append(header);
       const selection = el('select', undefined, {disabled: !canEdit, 'ariaLabel': 'Operator'});
       state.operators.filter(value => value.pipeline_allowed || value.operator_id === step.operator_id).forEach(value => {
-        const option = el('option', value.operator_id + (value.reason ? ` · ${value.reason}` : ''), {value: value.operator_id, disabled: !value.available});
+        const option = el('option', (value.presentation?.title || value.operator_id) + (value.reason ? ` · ${value.reason}` : ''), {value: value.operator_id, disabled: !value.available});
         selection.append(option);
       });
       selection.value = step.operator_id;
@@ -87,16 +87,47 @@ function mountPipelineEditor(root, options) {
         card.append(dependencies);
       }
       const fields = el('div', undefined, {className: 'parameters'});
+      const extraFields = el('details'); extraFields.append(el('summary', 'Advanced parameters'));
+      const common = new Set(spec?.presentation?.common_parameters || []);
+      const required = new Set(spec?.parameters.required || []);
       Object.entries(spec?.parameters.properties || {}).forEach(([key, schema]) => {
-        const label = el('label', key);
+        const label = el('label', (schema.title || key.replaceAll('_', ' ')) + (required.has(key) ? ' *' : ''));
         const types = Array.isArray(schema.type) ? schema.type : [schema.type];
         const kind = types.includes('string') ? 'string' : types.find(value => value !== 'null');
         const stored = Object.hasOwn(step.parameters, key) ? step.parameters[key] : schema.default;
+        if (kind === 'array' && ['string', 'integer', 'number', 'boolean'].includes(schema.items?.type)) {
+          const group = el('fieldset'); group.append(el('legend', schema.title || key.replaceAll('_', ' ')));
+          const values = Array.isArray(stored) ? stored : [];
+          const update = value => {step.parameters[key] = value; raw.value = JSON.stringify(step.parameters); invalidate();};
+          values.forEach((value, itemIndex) => {
+            const row = el('div', undefined, {className: 'row'});
+            const input = el('input', undefined, {type: schema.items.type === 'boolean' ? 'checkbox' : schema.items.type === 'string' ? 'text' : 'number', value, checked: !!value, disabled: !canEdit, ariaLabel: `${key} ${itemIndex + 1}`});
+            if (schema.items.minimum !== undefined) input.min = schema.items.minimum;
+            if (schema.items.maximum !== undefined) input.max = schema.items.maximum;
+            input.step = schema.items.type === 'integer' ? '1' : 'any';
+            input.addEventListener('input', () => {invalidate(); const invalidKey = `${step.step_id}:${key}:${itemIndex}`; if (!input.checkValidity() || (input.type === 'number' && input.value === '')) {state.invalid.add(invalidKey); return;} state.invalid.delete(invalidKey); const next = [...values]; next[itemIndex] = input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value; values[itemIndex] = next[itemIndex]; update(next);});
+            row.append(input, button('Remove item', () => {update(values.filter((_, i) => i !== itemIndex)); state.invalid = new Set([...state.invalid].filter(k => !k.startsWith(`${step.step_id}:${key}:`))); render();})); group.append(row);
+          });
+          group.append(button('Add item', () => {update([...values, schema.items.type === 'string' ? '' : schema.items.type === 'boolean' ? false : schema.items.minimum || 0]); render();}));
+          (common.has(key) || required.has(key) ? fields : extraFields).append(group);
+          return;
+        }
         const jsonValue = !kind || ['array', 'object'].includes(kind);
         let control;
-        if (jsonValue) control = el('textarea', undefined, {value: stored === undefined ? '' : JSON.stringify(stored), disabled: !canEdit});
+        if (schema.enum) {
+          control = el('select', undefined, {disabled: !canEdit});
+          control.append(el('option', 'Default', {value: ''}));
+          schema.enum.forEach(value => control.append(el('option', String(value), {value: JSON.stringify(value)})));
+          control.value = stored === undefined ? '' : JSON.stringify(stored);
+        }
+        else if (jsonValue) control = el('textarea', undefined, {value: stored === undefined ? '' : JSON.stringify(stored), disabled: !canEdit});
         else control = el('input', undefined, {type: kind === 'boolean' ? 'checkbox' : ['number', 'integer'].includes(kind) ? 'number' : 'text', disabled: !canEdit});
-        if (!jsonValue) {
+        control.setAttribute('aria-label', key);
+        if (schema.minimum !== undefined) control.min = schema.minimum;
+        if (schema.maximum !== undefined) control.max = schema.maximum;
+        if (kind === 'integer') control.step = '1';
+        else if (kind === 'number') control.step = 'any';
+        if (!jsonValue && !schema.enum) {
           if (kind === 'boolean') control.checked = !!stored;
           else control.value = stored ?? '';
         }
@@ -104,22 +135,50 @@ function mountPipelineEditor(root, options) {
         control.addEventListener('change', guard(() => {
           invalidate(); state.invalid.delete(step.step_id + ':' + key);
           let value;
-          if (kind === 'boolean') value = control.checked;
-          else if (!control.value.trim()) {delete step.parameters[key]; invalidate(); return;}
+          if (schema.enum && control.value) value = JSON.parse(control.value);
+          else if (kind === 'boolean') value = control.checked;
+          else if (!control.value.trim()) {delete step.parameters[key]; raw.value = JSON.stringify(step.parameters); invalidate(); return;}
           else if (jsonValue) {try {value = JSON.parse(control.value);} catch (error) {state.invalid.add(step.step_id + ':' + key); throw error;}}
           else if (['number', 'integer'].includes(kind)) value = Number(control.value);
           else value = control.value;
+          if (!control.checkValidity()) {state.invalid.add(step.step_id + ':' + key); throw new Error(`${key}: ${control.validationMessage}`);}
           step.parameters[key] = value; invalidate();
+          raw.value = JSON.stringify(step.parameters);
         }));
-        label.append(control); fields.append(label);
+        label.append(control); if (schema.description) label.append(el('small', schema.description));
+        (common.has(key) || required.has(key) ? fields : extraFields).append(label);
       });
-      card.append(fields);
+      card.append(fields, extraFields);
+      if (step.operator_id === 'preprocess.merge') {
+        const label = el('label', 'Additional datasets');
+        const selected = new Set(step.options?.source_location_ids || []);
+        const nodeId = state.locations.find(item => item.location_id === $('location').value)?.node_id;
+        const choices = el('select', undefined, {multiple: true, disabled: !canEdit, ariaLabel: 'Merge datasets'});
+        state.locations.filter(item => item.node_id === nodeId && item.location_id !== $('location').value).forEach(item => {
+          choices.append(el('option', `${item.dataset_key} · ${item.metadata?.codebase_version || 'dataset'}`, {value: item.location_id, selected: selected.has(item.location_id)}));
+          selected.delete(item.location_id);
+        });
+        selected.forEach(id => choices.append(el('option', `${id} · unavailable`, {value: id, selected: true, disabled: true})));
+        choices.addEventListener('change', () => {step.options = {...step.options, source_location_ids: [...choices.selectedOptions].map(item => item.value)}; invalidate(); render();});
+        label.append(choices); card.append(label);
+      }
       const advanced = el('details'); advanced.append(el('summary', 'Input and review options'));
       const options = el('textarea', undefined, {value: JSON.stringify(step.options || {}), disabled: !canEdit});
       options.setAttribute('aria-label', 'Registered Merge inputs, workspace or manifest options');
       options.addEventListener('input', invalidate);
       options.addEventListener('change', guard(() => {invalidate(); state.invalid.delete(step.step_id + ':options'); try {step.options = JSON.parse(options.value);} catch (error) {state.invalid.add(step.step_id + ':options'); throw error;}}));
-      advanced.append(options); card.append(advanced); root.append(card);
+      advanced.append(options);
+      const raw = el('textarea', undefined, {value: JSON.stringify(step.parameters), disabled: !canEdit, ariaLabel: 'Parameter JSON'});
+      raw.addEventListener('input', invalidate);
+      raw.addEventListener('change', guard(() => {
+        state.invalid.add(step.step_id + ':json');
+        const value = JSON.parse(raw.value);
+        if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('Parameters must be a JSON object');
+        step.parameters = value;
+        state.invalid = new Set([...state.invalid].filter(key => !key.startsWith(step.step_id + ':') || key.endsWith(':options')));
+        invalidate(); render();
+      }));
+      advanced.append(el('label', 'Parameter JSON'), raw); card.append(advanced); root.append(card);
     });
   }
   function move(index, delta) {const other = index + delta; [state.steps[index], state.steps[other]] = [state.steps[other], state.steps[index]]; invalidate(); render();}
@@ -130,12 +189,17 @@ function mountPipelineEditor(root, options) {
     state.operators = data.operators; $('add').disabled = !canEdit || !state.operators.some(value => value.available && value.pipeline_allowed); render();
     $('review-link').href = '/curation?location_id=' + encodeURIComponent($('location').value);
   }
-  async function loadSaved() {
-    const data = await api('/api/pipelines');
+  async function loadSaved(append = false) {
+    const epoch = state.epoch, request = ++state.savedEpoch;
+    const params = new URLSearchParams({page_size: '50', search: $('saved-search').value});
+    if (append && state.savedCursor) params.set('cursor', state.savedCursor);
+    const data = await api('/api/pipelines?' + params);
+    if (epoch !== state.epoch || request !== state.savedEpoch) return;
     const selected = $('saved').value;
-    $('saved').replaceChildren(el('option', 'New pipeline', {value: ''}));
-    data.pipelines.forEach(item => $('saved').append(el('option', `${item.name} · v${item.revision}`, {value: item.pipeline_id})));
+    if (!append) $('saved').replaceChildren(el('option', 'New pipeline', {value: ''}));
+    data.pipelines.forEach(item => {if (![...$('saved').options].some(option => option.value === item.pipeline_id)) $('saved').append(el('option', `${item.name} · v${item.revision}`, {value: item.pipeline_id}));});
     $('saved').value = selected;
+    state.savedCursor = data.next_cursor; $('saved-more').hidden = !data.has_more;
   }
   async function preview() {
     if (state.invalid.size) throw new Error('Correct the invalid parameter fields.');
@@ -160,7 +224,7 @@ function mountPipelineEditor(root, options) {
     } catch (error) {if (epoch === state.epoch && state.run?.run_id === runId) {feedback(error.message, true); timer = setTimeout(() => poll(runId, epoch), 5000);}}
   }
   function renderRun() {
-    const drafts = new Map(Array.from($('run-steps').querySelectorAll('input[id]')).map(input => [input.id, input.value]));
+    const drafts = new Map(Array.from($('run-steps').querySelectorAll('input[id],select[id]')).map(input => [input.id, input.value]));
     const value = state.run; $('run-panel').hidden = !value; if (!value) return;
     $('run-status').textContent = `${value.status}${value.error ? ': ' + value.error : ''}`;
     $('run-steps').replaceChildren();
@@ -170,9 +234,22 @@ function mountPipelineEditor(root, options) {
       if (step.status === 'waiting_review') {
         row.append(el('a', 'Review evidence', {href: '/curation?location_id=' + encodeURIComponent(step.input_location_id || value.location_id)}));
         if (step.review_required) {
-          const workspace = el('input', undefined, {placeholder: 'Curation workspace ID', id: 'review-workspace-' + step.step_id, disabled: !canEdit});
-          const revision = el('input', undefined, {type: 'number', placeholder: 'Draft revision', min: 0, id: 'review-revision-' + step.step_id, disabled: !canEdit});
-          row.append(workspace, revision);
+          const cacheKey = `${value.run_id}:${step.step_id}:${value.revision}`;
+          const workspace = el('select', undefined, {id: 'review-workspace-' + step.step_id, disabled: !canEdit, ariaLabel: 'Review draft'});
+          workspace.append(el('option', 'Choose a reviewed draft', {value: ''}));
+          const populate = items => {
+            items.forEach(item => workspace.append(el('option', `${item.workspace_id.slice(0, 8)} · revision ${item.revision}`, {value: `${item.workspace_id}:${item.revision}`})));
+            workspace.value = drafts.get(workspace.id) || '';
+          };
+          if (state.reviewOptions.has(cacheKey)) populate(state.reviewOptions.get(cacheKey));
+          else {
+            const epoch = state.epoch;
+            api(`/api/pipeline-runs/${value.run_id}/review-options?step_id=${encodeURIComponent(step.step_id)}`).then(result => {
+              if (epoch !== state.epoch || state.run?.revision !== result.run_revision || state.run?.run_id !== value.run_id) return;
+              state.reviewOptions.set(cacheKey, result.workspaces); populate(result.workspaces);
+            }).catch(error => {if (!disposed && epoch === state.epoch) feedback(error.message, true);});
+          }
+          row.append(workspace);
         }
         row.append(button('Approve', () => decide(step.step_id, 'approve')), button('Skip', () => decide(step.step_id, 'skip')));
       }
@@ -184,8 +261,10 @@ function mountPipelineEditor(root, options) {
   }
   async function decide(stepId, decision) {
     const epoch = state.epoch, runId = state.run.run_id;
-    const workspace = $('review-workspace-' + stepId), revision = $('review-revision-' + stepId);
-    const value = await api(`/api/pipeline-runs/${runId}/decisions`, 'POST', {step_id: stepId, decision, expected_revision: state.run.revision, workspace_id: workspace?.value, workspace_revision: revision ? Number(revision.value) : undefined});
+    const workspace = $('review-workspace-' + stepId);
+    const [workspaceId, revision] = (workspace?.value || '').split(':');
+    state.reviewOptions.clear();
+    const value = await api(`/api/pipeline-runs/${runId}/decisions`, 'POST', {step_id: stepId, decision, expected_revision: state.run.revision, workspace_id: workspaceId, workspace_revision: revision !== undefined ? Number(revision) : undefined});
     if (epoch !== state.epoch) return;
     state.run = value; renderRun(); clearTimeout(timer); poll(runId, epoch);
   }
@@ -230,14 +309,18 @@ function mountPipelineEditor(root, options) {
     if (epoch !== state.epoch) return;
     state.run = value; renderRun(); clearTimeout(timer); poll(runId, epoch);
   }));
-  async function loadRuns() {
-    const epoch = state.epoch, locationId = $('location').value;
-    const result = await api('/api/pipeline-runs?location_id=' + encodeURIComponent(locationId));
-    if (epoch !== state.epoch || locationId !== $('location').value) return;
+  async function loadRuns(append = false) {
+    const epoch = state.epoch, locationId = $('location').value, request = ++state.runsEpoch;
+    const params = new URLSearchParams({location_id: locationId, page_size: '50'});
+    if ($('run-filter').value) params.set('status', $('run-filter').value);
+    if (append && state.runsCursor) params.set('cursor', state.runsCursor);
+    const result = await api('/api/pipeline-runs?' + params);
+    if (epoch !== state.epoch || locationId !== $('location').value || request !== state.runsEpoch) return;
     const selected = state.run?.run_id || $('runs').value;
-    $('runs').replaceChildren(el('option', 'Choose a run', {value: ''}));
-    result.runs.forEach(value => $('runs').append(el('option', `${value.status} · ${value.run_id.slice(0, 8)} · ${new Date(value.updated_at * 1000).toLocaleString()}`, {value: value.run_id})));
+    if (!append) $('runs').replaceChildren(el('option', 'Choose a run', {value: ''}));
+    result.runs.forEach(value => {if (![...$('runs').options].some(option => option.value === value.run_id)) $('runs').append(el('option', `${value.status} · ${value.run_id.slice(0, 8)} · ${new Date(value.updated_at * 1000).toLocaleString()}`, {value: value.run_id}));});
     $('runs').value = selected;
+    state.runsCursor = result.next_cursor; $('runs-more').hidden = !result.has_more;
   }
   async function openRun(runId) {
     clearTimeout(timer);
@@ -248,12 +331,24 @@ function mountPipelineEditor(root, options) {
     if (!options.embedded) history.replaceState(null, '', '?location_id=' + encodeURIComponent(result.location_id) + '&run_id=' + encodeURIComponent(runId));
     poll(runId, epoch);
   }
+  $('saved-search').addEventListener('input', guard(() => loadSaved()));
+  $('saved-more').addEventListener('click', guard(() => loadSaved(true)));
+  $('runs-more').addEventListener('click', guard(() => loadRuns(true)));
+  $('run-filter').addEventListener('change', guard(() => loadRuns()));
+  $('use-template').addEventListener('click', guard(() => {
+    const ids = {quality: ['curation.snapshot', 'curation.quality'], subset: ['curation.snapshot', 'preprocess.split', 'curation.quality'], viewer: ['curation.snapshot', 'viewer.prepare']}[$('template').value];
+    if (!canEdit || !ids) return;
+    if (ids.some(id => !state.operators.some(spec => spec.operator_id === id && spec.available))) throw new Error('This template requires operators unavailable on the selected node.');
+    state.steps = ids.map((id, i) => ({step_id: 'step_' + (i + 1), operator_id: id, version: state.operators.find(spec => spec.operator_id === id).version, parameters: {}, options: {}, input: i > 1 && ids[i - 1] === 'preprocess.split' ? 'step_' + i : 'source', artifacts: [], review_before: false}));
+    state.pipeline = null; $('saved').value = ''; state.invalid.clear(); invalidate(); render();
+  }));
   $('runs').addEventListener('change', guard(async () => {if ($('runs').value) await openRun($('runs').value);}));
   const destroy = () => {disposed = true; state.epoch++; clearTimeout(timer); for (const controller of controllers) controller.abort(); window.removeEventListener('pagehide', destroy);};
   window.addEventListener('pagehide', destroy);
-  for (const id of ['add', 'preview', 'save', 'name']) $(id).disabled = !canEdit || id === 'add';
+  for (const id of ['add', 'preview', 'save', 'name', 'use-template']) $(id).disabled = !canEdit || id === 'add';
   guard(async () => {
     const locations = await api('/api/control/locations?summary=1');
+    state.locations = locations.locations;
     locations.locations.forEach(value => $('location').append(el('option', `${value.node_name || ''} · ${value.dataset_key}`, {value: value.location_id})));
     const requested = options.locationId || new URLSearchParams(location.search).get('location_id'); if (requested) $('location').value = requested;
     await Promise.all([loadOperators(), loadSaved(), loadRuns()]);

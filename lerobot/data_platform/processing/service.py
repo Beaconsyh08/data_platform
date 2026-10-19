@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from pathlib import PurePosixPath
@@ -622,6 +623,8 @@ class PipelineManager:
         options["operator_snapshot"] = {
             "operator_id": spec.operator_id,
             "version": spec.version,
+            "release": os.environ.get("DATA_PLATFORM_RELEASE", "legacy"),
+            "data_format": self._info(location).get("codebase_version", "unknown"),
             "pipeline_run": run.run_id,
             "step_id": step.step_id,
             "input_identity": location_identity(location),
@@ -743,6 +746,33 @@ class PipelineManager:
             except (ValueError, PermissionError, KeyError, JobConflictError) as exc:
                 run.status, run.error = "error", str(exc)
                 run.revision += 1
+
+    def review_options(self, owner, run_id, step_id):
+        if self.store.restricted_dataset_keys(owner) is not None:
+            raise PermissionError("Curation review requires unrestricted dataset access")
+        with self.store.sessions() as session:
+            actor = self._actor(session, owner, write=False)
+            run = session.get(PipelineRun, run_id)
+            if not run or run.owner != owner:
+                raise KeyError("Pipeline run not found")
+            self._location(session, run.location_id, owner, write=False)
+            step = session.get(PipelineStepRun, f"{run_id}:{step_id}")
+            if not step or step.status != "waiting_review":
+                raise JobConflictError("Select a step waiting for review")
+            location, _ = self._location(session, step.input_location_id, owner, write=False)
+            if location_identity(location) != step.input_identity:
+                raise JobConflictError("Reviewed dataset changed")
+            head = (
+                self.lifecycle._get_record("curation_locations", step.input_location_id)
+                if self.lifecycle
+                else None
+            )
+            values = (
+                self.lifecycle.repository.workspace_summaries(head["dataset_version_id"], actor.username)
+                if head
+                else []
+            )
+            return {"workspaces": values, "run_revision": run.revision}
 
     def decide(self, owner, run_id, body):
         with self.store.sessions.begin() as session:

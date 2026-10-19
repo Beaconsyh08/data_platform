@@ -51,8 +51,6 @@ def register_processing_routes(app, ctx):
     def list_page(kind, filters):
         from lerobot.data_platform.list_queries import ListPage
 
-        if "page_size" not in request.args and "cursor" not in request.args:
-            return None
         return ListPage.parse(request.args, scope={"actor": owner(), "kind": kind, **filters})
 
     def owner():
@@ -78,7 +76,14 @@ def register_processing_routes(app, ctx):
             reason = "Use the dedicated authorized operation form"
         if _current_user()["role"] == "viewer":
             reason = "Viewer accounts are read-only"
-        return {**value, "available": reason is None, "reason": reason}
+        from lerobot.data_platform.operators.presentation import presentation
+
+        return {
+            **value,
+            "available": reason is None,
+            "reason": reason,
+            "presentation": presentation(spec.operator_id),
+        }
 
     @app.get("/api/operators")
     @checked
@@ -155,6 +160,11 @@ def register_processing_routes(app, ctx):
     @checked
     def processing_run(run_id):
         return jsonify(manager.run(owner(), run_id))
+
+    @app.get("/api/pipeline-runs/<run_id>/review-options")
+    @checked
+    def processing_review_options(run_id):
+        return jsonify(manager.review_options(owner(), run_id, request.args.get("step_id", "")))
 
     @app.post("/api/pipeline-runs/<run_id>/<action>")
     @checked

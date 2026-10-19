@@ -946,7 +946,7 @@
                     <div class="grid gap-4 lg:grid-cols-[minmax(280px,0.7fr)_minmax(0,1.3fr)]">
                         <div class="dp-context-card max-h-[420px] space-y-2 overflow-y-auto p-2">
                             <div class="flex items-center justify-between px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                                <span>Recent jobs</span>
+                                <span>Recent jobs</span><a x-show="activeJob?.archived_reports?.length" :href="'/api/control/jobs/' + encodeURIComponent(activeJob?.id || '')" target="_blank" rel="noopener" class="text-sky-300">Archived report</a>
                                 <span x-text="filteredJobs().length"></span>
                             </div>
                             <p class="px-2 py-3 text-xs text-slate-500" x-show="filteredJobs().length === 0">No jobs match the current filter.</p>
@@ -1147,7 +1147,7 @@
                         </select>
                     </div>
                     <div class="flex items-center justify-between px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        <span>Recent jobs</span>
+                        <span>Recent jobs</span><a x-show="activeJob?.archived_reports?.length" :href="'/api/control/jobs/' + encodeURIComponent(activeJob?.id || '')" target="_blank" rel="noopener" class="text-sky-300">Archived report</a>
                         <span x-text="filteredJobs().length"></span>
                     </div>
                     <p class="px-2 py-3 text-xs text-slate-500" x-show="filteredJobs().length === 0" role="status">No jobs match these filters.</p>

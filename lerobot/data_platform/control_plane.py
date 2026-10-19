@@ -1208,29 +1208,38 @@ class ControlPlaneStore:
             )
             if allowed is not None:
                 query = query.where(RemoteJob.location_id.in_(allowed))
-                if self.engine.dialect.name == "sqlite":
-                    inputs = (
-                        func.json_each(RemoteJob.options, "$.source_location_ids")
-                        .table_valued("value")
-                        .alias("inputs")
-                    )
-                else:
-                    inputs = (
-                        func.json_table(
-                            RemoteJob.options,
-                            literal_column("'$.source_location_ids[*]' COLUMNS (value VARCHAR(36) PATH '$')"),
+                for field, item_path in (
+                    ("source_location_ids", "$"),
+                    ("_source_locations", "$.location_id"),
+                ):
+                    if self.engine.dialect.name == "sqlite":
+                        inputs = (
+                            func.json_each(RemoteJob.options, f"$.{field}")
+                            .table_valued("value")
+                            .alias("inputs")
                         )
-                        .table_valued("value")
-                        .alias("inputs")
+                        value = (
+                            inputs.c.value
+                            if item_path == "$"
+                            else func.json_extract(inputs.c.value, item_path)
+                        )
+                    else:
+                        inputs = (
+                            func.json_table(
+                                RemoteJob.options,
+                                literal_column(
+                                    f"'$.{field}[*]' COLUMNS (value VARCHAR(36) PATH '{item_path}')"
+                                ),
+                            )
+                            .table_valued("value")
+                            .alias("inputs")
+                        )
+                        value = inputs.c.value
+                    query = query.where(
+                        ~exists(
+                            select(1).select_from(inputs).where(value.not_in(allowed)).correlate(RemoteJob)
+                        )
                     )
-                query = query.where(
-                    ~exists(
-                        select(1)
-                        .select_from(inputs)
-                        .where(inputs.c.value.not_in(allowed))
-                        .correlate(RemoteJob)
-                    )
-                )
             if filters.get("location_id"):
                 query = query.where(RemoteJob.location_id == filters["location_id"])
             status = filters.get("status")
@@ -1359,6 +1368,8 @@ class ControlPlaneStore:
 
     @staticmethod
     def _job_dict(job: RemoteJob) -> dict:
+        from lerobot.data_platform.report_archive import archived_fields
+
         if job.status not in JOB_STATES:
             raise ValueError(f"invalid persisted job state: {job.status}")
         return {
@@ -1373,6 +1384,7 @@ class ControlPlaneStore:
             "lease_until": _iso(job.lease_until),
             "idempotency_key": job.idempotency_key,
             "result": dict(job.result or {}),
+            "archived_reports": archived_fields(job.result or {}),
             "error": job.error,
             "created_at": _iso(job.created_at),
             "updated_at": _iso(job.updated_at),

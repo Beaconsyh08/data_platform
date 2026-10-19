@@ -13,13 +13,16 @@
   <header><h1>Pipelines</h1><nav><a href="/">Datasets</a> · <a href="/tasks">Jobs</a> · <a id="review-link" href="/curation">Review</a></nav></header>
   <div class="row">
     <label class="grow">Dataset<select id="location" aria-label="Dataset"><option value="">Choose a registered dataset</option></select></label>
+    <label>Search pipelines<input id="saved-search" type="search" maxlength="128"></label><button id="saved-more" hidden>Load more pipelines</button>
     <label class="grow">Saved pipeline<select id="saved" aria-label="Saved pipeline"><option value="">New pipeline</option></select></label>
     <label class="grow">Name<input id="name" aria-label="Name" maxlength="128" value="New pipeline"></label>
   </div>
   <div id="feedback" role="status" aria-live="polite"></div>
+  <div class="row"><label>Template<select id="template"><option value="quality">Snapshot → Quality</option><option value="subset">Snapshot → Split → Quality</option><option value="viewer">Snapshot → Viewer</option></select></label><button id="use-template">Use template</button></div>
   <div id="steps"></div>
   <div class="row"><button id="add" disabled>Add step</button><button id="preview">Preview</button><button id="save">Save version</button><button id="run" class="primary" disabled>Run saved version</button></div>
   <section id="preview-panel" hidden><h2>Plan preview</h2><pre id="preview-result"></pre></section>
+  <div class="row"><label>Run status<select id="run-filter"><option value="">All</option><option value="running">Running</option><option value="waiting_review">Waiting for review</option><option value="done">Completed</option><option value="error">Failed</option></select></label><button id="runs-more" hidden>Load more runs</button></div>
   <label>Recent runs<select id="runs" aria-label="Recent runs"><option value="">Choose a run</option></select></label>
   <section id="run-panel" hidden><h2>Run</h2><p id="run-status"></p><div id="run-steps"></div>
     <div class="row"><button id="cancel">Cancel remaining steps</button><button id="retry">Retry failed step</button></div>

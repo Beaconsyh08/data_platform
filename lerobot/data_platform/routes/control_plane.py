@@ -977,11 +977,7 @@ def register_control_plane_routes(
             key: request.args.get(key) for key in ("location_id", "status", "created_from", "created_to")
         }
         try:
-            page = (
-                ListPage.parse(request.args, scope={"actor": actor["user_id"], "kind": "jobs", **filters})
-                if ("page_size" in request.args or "cursor" in request.args)
-                else None
-            )
+            page = ListPage.parse(request.args, scope={"actor": actor["user_id"], "kind": "jobs", **filters})
             result = store.list_jobs(
                 limit=int(request.args.get("limit") or 200),
                 actor=actor,
@@ -999,11 +995,18 @@ def register_control_plane_routes(
 
     @app.route("/api/control/jobs/<string:job_id>")
     def control_job(job_id: str):
+        from lerobot.data_platform.artifact_store import ArtifactUnavailableError
+        from lerobot.data_platform.report_archive import hydrate_result
+
         try:
             job = store.job_manager.decorate(store.get_job(job_id), _current_user())
             if request.args.get("summary") == "1":
                 job = summarize_job(job)
+            else:
+                job["result"] = hydrate_result(job.get("result") or {})
             return jsonify(job=job)
+        except ArtifactUnavailableError as exc:
+            return jsonify(error=str(exc)), 503
         except KeyError:
             return jsonify({"error": "job not found"}), 404
 

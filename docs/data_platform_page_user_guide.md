@@ -38,7 +38,12 @@ flowchart LR
 Evidence 传递报告。每次保存生成不可变 revision，运行固定该版本。多数据源必须来自同一节点。
 
 Jobs 展示实际任务进度，Review 保存人工决策；Recent runs 可恢复等待复核的运行。
-位姿插值需先在 Review 保存与流程参数完全一致的 pose repair 草稿，再填写 workspace ID 和 revision 批准。
+Split、Merge、Quality、Viewer 优先显示常用参数，其他参数在 Advanced parameters 中。
+表单与 Parameter JSON 共用状态；Merge 可选择同节点且当前账户可读的数据集。
+模板提供 Snapshot → Quality、Snapshot → Split → Quality、Snapshot → Viewer；仍需预览、保存后运行。
+位姿插值需先在 Review 保存与流程参数完全一致的 pose repair 草稿，再从 Review draft 选择器选中草稿批准；提交会重新检查权限和 revision。
+历史列表支持 Load more，展开的任务详情不会因新页到达而关闭。
+Archived report 只在打开时读取 OSS；暂时不可用不会改变任务的完成状态。
 源修改继续使用原有专用入口。接口、依赖限制和迁移清单见 [算子与流程](data_platform_operators.md)。
 
 ## 2. 启动页面

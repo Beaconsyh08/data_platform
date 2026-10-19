@@ -55,3 +55,16 @@ def test_summary_select_projects_reports_in_database(setup):  # noqa: F811
     assert rows[0]["result"] == {"progress": {"current": 2}}
     assert any("json_remove" in statement.lower() for statement in sql)
     assert "large" in store.get_job(job["job_id"])["result"]["precompute"]
+
+
+def test_permission_filter_precedes_pages_and_checks_hidden_sources(setup):  # noqa: F811
+    store, admin, owner, node, location, create = setup
+    other = store.sync_locations(node["node_id"], [{"root": "/data/other", "dataset_key": "other"}])[0]
+    visible = create()
+    hidden = create()
+    with store.sessions.begin() as session:
+        session.get(RemoteJob, hidden["job_id"]).options = {"_source_locations": [other]}
+    store.set_mutation_locations(owner["user_id"], [location["location_id"]], actor=admin)
+    rows, page = store.list_jobs(actor=owner, summary=True, page=ListPage.parse({"page_size": 1}, scope={}))
+    assert [row["job_id"] for row in rows] == [visible["job_id"]]
+    assert not page["has_more"]

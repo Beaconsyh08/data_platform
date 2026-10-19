@@ -108,6 +108,7 @@ def test_pipeline_browser_edit_run_restore_review_and_role(tmp_path):
             page.get_by_role("button", name="Save version", exact=True).click()
             page.wait_for_function("!document.getElementById('run').disabled")
             # Invalid JSON must invalidate the previously executable preview.
+            page.locator("article").nth(1).get_by_text("Advanced parameters", exact=True).click()
             field = page.locator("article").nth(1).get_by_label("task_filter", exact=True)
             field.fill("[")
             field.press("Tab")

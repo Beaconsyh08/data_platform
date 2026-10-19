@@ -9,7 +9,7 @@ function consoleRunsState() {
                 jobDrawerOpen: false,
                 selectedJobId: '',
                 runsFilter: {scope: 'all', status: ''},
-                jobsCursor: null, jobsHasMore: false, jobsPageScope: '', jobsPageMode: 'all',
+                jobsCursor: null, jobsHasMore: false, jobsPageScope: '', jobsPageMode: 'all', jobsPagesExpanded: false,
                 jobsCreatedFrom: '', jobsCreatedTo: '',
                 remoteJobs: [],
                 remoteViewerJob: null,
@@ -44,20 +44,21 @@ function consoleRunsState() {
                     if (status || this.jobsPageMode !== 'all') filters.status = status || this.jobsPageMode;
                     if (this.jobsCreatedFrom) filters.created_from = new Date(this.jobsCreatedFrom).toISOString();
                     if (this.jobsCreatedTo) filters.created_to = new Date(this.jobsCreatedTo).toISOString();
-                    const scope = JSON.stringify(filters);
+                    const scope = JSON.stringify({filters, actor: this.controlPlaneUser?.user_id, role: this.controlPlaneUser?.role});
                     const changed = scope !== this.jobsPageScope;
-                    if (changed) {append = false; this.jobsCursor = null; this.jobsHasMore = false;}
+                    if (changed) {append = false; this.jobsCursor = null; this.jobsHasMore = false; this.jobsPagesExpanded = false;}
+                    if (append) this.jobsPagesExpanded = true;
                     const params = new URLSearchParams(filters);
                     if (append && this.jobsCursor) params.set('cursor', this.jobsCursor);
                     const data = await this.requestJson('/api/control/jobs?' + params.toString());
                     if (requestId !== this.remoteJobsLoadRequest) return;
                     const previousById = new Map(this.remoteJobs.map(job => [job.job_id, job]));
                     this.jobsPageScope = scope;
-                    if (append || changed || !this.jobsCursor) {
+                    if (append || changed || !this.jobsPagesExpanded) {
                         this.jobsCursor = data.next_cursor || null; this.jobsHasMore = !!data.has_more;
                     }
                     const incoming = new Set((data.jobs || []).map(job => job.job_id));
-                    const retained = !changed && (append || this.jobsCursor)
+                    const retained = !changed && this.jobsPagesExpanded
                         ? this.remoteJobs.filter(job => !incoming.has(job.job_id)) : [];
                     this.remoteJobs = (data.jobs || []).map(job => {
                         const previous = previousById.get(job.job_id);
@@ -146,6 +147,7 @@ function consoleRunsState() {
                     return {
                         id: job.job_id,
                         remote: true,
+                        archived_reports: job.archived_reports || [],
                         job_type: job.operation,
                         dataset_key: `remote:${job.location_id}`,
                         display_dataset_key: location

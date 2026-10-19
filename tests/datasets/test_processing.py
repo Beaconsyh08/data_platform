@@ -496,6 +496,10 @@ def test_pose_review_binds_existing_curation_username_owner_and_revision(setup, 
             }
         ],
     )
+    assert ledger.repository.workspace_summaries(base.version_id, actor["username"]) == [
+        {"workspace_id": workspace.workspace_id, "revision": workspace.revision, "status": workspace.status}
+    ]
+    assert ledger.repository.workspace_summaries(base.version_id, "another-user") == []
     manager = PipelineManager(store, ledger)
     step = SimpleNamespace(parameters={"repairs": repairs()})
     evidence = [SimpleNamespace(input_identity=location_identity(location))]
