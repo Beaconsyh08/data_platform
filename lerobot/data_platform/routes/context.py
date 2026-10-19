@@ -43,6 +43,7 @@ class RouteContext:
     dataset_is_protected: Callable[[tuple[str, str]], bool] | None = None
     remote_cache_root: Path | None = None
     caption_read_relay: Any | None = None
+    unregister_missing_dataset: Callable[[dict], None] | None = None
 
     def update_job(self, job: dict, payload: dict) -> None:
         import os

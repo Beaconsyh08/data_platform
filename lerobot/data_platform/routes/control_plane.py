@@ -595,6 +595,7 @@ def register_control_plane_routes(
             {
                 "node": refreshed,
                 "result_sync_protocol": 1,
+                "source_cleanup_protocol": 1 if "data_platform_source_cleanup" in app.extensions else 0,
                 "scan_request": asdict(scan) if scan else None,
                 "caption_read_protocol": app.config.get("DATA_PLATFORM_CAPTION_READ_PROTOCOL", 0),
             }

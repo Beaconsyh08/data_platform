@@ -743,6 +743,7 @@ class DataPlatformAgent:
             **worker_capabilities(),
             "caption_protocol": 1,
             "caption_read_protocol": 1,
+            "source_cleanup_protocol": 1,
             "caption_concurrent_limit": max(
                 1, int(os.environ.get("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "1"))
             ),
@@ -813,6 +814,15 @@ class DataPlatformAgent:
             return False
         if isinstance(self.client, AgentClient) and heartbeat.get("caption_read_protocol") == 1:
             self._start_caption_reads()
+        if (
+            isinstance(self.client, AgentClient)
+            and heartbeat.get("source_cleanup_protocol") == 1
+            and not getattr(self, "_source_cleanup", None)
+        ):
+            from lerobot.data_platform.source_cleanup_agent import SourceCleanupWorker
+
+            self._source_cleanup = SourceCleanupWorker(self)
+            self._source_cleanup.start()
         self._process_scan_request(heartbeat.get("scan_request"))
         if isinstance(self.client, AgentClient):
             from lerobot.data_platform.execution import ExecutionSupervisor, StopRequestedError
@@ -1810,6 +1820,9 @@ class DataPlatformAgent:
 
     def close(self) -> None:
         """Stop background reads and release transports when replacing a local executor Agent."""
+        cleanup = getattr(self, "_source_cleanup", None)
+        if cleanup is not None:
+            cleanup.close()
         stop = getattr(self, "_caption_read_stop", None)
         if stop is not None:
             stop.set()

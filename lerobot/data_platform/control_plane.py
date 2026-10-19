@@ -834,6 +834,9 @@ class ControlPlaneStore:
         with self.sessions.begin() as session:
             if session.get(ControlPlaneNode, str(node_id)) is None:
                 raise KeyError(node_id)
+            from lerobot.data_platform.job_management import scheduler_lock
+
+            scheduler_lock(session)
             for payload in locations:
                 root = str(payload.get("root") or "").strip()
                 dataset_key = str(payload.get("dataset_key") or "").strip()
@@ -865,6 +868,9 @@ class ControlPlaneStore:
                         changes.created += 1
                 else:
                     output_dir = str(payload.get("output_dir") or location.output_dir)
+                    if location.state == "deleting":
+                        synced.append(location)
+                        continue  # Only authoritative source-presence checks may abort pending cleanup.
                     details = dict(payload.get("metadata") or {})
                     previous_details = dict(location.details or {})
                     for key in ("viewer_ready", "viewer_url", "cache_root"):
@@ -896,7 +902,7 @@ class ControlPlaneStore:
             nodes = session.scalars(select(ControlPlaneNode).order_by(ControlPlaneNode.name)).all()
             return [self._node_dict(node) for node in nodes]
 
-    def list_locations(self, *, user_id: str | None = None) -> list[dict]:
+    def list_locations(self, *, user_id: str | None = None, include_deleted: bool = False) -> list[dict]:
         with self.sessions() as session:
             allowed = None
             if user_id is not None:
@@ -908,6 +914,8 @@ class ControlPlaneStore:
             query = select(
                 DatasetLocation.location_id, ControlPlaneNode.name, ControlPlaneNode.hostname
             ).join(ControlPlaneNode, ControlPlaneNode.node_id == DatasetLocation.node_id)
+            if not include_deleted:
+                query = query.where(DatasetLocation.state == "available")
             if allowed is not None:
                 query = query.where(DatasetLocation.location_id.in_(allowed))
             rows = session.execute(
@@ -985,6 +993,12 @@ class ControlPlaneStore:
             location = session.get(DatasetLocation, str(location_id))
             if location is None:
                 raise KeyError(location_id)
+            if location.state != "available":
+                raise JobConflictError("Source dataset was deleted or is being cleaned up")
+            for source_id in (options or {}).get("source_location_ids", []):
+                source = session.get(DatasetLocation, source_id)
+                if source is None or source.state != "available":
+                    raise JobConflictError("A source dataset is no longer available")
             submitter = session.get(ControlPlaneUser, requested_by)
             if submitter is not None and not self.dataset_access_allowed(session, submitter, location):
                 raise PermissionError("Dataset access is outside this account's data permissions")

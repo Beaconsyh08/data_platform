@@ -60,13 +60,24 @@ class PipelineManager:
             raise PermissionError("An active operator account is required")
         return actor
 
-    def _location(self, session, location_id: str, owner: str, node_id: str | None = None, *, write=True):
+    def _location(
+        self,
+        session,
+        location_id: str,
+        owner: str,
+        node_id: str | None = None,
+        *,
+        write=True,
+        allow_retired=False,
+    ):
         from lerobot.data_platform.control_plane import ControlPlaneNode, DatasetLocation
 
         actor = self._actor(session, owner, write=write)
         location = session.get(DatasetLocation, location_id)
         if location is None:
             raise KeyError("Dataset location not found")
+        if location.state != "available" and not allow_retired:
+            raise JobConflictError("Source dataset was deleted or is being cleaned up")
         if not self.store.dataset_access_allowed(session, actor, location):
             raise PermissionError("Dataset is outside this account's data permissions")
         if node_id and location.node_id != node_id:
@@ -141,6 +152,8 @@ class PipelineManager:
                     and not operator.operator_id.startswith("import.mcap.")
                 ):
                     reason = "Add a Snapshot step first to bind the source dataset version"
+                if operator.review_required and self.store.restricted_dataset_keys(owner) is not None:
+                    reason = "Curation review requires unrestricted dataset access"
                 if reason:
                     blocked.append({"step_id": step.step_id, "reason": reason})
                 for source_id in step.options.get("source_location_ids", []):
@@ -346,7 +359,7 @@ class PipelineManager:
             row = session.get(PipelineRun, run_id)
             if row is None or row.owner != owner:
                 raise KeyError("Pipeline run not found")
-            self._location(session, row.location_id, owner, write=False)
+            self._location(session, row.location_id, owner, write=False, allow_retired=True)
             steps = session.scalars(
                 select(PipelineStepRun)
                 .where(PipelineStepRun.run_id == run_id)
@@ -582,7 +595,13 @@ class PipelineManager:
             if not run or run.status not in {"queued", "running", "waiting_review", "cancel_requested"}:
                 return
             try:
-                source, node = self._location(session, run.location_id, run.owner, run.node_id)
+                source, node = self._location(
+                    session,
+                    run.location_id,
+                    run.owner,
+                    run.node_id,
+                    allow_retired=run.status == "cancel_requested",
+                )
                 definition = session.get(PipelineVersion, run.version_id)
                 spec = PipelineSpec.from_dict(definition.spec)
                 steps = session.scalars(
@@ -722,6 +741,8 @@ class PipelineManager:
         return self.run(owner, run_id)
 
     def _review_workspace(self, step, owner, location, evidence, answer):
+        if self.store.restricted_dataset_keys(owner) is not None:
+            raise PermissionError("Curation review requires unrestricted dataset access")
         if not self.lifecycle:
             raise ValueError("A versioned Curation review is required")
         workspace = self.lifecycle.get_workspace(str(answer.get("workspace_id") or ""))
@@ -766,7 +787,7 @@ class PipelineManager:
                 raise KeyError("Pipeline run not found")
             if run.revision != body.get("expected_revision"):
                 raise JobConflictError("Pipeline run revision conflict")
-            self._location(session, run.location_id, owner)
+            self._location(session, run.location_id, owner, allow_retired=action == "cancel")
             if action == "cancel":
                 if run.status not in {"queued", "running", "waiting_review", "error", "cancel_requested"}:
                     raise JobConflictError("Pipeline is already finished")

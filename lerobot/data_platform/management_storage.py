@@ -103,7 +103,10 @@ def migrate_management(engine) -> None:
     """Create additive tables and serialize startup migrations across processes."""
     import hashlib
 
-    from lerobot.data_platform import maintenance  # noqa: F401 -- register the maintenance table
+    from lerobot.data_platform import (
+        maintenance,  # noqa: F401 -- register the maintenance table
+        source_cleanup,  # noqa: F401
+    )
     from lerobot.data_platform.processing import models  # noqa: F401
 
     lock_key = "dp-management-" + hashlib.sha256(str(engine.url.database).encode()).hexdigest()[:32]

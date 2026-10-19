@@ -19,6 +19,8 @@ from lerobot.data_platform.operation_log import append_operation_event
 
 def register_dataset_result_routes(app, store, remote_cache_root: Path):
     def cache_for(location):
+        if location.get("state", "available") != "available":
+            raise ValueError("Source dataset is no longer available")
         cache = Path((location.get("metadata") or {}).get("cache_root") or "")
         if not (location.get("metadata") or {}).get("viewer_ready"):
             raise ValueError("Dataset viewer is not prepared")

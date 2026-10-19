@@ -27,6 +27,13 @@ flowchart LR
     O --> P[Dataset IO / computation / validated publication]
 ```
 
+Source-loss cleanup is independent of operator execution: authoritative Agent checks retire a missing
+input and its owned caches while preserving Job/Attempt history, lineage and independent outputs.
+Queued dependent work is cancelled; running/interrupted work retains cache protection. Pipeline preview,
+submission and scheduler claims reject retired inputs. See [storage](data_platform_storage_locations.md)
+for cleanup ownership and retry rules. Curation-backed repair review retains the existing unrestricted
+Curation access requirement even when submitted through a pipeline.
+
 ## Operator contract
 
 `OperatorSpec` pins an ID and implementation version, parameter schema, dataset formats, dependencies,

@@ -491,6 +491,20 @@ python scripts/benchmark_data_platform_matrix.py \
 覆盖阶段切换、文本事件、真实完成计数、重试、事件顺序和最终确认；UI 改动还需浏览器验证。
 
 
+## 源目录删除与缓存回收
+
+Server 与 Agent 均需支持 `source_cleanup_protocol=1`，且执行器发行身份须与当前环境一致。
+控制面在维护模式暂停检查与确认；普通 Refresh 不进行目录扫描。节点后台以 15 秒间隔分页检查
+已登记路径，两次一致的缺失证据后清理。大量数据集按页轮转，不能用 30 秒作为完成时限。
+`dp_source_cleanups` 保存 location、令牌、阶段、错误、任务页游标及短租约；重启会续清理。
+`dataset.source_cleanup` 事件写入现有审计。`deleting`/`deleted` 不允许新 Job 或 Pipeline 输入，
+普通位置列表隐藏它们；历史查询仍保留原 location 和 Job 外键。
+
+若清理停留在 waiting，先查看该位置及缓存别名的运行、取消确认和 interrupted 任务；不要强制删除缓存。
+node/server 阶段失败时检查登记 output_dir 的归属、可写根、文件系统身份、共享缓存和独立数据保护。
+错误可修复后自动重试。服务器不依据心跳丢失或扫描未发现就删除数据。手动 unregister 仍仅移除登记，
+不删除文件。范围与保留规则见[存储说明](data_platform_storage_locations.md#原始目录删除后的清理)。
+
 ## HTTPS 地址与证书
 
 Server A 的用户入口是 `https://10.8.8.29`（开发环境端口 `8443`）。证书 SAN 必须包含

@@ -218,6 +218,11 @@ class JobManager:
                     continue
                 source_ids = [job.location_id, *(job.options or {}).get("source_location_ids", [])]
                 if any(
+                    (location := session.get(DatasetLocation, key)) is None or location.state != "available"
+                    for key in source_ids
+                ):
+                    continue
+                if any(
                     not self.store.dataset_access_allowed(
                         session, submitter, session.get(DatasetLocation, key)
                     )

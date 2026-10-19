@@ -16,11 +16,13 @@ from lerobot.data_platform.routes.inspect import register_inspect_routes
 from lerobot.data_platform.routes.lifecycle import register_lifecycle_routes
 from lerobot.data_platform.routes.mcap_import import register_mcap_import_routes
 from lerobot.data_platform.routes.preprocess import register_preprocess_routes
+from lerobot.data_platform.routes.source_cleanup import register_source_cleanup_routes
 from lerobot.data_platform.routes.tagging import register_tagging_routes
 from lerobot.data_platform.routes.tasks import register_task_routes
 from lerobot.data_platform.routes.temporal_caption import register_temporal_caption_routes
 
 __all__ = [
+    "register_source_cleanup_routes",
     "register_caption_read_routes",
     "register_curation_routes",
     "register_dataset_result_routes",

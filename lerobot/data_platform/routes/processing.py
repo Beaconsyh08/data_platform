@@ -65,6 +65,8 @@ def register_processing_routes(app, ctx):
                 g.processing_info = manager._info(location)
             info = g.processing_info
             reason = availability(spec, node, info, validate_dataset=bool(info.get("features")))
+        if spec.review_required and manager.store.restricted_dataset_keys(owner()) is not None:
+            reason = "Curation review requires unrestricted dataset access"
         if not spec.pipeline_allowed:
             reason = "Use the dedicated authorized operation form"
         if _current_user()["role"] == "viewer":

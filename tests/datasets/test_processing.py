@@ -576,3 +576,26 @@ def test_preprocess_execution_uses_selected_replica_without_changing_logical_ver
     result = agent.execute_job(job)
     assert result["dataset_version_id"]
     assert Path(result["dataset_location"]["root"]).is_dir()
+
+
+def test_pipeline_repair_review_preserves_curation_scope_guard(setup, monkeypatch):
+    store, manager, actor, node, location = setup
+    monkeypatch.setattr(store, "restricted_dataset_keys", lambda owner: {location["dataset_key"]})
+    with pytest.raises(PermissionError, match="unrestricted"):
+        manager._review_workspace(None, actor["user_id"], location, [], {})
+
+
+def test_deleted_source_keeps_pipeline_history_and_cancel_but_blocks_new_work(setup):
+    from lerobot.data_platform.control_plane import DatasetLocation
+
+    store, manager, actor, node, location = setup
+    _, run = start(setup)
+    with store.sessions.begin() as session:
+        session.get(DatasetLocation, location["location_id"]).state = "deleted"
+    assert manager.run(actor["user_id"], run["run_id"])["run_id"] == run["run_id"]
+    with pytest.raises(JobConflictError, match="deleted"):
+        manager.preview(actor["user_id"], location["location_id"], definition())
+    cancelled = manager.action(
+        actor["user_id"], run["run_id"], "cancel", {"expected_revision": run["revision"]}
+    )
+    assert cancelled["status"] == "cancelled"

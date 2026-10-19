@@ -1439,6 +1439,9 @@ def run_server(
     def _ensure_dataset_loaded(dataset_key: tuple[str, str]) -> tuple[object, Path]:
         entry = datasets_registry.get(dataset_key)
         if entry is not None:
+            if not Path(entry[0].root).exists() and not (Path(entry[1]) / "viewer_manifest.json").is_file():
+                datasets_registry.pop(dataset_key, None)
+                raise KeyError(_repo_id_from_key(dataset_key))
             return entry
         index_entry = datasets_index.get(dataset_key)
         if index_entry is None:
@@ -4505,6 +4508,23 @@ def run_server(
             return namespace, name
         raise ValueError("dataset_key is required")
 
+    def _unregister_missing_dataset(location):
+        cache = Path(route_context.remote_cache_root) / location["location_id"]
+        local_source = location["node_id"] in {
+            node["node_id"] for node in control_plane_store.list_nodes() if node["name"].startswith("local-")
+        }
+        for key, entry in list(datasets_index.items()):
+            source, output = Path(entry["root"]), Path(entry["output_dir"])
+            cached = source.is_relative_to(cache) or output.is_relative_to(cache)
+            if not cached and not (local_source and str(source) == location["root"]):
+                continue
+            datasets_index.pop(key, None)
+            datasets_registry.pop(key, None)
+            episodes_by_key.pop(key, None)
+            _clear_episode_dependent_caches(key)
+            _invalidate_light_cache_status(source, output)
+        _save_registry()
+
     route_context = RouteContext(
         datasets_index=datasets_index,
         jobs_registry=jobs_registry,
@@ -4537,6 +4557,7 @@ def run_server(
         control_plane_store=control_plane_store,
         legacy_mutations_enabled=True,
         dataset_is_protected=_dataset_is_protected,
+        unregister_missing_dataset=_unregister_missing_dataset,
     )
     app.extensions["data_platform_route_context"] = route_context
     app.config["DATA_PLATFORM_CONSOLE_MODE"] = console_mode
@@ -4582,6 +4603,9 @@ def run_server(
             task_catalog_store=_lifecycle_store().tasks,
         )
         route_context.remote_cache_root = cache_root
+        from lerobot.data_platform.routes import register_source_cleanup_routes
+
+        register_source_cleanup_routes(app, route_context)
     if _open_link_enabled("inspect"):
         register_inspect_routes(app, route_context)
     if console_mode == CONSOLE_MODE_FULL:
