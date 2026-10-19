@@ -21,8 +21,6 @@ RELEASE_ROOT = Path("/var/lib/data-platform-releases")
 SCHEMA_VERSION = 6
 VALIDATION_TESTS = [
     "tests/datasets/test_console_services.py",
-    "tests/datasets/test_console_browser.py",
-    "tests/datasets/test_processing_browser.py",
     "tests/datasets/test_console_interactions.py",
     "tests/datasets/test_remote_dataset_merge.py",
     "tests/datasets/test_task_ui.py",
@@ -119,7 +117,9 @@ def extract_archive(archive: Path, destination: Path):
         stream.extractall(destination)
 
 
-def build_release(source: Path, version: str, *, index_url: str | None = None) -> Path:
+def build_release(
+    source: Path, version: str, *, index_url: str | None = None, browser_executable: Path | None = None
+) -> Path:
     validate_package_index(index_url)
     version = validate_version(version)
     source = source.resolve()
@@ -190,6 +190,9 @@ def build_release(source: Path, version: str, *, index_url: str | None = None) -
             raise RuntimeError(
                 f"Release validation failed (exit {exc.returncode}). Log: {report_path}"
             ) from None
+        from lerobot.data_platform.browser_validation import run_browser_validation
+
+        browser = run_browser_validation(python, snapshot, browser_executable, root, env, run)
         print(f"Release validation passed: {version}", flush=True)
         run(
             [
@@ -209,7 +212,16 @@ def build_release(source: Path, version: str, *, index_url: str | None = None) -
             agent_manifest_sha256 = hashlib.sha256(internal_manifest.read()).hexdigest()
         shutil.move(agent, root / agent.name)
         shutil.move(Path(str(agent) + ".sha256"), root / (agent.name + ".sha256"))
-        files = {name: digest(root / name) for name in ("server.tar.gz", agent.name, "validation.txt")}
+        files = {
+            name: digest(root / name)
+            for name in (
+                "server.tar.gz",
+                agent.name,
+                "validation.txt",
+                "browser-validation.txt",
+                "browser-validation.xml",
+            )
+        }
         atomic_json(
             root / "release.json",
             {
@@ -226,6 +238,7 @@ def build_release(source: Path, version: str, *, index_url: str | None = None) -
                 "job_protocol": 2,
                 "rolling_deploy_protocol": ROLLING_DEPLOY_PROTOCOL,
                 "tests": VALIDATION_TESTS,
+                "browser_acceptance": browser,
             },
         )
         shutil.rmtree(snapshot)

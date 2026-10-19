@@ -48,6 +48,13 @@ def register_processing_routes(app, ctx):
             raise ValueError("A JSON object is required")
         return value
 
+    def list_page(kind, filters):
+        from lerobot.data_platform.list_queries import ListPage
+
+        if "page_size" not in request.args and "cursor" not in request.args:
+            return None
+        return ListPage.parse(request.args, scope={"actor": owner(), "kind": kind, **filters})
+
     def owner():
         return _current_user()["user_id"]
 
@@ -93,7 +100,11 @@ def register_processing_routes(app, ctx):
     @checked
     def processing_pipelines():
         if request.method == "GET":
-            return jsonify(pipelines=manager.list(owner()))
+            search = request.args.get("search", "")[:128]
+            page = list_page("pipelines", {"search": search})
+            result = manager.list(owner(), page=page, search=search)
+            rows, paging = result if page else (result, {})
+            return jsonify(pipelines=rows, **paging)
         return jsonify(manager.save(owner(), body().get("definition"))), 201
 
     @app.route("/api/pipelines/<pipeline_id>", methods=["GET", "PUT"])
@@ -132,7 +143,13 @@ def register_processing_routes(app, ctx):
     @app.get("/api/pipeline-runs")
     @checked
     def processing_runs():
-        return jsonify(runs=manager.runs(owner(), request.args.get("location_id")))
+        filters = {
+            key: request.args.get(key) for key in ("location_id", "status", "created_from", "created_to")
+        }
+        page = list_page("pipeline-runs", filters)
+        result = manager.runs(owner(), filters["location_id"], page=page, filters=filters)
+        rows, paging = result if page else (result, {})
+        return jsonify(runs=rows, **paging)
 
     @app.get("/api/pipeline-runs/<run_id>")
     @checked

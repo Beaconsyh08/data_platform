@@ -919,12 +919,12 @@
                         </div>
                         <div class="flex flex-wrap gap-2 text-xs">
                             <select class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-300"
-                                    x-model="runsFilter.scope" @change="selectFirstVisibleJob(); loadOperationLogs()">
+                                    x-model="runsFilter.scope" @change="resetJobPages(); loadOperationLogs()">
                                 <option value="all">All datasets</option>
                                 <option value="current" :disabled="!selectedDatasetKey">Working dataset</option>
                             </select>
                             <select class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-300"
-                                    x-model="runsFilter.status" @change="selectFirstVisibleJob()">
+                                    x-model="runsFilter.status" @change="resetJobPages()">
                                 <option value="">All statuses</option>
                                 <option value="running">Active (including queued)</option>
                                 <option value="done">Completed</option>
@@ -932,6 +932,12 @@
                                 <option value="queued">Queued</option><option value="cancelled">Cancelled</option>
                                 <option value="cancel_requested">Stopping</option><option value="interrupted">Interrupted</option>
                             </select>
+                            <select aria-label="Task history" x-model="jobsPageMode" @change="resetJobPages()" class="rounded border border-slate-700 bg-slate-950 p-2 text-xs">
+                                <option value="all">All tasks</option><option value="active">Active</option><option value="history">History</option>
+                            </select>
+                            <input type="datetime-local" aria-label="Jobs from" x-model="jobsCreatedFrom" @change="resetJobPages()" class="rounded bg-slate-950 p-2 text-xs">
+                            <input type="datetime-local" aria-label="Jobs until" x-model="jobsCreatedTo" @change="resetJobPages()" class="rounded bg-slate-950 p-2 text-xs">
+                            <button class="dp-btn dp-btn-secondary dp-btn-inline" x-show="jobsHasMore" @click="moreJobPages()">Load more</button>
                             <button class="dp-btn dp-btn-secondary dp-btn-inline" @click="loadJobs()">Refresh</button>
                         </div>
                     </div>
@@ -1133,10 +1139,10 @@
             <div class="grid min-h-0 flex-1 md:grid-cols-[20rem_minmax(0,1fr)]">
                 <div class="min-h-0 overflow-y-auto border-r border-slate-800 p-2 max-md:max-h-52 max-md:border-b max-md:border-r-0">
                     <div class="flex flex-wrap gap-2 px-2 py-2">
-                        <select class="min-w-0 rounded border border-slate-700 bg-slate-950 p-2 text-xs" aria-label="Job dataset scope" x-model="runsFilter.scope" @change="selectFirstVisibleJob()">
+                        <select class="min-w-0 rounded border border-slate-700 bg-slate-950 p-2 text-xs" aria-label="Job dataset scope" x-model="runsFilter.scope" @change="resetJobPages()">
                             <option value="all">All datasets</option><option value="current" :disabled="!selectedDatasetKey">Working dataset</option>
                         </select>
-                        <select class="min-w-0 rounded border border-slate-700 bg-slate-950 p-2 text-xs" aria-label="Job status filter" x-model="runsFilter.status" @change="selectFirstVisibleJob()">
+                        <select class="min-w-0 rounded border border-slate-700 bg-slate-950 p-2 text-xs" aria-label="Job status filter" x-model="runsFilter.status" @change="resetJobPages()">
                             <option value="">All statuses</option><option value="running">Active (including queued)</option><option value="done">Completed</option><option value="error">Failed</option><option value="queued">Queued</option><option value="cancelled">Cancelled</option>
                         </select>
                     </div>

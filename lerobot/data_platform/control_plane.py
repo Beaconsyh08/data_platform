@@ -395,8 +395,8 @@ class ControlPlaneStore:
             )
         )
 
-    def accessible_locations(self, user_id: str) -> list[dict]:
-        return self.list_locations(user_id=user_id)
+    def accessible_locations(self, user_id: str, *, summary: bool = False) -> list[dict]:
+        return self.list_locations(user_id=user_id, summary=summary)
 
     def restricted_dataset_keys(self, user_id: str) -> set[str] | None:
         """None means unrestricted; an empty set deliberately denies every dataset."""
@@ -902,7 +902,11 @@ class ControlPlaneStore:
             nodes = session.scalars(select(ControlPlaneNode).order_by(ControlPlaneNode.name)).all()
             return [self._node_dict(node) for node in nodes]
 
-    def list_locations(self, *, user_id: str | None = None, include_deleted: bool = False) -> list[dict]:
+    def list_locations(
+        self, *, user_id: str | None = None, include_deleted: bool = False, summary: bool = False
+    ) -> list[dict]:
+        from lerobot.data_platform.list_queries import location_projection
+
         with self.sessions() as session:
             allowed = None
             if user_id is not None:
@@ -926,7 +930,9 @@ class ControlPlaneStore:
             locations = {
                 location.location_id: self._location_dict(location)
                 for location in session.scalars(
-                    select(DatasetLocation).where(DatasetLocation.location_id.in_([row[0] for row in rows]))
+                    select(DatasetLocation)
+                    .where(DatasetLocation.location_id.in_([row[0] for row in rows]))
+                    .options(*([location_projection(DatasetLocation)] if summary else []))
                 ).all()
             }
             return [
@@ -1182,45 +1188,89 @@ class ControlPlaneStore:
             credential=credential,
         )
 
-    def list_jobs(self, *, limit: int = 200, actor: dict | None = None) -> list[dict]:
+    def list_jobs(
+        self, *, limit: int = 200, actor: dict | None = None, summary: bool = False, page=None, filters=None
+    ):
+        from sqlalchemy import exists, literal_column
+
+        from lerobot.data_platform.list_queries import job_projection, parse_time
+
         self.job_manager.reap_expired()
+        filters = filters or {}
         with self.sessions() as session:
-            # Sort identifiers only: MySQL filesort can otherwise copy large JSON
-            # options/results into the sort buffer for owner-filtered queries.
-            query = select(RemoteJob.job_id)
+            query = select(RemoteJob.job_id, RemoteJob.created_at)
             if actor is not None and actor.get("role") != "admin":
                 query = query.where(RemoteJob.requested_by == actor.get("user_id", ""))
-            job_ids = session.scalars(
-                query.order_by(RemoteJob.created_at.desc(), RemoteJob.job_id.desc()).limit(
-                    max(1, min(1000, limit))
-                )
-            ).all()
-            if not job_ids:
-                return []
-            details = select(RemoteJob).where(RemoteJob.job_id.in_(job_ids))
-            if actor is not None and actor.get("role") != "admin":
-                details = details.where(RemoteJob.requested_by == actor.get("user_id", ""))
-            jobs = {job.job_id: job for job in session.scalars(details).all()}
             allowed = (
                 self._accessible_location_ids(session, session.get(ControlPlaneUser, actor["user_id"]))
                 if actor is not None
                 else None
             )
-            return [
-                self._job_dict(jobs[job_id])
-                for job_id in job_ids
-                if job_id in jobs
-                and (
-                    allowed is None
-                    or all(
-                        key in allowed
-                        for key in [
-                            jobs[job_id].location_id,
-                            *(jobs[job_id].options or {}).get("source_location_ids", []),
-                        ]
+            if allowed is not None:
+                query = query.where(RemoteJob.location_id.in_(allowed))
+                if self.engine.dialect.name == "sqlite":
+                    inputs = (
+                        func.json_each(RemoteJob.options, "$.source_location_ids")
+                        .table_valued("value")
+                        .alias("inputs")
+                    )
+                else:
+                    inputs = (
+                        func.json_table(
+                            RemoteJob.options,
+                            literal_column("'$.source_location_ids[*]' COLUMNS (value VARCHAR(36) PATH '$')"),
+                        )
+                        .table_valued("value")
+                        .alias("inputs")
+                    )
+                query = query.where(
+                    ~exists(
+                        select(1)
+                        .select_from(inputs)
+                        .where(inputs.c.value.not_in(allowed))
+                        .correlate(RemoteJob)
                     )
                 )
-            ]
+            if filters.get("location_id"):
+                query = query.where(RemoteJob.location_id == filters["location_id"])
+            status = filters.get("status")
+            if status:
+                from lerobot.data_platform.job_management import ACTIVE_STATES
+
+                if status == "active":
+                    query = query.where(RemoteJob.status.in_({"queued"} | ACTIVE_STATES))
+                elif status == "history":
+                    query = query.where(RemoteJob.status.not_in({"queued"} | ACTIVE_STATES))
+                elif status in JOB_STATES:
+                    query = query.where(RemoteJob.status == status)
+                else:
+                    raise ValueError("Invalid job status")
+            for key, condition in (
+                ("created_from", RemoteJob.created_at.__ge__),
+                ("created_to", RemoteJob.created_at.__lt__),
+            ):
+                if filters.get(key):
+                    query = query.where(condition(parse_time(filters[key])))
+            query = (
+                page.apply(query, RemoteJob.created_at, RemoteJob.job_id, date_time=True)
+                if page
+                else query.order_by(RemoteJob.created_at.desc(), RemoteJob.job_id.desc()).limit(
+                    max(1, min(1000, limit))
+                )
+            )
+            rows = session.execute(query).all()
+            paging = {}
+            if page:
+                rows, paging = page.response(
+                    rows, timestamp=lambda r: r.created_at, identity=lambda r: r.job_id
+                )
+            ids = [row.job_id for row in rows]
+            details = select(RemoteJob).where(RemoteJob.job_id.in_(ids))
+            if summary:
+                details = details.options(*job_projection(RemoteJob))
+            jobs = {job.job_id: self._job_dict(job) for job in session.scalars(details)} if ids else {}
+            result = [jobs[key] for key in ids if key in jobs]
+            return (result, paging) if page else result
 
     def get_job(self, job_id: str) -> dict:
         with self.sessions() as session:

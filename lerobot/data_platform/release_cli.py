@@ -380,6 +380,7 @@ def main():
     parser.add_argument("--source", type=Path, default=Path.cwd())
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--index-url")
+    parser.add_argument("--browser-executable", type=Path, default=Path("/usr/bin/google-chrome"))
     parser.add_argument("--server-only", action="store_true")
     parser.add_argument(
         "--wait-for-jobs",
@@ -407,14 +408,20 @@ def main():
         if args.release and args.version:
             parser.error("Choose --version to build once or --release to reuse existing artifacts")
         if args.version:
-            releases.build_release(args.source, version, index_url=args.index_url)
+            releases.build_release(
+                args.source, version, index_url=args.index_url, browser_executable=args.browser_executable
+            )
         deploy_both(version, index_url=args.index_url, wait_for_jobs=args.wait_for_jobs)
         return
     deployment = Deployment(args.env)
     if args.command == "build":
         if args.env != "dev":
             parser.error("Build candidates in dev; production reuses approved artifacts")
-        print(releases.build_release(args.source, version, index_url=args.index_url))
+        print(
+            releases.build_release(
+                args.source, version, index_url=args.index_url, browser_executable=args.browser_executable
+            )
+        )
     elif args.command == "approve":
         if not args.evidence:
             parser.error("--evidence is required for manual acceptance")
@@ -423,7 +430,9 @@ def main():
         if args.version and not args.release:
             if args.env != "dev":
                 parser.error("Production requires --release for an approved artifact")
-            releases.build_release(args.source, version, index_url=args.index_url)
+            releases.build_release(
+                args.source, version, index_url=args.index_url, browser_executable=args.browser_executable
+            )
         deploy(
             deployment,
             version,

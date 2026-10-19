@@ -516,3 +516,30 @@ CA 公共证书为 `/etc/nginx/tls/data-platform-ca.crt`，尚未信任该 CA �
 不得分发任何私钥。证书更新前备份证书与密钥，验证证书链和 SAN，运行 `nginx -t` 后重载，
 等待新连接提供新证书，再使用可信 CA 正常校验开发/生产 `/healthz` 和 Agent 心跳。
 使用 `curl -k` 或浏览器忽略证书错误不构成 TLS 验证通过。
+
+### Bounded lists and optional OSS archive
+
+List clients may request `page_size` (1–200, default 50) and `cursor`. Jobs and pipeline runs
+accept `location_id`, `status`, `created_from` and `created_to` (ISO 8601, exclusive upper bound).
+Responses retain their original arrays and add `next_cursor` and `has_more`. A cursor belongs to
+its account and filters; changing either restarts pagination. Summary queries remove large report
+fields in the database; full detail reads preserve the original contract.
+
+Release builds require `--browser-executable /usr/bin/google-chrome` (the deployment CLI default).
+Browser tests execute separately, produce JUnit evidence included in the package checksum manifest,
+and must execute every required scenario without skips. Installed development acceptance remains
+separate from these fixture-backed browser tests.
+
+OSS is optional and independent of compute publication. Install the `data-platform-oss` extra and
+configure a private service-owned JSON file through `DATA_PLATFORM_ARCHIVE_CONFIG`; credentials
+come from the SDK environment provider or `DATA_PLATFORM_OSS_CREDENTIALS_FILE` (a protected ossutil
+INI file). Never put credentials in the repository or command-line arguments. The configuration
+contains bucket, region, environment (`dev`/`prod`), local `root`, `enabled` and `unlimited`.
+`unlimited: true` explicitly permits uncapped cloud use; local quotas remain enforced. Defaults are
+2 GiB read cache, 5 GiB pending uploads, and free space of at least 10 GiB and 10 percent.
+
+Use `python -m lerobot.data_platform.archive_cli --config /path/to/archive.json probe`, `enqueue`,
+`flush`, `backup` and `cleanup --protected-keys /path/to/protected.json`. Backup accepts only a
+completed quiescent deployment backup; it checks inventory hashes and excludes environment files
+and management credentials. Source datasets and active database files are not archive inputs.
+The worker is explicitly invoked; enabling an archive config does not schedule a migration.

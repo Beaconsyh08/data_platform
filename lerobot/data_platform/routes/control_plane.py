@@ -956,7 +956,9 @@ def register_control_plane_routes(
                     else {}
                 ),
             }
-            for location in store.accessible_locations(_current_user()["user_id"])
+            for location in store.accessible_locations(
+                _current_user()["user_id"], summary=request.args.get("summary") == "1"
+            )
             if request.args.get("format") == "all"
             or (location.get("metadata", {}).get("source_format") == "mcap")
             == (request.args.get("format") == "mcap")
@@ -967,13 +969,33 @@ def register_control_plane_routes(
 
     @app.route("/api/control/jobs")
     def control_jobs():
-        jobs = store.job_manager.decorate_many(
-            store.list_jobs(limit=int(request.args.get("limit") or 200), actor=_current_user()),
-            _current_user(),
-        )
-        if request.args.get("summary") == "1":
+        from lerobot.data_platform.list_queries import ListPage
+
+        actor = _current_user()
+        summary = request.args.get("summary") == "1"
+        filters = {
+            key: request.args.get(key) for key in ("location_id", "status", "created_from", "created_to")
+        }
+        try:
+            page = (
+                ListPage.parse(request.args, scope={"actor": actor["user_id"], "kind": "jobs", **filters})
+                if ("page_size" in request.args or "cursor" in request.args)
+                else None
+            )
+            result = store.list_jobs(
+                limit=int(request.args.get("limit") or 200),
+                actor=actor,
+                summary=summary,
+                page=page,
+                filters=filters,
+            )
+            jobs, paging = result if page else (result, {})
+        except (ValueError, TypeError) as exc:
+            return jsonify(error=str(exc)), 400
+        jobs = store.job_manager.decorate_many(jobs, actor)
+        if summary:
             jobs = [summarize_job(job) for job in jobs]
-        return jsonify(jobs=jobs)
+        return jsonify(jobs=jobs, **paging)
 
     @app.route("/api/control/jobs/<string:job_id>")
     def control_job(job_id: str):

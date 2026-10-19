@@ -264,3 +264,21 @@ exit
 上传仍先进入 `curation/.jobs/<job_id>/<attempt_id>/`，校验后发布。计算节点的 `operator-work/`
 保存按 Job/Attempt 隔离的工作文件与版本快照。数据转换输出是已登记源目录的独立 sibling，
 不在原始数据根内存放控制面状态。详见 [算子与流程](data_platform_operators.md)。
+
+### Optional object archive
+
+OSS artifacts live only under `data-platform/dev/` or `data-platform/prod/` in the configured Bucket.
+Content-addressed gzip objects are checked against both compressed and original SHA-256 before
+publication. References reuse existing result records or file manifests; no additional database
+is introduced. Original datasets, hot Viewer caches, permissions, leases and recovery state stay
+on their current storage. The archive's `pending`, `cache`, `receipts` and `migrations` directories
+belong outside all dataset roots. Failed uploads remain pending within the configured byte limit.
+
+Owned success/failure acceptance attachments expire after 30/90 days; database backups retain
+30 days and at least the newest three. Cleanup requires a protected-object inventory for current
+and rollback release evidence. Referenced reports never expire automatically. Bucket lifecycle
+rules must not expire the reports prefix; incomplete multipart uploads may expire after seven days.
+Versioned Buckets also need scoped noncurrent-version/delete-marker cleanup. No rule may change
+other applications' prefixes. OSS download traffic and requests can incur charges even when local
+storage usage is bounded. Database page reuse is not the same as reducing its physical file size;
+this workflow never automatically rebuilds tables or vacuums a live database.

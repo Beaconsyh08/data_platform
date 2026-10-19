@@ -9,6 +9,8 @@ function consoleRunsState() {
                 jobDrawerOpen: false,
                 selectedJobId: '',
                 runsFilter: {scope: 'all', status: ''},
+                jobsCursor: null, jobsHasMore: false, jobsPageScope: '', jobsPageMode: 'all',
+                jobsCreatedFrom: '', jobsCreatedTo: '',
                 remoteJobs: [],
                 remoteViewerJob: null,
                 remoteRefreshTimer: null,
@@ -33,18 +35,46 @@ function consoleRunsState() {
                         // localStorage can be disabled; the current page still keeps the selection.
                     }
                 },
-                async loadRemoteJobs() {
+                async loadRemoteJobs(append = false) {
                     const requestId = this.remoteJobsLoadRequest = (this.remoteJobsLoadRequest || 0) + 1;
-                    const data = await this.requestJson('/api/control/jobs?limit=200&summary=1');
+                    const filters = {summary: '1', page_size: '50'};
+                    const selected = this.runsFilter.scope === 'current' ? this.selectedRemoteLocation?.location_id : '';
+                    if (selected) filters.location_id = selected;
+                    const status = this.runsFilter.status === 'running' ? 'active' : this.runsFilter.status;
+                    if (status || this.jobsPageMode !== 'all') filters.status = status || this.jobsPageMode;
+                    if (this.jobsCreatedFrom) filters.created_from = new Date(this.jobsCreatedFrom).toISOString();
+                    if (this.jobsCreatedTo) filters.created_to = new Date(this.jobsCreatedTo).toISOString();
+                    const scope = JSON.stringify(filters);
+                    const changed = scope !== this.jobsPageScope;
+                    if (changed) {append = false; this.jobsCursor = null; this.jobsHasMore = false;}
+                    const params = new URLSearchParams(filters);
+                    if (append && this.jobsCursor) params.set('cursor', this.jobsCursor);
+                    const data = await this.requestJson('/api/control/jobs?' + params.toString());
                     if (requestId !== this.remoteJobsLoadRequest) return;
                     const previousById = new Map(this.remoteJobs.map(job => [job.job_id, job]));
+                    this.jobsPageScope = scope;
+                    if (append || changed || !this.jobsCursor) {
+                        this.jobsCursor = data.next_cursor || null; this.jobsHasMore = !!data.has_more;
+                    }
+                    const incoming = new Set((data.jobs || []).map(job => job.job_id));
+                    const retained = !changed && (append || this.jobsCursor)
+                        ? this.remoteJobs.filter(job => !incoming.has(job.job_id)) : [];
                     this.remoteJobs = (data.jobs || []).map(job => {
                         const previous = previousById.get(job.job_id);
                         if (previous?.updated_at && job.updated_at && previous.updated_at > job.updated_at) return previous;
                         return previous?.events && previous.attempt_id === job.attempt_id ? {...job, events: previous.events} : job;
                     });
+                    this.remoteJobs.push(...retained);
                     this.syncRemoteViewerJob();
                     this.mergeRemoteJobsIntoRuns();
+                },
+                async resetJobPages() {
+                    this.jobsPageScope = ''; this.jobsCursor = null; this.jobsHasMore = false;
+                    await this.loadJobs();
+                },
+                async moreJobPages() {
+                    if (!this.jobsHasMore) return;
+                    try {await this.loadRemoteJobs(true);} catch (error) {this.remoteError = `Tasks: ${error.message}`;}
                 },
                 syncRemoteViewerJob() {
                     if (!this.selectedRemoteLocation) {
@@ -289,7 +319,7 @@ function consoleRunsState() {
                     this.jobs = data.jobs || [];
                     this.mergeRemoteJobsIntoRuns();
                     this.syncActiveJob();
-                    if (!this.selectedJobId || !this.jobs.some(job => job.id === this.selectedJobId)) {
+                    if (!this.selectedJobId) {
                         this.selectedJobId = (this.activeJob || this.jobs[0] || {}).id || '';
                     }
                     this.scrollLogsSoon();

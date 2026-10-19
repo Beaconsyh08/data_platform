@@ -240,18 +240,27 @@ class PipelineManager:
                 "digest": spec.digest,
             }
 
-    def list(self, owner: str) -> list[dict]:
+    def list(self, owner: str, *, page=None, search=""):
         with self.store.sessions() as session:
             self._actor(session, owner, write=False)
-            rows = session.scalars(
-                select(Pipeline)
-                .where(Pipeline.owner == owner)
-                .order_by(Pipeline.updated_at.desc())
-                .limit(200)
-            ).all()
-            return [
+            query = select(Pipeline).where(Pipeline.owner == owner)
+            if search:
+                query = query.where(Pipeline.name.contains(search, autoescape=True))
+            query = (
+                page.apply(query, Pipeline.updated_at, Pipeline.pipeline_id)
+                if page
+                else query.order_by(Pipeline.updated_at.desc()).limit(200)
+            )
+            rows = session.scalars(query).all()
+            paging = {}
+            if page:
+                rows, paging = page.response(
+                    rows, timestamp=lambda r: r.updated_at, identity=lambda r: r.pipeline_id
+                )
+            result = [
                 {"pipeline_id": row.pipeline_id, "revision": row.revision, "name": row.name} for row in rows
             ]
+            return (result, paging) if page else result
 
     def get(self, owner: str, pipeline_id: str, revision: int | None = None) -> dict:
         with self.store.sessions() as session:
@@ -332,7 +341,7 @@ class PipelineManager:
                 self._audit(session, owner, "pipeline.started", run_id=run_id, digest=saved["digest"])
         return self.run(owner, run_id)
 
-    def runs(self, owner: str, location_id: str | None = None) -> list[dict]:
+    def runs(self, owner: str, location_id: str | None = None, *, page=None, filters=None):
         with self.store.sessions() as session:
             actor = self._actor(session, owner, write=False)
             allowed = self.store._accessible_location_ids(session, actor)
@@ -341,8 +350,45 @@ class PipelineManager:
                 query = query.where(PipelineRun.location_id.in_(allowed))
             if location_id:
                 query = query.where(PipelineRun.location_id == location_id)
-            rows = session.scalars(query.order_by(PipelineRun.created_at.desc()).limit(100)).all()
-            return [
+            from sqlalchemy.orm import load_only
+
+            from lerobot.data_platform.list_queries import parse_time
+
+            filters = filters or {}
+            if filters.get("status"):
+                query = query.where(PipelineRun.status == filters["status"])
+            for key, condition in (
+                ("created_from", PipelineRun.created_at.__ge__),
+                ("created_to", PipelineRun.created_at.__lt__),
+            ):
+                if filters.get(key):
+                    from datetime import timezone
+
+                    query = query.where(
+                        condition(parse_time(filters[key]).replace(tzinfo=timezone.utc).timestamp())
+                    )
+            query = query.options(
+                load_only(
+                    PipelineRun.run_id,
+                    PipelineRun.version_id,
+                    PipelineRun.status,
+                    PipelineRun.location_id,
+                    PipelineRun.updated_at,
+                    PipelineRun.created_at,
+                )
+            )
+            query = (
+                page.apply(query, PipelineRun.created_at, PipelineRun.run_id)
+                if page
+                else query.order_by(PipelineRun.created_at.desc()).limit(100)
+            )
+            rows = session.scalars(query).all()
+            paging = {}
+            if page:
+                rows, paging = page.response(
+                    rows, timestamp=lambda r: r.created_at, identity=lambda r: r.run_id
+                )
+            result = [
                 {
                     "run_id": row.run_id,
                     "version_id": row.version_id,
@@ -352,6 +398,7 @@ class PipelineManager:
                 }
                 for row in rows
             ]
+            return (result, paging) if page else result
 
     def run(self, owner: str, run_id: str) -> dict:
         with self.store.sessions() as session:

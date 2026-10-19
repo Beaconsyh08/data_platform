@@ -28,6 +28,8 @@ def test_build_checks_archived_lock_before_tests_and_preserves_it(
     (source / "uv.lock").write_bytes(lock)
     monkeypatch.setattr(releases, "RELEASE_ROOT", tmp_path / "releases")
     calls = []
+    browser = tmp_path / "chrome"
+    browser.touch()
 
     def run(argv, **kwargs):
         calls.append(argv)
@@ -48,6 +50,15 @@ def test_build_checks_archived_lock_before_tests_and_preserves_it(
                 kwargs["stdout"].write("FAILED test_release_regression: useful failure detail\n")
                 raise subprocess.CalledProcessError(1, argv)
             kwargs["stdout"].write("passed")
+            for arg in argv:
+                if str(arg).startswith("--junitxml="):
+                    from lerobot.data_platform.browser_validation import REQUIRED_CASES
+
+                    Path(str(arg).split("=", 1)[1]).write_text(
+                        "<testsuite>"
+                        + "".join(f'<testcase name="{name}"/>' for name in REQUIRED_CASES)
+                        + "</testsuite>"
+                    )
             return
         if "--output-dir" in argv:
             if index_url:
@@ -66,12 +77,12 @@ def test_build_checks_archived_lock_before_tests_and_preserves_it(
     monkeypatch.setattr(releases, "run", run)
     if not lock_in_archive:
         with pytest.raises(RuntimeError, match="committed source archive is missing uv.lock"):
-            releases.build_release(source, "candidate", index_url=index_url)
+            releases.build_release(source, "candidate", index_url=index_url, browser_executable=browser)
         assert not any("pytest" in call or "--output-dir" in call for call in calls)
         assert not (releases.RELEASE_ROOT / "candidate").exists()
     elif validation_fails:
         with pytest.raises(RuntimeError, match="Release validation failed.*validation.txt"):
-            releases.build_release(source, "candidate", index_url=index_url)
+            releases.build_release(source, "candidate", index_url=index_url, browser_executable=browser)
         assert not (releases.RELEASE_ROOT / "candidate").exists()
         assert not any("--output-dir" in call for call in calls)
         assert not list(releases.RELEASE_ROOT.glob(".build-*"))
@@ -86,7 +97,7 @@ def test_build_checks_archived_lock_before_tests_and_preserves_it(
             "exit_code": 1,
         }
     else:
-        root = releases.build_release(source, "candidate", index_url=index_url)
+        root = releases.build_release(source, "candidate", index_url=index_url, browser_executable=browser)
         _, manifest = releases.verify_release("candidate")
         assert manifest["package_index_url"] == index_url
         with tarfile.open(root / "server.tar.gz") as stream:
@@ -537,7 +548,9 @@ def test_development_cli_forwards_index_to_build(monkeypatch, command):
         ],
     )
     release_cli.main()
-    assert calls == [{"index_url": "https://mirror.test/simple"}]
+    assert calls == [
+        {"index_url": "https://mirror.test/simple", "browser_executable": Path("/usr/bin/google-chrome")}
+    ]
 
 
 def test_build_rejects_non_https_index_before_creating_artifacts(tmp_path, monkeypatch):
@@ -677,3 +690,18 @@ def test_pipeline_coordinator_unit_follows_release_and_legacy_rollback(tmp_path,
     current.unlink()
     current.symlink_to(old)
     assert deployment.coordinator_unit_name not in deployment.units
+
+
+def test_browser_gate_rejects_skips_and_empty_reports(tmp_path):
+    from lerobot.data_platform.browser_validation import REQUIRED_CASES, check_browser_report
+
+    report = tmp_path / "browser.xml"
+    for contents in (
+        "<testsuite/>",
+        "<testsuite>"
+        + "".join(f'<testcase name="{name}"><skipped/></testcase>' for name in REQUIRED_CASES)
+        + "</testsuite>",
+    ):
+        report.write_text(contents)
+        with pytest.raises(RuntimeError):
+            check_browser_report(report)

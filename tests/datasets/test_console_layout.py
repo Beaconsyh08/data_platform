@@ -23,7 +23,7 @@ def test_remote_lists_load_independently_when_jobs_fail(page):
     assert end is not None
     source = template[match.start() : match.end() + end.end()]
     if method == "loadRemoteSources":
-        jobs_match = re.search(r"^                async loadRemoteJobs\(\) \{", template, re.MULTILINE)
+        jobs_match = re.search(r"^                async loadRemoteJobs\([^\n]*\) \{", template, re.MULTILINE)
         jobs_end = re.search(r"^                \},", template[jobs_match.end() :], re.MULTILINE)
         source += template[jobs_match.start() : jobs_match.end() + jobs_end.end()]
     script = "const assert = require('node:assert/strict'); const app = {" + source + "};\n"
@@ -32,6 +32,7 @@ def test_remote_lists_load_independently_when_jobs_fail(page):
 (async () => {
     Object.assign(app, {controlPlaneEnabled: true, isAdmin: false, refreshing: false,
         remoteJobs: [{job_id: 'old', events: ['saved']}], jobs: [{job_id: 'old'}],
+        runsFilter: {scope: 'all', status: ''}, jobsPageMode: 'all', jobsCursor: null,
         controlPlaneNodes: [], nodes: [], remoteLocations: [], locations: [],
         selectedRemoteLocation: null, selectedDataset: null, selectedNodeId: '', jobPage: 1,
         loadDeletionRequests: async () => {}, syncRemoteViewerJob: () => {},

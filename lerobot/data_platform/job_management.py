@@ -715,12 +715,15 @@ class JobManager:
 
     def decorate_many(self, payloads, actor=None):
         """Share one request snapshot for task controls, capacity and queue positions."""
+        from sqlalchemy.orm import load_only
+
         from lerobot.data_platform.control_plane import (
             ControlPlaneNode,
             ControlPlaneUser,
             DatasetLocation,
             RemoteJob,
         )
+        from lerobot.data_platform.list_queries import job_projection
 
         if not payloads:
             return []
@@ -743,7 +746,11 @@ class JobManager:
                     )
                 )
             }
-            active_jobs = session.scalars(select(RemoteJob).where(RemoteJob.status.in_(ACTIVE_STATES))).all()
+            active_jobs = session.scalars(
+                select(RemoteJob)
+                .options(*job_projection(RemoteJob))
+                .where(RemoteJob.status.in_(ACTIVE_STATES))
+            ).all()
             controls = {
                 control.job_id: control
                 for control in session.scalars(
@@ -757,7 +764,9 @@ class JobManager:
             attempts = {
                 attempt.attempt_id: attempt
                 for attempt in session.scalars(
-                    select(JobAttempt).where(
+                    select(JobAttempt)
+                    .options(load_only(JobAttempt.attempt_id, JobAttempt.protocol))
+                    .where(
                         JobAttempt.attempt_id.in_(
                             {control.attempt_id for control in controls.values() if control.attempt_id}
                         )
@@ -770,7 +779,9 @@ class JobManager:
                 {
                     job.job_id: job
                     for job in session.scalars(
-                        select(RemoteJob).where(
+                        select(RemoteJob)
+                        .options(*job_projection(RemoteJob))
+                        .where(
                             RemoteJob.job_id.in_({p["job_id"] for p in payloads if p["status"] == "queued"})
                         )
                     )
@@ -786,7 +797,13 @@ class JobManager:
             }
             _locations = (
                 session.scalars(
-                    select(DatasetLocation).where(DatasetLocation.location_id.in_(location_ids))
+                    select(DatasetLocation)
+                    .options(
+                        load_only(
+                            DatasetLocation.location_id, DatasetLocation.root, DatasetLocation.output_dir
+                        )
+                    )
+                    .where(DatasetLocation.location_id.in_(location_ids))
                 ).all()
                 if current_jobs
                 else []
