@@ -109,7 +109,8 @@ retry command and preserves completed, acknowledged outputs. Existing supervisor
 continues to handle publication failure without recomputing completed work; MCAP automatic recovery keeps
 its separate, bounded process-loss rules. Validated preprocessing outputs have a command/input/output fingerprint checkpoint, so a failed version
 registration can resume publication without rerunning the transform. Operator snapshots include resolved parameters, versions,
-input fingerprints and artifact checksums. After atomic dataset publication, spooled snapshot/result paths
+input fingerprints and artifact checksums. Execution snapshots use the selected registered replica root,
+including secondary inputs; another replica of the same logical version does not change immutable version identity. After atomic dataset publication, spooled snapshot/result paths
 are rebased to the final output and the bundle checksums are regenerated. Retained older executors may
 finish with their exact authenticated attempt staging path; registration also requires confirmation of
 the planned final output and matching metadata. Fingerprints are checked again before dataset computation.

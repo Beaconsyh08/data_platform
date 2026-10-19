@@ -85,13 +85,24 @@ class PipelineManager:
             ),
         )
 
+    def _snapshot_for_location(self, location):
+        """Bind a logical snapshot to the selected replica without rewriting its immutable record."""
+        head = (
+            self.lifecycle._get_record("curation_locations", location["location_id"])
+            if self.lifecycle
+            else None
+        )
+        snapshot = self.lifecycle.curation_snapshot(head["dataset_version_id"]) if head else None
+        if snapshot:
+            return {**snapshot, "version": {**snapshot["version"], "root": location["root"]}}
+        return None
+
     def _info(self, location):
         """Read synchronized version metadata for legacy local registration stubs."""
         if location["metadata"].get("features"):
             return location["metadata"]
         if self.lifecycle:
-            head = self.lifecycle._get_record("curation_locations", location["location_id"])
-            snapshot = self.lifecycle.curation_snapshot(head["dataset_version_id"]) if head else None
+            snapshot = self._snapshot_for_location(location)
             if snapshot:
                 return snapshot["info"]
         return location["metadata"]
@@ -379,14 +390,7 @@ class PipelineManager:
     def _command(self, run, step, location, node, evidence, decision=None):
         spec = get_operator(step.operator_id, step.version)
         options = dict(step.parameters)
-        snapshot = None
-        head = (
-            self.lifecycle._get_record("curation_locations", location["location_id"])
-            if self.lifecycle
-            else None
-        )
-        if head:
-            snapshot = self.lifecycle.curation_snapshot(head["dataset_version_id"])
+        snapshot = self._snapshot_for_location(location)
         task_config = (snapshot or {}).get("task_config") or TaskConfigSnapshot.from_dict(None).to_dict()
         if spec.family == "curation":
             if spec.operator_id != "curation.snapshot" and not snapshot:
@@ -534,10 +538,10 @@ class PipelineManager:
             for source_id in step.options.get("source_location_ids", []):
                 if source_id == location["location_id"]:
                     continue
-                source_head = self.lifecycle._get_record("curation_locations", source_id)
-                if not source_head:
+                selected = self._snapshot_for_location(self.store.get_location(source_id))
+                if not selected:
                     raise ValueError("Synchronize every Merge input dataset version first")
-                snapshots.append(self.lifecycle.curation_snapshot(source_head["dataset_version_id"]))
+                snapshots.append(selected)
             options["version_inputs"] = snapshots
             options["target"] = {
                 "location_id": location["location_id"],

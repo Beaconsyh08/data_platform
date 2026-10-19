@@ -521,3 +521,58 @@ def test_preview_rejects_remote_derived_outputs_outside_configured_read_roots(se
     assert preview["can_execute"] is False
     assert any("configured read roots" in item["reason"] for item in preview["blocked"])
     assert store.list_jobs() == []
+
+
+def test_preprocess_execution_uses_selected_replica_without_changing_logical_version(setup, tmp_path):
+    import shutil
+
+    from lerobot.data_platform.curation import register_snapshot, snapshot_from_version
+    from lerobot.data_platform.lifecycle import LifecycleStore
+    from tests.datasets.test_data_platform_agent import _agent
+
+    store, _, actor, node, original = setup
+    ledger = LifecycleStore(tmp_path / "replica-ledger")
+    source = Path(original["root"])
+    version = ledger.ingest(source, original["dataset_key"], stage="raw")
+    canonical = snapshot_from_version(ledger, version, source)
+    register_snapshot(ledger, canonical, original)
+    replica = tmp_path / "replica"
+    shutil.copytree(source, replica)
+    location = store.sync_locations(
+        node["node_id"],
+        [
+            {
+                **original,
+                "root": str(replica),
+                "dataset_key": "node/replica",
+                "output_dir": str(tmp_path / "replica-cache"),
+            }
+        ],
+    )[0]
+    register_snapshot(ledger, canonical, location)
+    manager = PipelineManager(store, ledger)
+    saved = manager.save(
+        actor["user_id"],
+        {
+            "name": "Use selected replica",
+            "steps": [
+                {
+                    "step_id": "split",
+                    "operator_id": "preprocess.split",
+                    "parameters": {"episode_range": "0:1"},
+                }
+            ],
+        },
+    )
+    run = manager.start(actor["user_id"], saved["pipeline_id"], 1, location["location_id"], "replica")
+    manager.tick(run["run_id"])
+    job = store.claim_job(node["node_id"], worker_instance_id="replica-worker")
+    snapshot = job["options"]["version_inputs"][0]
+    assert snapshot["version"]["root"] == str(replica)
+    assert snapshot["version"]["version_id"] == version.version_id
+    assert ledger.curation_snapshot(version.version_id)["version"]["root"] == str(source)
+    agent = _agent(tmp_path, tmp_path, tmp_path)
+    agent.client.upload_artifact = lambda *args, **kwargs: None
+    result = agent.execute_job(job)
+    assert result["dataset_version_id"]
+    assert Path(result["dataset_location"]["root"]).is_dir()
