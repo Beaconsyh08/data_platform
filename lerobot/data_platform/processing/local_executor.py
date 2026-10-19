@@ -44,6 +44,18 @@ def execute_local_operator(agent, job: dict) -> dict:
         return value
 
     parameters = restore(command["parameters"])
+    # The persisted command describes the requested destination. The supervisor's
+    # execution copy owns staging and worker limits; never write around publication.
+    if spec.operator_id == "viewer.prepare":
+        parameters["output_dir"] = job["location"]["output_dir"]
+    if spec.effect == "dataset" and options.get("out_root"):
+        parameters["out_root"] = options["out_root"]
+        for key in ("overwrite_output", "overwrite"):
+            if key in parameters:
+                parameters[key] = False
+    for key in ("workers", "prepare_workers"):
+        if key in parameters and key in options:
+            parameters[key] = options[key]
     source = _require_within(Path(job["location"]["root"]), agent.allowed_roots, "dataset root")
     for key in ("root", "src_root", "base_root", "dataset_root"):
         if key in parameters:
@@ -98,6 +110,8 @@ def execute_local_operator(agent, job: dict) -> dict:
     else:
         value = function(**parameters)
     result = _json_value(asdict(value) if is_dataclass(value) else value or {})
+    if spec.operator_id == "viewer.prepare":
+        agent._upload_viewer_artifacts(job, Path(parameters["output_dir"]) / "static")
     payload = {
         "computation": result,
         "local_job": {
@@ -142,7 +156,7 @@ def execute_local_operator(agent, job: dict) -> dict:
         payload["local_job"].update(
             output_root=output, viewer_url=f"/{registrations[-1]['repo_id']}/episode_0"
         )
-    if spec.effect == "source":
+    if spec.effect == "source" or spec.operator_id == "viewer.prepare":
         registrations.append(
             {
                 "root": str(source),
@@ -150,6 +164,10 @@ def execute_local_operator(agent, job: dict) -> dict:
                 "output_dir": job["location"]["output_dir"],
             }
         )
+        if spec.operator_id == "viewer.prepare" and result.get("episodes"):
+            payload["local_job"]["viewer_url"] = (
+                f"/{job['location']['dataset_key']}/episode_{result['episodes'][0]}"
+            )
     payload["local_registrations"] = registrations
     if spec.effect == "source":
         agent._write_completed_mutation(job["job_id"], payload)

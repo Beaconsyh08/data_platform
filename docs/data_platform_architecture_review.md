@@ -39,3 +39,10 @@ an installed Chrome and Playwright; their explicit run must be recorded with the
 The remaining model-runtime acceptance is not a missing console split. Passing CPU fixtures or advertising
 an unavailable operator does not establish real model inference acceptance, and development installation
 does not constitute production promotion.
+
+Installed acceptance also exercises the original local cache-preparation endpoint. Local command snapshots
+retain requested parameters, while execution binds outputs to supervisor staging and uses its worker limits.
+Viewer artifacts enter the normal upload/acknowledgement protocol, and custom dataset output paths are
+included in admission and path locks. Real-process regressions cover cache publication and local v2.1/v3.0
+dataset transforms, checking that the final destination is absent until publication and source bytes remain
+unchanged. A completed attempt awaiting upload is finalized from its retained output rather than recomputed.

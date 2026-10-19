@@ -241,8 +241,9 @@ def test_first_viewer_job_creates_missing_cache_parent(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("version", ["v2.1", "v3.0"])
 @pytest.mark.parametrize("named_environment", [False, True])
+@pytest.mark.parametrize("local_command", [False, True])
 def test_real_worker_preserves_source_and_publishes_drop_field(
-    tmp_path, monkeypatch, version, named_environment
+    tmp_path, monkeypatch, version, named_environment, local_command
 ):
     monkeypatch.setenv("DATA_PLATFORM_REQUIRE_CGROUP", "0")
     source = tmp_path / "source"
@@ -290,6 +291,23 @@ def test_real_worker_preserves_source_and_publishes_drop_field(
             "final_output": str(final),
         },
     }
+    if local_command:
+        from lerobot.data_platform.precompute.preprocess.field_ops import run_drop_field
+        from lerobot.data_platform.processing.commands import build_command
+
+        command = build_command(
+            "preprocess.drop_field", run_drop_field, source, field_name="old_field", out_root=final
+        )
+        assert command["options"]["out_root"] == str(final)
+        job["options"] = command["options"]
+    publish = supervisor.publish
+
+    def check_staging(marker, payload):
+        assert not final.exists()
+        assert (Path(marker["staging"]) / final.name / "meta/info.json").is_file()
+        return publish(marker, payload)
+
+    monkeypatch.setattr(supervisor, "publish", check_staging)
     supervisor.start(job)
     result = client.completions[-1]
     assert result["status"] == "done", result
@@ -306,6 +324,65 @@ def test_real_worker_preserves_source_and_publishes_drop_field(
         str(path.relative_to(source)): path.read_bytes() for path in source.rglob("*") if path.is_file()
     } == before
     assert [phase for phase, _ in client.checkpoints] == ["executing", "finalizing"]
+
+
+def test_local_viewer_command_publishes_attempt_cache_and_registers_result(tmp_path, monkeypatch):
+    from lerobot.data_platform.cli import run_precompute
+    from lerobot.data_platform.processing.commands import build_command
+
+    monkeypatch.setenv("DATA_PLATFORM_REQUIRE_CGROUP", "0")
+    source = tmp_path / "source"
+    _make_dataset(source)
+    _add_v21_stat_counts(source)
+    before = {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()}
+    target = tmp_path / "viewer"
+    command = build_command(
+        "viewer.prepare",
+        run_precompute,
+        root=source,
+        repo_id="local/source",
+        output_dir=target,
+        prepare_videos=False,
+        prepare_csv=True,
+        prepare_workers=1,
+        visualize_only=True,
+        show_progress=False,
+    )
+    client = Client()
+    supervisor = ExecutionSupervisor(fake_agent(tmp_path, client))
+    job = {
+        "job_id": "viewer-job",
+        **command,
+        "location_id": "location",
+        "location": {"root": str(source), "dataset_key": "local/source", "output_dir": str(target)},
+        "execution": {
+            "attempt_id": "attempt",
+            "credential": "test-credential",
+            "worker_instance_id": "worker",
+            "protocol": 2,
+            "final_output": None,
+        },
+    }
+    publish = supervisor.publish
+
+    def check_staging(marker, payload):
+        assert not target.exists()
+        assert (Path(marker["staging"]) / "cache/static/viewer_manifest.json").is_file()
+        return publish(marker, payload)
+
+    monkeypatch.setattr(supervisor, "publish", check_staging)
+    supervisor.start(job)
+    completed = client.completions[-1]
+    assert completed["status"] == "done", completed
+    assert (target / "static/viewer_manifest.json").is_file()
+    assert completed["result"]["local_registrations"] == [
+        {"root": str(source), "repo_id": "local/source", "output_dir": str(target)}
+    ]
+    assert completed["result"]["local_job"]["viewer_url"] == "/local/source/episode_0"
+    uploads = [json.loads(p.read_text()) for p in (supervisor.root / "attempt/uploads").glob("*.json")]
+    assert any(p["relative_path"] == "viewer_manifest.json" for p in uploads)
+    assert all(Path(p["path"]).is_relative_to(target) for p in uploads)
+    assert {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()} == before
 
 
 def test_completion_outage_replays_result_without_recomputing(tmp_path, monkeypatch):
@@ -467,6 +544,7 @@ def test_local_validated_command_is_queued_and_executed(tmp_path, monkeypatch):
     assert persistent["operation"] == "preprocess.drop_field"
     assert "request" not in persistent["options"]
     claimed = store.claim_job(persistent["node_id"], worker_instance_id="test-worker")
+    assert claimed["execution"]["final_output"] == str(output)
     work = tmp_path / "worker"
     config = {
         "job": claimed,

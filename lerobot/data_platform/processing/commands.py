@@ -40,6 +40,19 @@ def build_command(operator_id, function, *args, **kwargs) -> dict:
     return {
         "operation": operator_id,
         "options": {
+            # Admission and the supervisor must see the same output and resource intent.
+            **{
+                key: _json(parameters[key])
+                for key in (
+                    "out_root",
+                    "dry_run",
+                    "workers",
+                    "prepare_workers",
+                    "data_version",
+                    "task_config",
+                )
+                if key in parameters
+            },
             "local_compute": {
                 "operator_id": operator_id,
                 "parameters": _json(parameters),
@@ -53,6 +66,10 @@ def standardize_command(root, out_root, data_version, workers, overwrite, delete
     return {
         "operation": "preprocess.standardize",
         "options": {
+            "out_root": _json(out_root),
+            "dry_run": dry_run,
+            "workers": workers,
+            "data_version": data_version,
             "local_compute": {
                 "operator_id": "preprocess.standardize",
                 "composite": True,
