@@ -20,6 +20,14 @@ from lerobot.data_platform.rolling_deployment import ROLLING_DEPLOY_PROTOCOL, re
 RELEASE_ROOT = Path("/var/lib/data-platform-releases")
 SCHEMA_VERSION = 6
 VALIDATION_TESTS = [
+    "tests/datasets/test_operators.py",
+    "tests/datasets/test_processing.py",
+    "tests/datasets/test_pose_interpolate.py",
+    "tests/datasets/test_preprocess_ops.py",
+    "tests/datasets/test_preprocess_routes.py",
+    "tests/datasets/test_lifecycle.py",
+    "tests/datasets/test_compare.py",
+    "tests/datasets/test_task_suggestions.py",
     "tests/datasets/test_dataset_captions.py",
     "tests/datasets/test_temporal_caption_jobs.py",
     "tests/datasets/test_dataset_results.py",
@@ -483,7 +491,15 @@ def prepare_server(
 def install_server_units(deployment: Deployment):
     release = (deployment.root / "current").resolve()
     directory = Path("/etc/systemd/system")
+    from lerobot.data_platform.deployment import coordinator_unit
+
     (directory / deployment.units[0]).write_text(server_unit(deployment, worker=False))
+    has_coordinator = deployment.coordinator_unit_name in deployment.units
+    if has_coordinator:
+        (directory / deployment.coordinator_unit_name).write_text(coordinator_unit(deployment))
+    elif (directory / deployment.coordinator_unit_name).exists():
+        run(["systemctl", "stop", deployment.coordinator_unit_name])
+        run(["systemctl", "disable", deployment.coordinator_unit_name])
     generation = f"data-platform-local-worker-{release.name}@{deployment.environment}.service"
     (directory / generation).write_text(server_unit(deployment, worker=True, release=release))
     alias = directory / deployment.units[1]
@@ -500,6 +516,9 @@ def install_server_units(deployment: Deployment):
     if previous and previous != generation:
         run(["systemctl", "disable", previous])
     run(["systemctl", "enable", deployment.units[0], generation])
+    if has_coordinator:
+        run(["systemctl", "enable", deployment.coordinator_unit_name])
+        run(["systemctl", "restart", deployment.coordinator_unit_name])
 
 
 def wait_healthy(deployment: Deployment, version: str):

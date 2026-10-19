@@ -7,37 +7,11 @@ import posixpath
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from lerobot.data_platform.mcap_contract import OPERATIONS as MCAP_OPERATIONS
+from lerobot.data_platform.operators.registry import list_operators, operation_ids
 
-PARALLEL_OPERATIONS = frozenset(
-    {
-        "curation.snapshot",
-        "curation.validate_source",
-        "curation.quality",
-        "curation.stage",
-        "curation.labeling",
-        "curation.tagging",
-        "curation.embedding",
-        "curation.project",
-        "curation.compare_summary",
-        "curation.construction",
-        "curation.construction_preview",
-        "curation.materialize",
-        *MCAP_OPERATIONS,
-        "caption.annotate",
-        "viewer.prepare",
-        "preprocess.convert_action",
-        "preprocess.convert_v3",
-        "preprocess.drop_field",
-        "preprocess.smooth_action",
-        "preprocess.split",
-        "preprocess.merge",
-        "preprocess.standardize",
-        "preprocess.value_edit",
-    }
-)
+PARALLEL_OPERATIONS = frozenset(operation_ids(remote=True, parallel=True))
 DATASET_OUTPUT_OPERATIONS = frozenset(
-    {"curation.materialize", "curation.construction", "import.mcap.convert"}
+    spec.operator_id for spec in list_operators() if spec.remote and spec.output_type == "dataset"
 )
 
 

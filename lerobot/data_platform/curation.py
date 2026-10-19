@@ -12,27 +12,33 @@ from pathlib import Path, PurePosixPath
 
 from lerobot.data_platform.execution import atomic_json
 from lerobot.data_platform.lifecycle import DatasetReplica, DatasetVersion, LifecycleStore
+from lerobot.data_platform.operators.registry import operation_ids
 from lerobot.data_platform.precompute.dataset_io import load_episode_records, load_task_records
 from lerobot.data_platform.precompute.preprocess.common import load_json
 from lerobot.data_platform.task_catalog import TaskConfigSnapshot, content_digest
 
 CURATION_PROTOCOL = 1
-OPERATIONS = frozenset(
-    {
-        "curation.snapshot",
-        "curation.validate_source",
-        "curation.quality",
-        "curation.stage",
-        "curation.labeling",
-        "curation.tagging",
-        "curation.embedding",
-        "curation.project",
-        "curation.compare_summary",
-        "curation.construction",
-        "curation.construction_preview",
-        "curation.materialize",
-    }
-)
+
+
+def supports_artifact_transport(job: dict) -> bool:
+    """The existing authenticated, attempt-scoped bundle transport also serves registered operators."""
+    from lerobot.data_platform.operators import get_operator
+
+    try:
+        spec = get_operator(job["operation"])
+    except ValueError:
+        return False
+    if spec.family == "curation":
+        return True
+    if spec.family == "preprocess" and (job.get("options") or {}).get("version_inputs"):
+        return True
+    snapshot = (job.get("options") or {}).get("operator_snapshot") or {}
+    return spec.family not in {"mcap", "caption", "viewer", "preprocess", "mutation", "local"} and (
+        snapshot.get("operator_id") == spec.operator_id and snapshot.get("version") == spec.version
+    )
+
+
+OPERATIONS = frozenset(operation_ids(family="curation"))
 DATASET_OPERATIONS = {"curation.construction", "curation.materialize"}
 
 

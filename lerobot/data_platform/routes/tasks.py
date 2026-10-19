@@ -240,7 +240,12 @@ def register_task_routes(app, ctx) -> None:
                     release()
 
             launch_background(
-                target=rebuild, name=f"task-mapping-{job['id']}", daemon=True, thread_factory=threading.Thread
+                target=rebuild,
+                name=f"task-mapping-{job['id']}",
+                daemon=True,
+                thread_factory=threading.Thread,
+                continuation={"task_config": mapping.snapshot},
+                on_enqueued=release,
             )
             response["job"] = job
             response["message"] = "Mapping saved; local cache rebuild started"

@@ -646,7 +646,7 @@ class ExecutionSupervisor:
         work = self.root / execution["attempt_id"]
         work.mkdir(mode=0o700)
         job_copy = copy.deepcopy(job)
-        if job["operation"].startswith("curation."):
+        if job["operation"].startswith("curation.") or job["options"].get("input_files"):
             from lerobot.data_platform.curation import artifact_path
 
             inputs = work / "curation-inputs"

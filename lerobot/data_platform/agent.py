@@ -26,6 +26,7 @@ from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.data_platform.cli import get_default_output_dir, run_precompute
 from lerobot.data_platform.job_concurrency import agent_slots
 from lerobot.data_platform.operation_log import append_operation_event
+from lerobot.data_platform.operators.registry import operation_ids
 from lerobot.data_platform.precompute.data_profile import (
     DATA_PROFILE_PROTOCOL,
     dataset_semantics,
@@ -46,20 +47,10 @@ from lerobot.data_platform.precompute.preprocess.dataset_merge import validate_m
 from lerobot.data_platform.task_catalog import TASK_CONFIG_PROTOCOL, TaskConfigSnapshot
 
 _PREPROCESS_OPS = {
-    "convert_action",
-    "convert_v3",
-    "drop_field",
-    "merge",
-    "smooth_action",
-    "split",
-    "standardize",
-    "value_edit",
+    name.removeprefix("preprocess.") for name in operation_ids(family="preprocess", remote=True)
 }
 _SOURCE_MUTATION_OPS = {
-    "trim_episode",
-    "delete_episodes",
-    "repair_v3_video_timestamps",
-    "value_edit",
+    name.removeprefix("mutation.") for name in operation_ids(family="mutation", remote=True)
 }
 _FORBIDDEN_OPTION_KEYS = {
     "in_place",
@@ -718,7 +709,37 @@ class DataPlatformAgent:
         mcap_runtime = runtime_status()
         if mcap_runtime.get("ready"):
             operations.extend(sorted(MCAP_OPERATIONS))
+        from lerobot.data_platform.operators.registry import list_operators, worker_manifest
+
+        operations.extend(
+            spec.operator_id
+            for spec in list_operators()
+            if spec.remote
+            and spec.family not in {"mcap", "curation", "caption", "viewer", "preprocess", "mutation"}
+        )
+        backends = worker_capabilities().get("curation_backends", {})
+        for kind in ("labeling", "tagging", "embedding"):
+            group = backends.get(kind, {})
+            ready = (
+                any(item.get("available") for item in group.get("backends", {}).values())
+                if "backends" in group
+                else group.get("available")
+            )
+            if not ready and f"curation.{kind}" in operations:
+                operations.remove(f"curation.{kind}")
+        manifest = worker_manifest(operations)
+        operations = sorted(set(operations) & set(manifest["operator_versions"]))
+        if self.local_requests:
+            # Local commands and protected request adapters pin local-only descriptors too.
+            manifest["operator_versions"].update(
+                {
+                    spec.operator_id: spec.version
+                    for spec in list_operators()
+                    if spec.effect != "source" or self.allow_source_mutations
+                }
+            )
         return {
+            **manifest,
             **worker_capabilities(),
             "caption_protocol": 1,
             "caption_read_protocol": 1,
@@ -879,31 +900,62 @@ class DataPlatformAgent:
         location = dict(job.get("location") or {})
         source_root = _require_within(Path(location.get("root") or ""), self.allowed_roots, "dataset root")
         operation = str(job.get("operation") or "")
-        if operation.startswith("import.mcap."):
-            from lerobot.data_platform.mcap_contract import OPERATIONS as MCAP_OPERATIONS
-            from lerobot.data_platform.mcap_import import execute_import
+        from lerobot.data_platform.curation_execution import execute_curation_job
+        from lerobot.data_platform.mcap_import import execute_import
+        from lerobot.data_platform.operators import ExecutionContext, get_operator
+        from lerobot.data_platform.operators.registry import execute_operator
+        from lerobot.data_platform.temporal_caption_jobs import execute_caption_job
 
-            if operation not in MCAP_OPERATIONS:
-                raise ValueError("Unsupported MCAP import operation")
-            return execute_import(self, job, source_root)
-        require_dataset_operation(
-            source_root, operation, data_version_override=(job.get("options") or {}).get("data_version")
+        snapshot = (job.get("options") or {}).get("operator_snapshot")
+        if (job.get("options") or {}).get("local_compute"):
+            from lerobot.data_platform.processing.local_executor import execute_local_operator
+
+            get_operator(operation, snapshot.get("version") if snapshot else None)
+            return execute_local_operator(self, job)
+        get_operator(operation, snapshot.get("version") if snapshot else None)
+        if not operation.startswith("import.mcap."):
+            require_dataset_operation(
+                source_root, operation, data_version_override=(job.get("options") or {}).get("data_version")
+            )
+        if snapshot and snapshot.get("source_fingerprint"):
+            from lerobot.data_platform.lifecycle import dataset_snapshot
+
+            if dataset_snapshot(source_root)[0] != snapshot["source_fingerprint"]:
+                raise ValueError("Pinned pipeline dataset version changed")
+        if snapshot:
+            job = {
+                **job,
+                "_operator_version": snapshot["version"],
+                "options": {k: v for k, v in job["options"].items() if k != "operator_snapshot"},
+            }
+        spec = get_operator(operation, job.get("_operator_version"))
+        if spec.family == "preprocess" and job["options"].get("version_inputs"):
+            from lerobot.data_platform.operators.dataset_versions import (
+                publish_preprocess_version,
+                resume_preprocess_result,
+            )
+
+            completed = resume_preprocess_result(self, job)
+            if completed:
+                return publish_preprocess_version(self, job, source_root, completed)
+        if spec.family not in {"mcap", "curation", "caption", "viewer", "preprocess", "mutation"}:
+            from lerobot.data_platform.operators.execution import execute_registered
+
+            return execute_registered(self, job, source_root, location)
+        return execute_operator(
+            operation,
+            ExecutionContext(
+                source_root=source_root,
+                handlers={
+                    "mcap": lambda: execute_import(self, job, source_root),
+                    "curation": lambda: execute_curation_job(self, job, source_root, location),
+                    "caption": lambda: execute_caption_job(self, job, source_root, location),
+                    "viewer": lambda: self._prepare_viewer(job, source_root, location),
+                    "preprocess": lambda: self._run_preprocess(job, source_root, location),
+                    "mutation": lambda: self._run_source_mutation(job, source_root, location),
+                },
+            ),
         )
-        if operation.startswith("curation."):
-            from lerobot.data_platform.curation_execution import execute_curation_job
-
-            return execute_curation_job(self, job, source_root, location)
-        if operation == "caption.annotate":
-            from lerobot.data_platform.temporal_caption_jobs import execute_caption_job
-
-            return execute_caption_job(self, job, source_root, location)
-        if operation == "viewer.prepare":
-            return self._prepare_viewer(job, source_root, location)
-        if operation.startswith("preprocess."):
-            return self._run_preprocess(job, source_root, location)
-        if operation.startswith("mutation."):
-            return self._run_source_mutation(job, source_root, location)
-        raise ValueError(f"unsupported remote operation: {operation}")
 
     def _prepare_viewer(self, job: dict, source_root: Path, location: dict) -> dict:
         options = dict(job.get("options") or {})
@@ -1001,9 +1053,46 @@ class DataPlatformAgent:
         op = str(job["operation"]).removeprefix("preprocess.")
         if op not in _PREPROCESS_OPS:
             raise ValueError(f"unsupported remote preprocess op: {op}")
-        if op == "merge":
-            return self._run_merge(job, source_root)
+        if op in {"merge", "subtract"}:
+            from lerobot.data_platform.operators.dataset_versions import publish_preprocess_version
+
+            computed = (
+                self._run_merge(job, source_root) if op == "merge" else self._run_subtract(job, source_root)
+            )
+            return publish_preprocess_version(self, job, source_root, computed)
         options = dict(job.get("options") or {})
+        version_inputs = options.pop("version_inputs", None)
+        if version_inputs:
+            from lerobot.data_platform.lifecycle import dataset_snapshot
+
+            roots = {str(source_root.resolve()): source_root}
+            roots.update(
+                {
+                    str(Path(item["root"]).resolve()): Path(item["root"])
+                    for item in options.get("_source_locations", [])
+                }
+            )
+            for value in version_inputs:
+                root = roots.get(str(Path(value["version"]["root"]).resolve()))
+                if root is None or dataset_snapshot(root)[0] != value["version"]["fingerprint"]:
+                    raise ValueError("Versioned pipeline input changed")
+            for key in ("target", "parents", "source_batches", "task_config"):
+                options.pop(key, None)
+        if op == "pose_interpolate":
+            from lerobot.data_platform.lifecycle import dataset_snapshot
+            from lerobot.data_platform.task_catalog import content_digest
+
+            review = options.pop("_review", None)
+            if (
+                not isinstance(review, dict)
+                or not review.get("approved_by")
+                or not review.get("evidence_job_ids")
+            ):
+                raise PermissionError("Pose interpolation requires a reviewed pipeline decision")
+            if review.get("repairs_digest") != content_digest(options.get("repairs")) or (
+                review.get("source_fingerprint") != dataset_snapshot(source_root)[0]
+            ):
+                raise ValueError("Reviewed pose inputs changed")
         blocked = sorted(_FORBIDDEN_OPTION_KEYS.intersection(options))
         if blocked:
             raise ValueError(f"remote path/in-place options are not allowed: {blocked}")
@@ -1101,6 +1190,14 @@ class DataPlatformAgent:
                 show_progress=False,
             )
 
+        if options.get("urdf_path"):
+            options["urdf_path"] = _require_within(
+                Path(options["urdf_path"]),
+                [*self.allowed_roots, Path(__file__).resolve().parents[2]],
+                "robot model",
+            )
+        if job.get("_operator_version"):
+            options["operator_version"] = job["_operator_version"]
         result = run_preprocess_op(
             op,
             src_root=source_root,
@@ -1209,10 +1306,89 @@ class DataPlatformAgent:
                     "output_dir": str(output_dir),
                     "uploaded_files": uploaded_files,
                 }
+        from lerobot.data_platform.operators.dataset_versions import publish_preprocess_version
+
+        return publish_preprocess_version(self, job, source_root, payload)
+
+    def _run_subtract(self, job, source_root):
+        options = dict(job["options"])
+        locations = options.get("_source_locations") or []
+        ids = options.get("source_location_ids") or []
+        if (
+            len(locations) < 2
+            or [row["location_id"] for row in locations] != ids
+            or ids[0] != job["location_id"]
+        ):
+            raise ValueError("Subtract requires matching registered inputs")
+        if any(row["node_id"] != self.state.node_id for row in locations):
+            raise ValueError("Subtract inputs must belong to this node")
+        roots = [
+            _require_within(Path(row["root"]), self.allowed_roots, "subtract source") for row in locations
+        ]
+        if roots[0] != source_root or len(set(roots)) != len(roots):
+            raise ValueError("Subtract inputs must be distinct")
+        if options.get("version_inputs"):
+            from lerobot.data_platform.lifecycle import dataset_snapshot
+
+            expected = {
+                str(Path(row["version"]["root"]).resolve()): row["version"]["fingerprint"]
+                for row in options["version_inputs"]
+            }
+            if set(expected) != {str(root) for root in roots} or any(
+                dataset_snapshot(root)[0] != expected[str(root)] for root in roots
+            ):
+                raise ValueError("Versioned Subtract input changed")
+        from lerobot.data_platform.operators import ExecutionContext, execute_operator, get_operator
+        from lerobot.data_platform.operators.schema import validate_parameters
+
+        params = {
+            key: value
+            for key, value in options.items()
+            if key
+            not in {
+                "version_inputs",
+                "parents",
+                "source_batches",
+                "task_config",
+                "target",
+                "source_location_ids",
+                "_source_locations",
+                "out_root",
+            }
+        }
+        params = validate_parameters(get_operator("preprocess.subtract"), params)
+        output = Path(options.get("out_root") or default_preprocess_path(source_root, "subtract"))
+        for source in roots:
+            output = _require_safe_output(output, source, self.writable_roots)
+        result = execute_operator(
+            "preprocess.subtract",
+            ExecutionContext(
+                source_root,
+                output_root=output,
+                source_roots=tuple(roots),
+                progress=lambda payload: self.client.event(
+                    self.state, job["job_id"], str(payload.get("message") or "Subtract"), payload
+                ),
+            ),
+            params,
+        )
+        payload = {"preprocess": _json_value(result)}
+        if not result.dry_run:
+            payload["dataset_location"] = _dataset_payload(
+                result.out_root,
+                node_name=self.name,
+                metadata={
+                    "derived_from_location_id": job["location_id"],
+                    "derived_from_location_ids": ids,
+                    "derived_by_operation": job["operation"],
+                },
+            )
         return payload
 
     def _run_merge(self, job: dict, source_root: Path) -> dict:
         options = dict(job.get("options") or {})
+        for key in ("version_inputs", "target", "parents", "source_batches", "task_config"):
+            options.pop(key, None)
         unexpected = sorted(set(options) - _MERGE_OPTION_KEYS)
         if unexpected:
             raise ValueError(f"unsupported remote merge options: {unexpected}")
@@ -1236,6 +1412,17 @@ class DataPlatformAgent:
         roots = [
             _require_within(Path(item["root"]), self.allowed_roots, "merge source") for item in locations
         ]
+        if job["options"].get("version_inputs"):
+            from lerobot.data_platform.lifecycle import dataset_snapshot
+
+            expected = {
+                str(Path(value["version"]["root"]).resolve()): value["version"]["fingerprint"]
+                for value in job["options"]["version_inputs"]
+            }
+            if set(expected) != {str(root) for root in roots} or any(
+                dataset_snapshot(root)[0] != expected[str(root)] for root in roots
+            ):
+                raise ValueError("Versioned Merge input changed")
         if roots[0] != source_root or len(set(roots)) != len(roots):
             raise ValueError("merge source roots must be distinct and start with the job source")
         validate_merge_sources(

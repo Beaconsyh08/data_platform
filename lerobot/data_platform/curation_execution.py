@@ -29,68 +29,14 @@ from lerobot.data_platform.lifecycle import (
     dataset_snapshot,
     materialize_manifest,
 )
+from lerobot.data_platform.operators.registry import list_operators
 from lerobot.data_platform.precompute.data_profile import require_dataset_operation
 from lerobot.data_platform.task_catalog import TaskConfigSnapshot, content_digest
 
 PARAMETERS = {
-    "snapshot": set(),
-    "validate_source": set(),
-    "stage": {"episodes", "prepare_workers", "fallback_stage_count", "data_version"},
-    "quality": {
-        "episodes",
-        "data_version",
-        "workers",
-        "overwrite",
-        "clear_manual_flags",
-        "checks",
-        "qc_config",
-        "video_mode",
-        "video_workers",
-    },
-    "labeling": {
-        "episodes",
-        "backend",
-        "model_id",
-        "endpoint",
-        "qwen_model",
-        "min_pixels",
-        "max_pixels",
-        "box_threshold",
-        "text_threshold",
-        "save_vis",
-        "workers",
-        "devices",
-        "output_variant",
-        "run_mode",
-        "trial",
-        "trial_per_type",
-        "trial_seed",
-    },
-    "tagging": {
-        "episodes",
-        "selected_tags",
-        "vlm_backend",
-        "vlm_model",
-        "vlm_endpoint",
-        "output_variant",
-        "workers",
-        "overwrite",
-        "trial",
-        "trial_per_type",
-        "trial_seed",
-    },
-    "embedding": {"episodes", "ckpt_path", "layer_hook", "openpi_config", "refit", "workers", "devices"},
-    "project": {"method", "seed", "n_neighbors", "min_dist", "metric"},
-    "compare_summary": set(),
-    "construction_preview": {"uncertainty_threshold", "allow_pick_to_give"},
-    "construction": {
-        "uncertainty_threshold",
-        "per_scenario_counts",
-        "include_positives",
-        "oversample_factor",
-        "allow_pick_to_give",
-    },
-    "materialize": {"workers"},
+    spec.operator_id.split(".")[1]: set(spec.parameter_names)
+    for spec in list_operators()
+    if spec.family == "curation"
 }
 
 
@@ -256,7 +202,7 @@ def _review_inputs(static: Path, snapshot: dict, workspace: dict | None) -> None
 
 def execute_curation_job(agent, job: dict, source: Path, location: dict) -> dict:
     from lerobot.data_platform.agent import _dataset_payload, _json_value, _require_within
-    from lerobot.data_platform.viewer import MetaOnlyDataset
+    from lerobot.data_platform.dataset_metadata import MetaOnlyDataset
 
     options = job["options"]
     operation = job["operation"]

@@ -101,7 +101,7 @@ from flask import (
 from werkzeug.serving import WSGIRequestHandler
 
 from lerobot import available_datasets
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.datasets.utils import IterableNamespace
 from lerobot.common.utils.utils import init_logging
 from lerobot.data_platform.admin_auth import ADMIN_SESSION_COOKIE, AdminAuthStore
@@ -117,6 +117,7 @@ from lerobot.data_platform.data_protection import (
     infer_dataset_stage,
     normalized_path,
 )
+from lerobot.data_platform.dataset_metadata import MetaOnlyDataset
 from lerobot.data_platform.lifecycle import LifecycleStore
 from lerobot.data_platform.local_execution import launch_background
 from lerobot.data_platform.operation_log import (
@@ -145,7 +146,6 @@ from lerobot.data_platform.precompute.data_profile import (
     resolve_processing_profile,
 )
 from lerobot.data_platform.precompute.dataset_io import (
-    V3DatasetMetadata,
     is_v3_dataset,
     is_v3_metadata,
     load_episode_records,
@@ -246,6 +246,7 @@ from lerobot.data_platform.precompute.viewer_manifest import (
     write_viewer_manifest,
 )
 from lerobot.data_platform.precompute.viewer_signals import viewer_csv_labels, viewer_signal_presentation
+from lerobot.data_platform.processing.commands import build_command
 from lerobot.data_platform.routes import (
     RouteContext,
     register_compare_routes,
@@ -261,30 +262,6 @@ from lerobot.data_platform.routes import (
 )
 from lerobot.data_platform.task_catalog import TaskConfigSnapshot
 from lerobot.data_platform.task_text import cached_subtask_names, generate_subtask_text
-
-
-class MetaOnlyDataset:
-    def __init__(
-        self,
-        repo_id: str,
-        root: str | Path | None = None,
-        revision: str | None = None,
-        force_cache_sync: bool = False,
-    ):
-        self.repo_id = repo_id
-        root_path = Path(root) if root is not None else None
-        if root_path is not None and is_v3_dataset(root_path):
-            self.meta = V3DatasetMetadata(repo_id=repo_id, root=root_path)
-        else:
-            self.meta = LeRobotDatasetMetadata(
-                repo_id=repo_id, root=root, revision=revision, force_cache_sync=force_cache_sync
-            )
-        self.root = self.meta.root
-        self.features = self.meta.features
-        self.fps = self.meta.fps
-        self.codebase_version = self.meta.info.get("codebase_version", "unknown")
-        self.total_frames = self.meta.total_frames
-        self.total_episodes = self.meta.total_episodes
 
 
 def _prepare_episode_videos(
@@ -3463,7 +3440,40 @@ def run_server(
                 _audit_job(job, "failed", exc)
 
         launch_background(
-            target=_run_job, name=f"precompute-{job_id}", daemon=True, thread_factory=threading.Thread
+            target=_run_job,
+            name=f"precompute-{job_id}",
+            daemon=True,
+            thread_factory=threading.Thread,
+            command=build_command(
+                "viewer.prepare",
+                run_precompute,
+                root=root_path,
+                repo_id=repo_id,
+                episodes=selected_episodes,
+                image_keys=None,
+                output_dir=output_dir,
+                prepare_videos=_bool_option(options, "prepare_videos", True),
+                prepare_csv=_bool_option(options, "prepare_csv", True),
+                prepare_workers=_parse_positive_int(options.get("prepare_workers"), 8),
+                max_frames=None,
+                downsample=downsample_opt,
+                overwrite=_bool_option(options, "overwrite", False),
+                overwrite_csv=_bool_option(options, "overwrite_csv", False),
+                fix_episode_indices_enabled=_bool_option(options, "fix_episode_indices", False),
+                annotate=_bool_option(options, "annotate", False),
+                write_parquet=_bool_option(options, "write_parquet", False),
+                force_recompute_stage=_bool_option(options, "force_recompute_stage", False),
+                fallback_stage_count=_parse_positive_int(
+                    options.get("fallback_stage_count"), DEFAULT_FALLBACK_STAGE_COUNT
+                ),
+                task_config=_lifecycle_store().tasks.snapshot(repo_id).to_dict(),
+                write_subtask=_bool_option(options, "write_subtask", False),
+                overwrite_parquet=_bool_option(options, "overwrite_parquet", False),
+                overwrite_subtask_text=_bool_option(options, "overwrite_subtask_text", False),
+                visualize_only=_bool_option(options, "visualize_only", False),
+                data_version=data_version,
+                show_progress=False,
+            ),
         )
         return jsonify({"job": _serialize_job(job)})
 
@@ -3664,7 +3674,33 @@ def run_server(
                 _audit_job(job, "failed", exc)
 
         launch_background(
-            target=_run_job, name=f"labeling-{job_id}", daemon=True, thread_factory=threading.Thread
+            target=_run_job,
+            name=f"labeling-{job_id}",
+            daemon=True,
+            thread_factory=threading.Thread,
+            command=build_command(
+                "curation.labeling",
+                run_labeling,
+                root=dataset_obj.root,
+                meta=dataset_obj.meta,
+                episodes=selected_episodes,
+                static_dir=ds_static,
+                backend=backend,
+                model_id=model_id,
+                endpoint=endpoint,
+                qwen_model=qwen_model,
+                qwen_token=qwen_token,
+                min_pixels=min_pixels,
+                max_pixels=max_pixels,
+                box_threshold=box_threshold,
+                text_threshold=text_threshold,
+                save_vis=save_vis,
+                workers=workers,
+                devices=devices,
+                output_variant=output_variant,
+                run_mode=labeling_run_mode,
+                show_progress=False,
+            ),
         )
         return jsonify({"job": _serialize_job(job)})
 
@@ -3679,6 +3715,7 @@ def run_server(
                     limit=200, actor=getattr(g, "control_plane_user", None) or {}
                 )
                 if row["operation"].startswith("local.request.")
+                or row.get("options", {}).get("local_compute")
             ]
             rows = control_plane_store.job_manager.decorate_many(
                 rows[:20], getattr(g, "control_plane_user", None)
@@ -3705,7 +3742,9 @@ def run_server(
 
             try:
                 row = control_plane_store.get_job(job_id)
-                if row["operation"].startswith("local.request."):
+                if row["operation"].startswith("local.request.") or row.get("options", {}).get(
+                    "local_compute"
+                ):
                     return jsonify(
                         {
                             "job": _serialize_job(
@@ -3857,7 +3896,11 @@ def run_server(
                 _audit_job(job, "failed", exc)
 
         launch_background(
-            target=_run_job, name=f"viewer-preload-{job['id']}", daemon=True, thread_factory=threading.Thread
+            compatibility_operator="viewer.preload",
+            target=_run_job,
+            name=f"viewer-preload-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
         )
         return jsonify({"job": _serialize_job(job)})
 
@@ -4502,8 +4545,15 @@ def run_server(
         from lerobot.data_platform.routes.dataset_scans import register_dataset_scan_routes
 
         register_dataset_scan_routes(app, route_context)
+        from lerobot.data_platform.routes.processing import register_processing_routes
+
+        register_processing_routes(app, route_context)
 
     def _complete_local_execution(result):
+        if result.get("local_preprocess"):
+            from lerobot.data_platform.processing.lineage import register_local_preprocess
+
+            register_local_preprocess(_lifecycle_store(), result["local_preprocess"])
         for entry in result.get("local_registrations") or []:
             root = Path(entry["root"])
             if not _is_dataset_root(root):
@@ -7893,6 +7943,13 @@ def run_server(
             name=f"preprocess-delete-episodes-{job_id}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "mutation.delete_episodes",
+                delete_episodes_inplace,
+                dataset_obj,
+                episode_ids,
+                static_folder=ds_static,
+            ),
         )
         return jsonify({"job": _serialize_job(job)})
 

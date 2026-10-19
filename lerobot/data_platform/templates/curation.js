@@ -381,6 +381,13 @@ window.createCurationWorkspace = (root, initialTarget) => {
     const uid = context?.episode_refs?.find(row => row.episode_index === episode())?.episode_uid;
     const decision = reviewFor(episode());
     form.elements.decision.value = decision?.decision || ''; form.elements.reason.value = decision?.reason || '';
+    const recipe = draft()?.repair_recipes.find(item => item.op === 'pose_interpolate' && item.episode_refs.some(ref => ref.episode_uid === uid));
+    if (recipe) {
+      const repairs = recipe.params.repairs.map(({episode_uid, ...value}) => value).filter(value => value.episode_index === episode());
+      form.elements.repair.value = 'pose_interpolate';
+      form.elements.pose_repair.value = JSON.stringify(repairs);
+      if (repairs.length) {form.elements.start_frame.value = repairs[0].start_frame; form.elements.end_frame.value = repairs[0].end_frame;}
+    }
     const fields = draft()?.annotation_patches.find(item => item.episode_ref.episode_uid === uid)?.fields || {};
     form.elements.task.value = fields.task || '';
     (fields.subtask_transitions || []).forEach(item => addPair('transitions',item.time,item.state,'number'));
@@ -406,6 +413,11 @@ window.createCurationWorkspace = (root, initialTarget) => {
       body.fields = fields; body.clear_fields = ['task','tags','first_frame_bbox','subtask_transitions'].filter(key => !(key in fields));
       if (data.get('repair') === 'trim') body.repair = {op:'trim',params:{start_frame:Number(data.get('start_frame')),end_frame:Number(data.get('end_frame'))}};
       if (data.get('repair') === 'value_edit') body.repair = {op:'value_edit',params:{edits:[{field:data.get('signal'),dimension:Number(data.get('dimension')),value:Number(data.get('value'))}]}};
+      if (data.get('repair') === 'pose_interpolate') {
+        const pose = JSON.parse(data.get('pose_repair') || '{}');
+        const intervals = Array.isArray(pose) ? pose : [pose];
+        body.repair = {op:'pose_interpolate',params:{repairs:intervals.map(value => ({...value,episode_index:Number(episode()),start_frame:value.start_frame ?? Number(data.get('start_frame')),end_frame:value.end_frame ?? Number(data.get('end_frame'))}))}};
+      }
       if (data.get('repair') === 'clear') body.repair = null;
       await api(`/api/curation/drafts/${draft().workspace_id}/episodes/${episode()}`,body,'PATCH');
       savedReview = reviewValue(); reviewStatus();

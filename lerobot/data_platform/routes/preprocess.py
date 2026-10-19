@@ -66,6 +66,8 @@ from lerobot.data_platform.precompute.timeseries import (
     DATA_VERSION_DVT1,
     DATA_VERSION_DVT2,
 )
+from lerobot.data_platform.processing.commands import build_command, standardize_command
+from lerobot.data_platform.processing.compatibility import apply_prompt_assignments
 from lerobot.data_platform.routes.context import RouteContext
 
 
@@ -137,72 +139,9 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
         parents = [_current_or_ingested_version(store, str(repo_id)) for repo_id in parent_keys]
         if not parents:
             return store.ingest(result.out_root, result.repo_id, stage="raw")
-        summary = dict(getattr(result, "summary", {}) or {})
-        excluded = {}
-        deleted = summary.get("delete_episodes")
-        if len(parents) == 1 and deleted:
-            excluded[parents[0].version_id] = [int(item) for item in deleted]
-        profile = json.loads(
-            json.dumps(
-                {"job_type": job.get("job_type"), "summary": summary},
-                default=str,
-            )
-        )
-        lineage = []
-        parent_by_root = {str(Path(parent.root).resolve()): parent for parent in parents}
-        for item in list(getattr(result, "episode_lineage", None) or []):
-            source_position = item.get("source_position")
-            parent = None
-            if source_position is not None and 0 <= int(source_position) < len(parents):
-                parent = parents[int(source_position)]
-            if parent is None and item.get("source_root"):
-                parent = parent_by_root.get(str(Path(item["source_root"]).resolve()))
-            if parent is None and len(parents) == 1:
-                parent = parents[0]
-            if parent is None:
-                raise ValueError("preprocess result lineage does not identify its source dataset")
-            lineage.append(
-                {
-                    "source_dataset_version_id": parent.version_id,
-                    "source_episode_index": int(item["source_episode_index"]),
-                    "output_episode_index": int(item["output_episode_index"]),
-                }
-            )
-        if not lineage and len(parents) == 1:
-            deleted_indices = {int(item) for item in (summary.get("delete_episodes") or [])}
-            source_indices = [
-                index for index in sorted(parents[0].uid_by_index()) if index not in deleted_indices
-            ]
-            output_indices = sorted(
-                int(item["episode_index"]) for item in load_episode_records(result.out_root)
-            )
-            if len(source_indices) != len(output_indices):
-                raise ValueError("preprocess executor changed episode cardinality without explicit lineage")
-            lineage = [
-                {
-                    "source_dataset_version_id": parents[0].version_id,
-                    "source_episode_index": source_index,
-                    "output_episode_index": output_index,
-                }
-                for source_index, output_index in zip(source_indices, output_indices, strict=True)
-            ]
-        operation = str(getattr(result, "op", None) or job.get("job_type") or "preprocess")
-        parent_stages = {parent.stage for parent in parents}
-        if len(parent_stages) != 1:
-            raise ValueError(f"cannot derive one dataset from mixed lifecycle stages: {parent_stages}")
-        parent_stage = next(iter(parent_stages))
-        output_stage = "curated" if parent_stage == "curated" else "standard"
-        return store.register_derived(
-            result.out_root,
-            result.repo_id,
-            parent_version_ids=[parent.version_id for parent in parents],
-            operation=operation,
-            profile=profile,
-            stage=output_stage,
-            excluded_episode_indices=excluded,
-            episode_lineage=lineage,
-            verify_parents=False,
-        )
+        from lerobot.data_platform.processing.lineage import register_preprocess_result
+
+        return register_preprocess_result(store, result, parents, job.get("job_type"))
 
     def _published_version_at(root: Path):
         store = _lifecycle_store()
@@ -537,6 +476,14 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-convert-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.convert_action",
+                run_convert_action,
+                dataset_obj.root,
+                out_root=_out_root(options),
+                target_dim=target_dim,
+                dry_run=dry_run,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -678,7 +625,22 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 ctx.fail_job(job, "Preprocess convert_v3 failed", exc)
 
         launch_background(
-            target=_run_job, name=f"preprocess-v3-{job['id']}", daemon=True, thread_factory=threading.Thread
+            target=_run_job,
+            name=f"preprocess-v3-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.convert_v3",
+                run_convert_v3,
+                src_root,
+                out_root=target_root,
+                data_file_size_in_mb=data_file_size_in_mb,
+                video_file_size_in_mb=video_file_size_in_mb,
+                workers=workers,
+                image_video_mode=image_video_mode,
+                overwrite=overwrite,
+                dry_run=dry_run,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -744,6 +706,9 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-v3-timestamps-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "mutation.repair_v3_video_timestamps", repair_v3_video_timestamps, root, dry_run=dry_run
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -784,7 +749,18 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 ctx.fail_job(job, "Preprocess drop_field failed", exc)
 
         launch_background(
-            target=_run_job, name=f"preprocess-drop-{job['id']}", daemon=True, thread_factory=threading.Thread
+            target=_run_job,
+            name=f"preprocess-drop-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.drop_field",
+                run_drop_field,
+                dataset_obj.root,
+                out_root=_out_root(options),
+                field_name=field_name,
+                dry_run=dry_run,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -892,6 +868,16 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-value-edit-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.value_edit",
+                run_value_edits,
+                dataset_obj.root,
+                edits=edits,
+                episode_ids=episode_ids,
+                in_place=in_place,
+                out_root=out_root,
+                dry_run=dry_run,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -947,6 +933,16 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-smooth-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.smooth_action",
+                run_smooth_action,
+                dataset_obj.root,
+                out_root=_out_root(options),
+                window=window,
+                workers=workers,
+                smooth_state=smooth_state,
+                dry_run=dry_run,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -1018,6 +1014,15 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-rewrite-prompts-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.rewrite_prompts",
+                run_rewrite_prompts,
+                dataset_obj.root,
+                pattern=pattern,
+                replacement=replacement,
+                dry_run=dry_run,
+                backup=backup,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -1098,6 +1103,13 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-fix-prompt-prepositions-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.fix_prompt_prepositions",
+                run_fix_prompt_prepositions,
+                dataset_obj.root,
+                dry_run=dry_run,
+                backup=backup,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -1211,6 +1223,13 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-apply-prompt-assignments-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "mutation.apply_prompt_assignments",
+                apply_prompt_assignments,
+                dataset_obj.root,
+                ds_static,
+                pending,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -1278,6 +1297,13 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-lowercase-prompts-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.lowercase_prompts",
+                run_lowercase_prompts,
+                root_path,
+                backup=True,
+                static_dir=output_dir / "static",
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -1373,6 +1399,17 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-quality-flags-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.quality_flags",
+                run_quality_flag_detection,
+                root_path,
+                output_dir / "static",
+                episodes=episodes,
+                data_version=data_version,
+                workers=workers,
+                overwrite=overwrite,
+                clear_manual_flags=clear_manual_flags,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -1449,6 +1486,13 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-clear-flags-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.clear_flags",
+                clear_all_flags,
+                dataset_root,
+                ds_static,
+                repo_id=ctx.repo_id_from_key(dataset_key),
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -1647,6 +1691,15 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-flag-fix-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.flag_fixes",
+                run_flag_fix,
+                Path(dataset_obj.root),
+                ds_static,
+                fix_kind,
+                episodes=episodes,
+                data_version=data_version,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -1867,6 +1920,15 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-standardize-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=standardize_command(
+                root_path,
+                out_root,
+                standardize_data_version,
+                prepare_workers,
+                overwrite_output,
+                delete_episode_ids,
+                dry_run,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -1909,6 +1971,15 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
             name=f"preprocess-split-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.split",
+                run_split,
+                dataset_obj.root,
+                out_root=_out_root(options),
+                episode_range=options.get("episode_range"),
+                task_filter=options.get("task_filter"),
+                dry_run=dry_run,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -2056,11 +2127,27 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess merge failed")
                 ctx.fail_job(job, "Preprocess merge failed", exc)
 
+        entries = [ctx.ensure_dataset_loaded(key) for key in keys]
         launch_background(
             target=_run_job,
             name=f"preprocess-merge-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.merge",
+                run_merge,
+                [dataset_obj.root for (dataset_obj, _) in entries],
+                out_root=out_root,
+                dry_run=dry_run,
+                src_static_dirs=[ds_static for (_dataset_obj, ds_static) in entries],
+                out_static_dir=get_default_output_dir(out_root) / "static" if out_root is not None else None,
+                workers=workers,
+                dimension_policy=dimension_policy,
+                dimension_names=dimension_names,
+                dimension_indices=dimension_indices,
+                padding_value=padding_value,
+                exclude_episodes=[delete_by_key.get(key) for key in keys],
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -2148,10 +2235,23 @@ def register_preprocess_routes(app, ctx: RouteContext) -> None:
                 logging.exception("Preprocess subtract failed")
                 ctx.fail_job(job, "Preprocess subtract failed", exc)
 
+        base_dataset, base_static = ctx.ensure_dataset_loaded(base_key)
+        subtract_entries = [ctx.ensure_dataset_loaded(key) for key in keys]
         launch_background(
             target=_run_job,
             name=f"preprocess-subtract-{job['id']}",
             daemon=True,
             thread_factory=threading.Thread,
+            command=build_command(
+                "preprocess.subtract",
+                run_subtract,
+                base_dataset.root,
+                [dataset_obj.root for (dataset_obj, _ds_static) in subtract_entries],
+                out_root=out_root,
+                dry_run=dry_run,
+                src_static_dir=base_static,
+                out_static_dir=get_default_output_dir(out_root) / "static" if out_root is not None else None,
+                workers=workers,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})

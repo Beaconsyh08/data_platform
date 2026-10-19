@@ -197,7 +197,11 @@ def register_lifecycle_routes(app, ctx) -> None:
                 ctx.fail_job(job, "Lifecycle ingest failed", exc)
 
         launch_background(
-            target=run, name=f"lifecycle-ingest-{job['id']}", daemon=True, thread_factory=threading.Thread
+            compatibility_operator="lifecycle.ingest",
+            target=run,
+            name=f"lifecycle-ingest-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -503,7 +507,11 @@ def register_lifecycle_routes(app, ctx) -> None:
                 ctx.fail_job(job, "Lifecycle preprocessing failed", exc)
 
         launch_background(
-            target=run, name=f"lifecycle-preprocess-{job['id']}", daemon=True, thread_factory=threading.Thread
+            compatibility_operator="lifecycle.preprocess",
+            target=run,
+            name=f"lifecycle-preprocess-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -786,6 +794,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                 ctx.fail_job(job, "Lifecycle materialization failed", exc)
 
         launch_background(
+            compatibility_operator="lifecycle.materialize",
             target=run,
             name=f"lifecycle-materialize-{job['id']}",
             daemon=True,

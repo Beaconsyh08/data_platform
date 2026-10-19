@@ -30,22 +30,16 @@ from lerobot.data_platform.precompute.data_profile import (
 if TYPE_CHECKING:
     from lerobot.data_platform.control_plane import ControlPlaneStore
 
+from lerobot.data_platform.operators import list_operators
+from lerobot.data_platform.operators.registry import operation_ids
+
 CONTROL_PLANE_SESSION_COOKIE = "data_platform_session"
+
 REMOTE_PREPROCESS_OPS = {
-    "convert_action",
-    "convert_v3",
-    "drop_field",
-    "merge",
-    "smooth_action",
-    "split",
-    "standardize",
-    "value_edit",
+    spec.operator_id.removeprefix("preprocess.") for spec in list_operators() if spec.legacy_remote
 }
 REMOTE_SOURCE_MUTATION_OPS = {
-    "trim_episode",
-    "delete_episodes",
-    "repair_v3_video_timestamps",
-    "value_edit",
+    key.removeprefix("mutation.") for key in operation_ids(family="mutation", remote=True)
 }
 _REMOTE_MUTATION_OPTION_KEYS = {
     "trim_episode": {"episode_id", "start_frame", "end_frame", "reason"},
@@ -436,6 +430,7 @@ def register_control_plane_routes(
         app, store, remote_cache_root.parent, getattr(task_catalog_store, "repository", None)
     )
     register_management_routes(app, store)
+    app.config["DATA_PLATFORM_OPERATOR_STAGING"] = str(remote_cache_root / ".jobs")
     from lerobot.data_platform.routes.dataset_results import register_dataset_result_routes
 
     register_dataset_result_routes(app, store, remote_cache_root)
@@ -838,22 +833,43 @@ def register_control_plane_routes(
                 if complete_caption is None:
                     raise ValueError("Caption completion handler is unavailable")
                 result = complete_caption(current, result)
-            if status == "done" and current["operation"].startswith("curation."):
+            if (
+                status == "done"
+                and current["operation"].startswith("curation.")
+                and not current.get("options", {}).get("local_compute")
+            ):
                 complete_curation = app.extensions.get("data_platform_complete_curation")
                 if complete_curation is None:
                     raise ValueError("Curation completion handler is unavailable")
                 result = complete_curation(current, result)
+            if (
+                status == "done"
+                and current.get("options", {}).get("operator_snapshot")
+                and not current.get("options", {}).get("local_compute")
+            ):
+                from lerobot.data_platform.operators import get_operator
+
+                if current["options"].get("version_inputs") or get_operator(
+                    current["operation"]
+                ).family not in {"mcap", "curation", "caption", "viewer", "preprocess", "mutation", "local"}:
+                    result = app.extensions["data_platform_complete_operator"](current, result)
             derived = result.get("dataset_location")
             if status == "done" and isinstance(derived, dict):
                 synced_location = store.sync_locations(node["node_id"], [derived])[0]
                 result["synced_location"] = synced_location
                 result["output_location_id"] = synced_location["location_id"]
+                if current.get("options", {}).get("operator_snapshot"):
+                    store.inherit_import_access(current["location_id"], synced_location["location_id"])
                 if current["operation"] == "import.mcap.convert":
                     store.inherit_import_access(current["location_id"], synced_location["location_id"])
-                if current["operation"] in _DERIVED_VIEWER_OPERATIONS and (
-                    current["operation"] != "preprocess.split"
-                    or result.get("viewer_cache")
-                    or profile_from_info(derived.get("metadata") or {}).robot_profile == "umi"
+                if (
+                    not current.get("options", {}).get("local_compute")
+                    and current["operation"] in _DERIVED_VIEWER_OPERATIONS
+                    and (
+                        current["operation"] != "preprocess.split"
+                        or result.get("viewer_cache")
+                        or profile_from_info(derived.get("metadata") or {}).robot_profile == "umi"
+                    )
                 ):
                     cache_output_dir, viewer_url = _promote_derived_cache(job_id, synced_location)
                     refreshed_location = store.mark_viewer_ready(
@@ -878,7 +894,10 @@ def register_control_plane_routes(
                     )
                     os.replace(cache_output_dir, stale_cache)
                     shutil.rmtree(stale_cache, ignore_errors=True)
-            if status == "done" and current["operation"].startswith("local.request."):
+            if status == "done" and (
+                current["operation"].startswith("local.request.")
+                or current.get("options", {}).get("local_compute")
+            ):
                 if not node.get("name", "").startswith("local-"):
                     raise PermissionError("Local completion requires the local executor")
                 complete_local = app.extensions.get("data_platform_complete_local")

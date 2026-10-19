@@ -141,7 +141,7 @@ const assert = require('node:assert/strict');
  const calls = [];
  app.request = async (url, options = {}) => {
    calls.push({url, ...options});
-   if (url === '/api/control/locations?format=all') {
+   if (url === '/api/control/locations?format=all&summary=1') {
      return {locations: [
        {location_id:'a',root:'/data/Alpha',node_name:'node-one',dataset_format:'lerobot'},
        {location_id:'b',root:'/data/Beta',node_name:'node-two',dataset_format:'mcap'}
@@ -153,7 +153,7 @@ const assert = require('node:assert/strict');
  app.load = async () => { refreshed = true; };
  await app.editDataScopes({user_id: 'manager', username: 'alice'});
  assert.deepEqual(app.scopeLocationIds, ['existing']);
- assert.equal(calls[1].url, '/api/control/locations?format=all');
+ assert.equal(calls[1].url, '/api/control/locations?format=all&summary=1');
  assert.deepEqual(app.scopeLocations.map(x => x.location_id), ['a','b']);
  app.scopeLocationIds = ['new'];
  await app.saveDataScopes();

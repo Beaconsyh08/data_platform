@@ -85,7 +85,11 @@ def register_compare_routes(app, ctx: RouteContext) -> None:
                 ctx.fail_job(job, "Compare failed", exc)
 
         launch_background(
-            target=_run_job, name=f"compare-{job_id}", daemon=True, thread_factory=threading.Thread
+            compatibility_operator="compare.build",
+            target=_run_job,
+            name=f"compare-{job_id}",
+            daemon=True,
+            thread_factory=threading.Thread,
         )
         return jsonify({"job": ctx.serialize_job(job)})
 

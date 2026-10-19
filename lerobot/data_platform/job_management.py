@@ -13,7 +13,6 @@ from pathlib import PurePosixPath
 
 from sqlalchemy import func, select, update
 
-from lerobot.data_platform.curation import OPERATIONS as CURATION_OPERATIONS
 from lerobot.data_platform.job_concurrency import PARALLEL_OPERATIONS, footprint
 from lerobot.data_platform.job_concurrency import conflicts as resource_conflicts
 from lerobot.data_platform.management_storage import (
@@ -24,26 +23,13 @@ from lerobot.data_platform.management_storage import (
     enqueue_event,
 )
 from lerobot.data_platform.operation_log import build_operation_event, sanitize_for_log
+from lerobot.data_platform.operators.registry import operation_ids
 
 JOB_PROTOCOL = 2
 ACTIVE_STATES = {"running", "cancel_requested", "interrupted"}
 MCAP_RECOVERY_LIMIT = 3
 PROCESS_LOSS_ERROR = "Compute process exited without a result"
-SAFE_OPERATIONS = {
-    "import.mcap.inspect",
-    "import.mcap.convert",
-    *CURATION_OPERATIONS,
-    "caption.annotate",
-    "viewer.prepare",
-    "preprocess.convert_action",
-    "preprocess.convert_v3",
-    "preprocess.drop_field",
-    "preprocess.smooth_action",
-    "preprocess.split",
-    "preprocess.merge",
-    "preprocess.standardize",
-    "preprocess.value_edit",
-}
+SAFE_OPERATIONS = operation_ids(remote=True, cancellable=True)
 
 
 class JobConflictError(ValueError):
@@ -208,6 +194,19 @@ class JobManager:
                 )
             )
             for job, control in candidates:
+                if (job.options or {}).get("local_compute") and not (node.capabilities or {}).get(
+                    "local_requests"
+                ):
+                    continue
+                snapshot = (job.options or {}).get("operator_snapshot")
+                if snapshot:
+                    caps = node.capabilities or {}
+                    key = snapshot.get("operator_id", job.operation)
+                    installed = caps.get("operator_version_history", {}).get(
+                        key, [caps.get("operator_versions", {}).get(key)]
+                    )
+                    if snapshot.get("version") not in installed:
+                        continue
                 from lerobot.data_platform.control_plane import SCOPED_SOURCE_OPERATIONS, ControlPlaneUser
 
                 submitter = session.get(ControlPlaneUser, job.requested_by) if job.requested_by else None

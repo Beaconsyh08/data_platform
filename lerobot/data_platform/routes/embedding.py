@@ -22,6 +22,7 @@ from lerobot.data_platform.precompute.embedding import (
     reducer_capabilities,
     run_embedding,
 )
+from lerobot.data_platform.processing.commands import build_command
 from lerobot.data_platform.routes.context import RouteContext
 
 
@@ -113,7 +114,24 @@ def register_embedding_routes(app, ctx: RouteContext) -> None:
                 ctx.fail_job(job, "Embedding failed", exc)
 
         launch_background(
-            target=_run_job, name=f"embedding-{job_id}", daemon=True, thread_factory=threading.Thread
+            target=_run_job,
+            name=f"embedding-{job_id}",
+            daemon=True,
+            thread_factory=threading.Thread,
+            command=build_command(
+                "curation.embedding",
+                run_embedding,
+                root=dataset_obj.root,
+                meta=dataset_obj.meta,
+                episodes=selected_episodes,
+                static_dir=ds_static,
+                ckpt_path=Path(ckpt_value).expanduser(),
+                layer_hook=layer_hook,
+                openpi_config=openpi_config,
+                workers=workers,
+                devices=devices,
+                refit=refit,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 

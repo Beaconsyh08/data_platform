@@ -636,5 +636,5 @@ def test_convert_v3_homepage_wiring():
     assert 'x-text="selectedJob()?.output_root"' in template
     assert "Dataset is already v3.0; no conversion is needed." in template
     assert "selectedDatasetIsV3()" in template
-    assert "v3.0 viewer support uses a read-only adapter in this environment." in template
+    assert "Prepare Viewer data once to open v3.0 episodes. Source data stays unchanged." in template
     assert "Prepare v3.0 viewer cache first" in template

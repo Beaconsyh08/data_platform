@@ -20,6 +20,12 @@ class EefQualityConfig:
     local_ratio: float = 8.0
     window: int = 31
     quaternion_tolerance: float = 0.001
+    strategy: str = "dataset_quantile"
+    position_unit: str | None = None
+    linear_speed: float = 0.5
+    angular_speed: float = 1.2
+    spike_ratio: float = 3.0
+    angular_spike_ratio: float = 5.0
 
     @classmethod
     def parse(cls, value: dict) -> EefQualityConfig:
@@ -30,6 +36,12 @@ class EefQualityConfig:
             "local_ratio",
             "window",
             "quaternion_tolerance",
+            "strategy",
+            "position_unit",
+            "linear_speed",
+            "angular_speed",
+            "spike_ratio",
+            "angular_spike_ratio",
         }:
             raise ValueError("Unknown end-effector configuration")
         quantile = finite_number(value.get("quantile", 0.99), "eef.quantile", minimum=0.5)
@@ -40,7 +52,20 @@ class EefQualityConfig:
         window = value.get("window", 31)
         if quantile >= 1 or type(window) is not int or not 3 <= window <= 301 or window % 2 != 1:
             raise ValueError("EEF requires quantile < 1 and an odd window between 3 and 301")
-        return cls(quantile, ratio, window, tolerance)
+        strategy = value.get("strategy", "dataset_quantile")
+        unit = value.get("position_unit")
+        if strategy not in {"dataset_quantile", "laundry_spike"} or unit not in {None, "m", "cm", "mm"}:
+            raise ValueError("Invalid EEF strategy or position unit")
+        speeds = [
+            finite_number(value.get(key, default), f"eef.{key}", minimum=1e-12)
+            for key, default in (
+                ("linear_speed", 0.5),
+                ("angular_speed", 1.2),
+                ("spike_ratio", 3),
+                ("angular_spike_ratio", 5),
+            )
+        ]
+        return cls(quantile, ratio, window, tolerance, strategy, unit, *speeds)
 
 
 def pose_features(features: dict) -> dict:
@@ -240,6 +265,59 @@ def scan_eef_quality(root, info, meta, episode_rows, config, progress=None, sign
                         )
                     )
                 for metric, values in (("position", steps), ("rotation", angles)):
+                    if config.strategy == "laundry_spike":
+                        scale_unit = (
+                            config.position_unit
+                            or features[key].get("position_unit")
+                            or features[key].get("unit")
+                        )
+                        if scale_unit not in {"m", "cm", "mm"}:
+                            raise ValueError("Laundry EEF detection requires explicit position units")
+                        scale = (
+                            {"m": 1, "cm": 0.01, "mm": 0.001}[scale_unit]
+                            if metric == "position"
+                            else np.pi / 180
+                        )
+                        speed = np.divide(values * scale, dt, out=np.full_like(values, np.nan), where=dt > 0)
+                        threshold = config.linear_speed if metric == "position" else config.angular_speed
+                        ratio = config.spike_ratio if metric == "position" else config.angular_spike_ratio
+                        local = np.full(len(speed), np.nan)
+                        half = config.window // 2
+                        for position in range(len(speed)):
+                            neighbors = np.r_[
+                                speed[max(0, position - half) : position],
+                                speed[position + 1 : position + half + 1],
+                            ]
+                            neighbors = neighbors[np.isfinite(neighbors)]
+                            if len(neighbors):
+                                local[position] = np.median(neighbors)
+                        flags = np.flatnonzero(
+                            np.isfinite(speed)
+                            & (speed > threshold)
+                            & (speed > ratio * np.maximum(local, 1e-3))
+                        )
+                        if len(flags):
+                            issues.append(
+                                signal_issue(
+                                    ep,
+                                    "eef",
+                                    f"eef_{metric}_jump",
+                                    flags + 1,
+                                    timestamps,
+                                    field=key,
+                                    unit="m/s" if metric == "position" else "rad/s",
+                                    metrics={
+                                        "algorithm": "laundry_spike",
+                                        "algorithm_version": "1.0.0",
+                                        "source_commit": "6ba72ff6ca4ccb143eeeb15bcafd3047aac14845",
+                                        "threshold": threshold,
+                                        "spike_ratio": ratio,
+                                        "peak_speed": float(speed[flags].max()),
+                                        "position_unit": scale_unit,
+                                    },
+                                )
+                            )
+                        continue
                     threshold = thresholds[key, metric]
                     if threshold is None or not len(values):
                         continue

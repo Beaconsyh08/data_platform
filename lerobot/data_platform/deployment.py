@@ -75,7 +75,14 @@ class Deployment:
 
     @property
     def units(self) -> list[str]:
-        return [f"data-platform-{kind}@{self.environment}.service" for kind in ("web", "local-worker")]
+        units = [f"data-platform-{kind}@{self.environment}.service" for kind in ("web", "local-worker")]
+        if (self.root / "current/lerobot/data_platform/processing/coordinator.py").is_file():
+            units.append(self.coordinator_unit_name)
+        return units
+
+    @property
+    def coordinator_unit_name(self) -> str:
+        return f"data-platform-pipeline-coordinator@{self.environment}.service"
 
     @property
     def maintenance_file(self) -> Path:
@@ -187,3 +194,26 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def coordinator_unit(deployment: Deployment) -> str:
+    """A separate lightweight coordinator shares the control database and release identity."""
+    unit = server_unit(deployment, worker=False)
+    root = deployment.root / "current"
+    original = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+    return (
+        unit.replace(
+            original,
+            f"Environment=DATA_PLATFORM_COORDINATOR_CURRENT={root}\n"
+            f"ExecStart={root}/.venv/bin/python -m lerobot.data_platform.processing.coordinator",
+        )
+        .replace(
+            "Wants=network-online.target",
+            "Wants=network-online.target\n"
+            f"ConditionPathExists={root}/lerobot/data_platform/processing/coordinator.py",
+        )
+        .replace(
+            f"Description=Data Platform {deployment.environment} web",
+            f"Description=Data Platform {deployment.environment} pipeline coordinator",
+        )
+    )

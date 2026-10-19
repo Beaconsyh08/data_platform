@@ -27,6 +27,7 @@ from lerobot.data_platform.precompute.construction.review import (
 from lerobot.data_platform.precompute.labeling.review import (
     load_episode_record as load_labeling_episode_record,
 )
+from lerobot.data_platform.processing.commands import build_command
 from lerobot.data_platform.routes.context import RouteContext
 
 
@@ -163,7 +164,19 @@ def register_construction_routes(app, ctx: RouteContext) -> None:
                 ctx.fail_job(job, "Data construction failed", exc)
 
         launch_background(
-            target=_run_job, name=f"construction-{job_id}", daemon=True, thread_factory=threading.Thread
+            target=_run_job,
+            name=f"construction-{job_id}",
+            daemon=True,
+            thread_factory=threading.Thread,
+            command=build_command(
+                "curation.construction",
+                run_construction,
+                src_root=dataset_obj.root,
+                meta=dataset_obj.meta,
+                labeling_dir=ds_static / "labeling",
+                out_root=out_root,
+                config=config,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 

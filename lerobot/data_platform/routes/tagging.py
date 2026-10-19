@@ -45,6 +45,7 @@ from lerobot.data_platform.precompute.tagging import (
     source_path as tagging_source_path,
 )
 from lerobot.data_platform.precompute.tagging.geometric_backend import trajectory_xy_details_from_table
+from lerobot.data_platform.processing.commands import build_command
 from lerobot.data_platform.routes.context import RouteContext
 
 
@@ -265,7 +266,26 @@ def register_tagging_routes(app, ctx: RouteContext) -> None:
                 ctx.fail_job(job, "Auto-tagging failed", exc)
 
         launch_background(
-            target=_run_job, name=f"tagging-{job_id}", daemon=True, thread_factory=threading.Thread
+            target=_run_job,
+            name=f"tagging-{job_id}",
+            daemon=True,
+            thread_factory=threading.Thread,
+            command=build_command(
+                "curation.tagging",
+                run_tagging,
+                root=dataset_obj.root,
+                meta=dataset_obj.meta,
+                episodes=selected_episodes,
+                static_dir=ds_static,
+                selected_tags=selected_tags,
+                vlm_backend=vlm_backend,
+                vlm_model=vlm_model,
+                vlm_endpoint=vlm_endpoint,
+                vlm_token=vlm_token,
+                output_variant=output_variant,
+                workers=workers,
+                overwrite=overwrite,
+            ),
         )
         return jsonify({"job": ctx.serialize_job(job)})
 

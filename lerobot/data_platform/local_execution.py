@@ -16,7 +16,17 @@ from flask import current_app, g, has_app_context, request
 from lerobot.data_platform.execution import atomic_json
 
 
-def launch_background(*, target, name, daemon=True, thread_factory=None):
+def launch_background(
+    *,
+    target,
+    name,
+    daemon=True,
+    thread_factory=None,
+    command=None,
+    continuation=None,
+    on_enqueued=None,
+    compatibility_operator=None,
+):
     """Keep single-user execution compatible; central deployments enqueue validated requests."""
     import threading
 
@@ -33,19 +43,33 @@ def launch_background(*, target, name, daemon=True, thread_factory=None):
     if job is None:
         raise RuntimeError("Background work must have a registered job before submission")
     try:
-        continuation = None
-        if job.get("job_type") == "task_mapping_cache":
-            captured = dict(
-                zip(
-                    target.__code__.co_freevars,
-                    (cell.cell_contents for cell in target.__closure__ or ()),
-                    strict=True,
-                )
+        if command is not None:
+            from lerobot.data_platform.operators import get_operator
+
+            spec = get_operator(command["operation"])
+            if spec.effect == "source":
+                # Preserve dedicated source guards, backups and cache refresh semantics.
+                enqueue_local(app, ctx, job, execution_ref=command["options"]["operator_snapshot"])
+            else:
+                command["options"]["local_job"] = {
+                    key: value for key, value in job.items() if not key.startswith("_")
+                }
+                enqueue_local(app, ctx, job, command=command)
+        else:
+            enqueue_local(
+                app,
+                ctx,
+                job,
+                continuation=continuation,
+                execution_ref={
+                    "operator_id": compatibility_operator or "task_mapping_cache",
+                    "version": "1.0.0",
+                }
+                if continuation or compatibility_operator
+                else None,
             )
-            continuation = {"task_config": captured["mapping"].snapshot}
-        enqueue_local(app, ctx, job, continuation=continuation)
-        if continuation:
-            captured["release"]()
+        if on_enqueued is not None:
+            on_enqueued()
     except Exception:
         with ctx.jobs_lock:
             ctx.jobs_registry.pop(job["id"], None)
@@ -53,7 +77,9 @@ def launch_background(*, target, name, daemon=True, thread_factory=None):
     return None
 
 
-def enqueue_local(app, ctx, job, *, continuation=None, command=None, idempotency_key=None):
+def enqueue_local(
+    app, ctx, job, *, continuation=None, command=None, idempotency_key=None, execution_ref=None
+):
     from lerobot.data_platform.environment import EnvironmentIdentity, verify_directory
 
     store = ctx.control_plane_store
@@ -107,6 +133,40 @@ def enqueue_local(app, ctx, job, *, continuation=None, command=None, idempotency
                 }
             )
         entry = next((entry for entry in entries if entry["repo_id"] == job.get("dataset_key")), None)
+        computation = ((command or {}).get("options") or {}).get("local_compute") or {}
+        parameters = computation.get("parameters", {})
+        primary = next(
+            (
+                parameters[key]
+                for key in ("root", "src_root", "base_root", "dataset_root")
+                if parameters.get(key)
+            ),
+            None,
+        )
+        source_roots = list(parameters.get("src_roots") or [])
+        source_roots.extend(parameters.get("subtract_roots") or [])
+        primary = primary or (source_roots[0] if source_roots else None)
+        if primary:
+            entry = next(
+                (item for item in entries if Path(item["root"]).resolve() == Path(primary).resolve()), None
+            )
+            if entry is None:
+                raise PermissionError("Local computations require registered source datasets")
+        selected = [entry] if entry else []
+        for repo_id in job.get("related_dataset_keys") or []:
+            related = next((item for item in entries if item["repo_id"] == str(repo_id)), None)
+            if related and related not in selected:
+                selected.append(related)
+        if entry is None and selected:
+            entry = selected[0]
+        for path in source_roots:
+            candidate = next(
+                (item for item in entries if Path(item["root"]).resolve() == Path(path).resolve()), None
+            )
+            if candidate is None:
+                raise PermissionError("Every computation input must be a registered dataset")
+            if candidate not in selected:
+                selected.append(candidate)
         body = copy.deepcopy(request.get_json(silent=True) or {})
         if not isinstance(body, dict):
             raise ValueError("Background requests must be JSON objects")
@@ -130,8 +190,6 @@ def enqueue_local(app, ctx, job, *, continuation=None, command=None, idempotency
             return value
 
         body = extract(body)
-        if secrets:
-            atomic_json(root / "request-secrets" / f"{job['id']}.json", secrets)
         source = entry["root"] if entry else str(Path(body.get("root") or root).expanduser().resolve())
         output_dir = entry["output_dir"] if entry else str(root / "local-cache")
         previous = (
@@ -157,9 +215,21 @@ def enqueue_local(app, ctx, job, *, continuation=None, command=None, idempotency
             },
         )
         store.configure_local_execution_roots(state["node_id"], allowed, sorted(writable))
-        location = store.sync_locations(
+        synchronized = store.sync_locations(
             state["node_id"],
             [
+                {
+                    "dataset_key": item["repo_id"],
+                    "root": item["root"],
+                    "output_dir": item["output_dir"],
+                    "metadata": {
+                        **json.loads((Path(item["root"]) / "meta/info.json").read_text()),
+                        "local_execution": True,
+                    },
+                }
+                for item in selected
+            ]
+            or [
                 {
                     "dataset_key": job.get("dataset_key") or "local/console",
                     "root": source,
@@ -167,7 +237,8 @@ def enqueue_local(app, ctx, job, *, continuation=None, command=None, idempotency
                     "metadata": {"local_execution": True},
                 }
             ],
-        )[0]
+        )
+        location = next((item for item in synchronized if item["root"] == source), synchronized[0])
         options = {
             "request": {"path": request.path, "method": request.method, "body": body},
             "application": {
@@ -180,12 +251,19 @@ def enqueue_local(app, ctx, job, *, continuation=None, command=None, idempotency
             },
             "continuation": continuation,
         }
+        if execution_ref is not None:
+            options["operator_snapshot"] = execution_ref
         if command is not None:
             from lerobot.data_platform.curation_execution import worker_capabilities
 
             capabilities = {**agent_capabilities_for_local(), **worker_capabilities()}
             store.heartbeat(state["node_id"], capabilities=capabilities)
-            options = command["options"]
+            options = extract(command["options"])
+        if len(synchronized) > 1:
+            options["source_location_ids"] = [item["location_id"] for item in synchronized]
+            options["_source_locations"] = synchronized
+        if secrets:
+            atomic_json(root / "request-secrets" / f"{job['id']}.json", secrets)
         persisted = store.create_job(
             location_id=location["location_id"],
             requested_by=user["user_id"],
@@ -273,62 +351,83 @@ def execute_local_request(config):
         return value
 
     saved_request["body"] = restore(saved_request["body"])
-    if options.get("continuation"):
-        from lerobot.data_platform.cli import run_precompute
 
-        snapshot = options["continuation"]["task_config"]
-        source = next(
-            row for row in options["registry"] if row["repo_id"] == options["local_job"]["dataset_key"]
-        )
-        lifecycle = ctx.lifecycle_store()
-        current = lifecycle.tasks.snapshot(source["repo_id"]).to_dict()
-        if current["digest"] != snapshot["digest"]:
-            raise ValueError("Task mapping changed while queued; rebuild the latest mapping")
-        lease_id = "task-mapping-cache:" + source["repo_id"]
-        owner = job["execution"]["attempt_id"]
-        if not lifecycle.repository.claim_job(lease_id, "task_mapping_cache", owner=owner, lease_seconds=300):
-            raise RuntimeError("Task cache is busy")
+    def execute():
+        if options.get("continuation"):
+            from lerobot.data_platform.cli import run_precompute
 
-        def progress(payload):
-            if not lifecycle.repository.heartbeat_job(lease_id, owner=owner, lease_seconds=300):
-                raise RuntimeError("Task cache lease lost")
-
-        try:
-            run_precompute(
-                root=Path(source["root"]),
-                repo_id=source["repo_id"],
-                output_dir=Path(source["output_dir"]),
-                prepare_videos=False,
-                prepare_csv=True,
-                visualize_only=True,
-                task_config=snapshot,
-                show_progress=False,
-                progress_callback=progress,
+            snapshot = options["continuation"]["task_config"]
+            source = next(
+                row for row in options["registry"] if row["repo_id"] == options["local_job"]["dataset_key"]
             )
-        finally:
-            lifecycle.repository.release_job(lease_id, owner=owner)
-        return {"local_job": {**options["local_job"], "status": "done"}, "local_registrations": [source]}
-    response = app.test_client().open(
-        saved_request["path"], method=saved_request["method"], json=saved_request["body"]
+            lifecycle = ctx.lifecycle_store()
+            current = lifecycle.tasks.snapshot(source["repo_id"]).to_dict()
+            if current["digest"] != snapshot["digest"]:
+                raise ValueError("Task mapping changed while queued; rebuild the latest mapping")
+            lease_id = "task-mapping-cache:" + source["repo_id"]
+            owner = job["execution"]["attempt_id"]
+            if not lifecycle.repository.claim_job(
+                lease_id, "task_mapping_cache", owner=owner, lease_seconds=300
+            ):
+                raise RuntimeError("Task cache is busy")
+
+            def progress(payload):
+                if not lifecycle.repository.heartbeat_job(lease_id, owner=owner, lease_seconds=300):
+                    raise RuntimeError("Task cache lease lost")
+
+            try:
+                run_precompute(
+                    root=Path(source["root"]),
+                    repo_id=source["repo_id"],
+                    output_dir=Path(source["output_dir"]),
+                    prepare_videos=False,
+                    prepare_csv=True,
+                    visualize_only=True,
+                    task_config=snapshot,
+                    show_progress=False,
+                    progress_callback=progress,
+                )
+            finally:
+                lifecycle.repository.release_job(lease_id, owner=owner)
+            return {"local_job": {**options["local_job"], "status": "done"}, "local_registrations": [source]}
+        response = app.test_client().open(
+            saved_request["path"], method=saved_request["method"], json=saved_request["body"]
+        )
+        payload = response.get_json(silent=True) or {}
+        if response.status_code >= 400:
+            raise RuntimeError(payload.get("error") or "Local request execution failed")
+        local_job = payload.get("job") or {}
+        local_job = dict(ctx.jobs_registry.get(local_job.get("id"), local_job))
+        if local_job.get("status") == "error":
+            raise RuntimeError(local_job.get("error") or "Local operation failed")
+        if local_job.get("status") != "done":
+            raise RuntimeError("Local handler did not confirm completion")
+        registrations = [
+            {
+                "repo_id": ctx.repo_id_from_key(key),
+                "root": str(entry["root"]),
+                "output_dir": str(entry["output_dir"]),
+            }
+            for key, entry in ctx.datasets_index.items()
+        ]
+        return {"local_job": local_job, "local_registrations": registrations}
+
+    reference = options.get("operator_snapshot")
+    if not reference:
+        return execute()  # Requests accepted by earlier releases retain their original adapter.
+    from lerobot.data_platform.execution_pools import check_stop
+    from lerobot.data_platform.operators import ExecutionContext, execute_operator
+
+    return execute_operator(
+        reference["operator_id"],
+        ExecutionContext(
+            source_root=Path(job["location"]["root"]),
+            work_dir=Path(config["work"]),
+            check_cancelled=check_stop,
+            handlers={reference["operator_id"]: execute},
+        ),
+        version=reference["version"],
     )
-    payload = response.get_json(silent=True) or {}
-    if response.status_code >= 400:
-        raise RuntimeError(payload.get("error") or "Local request execution failed")
-    local_job = payload.get("job") or {}
-    local_job = dict(ctx.jobs_registry.get(local_job.get("id"), local_job))
-    if local_job.get("status") == "error":
-        raise RuntimeError(local_job.get("error") or "Local operation failed")
-    if local_job.get("status") != "done":
-        raise RuntimeError("Local handler did not confirm completion")
-    registrations = [
-        {
-            "repo_id": ctx.repo_id_from_key(key),
-            "root": str(entry["root"]),
-            "output_dir": str(entry["output_dir"]),
-        }
-        for key, entry in ctx.datasets_index.items()
-    ]
-    return {"local_job": local_job, "local_registrations": registrations}
 
 
 def report_local_progress(payload):
@@ -436,9 +535,11 @@ def _run(generation):
 
 def agent_capabilities_for_local():
     from lerobot.data_platform.curation_execution import worker_capabilities
+    from lerobot.data_platform.operators import list_operators
 
     return {
         **worker_capabilities(),
+        "operator_versions": {spec.operator_id: spec.version for spec in list_operators()},
         "job_protocol": 2,
         "data_profile_protocol": 100,
         "local_requests": True,

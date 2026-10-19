@@ -222,6 +222,8 @@
                 <div class="dp-header-utilities flex items-center justify-end gap-2 text-xs"
                      @click.outside="adminMenuOpen = false">
                     {% if control_plane_enabled %}
+                    <a :href="'/pipelines?location_id=' + encodeURIComponent(selectedRemoteLocation?.location_id || selectedDataset?.remote_location_id || '')"
+                       class="flex min-h-[2.75rem] items-center rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-semibold text-sky-200 hover:border-sky-700">Pipelines</a>
                     <a href="/control-plane"
                        class="flex min-h-[2.75rem] items-center rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-semibold text-sky-200 hover:border-sky-700">
                         Platform management

@@ -93,6 +93,7 @@ def test_local_identity_survives_repeated_agent_heartbeats(tmp_path, monkeypatch
     agent = _agent(tmp_path, tmp_path, tmp_path)
     assert not agent.capabilities().get("local_requests")
     agent.local_requests = True
+    assert agent.capabilities()["operator_versions"]["preprocess.clear_flags"] == "1.0.0"
     store = ControlPlaneStore(f"sqlite:///{tmp_path / 'control.db'}")
     _, node = store.enroll_node(
         name="local-worker",

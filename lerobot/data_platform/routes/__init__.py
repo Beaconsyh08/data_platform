@@ -27,6 +27,7 @@ __all__ = [
     "register_dataset_scan_routes",
     "register_account_password_routes",
     "RouteContext",
+    "register_processing_routes",
     "register_management_routes",
     "register_compare_routes",
     "register_control_plane_auth_routes",
@@ -45,3 +46,4 @@ __all__ = [
 ]
 from lerobot.data_platform.routes.analysis import register_remote_analysis_routes
 from lerobot.data_platform.routes.management import register_management_routes
+from lerobot.data_platform.routes.processing import register_processing_routes

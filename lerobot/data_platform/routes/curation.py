@@ -26,6 +26,7 @@ from lerobot.data_platform.curation import (
     publish_bundle,
     register_snapshot,
     snapshot_from_version,
+    supports_artifact_transport,
 )
 from lerobot.data_platform.curation_execution import validate_parameters
 from lerobot.data_platform.lifecycle import MATERIALIZATION_COMMITTED, MaterializationRun
@@ -850,7 +851,7 @@ def register_curation_routes(app, ctx):
     @checked
     def curation_upload(job_id, filename):
         job = control.get_job(job_id)
-        if job["operation"] not in OPERATIONS or job["status"] != "running":
+        if not supports_artifact_transport(job) or job["status"] != "running":
             abort(409)
         destination = artifact_path(staged(job), filename)
         maximum = 1024**3 if filename.startswith("static/") else 128 * 1024**2
@@ -878,9 +879,10 @@ def register_curation_routes(app, ctx):
     def curation_input(job_id, filename):
         job = control.get_job(job_id)
         item = job["options"].get("input_files", {}).get(filename)
-        if item is None or job["operation"] not in OPERATIONS or job["status"] != "running":
+        if item is None or not supports_artifact_transport(job) or job["status"] != "running":
             abort(404)
-        return send_file(artifact_path(root() / "runs" / item["run"], item["path"]))
+        storage = ledger().root / "operator-results" if item.get("storage") == "operator" else root() / "runs"
+        return send_file(artifact_path(storage / item["run"], item["path"]))
 
     def complete(job, returned):
         destination = root() / "runs" / job["job_id"]

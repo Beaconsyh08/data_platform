@@ -656,3 +656,24 @@ def test_history_retention_keeps_running_version_and_numeric_recent_versions(tmp
     assert (parent / "V0.0.6.12_Newer").exists()
     assert incomplete.exists() and external.exists()
     assert {path.name for path in backups.iterdir()} == {"2", "3", "4", "unfinished"}
+
+
+def test_pipeline_coordinator_unit_follows_release_and_legacy_rollback(tmp_path, monkeypatch):
+    from lerobot.data_platform.deployment import coordinator_unit
+
+    monkeypatch.setattr(Deployment, "root", property(lambda self: tmp_path / self.environment))
+    deployment = Deployment("dev")
+    old = deployment.root / "releases/old"
+    new = deployment.root / "releases/new"
+    old.mkdir(parents=True)
+    module = new / "lerobot/data_platform/processing/coordinator.py"
+    module.parent.mkdir(parents=True)
+    module.touch()
+    current = deployment.root / "current"
+    current.symlink_to(new)
+    assert deployment.coordinator_unit_name in deployment.units
+    assert "ConditionPathExists=" in coordinator_unit(deployment)
+    assert "DATA_PLATFORM_COORDINATOR_CURRENT=" in coordinator_unit(deployment)
+    current.unlink()
+    current.symlink_to(old)
+    assert deployment.coordinator_unit_name not in deployment.units

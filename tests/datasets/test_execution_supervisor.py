@@ -390,11 +390,10 @@ def test_agent_path_reservation_waits_and_renews_until_release(tmp_path):
         thread.join(timeout=3)
 
 
-def test_local_validated_request_is_queued_and_replayed(tmp_path, monkeypatch):
+def test_local_validated_command_is_queued_and_executed(tmp_path, monkeypatch):
     from lerobot.data_platform import viewer
     from lerobot.data_platform.cli import get_default_output_dir
     from lerobot.data_platform.execution import input_fingerprint
-    from lerobot.data_platform.local_execution import execute_local_request
 
     monkeypatch.setenv("DATA_PLATFORM_DATABASE_URL", f"sqlite:///{tmp_path / 'control.db'}")
     monkeypatch.setenv("DATA_PLATFORM_INTERNAL_EXECUTION", "")
@@ -465,7 +464,8 @@ def test_local_validated_request_is_queued_and_replayed(tmp_path, monkeypatch):
     assert not output.exists()
     persistent = store.get_job(job_id)
     assert persistent["status"] == "queued"
-    assert persistent["operation"].startswith("local.request.")
+    assert persistent["operation"] == "preprocess.drop_field"
+    assert "request" not in persistent["options"]
     claimed = store.claim_job(persistent["node_id"], worker_instance_id="test-worker")
     work = tmp_path / "worker"
     config = {
@@ -475,7 +475,12 @@ def test_local_validated_request_is_queued_and_replayed(tmp_path, monkeypatch):
         "fingerprint": input_fingerprint([source]),
     }
     atomic_json(work / "config.json", config)
-    result = execute_local_request(config)
+    from lerobot.data_platform.processing.local_executor import execute_local_operator
+    from tests.datasets.test_data_platform_agent import _agent
+
+    agent = _agent(tmp_path, tmp_path, tmp_path)
+    agent.name = "local-test"
+    result = execute_local_operator(agent, claimed)
     assert result["local_job"]["status"] == "done"
     assert "old_field" not in json.loads((output / "meta" / "info.json").read_text())["features"]
     assert "old_field" in json.loads((source / "meta" / "info.json").read_text())["features"]

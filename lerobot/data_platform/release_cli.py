@@ -225,7 +225,17 @@ def deploy(
             progress("stopping")
             # Compatible old worker generations remain alive, including their compute cgroups.
             if previous is not None:
-                releases.run(["systemctl", "stop", *(deployment.units[:1] if rolling else deployment.units)])
+                releases.run(
+                    [
+                        "systemctl",
+                        "stop",
+                        *(
+                            [unit for unit in deployment.units if "local-worker" not in unit]
+                            if rolling
+                            else deployment.units
+                        ),
+                    ]
+                )
             saved = deployment.root / "backups" / f"{version}-{time.time_ns()}"
             progress("backup")
             backup(deployment, saved, **({"quiescent": False} if rolling else {}))
@@ -248,6 +258,20 @@ def deploy(
                     ],
                     cwd=target,
                     env=migration_env,
+                )
+            if rolling and (target / "lerobot/data_platform/processing/models.py").is_file():
+                # Add only new management tables while old attempts retain their existing schema.
+                progress("additive-schema")
+                releases.run(
+                    [
+                        target / ".venv/bin/python",
+                        "-m",
+                        "lerobot.data_platform.management_cli",
+                        "--env",
+                        deployment.environment,
+                        "migrate",
+                    ],
+                    cwd=target,
                 )
             set_maintenance(store, True, release=version)
             progress("restart")
