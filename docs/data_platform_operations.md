@@ -530,8 +530,8 @@ Browser tests execute separately, produce JUnit evidence included in the package
 and must execute every required scenario without skips. Installed development acceptance remains
 separate from these fixture-backed browser tests.
 
-OSS is optional and independent of compute publication. Install the `data-platform-oss` extra and
-configure a private service-owned JSON file through `DATA_PLATFORM_ARCHIVE_CONFIG`; credentials
+OSS is optional and independent of compute publication. The Server bundle includes the pinned official
+OSS SDK. Configure a private service-owned JSON file through `DATA_PLATFORM_ARCHIVE_CONFIG`; credentials
 come from the SDK environment provider or `DATA_PLATFORM_OSS_CREDENTIALS_FILE` (a protected ossutil
 INI file). Never put credentials in the repository or command-line arguments. The configuration
 contains bucket, region, environment (`dev`/`prod`), local `root`, `enabled` and `unlimited`.
@@ -542,4 +542,88 @@ Use `python -m lerobot.data_platform.archive_cli --config /path/to/archive.json 
 `flush`, `backup` and `cleanup --protected-keys /path/to/protected.json`. Backup accepts only a
 completed quiescent deployment backup; it checks inventory hashes and excludes environment files
 and management credentials. Source datasets and active database files are not archive inputs.
-The worker is explicitly invoked; enabling an archive config does not schedule a migration.
+For a continuously bounded uploader, run `python -m lerobot.data_platform.archive_worker --config /path/to/archive.json`
+under the existing service account/environment. Each minute it handles at most 20 pending files.
+It never scans the database or migrates history. `archive.dev.json.example` starts disabled;
+copy it to protected service configuration, choose the environment's own prefix and credentials,
+and verify the Bucket's region, ACL, versioning and lifecycle before enabling. The supplied
+configuration explicitly permits unlimited cloud storage, as requested; finite quotas fail closed
+until an account billing gate is provided. Local quotas remain mandatory.
+
+Do not grant a development process production access. Use separate RAM credentials scoped to each
+prefix. Existing credentials found during preflight are not evidence of least-privilege IAM permissions.
+`cleanup` unions the supplied protected keys with evidence from all retained release packages and
+removes expired object versions and delete markers, not only the current object. It never deletes
+reports. `abort-expired-uploads` inspects at most 1,000 multipart sessions under this environment's
+prefix and aborts sessions older than seven days. Existing Bucket lifecycle rules are left intact.
+The [OSS version listing API](https://www.alibabacloud.com/help/en/oss/developer-reference/listobjectversions)
+includes both historical versions and delete markers.
+
+### Historical reports: reader first, migration second
+
+Deploy and accept the reader release before enabling `migration_enabled`. That accepted package is
+the minimum compatible rollback release. Keep its package and acceptance evidence protected.
+`archive_cli --config ... migrate --records 20 --bytes 67108864 --cursor <previous-next-cursor>`
+performs one bounded batch. Omit the cursor on the first batch. Save the returned cursor outside the
+database and invoke subsequent batches at the desired interval; interrupting a batch is safe to retry.
+`restore <job-id>` restores the inline JSON using its compact migration journal and verified OSS object.
+No production backfill is triggered by deployment or worker startup.
+
+Only acknowledged successful Jobs with finished Attempts and no active pipeline dependency qualify.
+The only externalized fields are `precompute`, `mcap_import.files` and `mcap_import.rejected`, each above
+256 KiB. Records exceeding the 64 MiB batch safety envelope are skipped for separate handling.
+All other result fields, options, progress, output locations, lineage and error summaries stay in place.
+Uploads and downloads occur outside DB transactions; the final transaction locks and checks the result,
+update timestamp, control revision and options before replacement. Job/Attempt copies reuse one object.
+Journals contain hashes and references, never another copy of report payloads. Keep journals backed up
+until the migration is retired; do not prune them with acceptance attachments. A changed record makes
+restore fail explicitly. The deployment CLI checks both Jobs and Attempts and refuses a reader-incompatible
+rollback while references exist, including `--hard`. Restore inline reports before using an older toolchain.
+
+### Installed acceptance and real operators
+
+Build-time browser validation does not establish installed acceptance. Run:
+
+```bash
+python -m lerobot.data_platform.acceptance browser \
+  --origin https://data-platform.example:8443 \
+  --release-root /var/lib/data-platform-releases/RELEASE \
+  --browser-executable /usr/bin/google-chrome --username ACCEPTANCE_USER \
+  --output /var/lib/data-platform-releases/RELEASE/installed-browser.json
+```
+
+The command prompts for the platform password without saving it, uses normal TLS verification,
+checks the installed development release, logs in through the form and visits protected lists and
+Pipelines. Include that JSON as `installed_browser` in the existing approval evidence. Approval for
+new reader releases also requires `operator_matrix`; neither check is replaced by fixture tests.
+
+Real executions use saved pipelines and the existing coordinator/Job/Attempt records. The optional
+`acceptance submit --pipeline-id ID --revision N --location-id ID --owner USER_ID --delivery STABLE_KEY
+--output /path/to/run.json` checks free disk space before starting the existing saved workflow.
+Review gates and permissions continue to apply. No second execution table is created.
+
+To collect a matrix, supply JSON with `changed_operators` and `cases`. Each case identifies `operator`,
+`version`, `node_id`, `format`, `scenario`, `job_id`, `attempt_id`, plus optional verified OSS `attachments`.
+Run `acceptance matrix --input /path/to/cases.json --release RELEASE --output /path/to/operator-matrix.json`.
+It verifies successful acknowledgement and the pinned execution identity, and retains `source_release`
+and `reused` for historical cases. Changed operators cannot reuse older evidence. Use both v2.1/v3.0
+where supported and each affected node; include input/permission failures, retry/publication and nominal
+scenarios in the acceptance plan. Shared scheduling, permission, IO or publishing changes require the
+full affected matrix. Execute failure/recovery scenarios through the normal task flow, then record the
+successfully recovered Attempt. Keep detailed logs/attachments in OSS and only references in approval.
+
+Before enabling backfill, inspect database/binlog/temp-directory/OSS sizes together, check actual MySQL
+`binlog_expire_logs_seconds`, and preserve existing heartbeat throttling and no-change write suppression.
+Do not run automatic VACUUM, OPTIMIZE TABLE or table rebuilds to reclaim physical space.
+
+
+Performance spot check (2026-10-19, isolated SQLite fixture; 16 Jobs, 2 MiB report each):
+
+| Query | Elapsed | Peak Python allocations | JSON response | Database + file growth |
+|---|---:|---:|---:|---:|
+| Full detail list | 103.0 ms | 67,290,916 B | 33,563,952 B | 0 B |
+| SQL summary list | 72.9 ms | 205,595 B | 9,072 B | 0 B |
+
+These are single local measurements, not production latency guarantees or total process RSS.
+MySQL parity runs use disposable databases; they do not write into development or production data.
+Server A preflight found a 259,200-second binlog retention setting (3 days); this change preserves it.

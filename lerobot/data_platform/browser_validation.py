@@ -1,5 +1,7 @@
 """Explicit browser release gate; a skipped test is not acceptance evidence."""
 
+import os
+import subprocess
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -30,7 +32,7 @@ def check_browser_report(path: Path) -> dict:
 
 
 def run_browser_validation(python, source, executable, destination, env, runner):
-    if not executable or not Path(executable).is_file():
+    if not executable or not Path(executable).is_file() or not os.access(executable, os.X_OK):
         raise RuntimeError(
             "Pass --browser-executable with an installed Chrome/Chromium for release validation"
         )
@@ -42,5 +44,6 @@ def run_browser_validation(python, source, executable, destination, env, runner)
             cwd=source,
             env=browser_env,
             stdout=log,
+            stderr=subprocess.STDOUT,
         )
     return check_browser_report(report)

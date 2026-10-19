@@ -6,7 +6,8 @@ import uuid
 import pytest
 
 from lerobot.data_platform.control_plane import ControlPlaneStore
-from tests.datasets import test_job_management, test_list_pagination
+from tests.datasets import test_job_management, test_list_pagination, test_report_migration
+from tests.datasets.test_artifact_store import archive  # noqa: F401
 
 
 @pytest.fixture
@@ -48,3 +49,11 @@ def test_mysql_projection_parity(mysql_context):
 
 def test_mysql_permission_before_pagination(mysql_context):
     test_list_pagination.test_permission_filter_precedes_pages_and_checks_hidden_sources(mysql_context)
+
+
+def test_mysql_migration_and_restore(mysql_context, archive):  # noqa: F811
+    test_report_migration.test_migration_deduplicates_and_restores(mysql_context, archive)
+
+
+def test_mysql_reader_guard(mysql_context, archive):  # noqa: F811
+    test_report_migration.test_rollback_requires_inline_restore(mysql_context, archive)

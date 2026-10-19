@@ -1207,6 +1207,8 @@ class ControlPlaneStore:
                 else None
             )
             if allowed is not None:
+                if not allowed:
+                    return ([], {"next_cursor": None, "has_more": False}) if page else []
                 query = query.where(RemoteJob.location_id.in_(allowed))
                 for field, item_path in (
                     ("source_location_ids", "$"),

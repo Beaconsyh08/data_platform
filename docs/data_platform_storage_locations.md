@@ -278,7 +278,8 @@ Owned success/failure acceptance attachments expire after 30/90 days; database b
 30 days and at least the newest three. Cleanup requires a protected-object inventory for current
 and rollback release evidence. Referenced reports never expire automatically. Bucket lifecycle
 rules must not expire the reports prefix; incomplete multipart uploads may expire after seven days.
-Versioned Buckets also need scoped noncurrent-version/delete-marker cleanup. No rule may change
+The cleanup worker lists and deletes the expired owned object's versions and delete markers.
+Multipart cleanup is explicit and bounded. No lifecycle rule may change
 other applications' prefixes. OSS download traffic and requests can incur charges even when local
 storage usage is bounded. Database page reuse is not the same as reducing its physical file size;
 this workflow never automatically rebuilds tables or vacuums a live database.

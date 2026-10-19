@@ -49,16 +49,16 @@ class ArchiveConfig:
     unlimited: bool = False
 
     def __post_init__(self):
+        if not self.root.is_absolute() or self.root == Path("/"):
+            raise ValueError("Archive root must be a dedicated absolute directory")
         if self.environment not in {"dev", "prod"} or not re.fullmatch(r"[a-z0-9-]{3,63}", self.bucket):
             raise ValueError("Invalid archive environment or bucket")
         if not re.fullmatch(r"[a-z0-9-]+", self.region):
             raise ValueError("Invalid OSS region")
-        if (
-            self.enabled
-            and not self.unlimited
-            and (not self.remote_capacity_bytes or not self.monthly_budget)
-        ):
-            raise ValueError("Explicit archive capacity and budget or unlimited=true are required")
+        if self.enabled and not self.unlimited:
+            raise ValueError(
+                "Finite cloud quotas require a billing gate; set explicit unlimited=true only with authorization"
+            )
         if (
             min(self.cache_bytes, self.spool_bytes) <= 0
             or self.min_free_bytes < 0
@@ -119,6 +119,25 @@ def atomic_json(path, value):
             raise
     temporary.chmod(0o600)
     temporary.replace(path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+@contextlib.contextmanager
+def staging_directory(store, kind):
+    """One bounded staging operation per kind; reclaim files left by a killed process."""
+    if kind not in {"backup", "migration"}:
+        raise ValueError("Unknown staging kind")
+    with (store.root / f".{kind}.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for old in store.root.glob(f"{kind}-*"):
+            if old.is_dir() and not old.is_symlink():
+                shutil.rmtree(old)
+        with tempfile.TemporaryDirectory(prefix=f"{kind}-", dir=store.root) as directory:
+            yield Path(directory)
 
 
 def service_status(error):
@@ -160,6 +179,7 @@ class OssTransport:
         cfg.retry_max_attempts = 3
         self.client = oss.Client(cfg)
         self.bucket = config.bucket
+        self.prefix = config.prefix
 
     def exists(self, key):
         try:
@@ -207,10 +227,53 @@ class OssTransport:
             raise ArtifactUnavailableError("OSS download or length verification failed") from None
 
     def delete(self, key):
+        """Delete expired owned evidence including versions; callers must check protected references."""
+        if not key.startswith(self.prefix) or "/reports/" in key:
+            raise ValueError("Deletion is restricted to owned expendable evidence")
         try:
-            self.client.delete_object(self.oss.DeleteObjectRequest(bucket=self.bucket, key=key))
+            marker, version_marker = None, None
+            for _ in range(20):
+                result = self.client.list_object_versions(
+                    self.oss.ListObjectVersionsRequest(
+                        bucket=self.bucket,
+                        prefix=key,
+                        key_marker=marker,
+                        version_id_marker=version_marker,
+                        max_keys=1000,
+                    )
+                )
+                for version in [*(result.version or []), *(result.delete_marker or [])]:
+                    if version.key == key:
+                        self.client.delete_object(
+                            self.oss.DeleteObjectRequest(
+                                bucket=self.bucket, key=key, version_id=version.version_id
+                            )
+                        )
+                if not result.is_truncated:
+                    return
+                marker, version_marker = result.next_key_marker, result.next_version_id_marker
+            raise ArtifactUnavailableError("Version cleanup batch exhausted; retry cleanup")
         except Exception:
-            raise ArtifactUnavailableError("OSS deletion failed") from None
+            raise ArtifactUnavailableError("OSS version deletion failed; retain receipt for retry") from None
+
+    def abort_expired_uploads(self, *, now=None):
+        now = time.time() if now is None else now
+        count = 0
+        try:
+            result = self.client.list_multipart_uploads(
+                self.oss.ListMultipartUploadsRequest(bucket=self.bucket, prefix=self.prefix, max_uploads=1000)
+            )
+            for upload in result.uploads or []:
+                if upload.key.startswith(self.prefix) and now - upload.initiated.timestamp() > 7 * 86400:
+                    self.client.abort_multipart_upload(
+                        self.oss.AbortMultipartUploadRequest(
+                            bucket=self.bucket, key=upload.key, upload_id=upload.upload_id
+                        )
+                    )
+                    count += 1
+            return count
+        except Exception:
+            raise ArtifactUnavailableError("OSS multipart cleanup failed") from None
 
 
 class ArtifactStore:
@@ -258,14 +321,25 @@ class ArtifactStore:
         source = Path(source)
         if source.is_symlink() or not source.is_file():
             raise ValueError("Archive input must be a regular file")
+        with source.open("rb") as stream:
+            if stream.read(16) == b"SQLite format 3\x00" or source.suffix.lower() in {".ibd", ".ibdata"}:
+                raise ValueError("Archive a completed backup export, not a live database file")
+        initial = source.stat()
         with self.locked():
             self.check_space()
             pending = self.root / "pending"
+            for stale in pending.glob("enqueue-*.partial"):
+                stale.unlink()
+            for stale in pending.glob("*.gz"):
+                if not stale.with_suffix(".json").exists():
+                    stale.unlink()
             used = sum(p.stat().st_size for p in pending.iterdir() if p.is_file())
             remaining = self.config.spool_bytes - used
             original = hashlib.sha256()
             size = 0
-            with tempfile.NamedTemporaryFile(dir=pending, delete=False) as output:
+            with tempfile.NamedTemporaryFile(
+                dir=pending, prefix="enqueue-", suffix=".partial", delete=False
+            ) as output:
                 temporary = Path(output.name)
                 try:
                     with (
@@ -282,6 +356,13 @@ class ArtifactStore:
                                 raise ArchiveCapacityError("Pending upload capacity reached")
                     output.flush()
                     os.fsync(output.fileno())
+                    current = source.stat()
+                    if (initial.st_ino, initial.st_size, initial.st_mtime_ns) != (
+                        current.st_ino,
+                        current.st_size,
+                        current.st_mtime_ns,
+                    ):
+                        raise ValueError("Archive source changed while being read")
                     ref = ArtifactRef(
                         self.config.bucket,
                         f"{self.config.prefix}{category}/{original.hexdigest()}.gz",
@@ -320,6 +401,8 @@ class ArtifactStore:
     def flush(self, *, limit=20):
         completed = []
         with self.locked():
+            for stale in self.root.glob("verify-*.partial"):
+                stale.unlink()
             for manifest in sorted((self.root / "pending").glob("*.json"))[:limit]:
                 self.check_space()
                 record = json.loads(manifest.read_text())
@@ -331,7 +414,9 @@ class ArtifactStore:
                 if not remote.exists(ref.key):
                     remote.put(ref.key, path)
                 self.check_space(ref.stored_size)
-                with tempfile.NamedTemporaryFile(dir=self.root, delete=False) as stream:
+                with tempfile.NamedTemporaryFile(
+                    dir=self.root, prefix="verify-", suffix=".partial", delete=False
+                ) as stream:
                     check = Path(stream.name)
                 try:
                     remote.download(ref.key, check, ref.stored_size)
@@ -355,6 +440,8 @@ class ArtifactStore:
         if ref.size > max_bytes or ref.stored_size > self.config.cache_bytes:
             raise ArtifactUnavailableError("Report exceeds interactive read limit")
         with self.locked():
+            for stale in (self.root / "cache").glob("*.partial"):
+                stale.unlink()
             path = self.root / "cache" / (hashlib.sha256(ref.key.encode()).hexdigest() + ".gz")
             if path.exists():
                 try:
@@ -386,7 +473,7 @@ class ArtifactStore:
             except (ValueError, UnicodeError):
                 raise ArtifactUnavailableError("Archived report is not valid JSON") from None
 
-    def cleanup(self, *, protected_keys=(), now=None):
+    def cleanup(self, *, protected_keys, now=None):
         """Only owned expendable objects; reports are never deleted automatically."""
         now = time.time() if now is None else now
         with self.locked():

@@ -20,6 +20,11 @@ from lerobot.data_platform.rolling_deployment import ROLLING_DEPLOY_PROTOCOL, re
 RELEASE_ROOT = Path("/var/lib/data-platform-releases")
 SCHEMA_VERSION = 6
 VALIDATION_TESTS = [
+    "tests/datasets/test_artifact_store.py",
+    "tests/datasets/test_report_archive.py",
+    "tests/datasets/test_report_migration.py",
+    "tests/datasets/test_list_pagination.py",
+    "tests/datasets/test_acceptance.py",
     "tests/datasets/test_console_services.py",
     "tests/datasets/test_console_interactions.py",
     "tests/datasets/test_remote_dataset_merge.py",
@@ -192,7 +197,15 @@ def build_release(
             ) from None
         from lerobot.data_platform.browser_validation import run_browser_validation
 
-        browser = run_browser_validation(python, snapshot, browser_executable, root, env, run)
+        try:
+            browser = run_browser_validation(python, snapshot, browser_executable, root, env, run)
+        except (RuntimeError, subprocess.CalledProcessError):
+            failure = Path(tempfile.mkdtemp(prefix=f".failed-browser-{version}-", dir=RELEASE_ROOT))
+            for name in ("browser-validation.txt", "browser-validation.xml"):
+                if (root / name).exists():
+                    shutil.copyfile(root / name, failure / name)
+            atomic_json(failure / "failure.json", {"release": version, "commit": commit, "stage": "browser"})
+            raise RuntimeError(f"Browser acceptance failed. Evidence: {failure}") from None
         print(f"Release validation passed: {version}", flush=True)
         run(
             [
@@ -239,6 +252,7 @@ def build_release(
                 "rolling_deploy_protocol": ROLLING_DEPLOY_PROTOCOL,
                 "tests": VALIDATION_TESTS,
                 "browser_acceptance": browser,
+                "artifact_reader_protocol": 1,
             },
         )
         shutil.rmtree(snapshot)
@@ -359,6 +373,36 @@ def approve_release(
     ):
         raise ValueError("Manual acceptance must identify this release and pass every required scenario")
     root = check_release_acceptance(deployment, version)
+    manifest = json.loads((root / "release.json").read_text())
+    if manifest.get("artifact_reader_protocol", 0) >= 1:
+        installed = report.get("installed_browser", {})
+        if (
+            installed.get("release") != version
+            or installed.get("environment") != "dev"
+            or installed.get("instance_id") != os.environ["DATA_PLATFORM_INSTANCE_ID"]
+            or installed.get("manifest_sha256") != digest(root / "release.json")
+            or installed.get("passed") is not True
+            or not {"login", "protected_lists", "pipeline_page"} <= set(installed.get("scenarios", []))
+        ):
+            raise ValueError(
+                "Installed authenticated browser evidence must identify these exact release artifacts"
+            )
+        matrix = report.get("operator_matrix", {})
+        if matrix.get("release") != version or not matrix.get("cases"):
+            raise ValueError("Real operator acceptance matrix is required before production approval")
+        from lerobot.data_platform.acceptance import collect_matrix
+        from lerobot.data_platform.artifact_store import configured_store
+        from lerobot.data_platform.control_plane import ControlPlaneStore
+
+        verified = collect_matrix(
+            ControlPlaneStore(os.environ["DATA_PLATFORM_DATABASE_URL"], initialize_schema=False),
+            configured_store(),
+            matrix["cases"],
+            version,
+            changed_operators=set(matrix["changed_operators"]),
+        )
+        if verified != matrix:
+            raise ValueError("Operator acceptance evidence changed; collect the matrix again")
     atomic_json(
         root / "approval.json",
         {

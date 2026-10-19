@@ -161,6 +161,9 @@ def deploy(
     with (deployment.root / ".deployment.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         store = _store()
+        from lerobot.data_platform.report_archive import require_reader_compatibility
+
+        require_reader_compatibility(store, manifest.get("artifact_reader_protocol", 0))
         with store.sessions() as session:
             schema = session.scalar(select(func.max(SchemaMigration.version)))
         if restore_from is not None:

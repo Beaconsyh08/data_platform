@@ -30,6 +30,7 @@ def test_build_checks_archived_lock_before_tests_and_preserves_it(
     calls = []
     browser = tmp_path / "chrome"
     browser.touch()
+    browser.chmod(0o700)
 
     def run(argv, **kwargs):
         calls.append(argv)
