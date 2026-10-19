@@ -884,3 +884,9 @@ Agent 文件权限、任务提交反馈及 operator 删除 episode 的审批流�
 ### Data Platform operators and pipelines
 
 The data console includes versioned sequential pipelines, a unified operator catalog, review-gated pose repairs and existing Agent/Job execution. See the [architecture and API guide](docs/data_platform_operators.md).
+
+### Offline MEM export
+
+For versioned raw multiview exports of selected segmentation/caption artifacts, see
+[MEM export](docs/mem_export.md). Run `python -m lerobot.data_platform.mem_export --help`
+on the source host; the command does not modify source datasets or platform state.
