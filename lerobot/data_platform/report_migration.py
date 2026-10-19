@@ -5,10 +5,12 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import time
 from dataclasses import dataclass
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import cast, func, literal, or_, select
+from sqlalchemy.dialects.mysql import DOUBLE, JSON
 
 from lerobot.data_platform.artifact_store import ArtifactRef, atomic_json, staging_directory
 from lerobot.data_platform.control_plane import RemoteJob
@@ -35,6 +37,62 @@ def encoded(value):
 
 def checksum(value):
     return hashlib.sha256(encoded(value)).hexdigest()
+
+
+def _float_repairs(expected, actual, path="$"):
+    """Find only numeric parser drift; any other persisted difference is an error."""
+    if checksum(expected) == checksum(actual):
+        return []
+    if isinstance(expected, float) and math.isfinite(expected) and type(actual) in (int, float):
+        return [(path, expected)]
+    if isinstance(expected, dict) and isinstance(actual, dict) and expected.keys() == actual.keys():
+        return [
+            repair
+            for key in expected
+            for repair in _float_repairs(expected[key], actual[key], path + "." + json.dumps(key))
+        ]
+    if isinstance(expected, list) and isinstance(actual, list) and len(expected) == len(actual):
+        return [
+            repair
+            for index, (left, right) in enumerate(zip(expected, actual, strict=True))
+            for repair in _float_repairs(left, right, f"{path}[{index}]")
+        ]
+    raise ValueError("Persisted report differs from the verified replacement")
+
+
+def _replace_result(session, row, desired):
+    if session.bind.dialect.name != "mysql":
+        row.result = desired
+    else:
+        # Preserve the binary JSON outside the archive whitelist. Re-parsing the whole
+        # document on MySQL can change floating-point values in unrelated metadata.
+        expression = type(row).result
+        for path in (*REPORT_PATHS, ("_archive_fields",)):
+            value = field_value(desired, path)
+            if checksum(value) == checksum(field_value(row.result, path)):
+                continue
+            if value is not None:
+                expression = func.json_set(
+                    expression, "$." + ".".join(path), cast(literal(encoded(value).decode()), JSON)
+                )
+            elif path == ("_archive_fields",):
+                expression = func.json_remove(expression, "$._archive_fields")
+        row.result = expression
+    session.flush()
+    session.refresh(row, ["result"])
+    if session.bind.dialect.name == "mysql":
+        repairs = _float_repairs(desired, row.result)
+        # MySQL's JSON text parser can lose a float ULP. SQL's DOUBLE parser does
+        # preserve it; patch only affected leaves, with bounded statement size.
+        for start in range(0, len(repairs), 100):
+            arguments = []
+            for path, value in repairs[start : start + 100]:
+                arguments.extend((path, cast(literal(repr(value)), DOUBLE)))
+            row.result = func.json_set(type(row).result, *arguments)
+            session.flush()
+            session.refresh(row, ["result"])
+    if checksum(row.result) != checksum(desired):
+        raise ValueError("Persisted report differs from the verified replacement")
 
 
 @dataclass(frozen=True)
@@ -198,10 +256,10 @@ class ReportMigrator:
                 or self._revision(session, job) != revision
             ):
                 return 0
-            atomic_json(manifest, journal)
-            job.result = after["job"]
+            _replace_result(session, job, after["job"])
             for attempt in attempts:
-                attempt.result = after[attempt.attempt_id]
+                _replace_result(session, attempt, after[attempt.attempt_id])
+            atomic_json(manifest, journal)
             self.control.job_manager.audit(session, job, "job.reports_archived", details={"bytes": count})
         return count
 
@@ -226,9 +284,9 @@ class ReportMigrator:
             job, attempts = self._rows(session, job_id)
             if self._values(job, attempts) != before or job.status != "done" or job.lease_owner:
                 raise ValueError("Record changed during restore")
-            job.result = after["job"]
+            _replace_result(session, job, after["job"])
             for attempt in attempts:
-                attempt.result = after[attempt.attempt_id]
+                _replace_result(session, attempt, after[attempt.attempt_id])
             self.control.job_manager.audit(session, job, "job.reports_restored")
         return True
 

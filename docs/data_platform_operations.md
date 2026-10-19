@@ -589,6 +589,10 @@ The only externalized fields are `precompute`, `mcap_import.files` and `mcap_imp
 All other result fields, options, progress, output locations, lineage and error summaries stay in place.
 Uploads and downloads occur outside DB transactions; the final transaction locks and checks the result,
 update timestamp, control revision and options before replacement. Job/Attempt copies reuse one object.
+MySQL updates only the archive fields in its binary JSON, preserving unrelated metadata. Both migration
+and restoration re-read the stored values inside the transaction and require exact canonical checksums.
+If MySQL's JSON parser changes a floating-point value, the affected numeric leaves are written through
+SQL DOUBLE parameters and checked again; any remaining mismatch rolls back the entire transaction.
 Journals contain hashes and references, never another copy of report payloads. Keep journals backed up
 until the migration is retired; do not prune them with acceptance attachments. A changed record makes
 restore fail explicitly. The deployment CLI checks both Jobs and Attempts and refuses a reader-incompatible

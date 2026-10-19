@@ -57,3 +57,7 @@ def test_mysql_migration_and_restore(mysql_context, archive):  # noqa: F811
 
 def test_mysql_reader_guard(mysql_context, archive):  # noqa: F811
     test_report_migration.test_rollback_requires_inline_restore(mysql_context, archive)
+
+
+def test_mysql_float_migration_and_restore(mysql_context, archive):  # noqa: F811
+    test_report_migration.test_float_reports_roundtrip_exactly(mysql_context, archive)

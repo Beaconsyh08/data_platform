@@ -7,7 +7,7 @@ import pytest
 from lerobot.data_platform.control_plane import RemoteJob, _utcnow
 from lerobot.data_platform.management_storage import JobAttempt, JobControl
 from lerobot.data_platform.report_archive import archived_fields, hydrate_result
-from lerobot.data_platform.report_migration import ReportMigrator
+from lerobot.data_platform.report_migration import ReportMigrator, checksum
 from tests.datasets.test_artifact_store import archive  # noqa: F401
 from tests.datasets.test_job_management import setup  # noqa: F401
 
@@ -111,3 +111,51 @@ def test_rollback_requires_inline_restore(setup, archive):  # noqa: F811
         require_reader_compatibility(store, 0)
     migrator.restore(job_id)
     require_reader_compatibility(store, 0)
+
+
+def test_float_reports_roundtrip_exactly(setup, archive):  # noqa: F811
+    import copy
+
+    store, job_id, report = completed(setup)
+    tricky = 3.9599999999994235e-14
+    report = {**report, "metadata": {"quantile": tricky}}
+    report["precompute"]["values"] = [tricky, -tricky, 0.30000000000000004, 1.0000000000000002]
+    report["precompute"]['quoted."key'] = {"value": tricky}
+    with store.sessions.begin() as session:
+        session.get(RemoteJob, job_id).result = report
+        session.get(JobAttempt, "attempt-one").result = report
+    # The original is the actual database value, including any normalization at ingestion.
+    with store.sessions() as session:
+        original = copy.deepcopy(session.get(RemoteJob, job_id).result)
+    archive.config = replace(archive.config, migration_enabled=True)
+    migrator = ReportMigrator(store, archive)
+    for _ in range(2):
+        assert migrator.migrate(job_id) > 0
+        assert checksum(hydrate_result(store.get_job(job_id)["result"], archive)) == checksum(original)
+        assert migrator.restore(job_id)
+        with store.sessions() as session:
+            assert checksum(session.get(RemoteJob, job_id).result) == checksum(original)
+            assert checksum(session.get(JobAttempt, "attempt-one").result) == checksum(original)
+
+
+def test_failed_persistence_verification_rolls_back(setup, archive):  # noqa: F811
+    from sqlalchemy import event
+
+    store, job_id, original = completed(setup)
+    archive.config = replace(archive.config, migration_enabled=True)
+
+    def corrupt(session, context):
+        for row in session.identity_map.values():
+            if isinstance(row, RemoteJob) and archived_fields(row.result):
+                session.connection().execute(
+                    RemoteJob.__table__.update().where(RemoteJob.job_id == job_id).values(result_json={})
+                )
+
+    event.listen(store.sessions.class_, "after_flush_postexec", corrupt)
+    try:
+        with pytest.raises(ValueError, match="Persisted report"):
+            ReportMigrator(store, archive).migrate(job_id)
+    finally:
+        event.remove(store.sessions.class_, "after_flush_postexec", corrupt)
+    assert store.get_job(job_id)["result"] == original
+    assert not (archive.root / "migrations" / f"{job_id}.json").exists()
