@@ -135,3 +135,7 @@ the ones hosted on [`hf-internal-testing`](https://huggingface.co/hf-internal-te
 them by URL. We recommend putting them in the following dataset: [huggingface/documentation-images](https://huggingface.co/datasets/huggingface/documentation-images).
 If an external contribution, feel free to add the images to your PR and ask a Hugging Face member to migrate your images
 to this dataset.
+
+## Data Platform processing architecture
+
+See [Unified operators and pipelines](data_platform_operators.md) for operator contracts, the migration inventory, APIs, review gates and recovery.

@@ -1,0 +1,181 @@
+# Unified operators and sequential pipelines
+
+This implementation builds on platform source `ce6e2680` and the installed `.60` release. It absorbs
+algorithm ideas from `data_laundry` commit `6ba72ff6ca4ccb143eeeb15bcafd3047aac14845` through the platform's
+existing dataset, review and publication contracts. Runtime acceptance and installed release identity
+must be checked separately from this source baseline.
+
+## Boundaries
+
+The existing control plane owns authentication, dataset scopes, Job/Attempt admission, quotas, path locks,
+stop confirmation and immutable release installation. `processing/` owns saved plans and orchestration;
+`operators/` owns computation descriptions and dispatch. `TaskCatalog` continues to describe robot tasks.
+Pipeline steps run sequentially on one node. Dataset inputs may reference earlier dataset outputs;
+evidence references do not replace the dataset input. Source mutations use their dedicated guarded forms.
+
+```mermaid
+flowchart LR
+    UI[Processing forms / Pipelines / future AI tools] --> API[Application services]
+    API --> DB[Immutable plan revisions and durable runs]
+    DB --> C[Pipeline coordinator]
+    C --> J[Existing Job / Attempt scheduler]
+    J --> A[Local executor or node Agent]
+    A --> O[Operator registry and adapters]
+    O --> P[Dataset IO / computation / validated publication]
+```
+
+## Operator contract
+
+`OperatorSpec` pins an ID and implementation version, parameter schema, dataset formats, dependencies,
+read/write effect, output type, resources, cancellation/checkpoint support and compatibility entry points.
+Discovery reads Python signatures through AST; it does not import models or initialize GPUs. Schemas
+support JSON scalar/object/array types, required fields, defaults, item schemas, enums and numeric bounds.
+Algorithm-specific validation remains authoritative. Missing backend/dependency and node-version reasons
+are exposed in discovery and preview; capability heartbeats contain descriptions, not reports.
+
+`ExecutionContext` provides registered source/output roots, an attempt working directory, bounded resource
+allocation, artifact files, progress and cancellation callbacks. Computations run without Flask request
+state. Existing builtins retain their specialized publication/checkpoint adapters. New operators normally
+need only an implementation accepting `(context, parameters)`, a descriptor in the trusted registry and
+contract tests. They return `OperatorResult(summary, artifacts, derived_datasets, episode_lineage)`.
+Artifact paths are relative to the working directory. A dataset producer must return its declared output,
+pass full dataset validation and provide lineage when episode identity/cardinality changes. There is no
+HTTP-uploaded Python code or arbitrary callable execution interface.
+
+Register only trusted implementation code installed with the release. Declare `required_modules` for
+optional dependencies and bump the operator version when behavior changes. Keep existing versions while
+queued/running snapshots need them; an Agent with a different advertised version cannot claim that job.
+
+## APIs and saved plans
+
+All endpoints require the existing session authentication and current dataset scope. Viewer accounts
+may inspect capabilities; they cannot save, run or decide. Saved configurations/runs are private to their
+owner. Lists are capped (200 definitions, 100 run summaries); reports remain in separate artifact routes.
+
+| Endpoint | Contract |
+| --- | --- |
+| `GET /api/operators[?location_id=…]`, `GET /api/operators/{id}` | Schema and target availability |
+| `POST /api/processing/preview` | `{location_id, definition}`; normalized/pinned steps, output templates and blocking reasons |
+| `GET/POST /api/pipelines` | List / save `{definition}` as revision 1 |
+| `GET/PUT /api/pipelines/{id}` | Read latest or `?revision=…`; save `{definition, expected_revision}` |
+| `POST /api/pipelines/{id}/runs` | `{revision, location_id}` plus required `Idempotency-Key` |
+| `GET /api/pipeline-runs[?location_id=…]` | Bounded run summaries |
+| `GET /api/pipeline-runs/{id}` | Revision, status, step Job IDs, input/output locations and decisions |
+| `POST /api/pipeline-runs/{id}/decisions` | `{expected_revision, step_id, decision: approve\|skip}`; pose repair also needs `workspace_id, workspace_revision` |
+| `POST /api/pipeline-runs/{id}/cancel` or `/retry` | `{expected_revision}`; reuse existing Job commands |
+| `GET /api/operator-results/{job_id}/{path}` | Owner/scoped access to published generic operator artifacts |
+
+Example definition (parameter defaults and operator versions are resolved when saved):
+
+```json
+{
+  "schema_version": 1,
+  "name": "Snapshot, subset and inspect",
+  "steps": [
+    {"step_id": "snapshot", "operator_id": "curation.snapshot"},
+    {"step_id": "subset", "operator_id": "preprocess.split", "parameters": {"episode_range": "0:20"}},
+    {"step_id": "quality", "operator_id": "curation.quality", "input": "subset", "parameters": {"checks": ["s3", "c3"]}}
+  ]
+}
+```
+
+A source version must be synchronized first (include Snapshot as the first step). Secondary Merge or
+Subtract inputs use registered `options.source_location_ids`; every input must be authorized, synchronized
+and on the same node. Paths cannot be injected as algorithm parameters. Existing model trial options,
+output variants, explicit signal selection and MCAP config/checkpoints retain their original contracts.
+Project requires an earlier Embedding artifact; Construction requires Labeling evidence. Dependency steps
+must be explicit in the saved sequence; preview reports missing evidence instead of silently inserting work.
+
+## Durability, review and recovery
+
+The management database adds `dp_pipelines`, `dp_pipeline_versions`, `dp_pipeline_runs` and
+`dp_pipeline_steps`. Published plan revisions are immutable; edits use optimistic locking. A shared
+scheduler transaction and unique constraints link each step to at most one Job. The coordinator polls
+bounded pages and can restart or run concurrently without duplicating submissions. It pauses during
+maintenance. It launches downstream work only after publication and control-plane acknowledgement.
+
+Public run states are `queued`, `running`, `waiting_review`, `done`, `error`, `cancel_requested` and
+`cancelled`; `retry_requested` is durable pending command delivery. Waiting for review creates no Job and
+uses no compute slot. Decisions bind run revision, data identity, proposed parameters and evidence Job IDs.
+Pose repair additionally binds the exact Curation repair draft and revision; edits to that draft invalidate
+approval. Skip passes through the dataset input for a dataset-producing step.
+
+Cancel intent is persisted before Job commands are sent and is replayed after a coordinator restart. A
+running pipeline stays cancelling until the executor confirms exit. Retry uses the failed Job's existing
+retry command and preserves completed, acknowledged outputs. Existing supervisor result/upload replay
+continues to handle publication failure without recomputing completed work; MCAP automatic recovery keeps
+its separate, bounded process-loss rules. Validated preprocessing outputs have a command/input/output fingerprint checkpoint, so a failed version
+registration can resume publication without rerunning the transform. Operator snapshots include resolved parameters, versions,
+input fingerprints and artifact checksums. Fingerprints are checked again before dataset computation.
+
+## Laundry absorption
+
+- `curation.quality` / EEF keeps `dataset_quantile` as its original default. Optional
+  `qc_config.eef.strategy="laundry_spike"` uses the laundry spike strategy and requires explicit position
+  units (`m`, `cm`, `mm`). Reports record strategy, thresholds, units and provenance.
+- Existing C3 black-frame detection retains platform sampling/full-scan, image/video adapters and review
+  evidence. No second black-frame detector or automatic episode deletion is introduced.
+- `preprocess.pose_interpolate` accepts explicit half-open `[start_frame,end_frame)` intervals with a
+  preceding and following anchor. It uses linear position interpolation and quaternion SLERP. Pose field
+  names or explicit indices, quaternion order and position units are required; unknown layouts fail.
+- Repair runs require matching Quality evidence and an approved Curation draft containing the exact
+  proposed intervals. The Review repair form supports pose definitions. Published Manifest repair recipes
+  bind stable episode UIDs, so later episode reindexing does not change their target.
+- Repair always writes a fresh sibling dataset through staging/validation/atomic rename, retains unrelated
+  columns and episodes (including shared v3 shards), refreshes statistics and registers lineage. Existing
+  output reuse is rejected; data/metadata symlinks that could escape output boundaries are rejected.
+  This avoids laundry's pending-decision resume and hard-link overwrite failure paths.
+
+## Compatibility and migration inventory
+
+The table below accounts for the existing computation families. Original route paths, CLI flags, defaults,
+source mutation guards and result protocols remain supported. Local ordinary background routes serialize
+allowlisted domain commands instead of replaying HTTP requests or extracting function closures. Protected
+source mutation, ledger publication and cache-maintenance compatibility paths remain explicit; immediate synchronous reads
+retain their existing bounded handlers.
+
+| Existing entry family | Canonical operators / adapter | Execution and effect |
+| --- | --- | --- |
+| Preprocess API/CLI: dimensions, format, fields, smoothing, values | `preprocess.convert_action`, `convert_v3`, `drop_field`, `smooth_action`, `value_edit` | Unified dispatch; derived dataset |
+| Standardization and optional episode removal | `preprocess.standardize` | Existing composite adapter preserves source/output cache phases |
+| Split / Merge / Subtract | `preprocess.split`, `merge`, `subtract` | Registered inputs, sibling outputs and explicit lineage |
+| Stage/height alignment and trajectory cleanup | `preprocess.stage_return_alignment`, `stage_return_height_alignment`, `trajectory_cleanup` | Unified adapters; original applicability and dry-run defaults |
+| Legacy quality / flag clearing | `preprocess.quality_flags`, `preprocess.clear_flags`; `curation.quality` for versioned chains | Cache evidence; legacy flag clearing stays dedicated |
+| Legacy flag fixes and prompt rewriting | `preprocess.flag_fixes`, `rewrite_prompts`, `fix_prompt_prepositions`, `lowercase_prompts` | Source-effect descriptors; dedicated protected compatibility adapters |
+| Labeling / Tagging / Embedding | `curation.labeling`, `tagging`, `embedding` | Model backends, trial and credential isolation preserved |
+| Projection / comparison / construction preview | `curation.project`, `compare_summary`, `construction_preview` | Existing artifact adapters; explicit evidence references |
+| Construction | `curation.construction` | Validated derived output and Curation publication |
+| Snapshot / source validation / stage / Manifest materialization | `curation.snapshot`, `validate_source`, `stage`, `materialize` | Existing immutable lifecycle contracts |
+| Temporal Caption | `caption.annotate` | Existing episode/scheme/signal and result-sync protocol |
+| Viewer precompute | `viewer.prepare` | Existing atomic cache publication and source protection |
+| MCAP inspection / conversion | `import.mcap.inspect`, `import.mcap.convert` | Existing config, checkpoint, conversion and publication adapters |
+| Trim / episode deletion / timestamp repair / in-place values | `mutation.trim_episode`, `delete_episodes`, `repair_v3_video_timestamps`, `value_edit` | Privileged legacy entry points, excluded from chains |
+| Local prompt assignments / prompt source fixes | `preprocess.apply_prompt_assignments` and `mutation.*` aliases | Cache versus source guards retained |
+| Task mapping cache / analysis / Inspect | `task_mapping_cache`, `analysis`, `inspect` | Explicit bounded/local compatibility entries; not automatic chains |
+| Two-dataset comparison / task suggestions | `compare.build`, `tasks.suggest` | Version-pinned local compatibility adapters |
+| Legacy lifecycle ingest / profile execution / materialization | `lifecycle.ingest`, `lifecycle.preprocess`, `lifecycle.materialize` | Dedicated local ledger/publication adapters; remote chains use Curation counterparts |
+| Viewer preload | `viewer.preload` | Version-pinned local cache adapter |
+| Metadata/cache refresh and direct review decisions | Existing maintenance/read adapters | No independent dataset computation; not scheduled pipeline steps |
+
+The original remote preprocess API keeps its historical eight-operation surface. Newly enabled sequence
+operators use the pipeline service; the dedicated source API still exposes only its original four allowed
+operations. New builtins do not automatically broaden privileged legacy APIs.
+
+## Validation and operations
+
+Run release validation with the exact source-worktree interpreter. Focused suites include
+`test_operators.py`, `test_processing.py`, `test_pose_interpolate.py`, existing Agent/local execution,
+lifecycle, Curation, preprocess, Job control and release tests. Browser acceptance is optional in an
+ordinary headless test run and can be invoked explicitly:
+
+```bash
+DATA_PLATFORM_BROWSER_EXECUTABLE=/usr/bin/google-chrome \
+  .venv/bin/python -m pytest tests/datasets/test_processing_browser.py -q
+```
+
+Install Playwright in the test environment first. The browser suite uses temporary datasets, real session
+authentication, real endpoints and the Agent artifact protocol; it exercises editing, reorder, version save,
+invalid parameters, derived inputs, review pause/resume, reload, mobile width and Viewer restrictions.
+Model/GPU integration and registered remote-node acceptance still require their corresponding installed
+runtimes and data. See [operations](data_platform_operations.md) for coordinator installation and release
+acceptance. This change does not configure an LLM, MCP server, conversation or autonomous planner.

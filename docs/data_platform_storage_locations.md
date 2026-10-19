@@ -237,3 +237,11 @@ exit
 后续更新命令请看 [当前环境构成与更新手册](data_platform_operations.md)。
 记住三个动作的区别：**改工作区代码 → 构建发行包 → 部署到指定环境**。
 这三个动作都不会自动把开发数据库或样本复制覆盖到生产。
+
+## 算子与流程新增状态
+
+流程定义、不可变 revision、运行与步骤状态使用现有管理数据库中的 `dp_pipeline*` 表。
+检测报告继续进入 lifecycle 目录旁的 `curation/runs/`；普通新算子的报告位于 `operator-results/<job_id>/`。
+上传仍先进入 `curation/.jobs/<job_id>/<attempt_id>/`，校验后发布。计算节点的 `operator-work/`
+保存按 Job/Attempt 隔离的工作文件与版本快照。数据转换输出是已登记源目录的独立 sibling，
+不在原始数据根内存放控制面状态。详见 [算子与流程](data_platform_operators.md)。

@@ -880,3 +880,7 @@ Agent 文件权限、任务提交反馈及 operator 删除 episode 的审批流�
 再由模型进行语义融合与独立复核。支持按 episode 区间或整个数据集提交标注 Jobs，并选择是否输入 action/state 等信号；
 不覆盖现有标注，不回写源数据。运行步骤、范围和结果复核限制见
 [Temporal Caption 实验](docs/temporal_caption_trial.md)。
+
+### Data Platform operators and pipelines
+
+The data console includes versioned sequential pipelines, a unified operator catalog, review-gated pose repairs and existing Agent/Job execution. See the [architecture and API guide](docs/data_platform_operators.md).

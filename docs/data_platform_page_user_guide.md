@@ -29,6 +29,16 @@ flowchart LR
     H --> I[Curated Dataset Version]
 ```
 
+### 自定义算子链
+
+处理区的 **Pipelines** 入口可组合顺序步骤：选择已登记的数据集，添加 Snapshot、数据转换或检测，
+编辑参数后点击 Preview，再 Save version、Run saved version。Dataset input 可引用前一步的数据输出；
+Evidence 传递报告。每次保存生成不可变 revision，运行固定该版本。多数据源必须来自同一节点。
+
+Jobs 展示实际任务进度，Review 保存人工决策；Recent runs 可恢复等待复核的运行。
+位姿插值需先在 Review 保存与流程参数完全一致的 pose repair 草稿，再填写 workspace ID 和 revision 批准。
+源修改继续使用原有专用入口。接口、依赖限制和迁移清单见 [算子与流程](data_platform_operators.md)。
+
 ## 2. 启动页面
 
 ### 2.1 启动完整工作台
