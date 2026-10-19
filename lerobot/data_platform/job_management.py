@@ -32,14 +32,21 @@ PROCESS_LOSS_ERROR = "Compute process exited without a result"
 SAFE_OPERATIONS = operation_ids(remote=True, cancellable=True)
 
 
-def _inputs_available(session, location_id: str, options: dict | None) -> bool:
-    from lerobot.data_platform.control_plane import DatasetLocation
-
+def _input_location_ids(location_id: str, options: dict | None) -> set[str]:
     options = options or {}
     keys = {location_id, *options.get("source_location_ids", [])}
     keys.update(
         item["location_id"] for item in options.get("_source_locations", []) if item.get("location_id")
     )
+    return keys
+
+
+def _inputs_available(session, location_id: str, options: dict | None, *, states=None) -> bool:
+    from lerobot.data_platform.control_plane import DatasetLocation
+
+    keys = _input_location_ids(location_id, options)
+    if states is not None:
+        return all(states.get(key) == "available" for key in keys)
     return all(
         (row := session.get(DatasetLocation, key)) is not None and row.state == "available" for key in keys
     )
@@ -784,6 +791,16 @@ class JobManager:
                 if current_jobs
                 else []
             )
+            input_ids = set().union(
+                *(_input_location_ids(payload["location_id"], payload.get("options")) for payload in payloads)
+            )
+            input_states = dict(
+                session.execute(
+                    select(DatasetLocation.location_id, DatasetLocation.state).where(
+                        DatasetLocation.location_id.in_(input_ids)
+                    )
+                ).all()
+            )
             user_counts = {}
             for job in active_jobs:
                 control = controls.get(job.job_id)
@@ -844,7 +861,9 @@ class JobManager:
                         and actor["user_id"] == payload["requested_by"]
                     )
                 )
-                inputs_available = _inputs_available(session, payload["location_id"], payload.get("options"))
+                inputs_available = _inputs_available(
+                    session, payload["location_id"], payload.get("options"), states=input_states
+                )
                 actions = []
                 if owner:
                     if payload["status"] == "queued":
