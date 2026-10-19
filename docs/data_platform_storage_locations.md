@@ -272,7 +272,14 @@ Content-addressed gzip objects are checked against both compressed and original 
 publication. References reuse existing result records or file manifests; no additional database
 is introduced. Original datasets, hot Viewer caches, permissions, leases and recovery state stay
 on their current storage. The archive's `pending`, `cache`, `receipts` and `migrations` directories
-belong outside all dataset roots. Failed uploads remain pending within the configured byte limit.
+belong outside all dataset roots. On Server A these are under `/srv/data-platform-dev/archive`
+and `/srv/data-platform/archive`, respectively. Failed uploads remain pending within the configured
+byte limit. Configuration and service ownership are documented in
+[operations](data_platform_operations.md#bounded-lists-and-optional-oss-archive).
+
+[Offline MEM exports](mem_export.md) remain on the source host at the explicitly chosen sibling
+output path. Their raw PNG views can exceed compressed video size; they are not automatically
+queued for OSS or stored in the control database.
 
 Owned success/failure acceptance attachments expire after 30/90 days; database backups retain
 30 days and at least the newest three. Cleanup requires a protected-object inventory for current

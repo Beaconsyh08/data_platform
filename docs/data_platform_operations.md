@@ -538,6 +538,15 @@ contains bucket, region, environment (`dev`/`prod`), local `root`, `enabled` and
 `unlimited: true` explicitly permits uncapped cloud use; local quotas remain enforced. Defaults are
 2 GiB read cache, 5 GiB pending uploads, and free space of at least 10 GiB and 10 percent.
 
+Server A keeps per-environment settings in `/etc/data-platform/<env>/archive.json` and
+`/etc/data-platform/<env>/ossutil.ini`, owned by root and readable only by that service group (0640).
+The environment file points to these paths; it contains no copied OSS keys. Local archive roots are
+`/srv/data-platform-dev/archive` and `/srv/data-platform/archive`, owned by the corresponding service
+account with mode 0700. This keeps development writes inside its existing systemd sandbox.
+`data-platform-archive@<env>.service` runs the bounded uploader using the installed `current` release;
+restart it after upgrading that environment. The service does not enable historical migration.
+Storage layout and retention are defined in [storage locations](data_platform_storage_locations.md#optional-object-archive).
+
 Use `python -m lerobot.data_platform.archive_cli --config /path/to/archive.json probe`, `enqueue`,
 `flush`, `backup` and `cleanup --protected-keys /path/to/protected.json`. Backup accepts only a
 completed quiescent deployment backup; it checks inventory hashes and excludes environment files
@@ -550,8 +559,10 @@ and verify the Bucket's region, ACL, versioning and lifecycle before enabling. T
 configuration explicitly permits unlimited cloud storage, as requested; finite quotas fail closed
 until an account billing gate is provided. Local quotas remain mandatory.
 
-Do not grant a development process production access. Use separate RAM credentials scoped to each
-prefix. Existing credentials found during preflight are not evidence of least-privilege IAM permissions.
+Use separate RAM credentials scoped to each prefix to enforce cloud-side environment isolation.
+A prefix check in the platform does not restrict the underlying credential. The existing shared
+credential has OSS full access and RAM read-only access; replacing it with scoped credentials requires
+a RAM administrator. Keep that limitation explicit in deployment acceptance until replacement.
 `cleanup` unions the supplied protected keys with evidence from all retained release packages and
 removes expired object versions and delete markers, not only the current object. It never deletes
 reports. `abort-expired-uploads` inspects at most 1,000 multipart sessions under this environment's
