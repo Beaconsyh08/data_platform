@@ -20,6 +20,13 @@ from lerobot.data_platform.rolling_deployment import ROLLING_DEPLOY_PROTOCOL, re
 RELEASE_ROOT = Path("/var/lib/data-platform-releases")
 SCHEMA_VERSION = 6
 VALIDATION_TESTS = [
+    "tests/datasets/test_console_services.py",
+    "tests/datasets/test_console_browser.py",
+    "tests/datasets/test_processing_browser.py",
+    "tests/datasets/test_console_interactions.py",
+    "tests/datasets/test_remote_dataset_merge.py",
+    "tests/datasets/test_task_ui.py",
+    "tests/datasets/test_value_edit.py",
     "tests/datasets/test_source_cleanup.py",
     "tests/datasets/test_operators.py",
     "tests/datasets/test_processing.py",

@@ -13,6 +13,7 @@ import pytest
 
 from lerobot.data_platform.precompute.dataset_io import V3DatasetMetadata, read_episode_table
 from lerobot.data_platform.precompute.preprocess.dataset_version import run_convert_v3
+from tests.datasets.console_templates import template_source
 from tests.datasets.test_control_plane import _app, _bootstrap, _store
 from tests.datasets.test_data_platform_agent import _agent, _FakeClient
 from tests.datasets.test_dataset_merge_alignment import _make_named_dataset, _snapshot
@@ -235,9 +236,9 @@ def test_remote_merge_form_filters_sources_and_forwards_alignment_options():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the homepage behavior check")
-    template = (
+    template = template_source(
         Path(__file__).parents[2] / "lerobot/data_platform/templates/visualize_dataset_homepage.html"
-    ).read_text()
+    )
     methods = []
     for name in (
         "operationAvailable",
@@ -317,15 +318,20 @@ def test_job_submission_feedback_reports_acceptance_errors_and_uncertain_deliver
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the homepage behavior check")
-    template = (
+    template = template_source(
         Path(__file__).parents[2] / "lerobot/data_platform/templates/visualize_dataset_homepage.html"
-    ).read_text()
+    )
     match = re.search(r"^                async requestJson\([^\n]*\) \{", template, re.MULTILINE)
     assert match is not None
     end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
     assert end is not None
     method = template[match.start() : match.end() + end.end()]
-    script = "const assert = require('node:assert/strict'); const app = {" + method + "};\n"
+    script = (
+        template_source("console/context.js")
+        + "\nconst assert = require('node:assert/strict'); const app = {"
+        + method
+        + "};\n"
+    )
     script += r"""
     global.window = {AbortController, setTimeout, clearTimeout};
     app.requestTimeoutMs = 1000;
@@ -354,9 +360,9 @@ def test_operator_deletion_ui_submits_request_without_starting_mutation():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the homepage behavior check")
-    template = (
+    template = template_source(
         Path(__file__).parents[2] / "lerobot/data_platform/templates/visualize_dataset_homepage.html"
-    ).read_text()
+    )
     methods = []
     for name in ("canRequestEpisodeDeletion", "startRemoteMutation"):
         match = re.search(rf"^                (?:async )?{name}\([^\n]*\) \{{", template, re.MULTILINE)
@@ -364,7 +370,12 @@ def test_operator_deletion_ui_submits_request_without_starting_mutation():
         end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
         assert end is not None
         methods.append(template[match.start() : match.end() + end.end()])
-    script = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
+    script = (
+        template_source("console/context.js")
+        + "\nconst assert = require('node:assert/strict'); const app = {"
+        + "\n".join(methods)
+        + "};\n"
+    )
     script += r"""
     global.window = {confirm: () => true};
     Object.assign(app, {
@@ -391,9 +402,9 @@ def test_prefix_tail_mapping_ui_preserves_source_order_and_requires_confirmation
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the homepage behavior check")
-    template = (
+    template = template_source(
         Path(__file__).parents[2] / "lerobot/data_platform/templates/visualize_dataset_homepage.html"
-    ).read_text()
+    )
     methods = []
     for name in (
         "mergeMappingRows",
@@ -407,7 +418,12 @@ def test_prefix_tail_mapping_ui_preserves_source_order_and_requires_confirmation
         assert match
         end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
         methods.append(template[match.start() : match.end() + end.end()])
-    script = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
+    script = (
+        template_source("console/context.js")
+        + "\nconst assert = require('node:assert/strict'); const app = {"
+        + "\n".join(methods)
+        + "};\n"
+    )
     script += r"""
     const feature = dimension => ({action: {shape: [dimension], names: ['actions']}, state: {shape: [dimension], names: ['state']}});
     Object.assign(app, {
@@ -472,16 +488,21 @@ def test_merge_output_prefill_and_path_validation():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the homepage behavior check")
-    template = (
+    template = template_source(
         Path(__file__).parents[2] / "lerobot/data_platform/templates/visualize_dataset_homepage.html"
-    ).read_text()
+    )
     methods = []
     for name in ("prefillMergeOutput", "mergeOutputError"):
         match = re.search(rf"^                {name}\([^\n]*\) \{{", template, re.MULTILINE)
         assert match
         end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
         methods.append(template[match.start() : match.end() + end.end()])
-    script = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
+    script = (
+        template_source("console/context.js")
+        + "\nconst assert = require('node:assert/strict'); const app = {"
+        + "\n".join(methods)
+        + "};\n"
+    )
     script += r"""
     Object.assign(app, {
         selectedDataset: {remote: true},
@@ -520,9 +541,9 @@ def test_index_position_form_builds_mappings_and_previews():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the homepage behavior check")
-    template = (
+    template = template_source(
         Path(__file__).parents[2] / "lerobot/data_platform/templates/visualize_dataset_homepage.html"
-    ).read_text()
+    )
     methods = []
     for name in (
         "mergeMappingRows",
@@ -543,7 +564,12 @@ def test_index_position_form_builds_mappings_and_previews():
         assert match
         end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
         methods.append(template[match.start() : match.end() + end.end()])
-    script = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
+    script = (
+        template_source("console/context.js")
+        + "\nconst assert = require('node:assert/strict'); const app = {"
+        + "\n".join(methods)
+        + "};\n"
+    )
     script += r"""
     const feature = n => ({action: {shape: [n]}, state: {shape: [n]}});
     Object.assign(app, {

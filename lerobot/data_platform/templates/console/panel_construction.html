@@ -1,0 +1,94 @@
+<div class="space-y-4 px-4 py-4" x-show="activeTab === 'construction'">
+                    <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
+                        <div class="font-semibold text-slate-200">Construction readiness</div>
+                        <div class="mt-2 text-amber-300" x-show="selectedDataset && !constructionReady()">
+                            Run Object Labeling first. Data Construction requires labeling/labels.jsonl.
+                        </div>
+                        <div class="mt-2 text-emerald-300" x-show="constructionReady()">Reviewed labeling data is available. Preview the cohort before materialization.</div>
+                        <div class="mt-2 text-sky-300" x-show="constructionLoading">Loading construction preview...</div>
+                    </div>
+
+                    <div class="rounded border border-slate-800 bg-slate-950 p-3"
+                         :class="constructionReady() ? '' : 'pointer-events-none opacity-50'">
+                        <div class="mb-2 flex items-center justify-between text-xs">
+                            <span class="font-semibold uppercase tracking-wide text-slate-400">Vocabulary</span>
+                            <button class="text-sky-300 hover:text-sky-200" @click="loadConstructionPreview()">preview</button>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                            <template x-for="obj in constructionVocab()" :key="obj">
+                                <span class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200" x-text="obj"></span>
+                            </template>
+                            <span class="text-xs text-slate-500" x-show="constructionVocab().length === 0">No vocabulary loaded.</span>
+                        </div>
+                    </div>
+
+                    <div class="grid gap-3 md:grid-cols-2"
+                         :class="constructionReady() ? '' : 'pointer-events-none opacity-50'">
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">uncertainty threshold</span>
+                            <input type="range" min="0" max="100" step="1" class="w-full accent-sky-500"
+                                   x-model.number="construction.uncertainty_threshold"
+                                   @change="loadConstructionPreview()">
+                            <span class="text-xs text-slate-300" x-text="construction.uncertainty_threshold"></span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">review buffer multiplier</span>
+                            <input type="number" min="1" max="5" step="0.5"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="construction.oversample_factor">
+                            <span class="mt-1 block text-[11px] text-slate-500">Generated candidates = requested count x buffer. Reject only removes items after finalize.</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-emerald-800 bg-emerald-950/30 px-3 py-2">
+                            <input type="checkbox" class="accent-sky-500" x-model="construction.include_positives">
+                            <span>Include source positives</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-sky-800 bg-sky-950/30 px-3 py-2">
+                            <input type="checkbox" class="accent-sky-500" x-model="construction.allow_pick_to_give"
+                                   @change="loadConstructionPreview()">
+                            <span>Allow normal pick sources for give</span>
+                        </label>
+                        <label class="block md:col-span-2">
+                            <span class="mb-1 block text-xs text-slate-400">output dataset path</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="construction.out_root"
+                                   :placeholder="syntheticPlaceholder()">
+                        </label>
+                    </div>
+
+                    <div class="rounded border border-slate-800 bg-slate-950"
+                         :class="constructionReady() ? '' : 'pointer-events-none opacity-50'">
+                        <div class="border-b border-slate-800 px-3 py-2 text-xs">
+                            <div class="font-semibold uppercase tracking-wide text-slate-400">Scenario counts</div>
+                            <div class="mt-1 text-[11px] text-slate-500">Inputs are target counts; review buffer may generate more candidates.</div>
+                        </div>
+                        <div class="divide-y divide-slate-800">
+                            <template x-for="row in constructionScenarioRows()" :key="row.key">
+                                <div class="grid grid-cols-[1fr_6rem] gap-3 px-3 py-2 text-xs">
+                                    <div class="min-w-0">
+                                        <div class="flex items-center gap-2">
+                                            <span class="font-semibold text-slate-200" x-text="row.label"></span>
+                                            <span class="rounded border border-slate-700 px-2 py-0.5 text-slate-400" x-text="`candidates ${row.candidate_count}`"></span>
+                                        </div>
+                                        <div class="mt-1 truncate text-slate-500" x-text="row.distributionText"></div>
+                                    </div>
+                                    <input type="number" min="0"
+                                           class="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100 outline-none focus:border-sky-500"
+                                           x-model.number="construction.per_scenario_counts[row.key]">
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <div class="dp-action-row">
+                        <button class="dp-btn dp-btn-secondary"
+                                @click="loadConstructionPreview()"
+                                :disabled="!selectedDataset || busy">
+                            Preview
+                        </button>
+                        <button class="dp-btn dp-btn-primary"
+                                @click="startConstruction()"
+                                :disabled="!canStartConstruction() || busy">
+                            Start construction
+                        </button>
+                    </div>
+                </div>

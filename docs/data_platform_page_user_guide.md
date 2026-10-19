@@ -31,7 +31,9 @@ flowchart LR
 
 ### 自定义算子链
 
-处理区的 **Pipelines** 入口可组合顺序步骤：选择已登记的数据集，添加 Snapshot、数据转换或检测，
+**Data Platform > Preprocessing > Pipeline** 子视图可组合顺序步骤；顶部 **Pipelines** 快捷入口进入同一子视图，原 `/pipelines` 地址继续可用。
+
+操作时：选择已登记的数据集，添加 Snapshot、数据转换或检测，
 编辑参数后点击 Preview，再 Save version、Run saved version。Dataset input 可引用前一步的数据输出；
 Evidence 传递报告。每次保存生成不可变 revision，运行固定该版本。多数据源必须来自同一节点。
 

@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from flask import Flask, render_template
 
+from tests.datasets.console_templates import template_source
+
 TEMPLATES = Path(__file__).parents[2] / "lerobot" / "data_platform" / "templates"
 
 
@@ -230,7 +232,7 @@ def test_remote_explore_exposes_analysis_before_viewer_cache_exists():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is required for template JavaScript checks")
-    template = (TEMPLATES / "visualize_dataset_homepage.html").read_text()
+    template = template_source(TEMPLATES / "visualize_dataset_homepage.html")
     methods = []
     for name in ("remoteDatasetRecord", "analysisUrl", "visualizationItems"):
         start = re.search(rf"^                {name}\([^\n]*\) \{{", template, re.MULTILINE)
@@ -246,7 +248,7 @@ def test_remote_explore_exposes_analysis_before_viewer_cache_exists():
                                                       node_id:'offline-node', metadata:{total_episodes:2}});
         assert.equal(app.analysisUrl(), '/remote/location-123/analysis');
         const items = app.visualizationItems();
-        assert.deepEqual(items.map(item => item.key), ['viewer','analysis']);
+        assert.deepEqual(items.map(item => item.key), ['inspect','viewer','analysis','temporal_caption']);
         assert.equal(items.find(item => item.key === 'analysis').ready, true);
         assert.equal(items.find(item => item.key === 'viewer').ready, false);
     """

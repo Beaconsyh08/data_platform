@@ -1,9 +1,12 @@
-(() => {
+function mountPipelineEditor(root, options) {
   'use strict';
-  const $ = id => document.getElementById(id);
-  const canEdit = document.querySelector('main').dataset.canEdit === 'true';
+  options = options || {};
+  const $ = id => root.querySelector(`[id="${id}"]`);
+  const canEdit = root.querySelector('main').dataset.canEdit === 'true';
   const state = {operators: [], steps: [], pipeline: null, run: null, preview: null, epoch: 0, edit: 0, invalid: new Set(), dirty: false};
   let timer;
+  let disposed = false;
+  const controllers = new Set();
   const el = (tag, text, attrs = {}) => {
     const node = document.createElement(tag);
     if (text !== undefined) node.textContent = text;
@@ -15,16 +18,21 @@
     $('feedback').className = error ? 'error' : 'ok';
   };
   const api = async (path, method = 'GET', value, headers = {}) => {
-    const response = await fetch(path, {method, credentials: 'same-origin', headers: {'Content-Type': 'application/json', ...headers}, body: value === undefined ? undefined : JSON.stringify(value)});
+    if (disposed) throw new Error('Pipeline editor closed');
+    const controller = new AbortController(); controllers.add(controller);
+    try {
+    const response = await fetch(path, {signal: controller.signal, method, credentials: 'same-origin', headers: {'Content-Type': 'application/json', ...headers}, body: value === undefined ? undefined : JSON.stringify(value)});
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+    if (disposed) throw new Error("Pipeline editor closed");
     return result;
+    } finally {controllers.delete(controller);}
   };
   const definition = () => ({name: $('name').value, steps: state.steps});
   const operator = step => state.operators.find(value => value.operator_id === step.operator_id);
   const invalidate = () => {state.edit++; state.preview = null; state.dirty = true; $('run').disabled = true; $('preview-panel').hidden = true;};
   const guard = fn => async (...args) => {
-    try {await fn(...args);} catch (error) {feedback(error.message, true);}
+    try {await fn(...args);} catch (error) {if (!disposed) feedback(error.message, true);}
   };
   const button = (text, action, disabled = false) => {
     const value = el('button', text, {type: 'button', disabled: !canEdit || disabled});
@@ -142,6 +150,7 @@
     feedback(result.can_execute ? 'Plan is ready.' : 'Resolve the blocked steps before running.', !result.can_execute);
   }
   async function poll(runId, epoch) {
+    if (disposed || epoch !== state.epoch) return;
     if (document.hidden) {timer = setTimeout(() => poll(runId, epoch), 3000); return;}
     try {
       const value = await api('/api/pipeline-runs/' + runId);
@@ -213,7 +222,7 @@
     const value = await api('/api/pipelines/' + state.pipeline.pipeline_id + '/runs', 'POST', {revision: state.pipeline.revision, location_id: $('location').value}, {'Idempotency-Key': crypto.randomUUID()});
     if (epoch !== state.epoch) return;
     state.run = value; renderRun(); await loadRuns(); $('runs').value = value.run_id;
-    history.replaceState(null, '', '?location_id=' + encodeURIComponent(value.location_id) + '&run_id=' + encodeURIComponent(value.run_id)); clearTimeout(timer); poll(value.run_id, epoch);
+    if (!options.embedded) history.replaceState(null, '', '?location_id=' + encodeURIComponent(value.location_id) + '&run_id=' + encodeURIComponent(value.run_id)); clearTimeout(timer); poll(value.run_id, epoch);
   }));
   for (const action of ['cancel', 'retry']) $(action).addEventListener('click', guard(async () => {
     const epoch = state.epoch, runId = state.run.run_id;
@@ -236,17 +245,19 @@
     const result = await api('/api/pipeline-runs/' + encodeURIComponent(runId));
     if (epoch !== state.epoch) return;
     state.run = result; renderRun(); $('runs').value = runId;
-    history.replaceState(null, '', '?location_id=' + encodeURIComponent(result.location_id) + '&run_id=' + encodeURIComponent(runId));
+    if (!options.embedded) history.replaceState(null, '', '?location_id=' + encodeURIComponent(result.location_id) + '&run_id=' + encodeURIComponent(runId));
     poll(runId, epoch);
   }
   $('runs').addEventListener('change', guard(async () => {if ($('runs').value) await openRun($('runs').value);}));
-  window.addEventListener('pagehide', () => {state.epoch++; clearTimeout(timer);});
+  const destroy = () => {disposed = true; state.epoch++; clearTimeout(timer); for (const controller of controllers) controller.abort(); window.removeEventListener('pagehide', destroy);};
+  window.addEventListener('pagehide', destroy);
   for (const id of ['add', 'preview', 'save', 'name']) $(id).disabled = !canEdit || id === 'add';
   guard(async () => {
     const locations = await api('/api/control/locations?summary=1');
     locations.locations.forEach(value => $('location').append(el('option', `${value.node_name || ''} · ${value.dataset_key}`, {value: value.location_id})));
-    const requested = new URLSearchParams(location.search).get('location_id'); if (requested) $('location').value = requested;
+    const requested = options.locationId || new URLSearchParams(location.search).get('location_id'); if (requested) $('location').value = requested;
     await Promise.all([loadOperators(), loadSaved(), loadRuns()]);
-    const runId = new URLSearchParams(location.search).get('run_id'); if (runId) await openRun(runId);
+    const runId = options.embedded ? null : new URLSearchParams(location.search).get('run_id'); if (runId) await openRun(runId);
   })();
-})();
+  return {destroy};
+}

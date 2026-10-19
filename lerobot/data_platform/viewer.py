@@ -76,7 +76,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from io import BytesIO, StringIO
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 import numpy as np
 import pandas as pd
@@ -111,15 +111,11 @@ from lerobot.data_platform.cache_files import (
     open_cached_csv,
     resolve_cached_csv,
 )
-from lerobot.data_platform.cli import get_default_output_dir, run_precompute
+from lerobot.data_platform.cli import run_precompute
 from lerobot.data_platform.data_protection import (
-    evaluate_dataset_protection,
-    infer_dataset_stage,
     normalized_path,
 )
 from lerobot.data_platform.dataset_metadata import MetaOnlyDataset
-from lerobot.data_platform.lifecycle import LifecycleStore
-from lerobot.data_platform.local_execution import launch_background
 from lerobot.data_platform.operation_log import (
     append_operation_event,
     local_actor,
@@ -133,16 +129,11 @@ from lerobot.data_platform.precompute.analysis import (
     read_analysis_cache,
     write_analysis_cache,
 )
-from lerobot.data_platform.precompute.annotation import DEFAULT_FALLBACK_STAGE_COUNT
-from lerobot.data_platform.precompute.construction.review import load_construction_records
 from lerobot.data_platform.precompute.data_profile import (
     STAGE_PROFILE_EQUAL_TIME,
     dataset_semantics,
     has_body_joint_dimensions,
     has_legacy_flag_dimension,
-    require_dataset_operation,
-    require_operation,
-    resolve_data_profile,
     resolve_processing_profile,
 )
 from lerobot.data_platform.precompute.dataset_io import (
@@ -152,30 +143,19 @@ from lerobot.data_platform.precompute.dataset_io import (
     read_episode_table,
     upsert_episode_column,
 )
-from lerobot.data_platform.precompute.embedding import load_source as load_embedding_source
 from lerobot.data_platform.precompute.image_io import (
     cached_image_bytes,
     get_parquet_file,
     get_row_group_offsets,
 )
 from lerobot.data_platform.precompute.labeling import (
-    DEFAULT_BACKEND,
-    DEFAULT_BOX_THRESHOLD,
-    DEFAULT_DASHSCOPE_BASE_URL,
-    DEFAULT_DASHSCOPE_MODEL,
-    DEFAULT_MODEL_ID,
-    DEFAULT_QWEN_ENDPOINT,
-    DEFAULT_QWEN_MODEL,
-    DEFAULT_TEXT_THRESHOLD,
-    run_labeling,
-    sample_episodes_by_task_type,
+    get_capabilities as get_labeling_capabilities,
 )
 from lerobot.data_platform.precompute.labeling import (
-    get_capabilities as get_labeling_capabilities,
+    run_labeling,
 )
 from lerobot.data_platform.precompute.labeling.review import (
     available_label_variants,
-    labels_path,
     load_labels_jsonl,
     merge_reviewed_labels_to_metadata,
     read_first_frame_jpeg,
@@ -183,7 +163,6 @@ from lerobot.data_platform.precompute.labeling.review import (
     remove_reviewed_record_for_variant,
     resolved_labels_path,
     resolved_reviewed_path,
-    reviewed_path,
     save_reviewed_record_for_variant,
     source_path,
 )
@@ -214,19 +193,6 @@ from lerobot.data_platform.precompute.signal_columns import signal_columns
 from lerobot.data_platform.precompute.tagging import (
     available_tag_variants,
     current_tags,
-    tags_path,
-)
-from lerobot.data_platform.precompute.tagging import (
-    resolved_reviewed_path as tagging_resolved_reviewed_path,
-)
-from lerobot.data_platform.precompute.tagging import (
-    resolved_tags_path as tagging_resolved_tags_path,
-)
-from lerobot.data_platform.precompute.tagging import (
-    reviewed_path as tagging_reviewed_path,
-)
-from lerobot.data_platform.precompute.tagging import (
-    source_path as tagging_source_path,
 )
 from lerobot.data_platform.precompute.timeseries import (
     DATA_VERSION_DVT1,
@@ -246,7 +212,7 @@ from lerobot.data_platform.precompute.viewer_manifest import (
     write_viewer_manifest,
 )
 from lerobot.data_platform.precompute.viewer_signals import viewer_csv_labels, viewer_signal_presentation
-from lerobot.data_platform.processing.commands import build_command
+from lerobot.data_platform.processing.console_submissions import ConsoleSubmissionService
 from lerobot.data_platform.routes import (
     RouteContext,
     register_compare_routes,
@@ -260,6 +226,27 @@ from lerobot.data_platform.routes import (
     register_task_routes,
     register_temporal_caption_routes,
 )
+from lerobot.data_platform.routes.console_datasets import register_console_dataset_routes
+from lerobot.data_platform.routes.console_jobs import register_console_job_routes
+from lerobot.data_platform.services.cache import DatasetCacheService
+from lerobot.data_platform.services.catalog import DatasetCatalog
+from lerobot.data_platform.services.dataset_paths import (
+    _find_any_cached_csv,
+    _get_feature_shape,
+    _is_dataset_root,
+    _normalize_data_version,
+    _repo_id_from_key,
+    _repo_key,
+    get_columns_info,
+)
+from lerobot.data_platform.services.jobs import ConsoleJobService
+from lerobot.data_platform.services.options import (
+    _bool_option,
+    _parse_int_list,
+    _parse_str_list,
+)
+from lerobot.data_platform.services.presentation import DatasetPresentation
+from lerobot.data_platform.services.state import ConsoleState
 from lerobot.data_platform.task_catalog import TaskConfigSnapshot
 from lerobot.data_platform.task_text import cached_subtask_names, generate_subtask_text
 
@@ -349,19 +336,6 @@ def _read_parquet_head(parquet_path: Path, columns: list[str], max_rows: int) ->
     return pa.concat_tables(tables).to_pandas()
 
 
-def _find_any_cached_csv(cache_dir: Path, episode_id: int) -> Path | None:
-    pattern = f"episode_{episode_id:06d}_ds*.csv"
-    candidates = cached_csv_files(cache_dir, pattern)
-    if not candidates:
-        return None
-
-    def _ds_value(path: Path) -> int:
-        match = re.search(r"_ds(\d+)\.csv(?:\.gz)?$", path.name)
-        return int(match.group(1)) if match else 10**9
-
-    return min(candidates, key=_ds_value)
-
-
 def _get_csv_cache_path(
     cache_dir: Path, episode_id: int, downsample: int | None, precomputed_only: bool
 ) -> Path | None:
@@ -403,11 +377,6 @@ def _columns_from_csv_header(csv_path: Path, features: dict | None = None) -> li
             order.append(base)
         columns[base].append("exist_label" if scalar_exist_label_alias and name == "exist_label_0" else name)
     return [{"key": key, "value": columns[key]} for key in order]
-
-
-def _normalize_data_version(value: str | None) -> str:
-    normalized = str(value or "").upper()
-    return normalized if normalized in {DATA_VERSION_DVT1, DATA_VERSION_DVT2} else None
 
 
 def _serve_csv_stripped(csv_path: Path, data_version: str | None = None, features: dict | None = None):
@@ -508,6 +477,7 @@ _CONSOLE_GROUP_DEFS = [
                     {"key": "standardize", "label": "Standardize"},
                     {"key": "transform", "label": "Transform"},
                     {"key": "split_merge", "label": "Materialize"},
+                    {"key": "pipelines", "label": "Pipeline"},
                 ],
             },
             {
@@ -580,6 +550,7 @@ _LEGACY_CONSOLE_GROUP = {
 _CONSOLE_MODE_ALLOWED_TABS = {
     CONSOLE_MODE_FULL: {
         "mcap_import",
+        "pipelines",
         "cache",
         "explore_overview",
         "stage_subtask",
@@ -623,13 +594,6 @@ def _normalize_console_mode(mode: str | None) -> str:
     if value not in _CONSOLE_MODE_ALLOWED_TABS:
         raise ValueError(f"Unsupported console_mode: {mode}")
     return value
-
-
-def _is_dataset_root(path: Path) -> bool:
-    try:
-        return path.is_dir() and (path / "meta" / "info.json").is_file()
-    except OSError:
-        return False
 
 
 def _console_groups_for_tabs(
@@ -691,6 +655,7 @@ def run_server(
     control_plane_store = None
     if not database_url:
         allowed_tabs.discard("quality_report")
+        allowed_tabs.discard("pipelines")
     if database_url:
         from lerobot.data_platform.control_plane import ControlPlaneStore
 
@@ -746,6 +711,40 @@ def run_server(
         "protected_source_roots": set(configured_source_roots),
     }
 
+    console_state = ConsoleState(
+        light_cache_status_cache=_light_cache_status_cache,
+        viewer_tag_map_cache=_viewer_tag_map_cache,
+        issue_episodes_cache=_issue_episodes_cache,
+        flagged_episodes_cache=_flagged_episodes_cache,
+        annotation_issues_by_episode_cache=_annotation_issues_by_episode_cache,
+        flag_sidecar_json_cache=_flag_sidecar_json_cache,
+        construction_status_cache=_construction_status_cache,
+        tagging_status_cache=_tagging_status_cache,
+        embedding_count_cache=_embedding_count_cache,
+        jsonl_count_cache=_jsonl_count_cache,
+        columns_info_cache=_columns_info_cache,
+        status_cache_ttl_s=_status_cache_ttl_s,
+        task_caches=_task_caches,
+        viewer_cache_inventory_cache=_viewer_cache_inventory_cache,
+        control_plane_store=control_plane_store,
+        dataset=dataset,
+        datasets_index=datasets_index,
+        datasets_registry=datasets_registry,
+        episodes_by_key=episodes_by_key,
+        primary_key=primary_key,
+        registry_state=registry_state,
+        remote_cache_root=remote_cache_root,
+        server_state=server_state,
+        static_folder=static_folder,
+        metadata_factory=MetaOnlyDataset,
+    )
+    job_service = ConsoleJobService(control_plane_store)
+    cache_service = DatasetCacheService(console_state)
+    catalog_service = DatasetCatalog(console_state, cache_service)
+    presentation_service = DatasetPresentation(
+        console_state, cache_service, catalog_service, allowed_tabs, allowed_open_links
+    )
+
     def _admin_auth_store() -> AdminAuthStore:
         registry_path = Path(registry_state["path"])
         return AdminAuthStore(registry_path.parent.parent / "admin_auth.json")
@@ -763,61 +762,9 @@ def run_server(
     _job_state = {"current": None}  # mutable container for JobState | None
     _job_lock = threading.Lock()
 
-    def _ttl_get(cache: dict, key, builder, ttl: float | None = None):
-        now = time.time()
-        item = cache.get(key)
-        ttl = _status_cache_ttl_s if ttl is None else ttl
-        if item is not None and now - item[0] <= ttl:
-            return item[1]
-        value = builder()
-        cache[key] = (now, value)
-        return value
+    _dataset_protection_for_key = catalog_service.dataset_protection_for_key
 
-    def _file_count_signature(path: Path) -> tuple[float, int]:
-        try:
-            stat = Path(path).stat()
-            return stat.st_mtime, stat.st_size
-        except OSError:
-            return 0.0, -1
-
-    def _repo_key(repo_id: str) -> tuple[str, str]:
-        if "/" not in repo_id:
-            repo_id = f"local/{repo_id}"
-        return tuple(repo_id.split("/", 1))
-
-    def _repo_id_from_key(dataset_key: tuple[str, str]) -> str:
-        return f"{dataset_key[0]}/{dataset_key[1]}"
-
-    def _protected_source_roots() -> list[Path]:
-        return [Path(value) for value in sorted(registry_state["protected_source_roots"])]
-
-    def _dataset_stage(root_path: Path, declared_stage: str | None = None) -> str:
-        return infer_dataset_stage(root_path, declared_stage)
-
-    def _dataset_protection_for_key(dataset_key: tuple[str, str]) -> dict:
-        entry = datasets_index.get(dataset_key)
-        if entry is None:
-            raise KeyError(f"dataset is not registered: {_repo_id_from_key(dataset_key)}")
-        root_path = Path(entry["root"]).expanduser()
-        return evaluate_dataset_protection(
-            root_path,
-            source_roots=_protected_source_roots(),
-            manual_source=bool(entry.get("manual_source", False)),
-            manual_reason=str(entry.get("manual_source_reason") or ""),
-            stage=_dataset_stage(root_path, str(entry.get("stage") or "")),
-        ).to_dict()
-
-    def _dataset_is_protected(dataset_key: tuple[str, str]) -> bool:
-        return bool(_dataset_protection_for_key(dataset_key)["protected"])
-
-    def _dataset_protection_payload(dataset_key: tuple[str, str]) -> dict:
-        protection = _dataset_protection_for_key(dataset_key)
-        return {
-            "stage": protection["stage"],
-            "source_protected": protection["protected"],
-            "retention_class": protection["retention_class"],
-            "protection": protection,
-        }
+    _dataset_is_protected = catalog_service.dataset_is_protected
 
     def _get_ctx(ns: str, name: str):
         """Get (dataset_obj, static_dir) for given namespace/name, or 404."""
@@ -826,659 +773,41 @@ def run_server(
         except KeyError:
             abort(404)
 
-    def _cache_only_pair_for_key(dataset_key: tuple[str, str]) -> tuple[Path, Path] | None:
-        root_dir = registry_state.get("datasets_root")
-        if root_dir is None:
-            return None
-        root_dir = Path(root_dir).expanduser()
-        repo_id = _repo_id_from_key(dataset_key)
-        namespace, name = dataset_key
-        candidates = [
-            root_dir / name,
-            root_dir / repo_id,
-            root_dir / namespace / name,
-            root_dir / "vis" / name,
-            root_dir / "vis" / "_console" / name,
-        ]
-        seen: set[str] = set()
-        for candidate in candidates:
-            key = str(candidate)
-            if key in seen:
-                continue
-            seen.add(key)
-            try:
-                pair = _cache_only_root_and_output(candidate)
-            except Exception:
-                pair = None
-            if pair is not None:
-                return pair
-        return None
+    _static_dir_for_key = catalog_service.static_dir_for_key
 
-    def _static_dir_for_key(dataset_key: tuple[str, str]) -> Path | None:
-        entry = datasets_registry.get(dataset_key)
-        if entry is not None:
-            return Path(entry[1])
-        index_entry = datasets_index.get(dataset_key)
-        if index_entry is not None:
-            return Path(index_entry["output_dir"]).expanduser() / "static"
-        cache_pair = _cache_only_pair_for_key(dataset_key)
-        if cache_pair is not None:
-            return Path(cache_pair[1]).expanduser() / "static"
-        return static_folder if dataset_key == primary_key else None
+    _dataset_root_for_key = catalog_service.dataset_root_for_key
 
-    def _dataset_root_for_key(dataset_key: tuple[str, str]) -> Path | None:
-        entry = datasets_registry.get(dataset_key)
-        if entry is not None:
-            dataset_obj = entry[0]
-            root = getattr(dataset_obj, "root", None)
-            return Path(root).expanduser() if root is not None else None
-        index_entry = datasets_index.get(dataset_key)
-        if index_entry is not None and index_entry.get("root"):
-            return Path(index_entry["root"]).expanduser()
-        cache_pair = _cache_only_pair_for_key(dataset_key)
-        if cache_pair is not None:
-            return Path(cache_pair[0]).expanduser()
-        if dataset_key == primary_key and dataset is not None and getattr(dataset, "root", None) is not None:
-            return Path(dataset.root).expanduser()
-        return None
+    _normalize_episode_list = cache_service.normalize_episode_list
 
-    def _normalize_episode_list(values) -> list[int]:
-        episodes: set[int] = set()
-        for value in values or []:
-            try:
-                episodes.add(int(value))
-            except (TypeError, ValueError):
-                continue
-        return sorted(episodes)
+    _fallback_manifest_from_cache = cache_service.fallback_manifest_from_cache
 
-    def _fallback_manifest_from_cache(static_dir: Path, repo_id: str) -> dict | None:
-        static_dir = Path(static_dir)
-        inventory = _viewer_cache_inventory(static_dir)
-        episode_ids: set[int] = set(inventory["episode_ids"])
-        image_keys = list(inventory["image_keys"])
-        if not episode_ids:
-            return None
-        episodes = [
-            {"episode_index": episode_id, "length": 0, "tasks": []} for episode_id in sorted(episode_ids)
-        ]
-        return {
-            "version": 0,
-            "repo_id": repo_id,
-            "root": "",
-            "data_version": DATA_VERSION_DVT1,
-            "fps": 0,
-            "total_episodes": len(episodes),
-            "total_frames": 0,
-            "episodes": episodes,
-            "features": {},
-            "image_keys": image_keys,
-            "video_keys": [],
-            "downsample": 1,
-        }
+    _viewer_cache_inventory = cache_service.viewer_cache_inventory
 
-    def _dir_signature(path: Path) -> tuple[str, int, int]:
-        path = Path(path)
-        try:
-            stat = path.stat()
-            return str(path), int(stat.st_mtime_ns), int(stat.st_size)
-        except OSError:
-            return str(path), 0, -1
+    _manifest_for_key = catalog_service.manifest_for_key
 
-    def _viewer_cache_inventory(static_dir: Path) -> dict:
-        static_dir = Path(static_dir).expanduser()
-        csv_dir = static_dir / "csv"
-        videos_dir = static_dir / "videos"
-        image_dir_sigs: list[tuple[str, int, int]] = []
-        if videos_dir.is_dir():
-            try:
-                image_dirs = sorted(path for path in videos_dir.iterdir() if path.is_dir())
-            except OSError:
-                image_dirs = []
-            image_dir_sigs = [_dir_signature(path) for path in image_dirs]
-        else:
-            image_dirs = []
-        signature = (
-            _dir_signature(static_dir),
-            _dir_signature(csv_dir),
-            _dir_signature(videos_dir),
-            tuple(image_dir_sigs),
-        )
-        cached = _viewer_cache_inventory_cache.get(static_dir)
-        if cached is not None and cached[0] == signature:
-            return cached[1]
+    _root_has_cache_manifest = cache_service.root_has_cache_manifest
 
-        csv_episode_ids: set[int] = set()
-        if csv_dir.is_dir():
-            for csv_path in cached_csv_files(csv_dir):
-                match = re.match(r"episode_(\d+)_ds\d+\.csv(?:\.gz)?$", csv_path.name)
-                if match:
-                    csv_episode_ids.add(int(match.group(1)))
+    _dataset_episode_ids = cache_service.dataset_episode_ids
 
-        video_episode_ids_by_key: dict[str, set[int]] = {}
-        for image_dir in image_dirs:
-            ids: set[int] = set()
-            for video_path in image_dir.glob("episode_*_h264.mp4"):
-                match = re.match(r"episode_(\d+)_h264\.mp4$", video_path.name)
-                if match:
-                    ids.add(int(match.group(1)))
-            video_episode_ids_by_key[image_dir.name] = ids
+    _viewer_columns_info = cache_service.viewer_columns_info
 
-        episode_ids = set(csv_episode_ids)
-        for ids in video_episode_ids_by_key.values():
-            episode_ids.update(ids)
+    _dataset_image_keys = cache_service.dataset_image_keys
 
-        inventory = {
-            "episode_ids": sorted(episode_ids),
-            "csv_episode_ids": sorted(csv_episode_ids),
-            "csv_episode_id_set": set(csv_episode_ids),
-            "image_keys": sorted(video_episode_ids_by_key),
-            "video_episode_ids_by_key": {key: sorted(ids) for key, ids in video_episode_ids_by_key.items()},
-        }
-        _viewer_cache_inventory_cache[static_dir] = (signature, inventory)
-        return inventory
+    _data_profile_for_dataset = cache_service.data_profile_for_dataset
 
-    def _manifest_for_key(dataset_key: tuple[str, str]) -> tuple[dict | None, Path | None]:
-        ds_static = _static_dir_for_key(dataset_key)
-        if ds_static is None:
-            return None, None
-        manifest = load_viewer_manifest(ds_static)
-        if manifest is None:
-            manifest = _fallback_manifest_from_cache(ds_static, _repo_id_from_key(dataset_key))
-        return manifest, ds_static
+    _register_remote_cache = catalog_service.register_remote_cache
 
-    def _root_has_cache_manifest(root_path: Path, output_dir: Path) -> bool:
-        ds_static = Path(output_dir).expanduser() / "static"
-        return (ds_static / "viewer_manifest.json").is_file() or _fallback_manifest_from_cache(
-            ds_static, ""
-        ) is not None
+    _restore_remote_cache_routes = catalog_service.restore_remote_cache_routes
 
-    def _is_internal_remote_cache_entry(entry: dict) -> bool:
-        if bool(entry.get("internal_remote_cache", False)):
-            return True
-        root_path = Path(entry["root"]).expanduser()
-        output_dir = Path(entry["output_dir"]).expanduser()
-        return (
-            root_path.name == "remote_source"
-            and not _is_dataset_root(root_path)
-            and _root_has_cache_manifest(root_path, output_dir)
-        )
+    _dataset_index_uses_v3_adapter = catalog_service.dataset_index_uses_v3_adapter
 
-    def _static_has_viewer_cache(static_dir: Path) -> bool:
-        static_dir = Path(static_dir).expanduser()
-        if (static_dir / "viewer_manifest.json").is_file():
-            return True
-        return bool(_viewer_cache_inventory(static_dir)["episode_ids"])
+    _clear_episode_dependent_caches = cache_service.clear_episode_dependent_caches
 
-    def _root_has_viewer_cache(root_path: Path, output_dir: Path | None = None) -> bool:
-        if output_dir is not None:
-            return _static_has_viewer_cache(Path(output_dir).expanduser() / "static")
-        return _cache_only_root_and_output(root_path) is not None
+    _refresh_dataset_after_episode_delete = cache_service.refresh_dataset_after_episode_delete
 
-    def _cache_only_root_and_output(path: Path) -> tuple[Path, Path] | None:
-        path = Path(path).expanduser()
-        if path.name == "static" and _static_has_viewer_cache(path):
-            output_dir = path.parent
-            if output_dir.name == "_console" and output_dir.parent.name == "vis":
-                return output_dir.parent.parent, output_dir
-            return output_dir, output_dir
-        if _static_has_viewer_cache(path / "static"):
-            if path.name == "_console" and path.parent.name == "vis":
-                return path.parent.parent, path
-            return path, path
-        output_dir = get_default_output_dir(path)
-        if _static_has_viewer_cache(output_dir / "static"):
-            return path, output_dir
-        return None
+    _ensure_dataset_loaded = catalog_service.ensure_dataset_loaded
 
-    def _dataset_episode_ids(dataset_obj, dataset_key: tuple[str, str]) -> list[int]:
-        episode_ids = episodes_by_key.get(dataset_key)
-        if episode_ids is not None:
-            return episode_ids
-        total_episodes = (
-            dataset_obj.num_episodes
-            if isinstance(dataset_obj, LeRobotDataset)
-            else getattr(dataset_obj, "total_episodes", 0)
-        )
-        episode_ids = list(range(total_episodes))
-        episodes_by_key[dataset_key] = episode_ids
-        return episode_ids
-
-    def _viewer_columns_info(dataset_obj, dataset_key: tuple[str, str]):
-        features = getattr(dataset_obj, "features", {}) or {}
-        signature = (
-            dataset_key,
-            tuple(
-                sorted(
-                    (
-                        str(name),
-                        str((feature or {}).get("dtype")),
-                        repr((feature or {}).get("shape")),
-                        repr((feature or {}).get("names")),
-                    )
-                    for name, feature in features.items()
-                )
-            ),
-        )
-        cached = _columns_info_cache.get(signature)
-        if cached is not None:
-            return cached
-        result = get_columns_info(dataset_obj)
-        if len(_columns_info_cache) > 64:
-            _columns_info_cache.clear()
-        _columns_info_cache[signature] = result
-        return result
-
-    def _dataset_image_keys(dataset_obj) -> list[str]:
-        return [
-            key
-            for key, ft in getattr(dataset_obj, "features", {}).items()
-            if ft.get("dtype") in {"image", "video"}
-        ]
-
-    def _data_profile_for_dataset(dataset_obj):
-        return resolve_data_profile(
-            Path(dataset_obj.root),
-            getattr(dataset_obj, "features", {}) or {},
-        )
-
-    def _ensure_viewer_manifest(
-        dataset_obj, ds_static: Path, selected_episodes: list[int] | None = None
-    ) -> None:
-        if (ds_static / "viewer_manifest.json").is_file():
-            return
-        if not hasattr(dataset_obj, "meta"):
-            return
-        try:
-            videos_dir = ds_static / "videos"
-            cache_inventory = {} if videos_dir.is_symlink() else _viewer_cache_inventory(ds_static)
-            cached_episodes = list(cache_inventory.get("episode_ids") or [])
-            episodes = selected_episodes or cached_episodes
-            if not episodes:
-                episodes = sorted(int(ep) for ep in getattr(dataset_obj.meta, "episodes", {}))
-            image_keys = list(cache_inventory.get("image_keys") or []) or _dataset_image_keys(dataset_obj)
-            repo_id = str(
-                getattr(dataset_obj, "repo_id", None)
-                or f"local/{Path(getattr(dataset_obj, 'root', 'dataset')).name or 'dataset'}"
-            )
-            data_version = resolve_processing_profile(
-                Path(dataset_obj.root), getattr(dataset_obj, "features", {}) or {}
-            ).legacy_data_version
-            write_viewer_manifest(
-                root=Path(dataset_obj.root),
-                repo_id=repo_id,
-                meta=dataset_obj.meta,
-                episodes=sorted(int(ep) for ep in episodes),
-                image_keys=image_keys,
-                static_dir=ds_static,
-                data_version=data_version,
-                downsample=server_state.get("downsample"),
-            )
-            _viewer_cache_inventory_cache.pop(ds_static, None)
-        except Exception:
-            logging.exception("Could not write viewer manifest to %s", ds_static)
-
-    def _ensure_dataset_static(
-        dataset_obj, ds_static: Path, selected_episodes: list[int] | None = None
-    ) -> None:
-        ds_static.mkdir(parents=True, exist_ok=True)
-        videos_dir = ds_static / "videos"
-        if videos_dir.is_symlink() and not videos_dir.exists():
-            try:
-                videos_dir.unlink()
-            except OSError:
-                logging.exception("Could not remove broken videos symlink: %s", videos_dir)
-        if videos_dir.exists():
-            _ensure_viewer_manifest(dataset_obj, ds_static, selected_episodes)
-            return
-        if (
-            hasattr(dataset_obj, "meta")
-            and not getattr(dataset_obj.meta, "is_v3", False)
-            and len(getattr(dataset_obj.meta, "video_keys", [])) > 0
-        ):
-            source_videos = dataset_obj.root / "videos"
-            if source_videos.exists():
-                videos_dir.symlink_to(source_videos.resolve().as_posix())
-                _ensure_viewer_manifest(dataset_obj, ds_static, selected_episodes)
-                return
-        videos_dir.mkdir(parents=True, exist_ok=True)
-        _ensure_viewer_manifest(dataset_obj, ds_static, selected_episodes)
-
-    def _upsert_dataset_index(repo_id: str, root_path: Path, output_dir: Path) -> tuple[str, str]:
-        from lerobot.data_platform.environment import validate_dev_path
-
-        validate_dev_path(root_path)
-        validate_dev_path(output_dir)
-        root_path = normalized_path(root_path)
-        output_dir = normalized_path(output_dir)
-        dataset_key = _repo_key(repo_id)
-        existing_for_key = datasets_index.get(dataset_key)
-        if existing_for_key is not None and normalized_path(existing_for_key["root"]) != root_path:
-            suffix = uuid.uuid5(uuid.NAMESPACE_URL, str(root_path)).hex[:8]
-            dataset_key = dataset_key[0], f"{dataset_key[1]}-{suffix}"
-        existing = datasets_index.get(dataset_key) or {}
-        datasets_index[dataset_key] = {
-            "repo_id": _repo_id_from_key(dataset_key),
-            "root": str(root_path),
-            "output_dir": str(output_dir),
-            "stage": str(existing.get("stage") or infer_dataset_stage(root_path)),
-            "manual_source": bool(existing.get("manual_source", False)),
-            "manual_source_reason": str(existing.get("manual_source_reason") or ""),
-        }
-        return dataset_key
-
-    def _register_remote_cache(location: dict, cache_output_dir: Path) -> str:
-        cache_output_dir = Path(cache_output_dir).expanduser().resolve()
-        manifest = load_viewer_manifest(cache_output_dir / "static")
-        if manifest is None:
-            raise FileNotFoundError(cache_output_dir / "static" / "viewer_manifest.json")
-        placeholder_root = cache_output_dir / "remote_source"
-        previous_key = _repo_key(str(location["dataset_key"]))
-        if (datasets_index.get(previous_key) or {}).get("internal_remote_cache"):
-            datasets_index[previous_key]["root"] = str(placeholder_root)
-            datasets_registry.pop(previous_key, None)
-            episodes_by_key.pop(previous_key, None)
-            _clear_episode_dependent_caches(previous_key)
-        dataset_key = _upsert_dataset_index(
-            str(location["dataset_key"]),
-            placeholder_root,
-            cache_output_dir,
-        )
-        datasets_index[dataset_key]["internal_remote_cache"] = True
-        _save_registry()
-        episode_ids = manifest_episode_ids(manifest)
-        first_episode = episode_ids[0] if episode_ids else 0
-        return f"/{_repo_id_from_key(dataset_key)}/episode_{first_episode}"
-
-    def _restore_remote_cache_routes() -> None:
-        if control_plane_store is None:
-            return
-        for location in control_plane_store.list_locations():
-            metadata = dict(location.get("metadata") or {})
-            cache_root = str(metadata.get("cache_root") or "").strip()
-            if not metadata.get("viewer_ready") or not cache_root:
-                continue
-            try:
-                from lerobot.data_platform.dataset_results import migrate_cache
-
-                cache_base = (
-                    Path(remote_cache_root).expanduser()
-                    if remote_cache_root is not None
-                    else Path(registry_state["path"]).parent.parent / "remote_cache"
-                ).resolve()
-                if not Path(cache_root).resolve().is_relative_to(cache_base):
-                    raise ValueError("Registered cache is outside the configured cache root")
-                cache_root = str(migrate_cache(Path(cache_root), cache_base / location["location_id"]))
-                viewer_url = _register_remote_cache(location, Path(cache_root))
-            except FileNotFoundError:
-                logging.warning(
-                    "Remote viewer cache is missing for %s; marking it stale",
-                    location.get("dataset_key") or location.get("location_id"),
-                )
-                control_plane_store.mark_viewer_stale(location["location_id"])
-            except Exception:
-                logging.exception(
-                    "Could not restore remote viewer route for %s",
-                    location.get("dataset_key") or location.get("location_id"),
-                )
-            else:
-                if viewer_url != metadata.get("viewer_url") or cache_root != metadata.get("cache_root"):
-                    control_plane_store.mark_viewer_ready(
-                        location["location_id"],
-                        viewer_url=viewer_url,
-                        cache_root=cache_root,
-                    )
-
-    def _empty_cache_status(status: str = "not_loaded") -> dict:
-        return {
-            "status": status,
-            "videos": {"cached": 0, "total": 0, "status": status},
-            "csv": {"cached": 0, "total": 0, "status": status},
-        }
-
-    def _editable_vector_features(features: dict) -> list[dict]:
-        result = []
-        for key in ("action", "state"):
-            feature = (features or {}).get(key)
-            if not isinstance(feature, dict):
-                continue
-            shape = feature.get("shape") or []
-            if not shape:
-                continue
-            try:
-                dimension = int(shape[-1])
-            except (TypeError, ValueError):
-                continue
-            if dimension <= 0:
-                continue
-            raw_names = feature.get("names")
-            names = [str(name) for name in raw_names] if isinstance(raw_names, list) else []
-            result.append(
-                {
-                    "key": key,
-                    "label": "Action" if key == "action" else "State",
-                    "dimension": dimension,
-                    "names": names if len(names) == dimension else [],
-                }
-            )
-        return result
-
-    def _read_light_dataset_info(root_path: Path, output_dir: Path | None = None) -> dict | None:
-        info_path = root_path / "meta" / "info.json"
-        try:
-            info = json.loads(info_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            if output_dir is None:
-                return None
-            ds_static = Path(output_dir).expanduser() / "static"
-            manifest = load_viewer_manifest(ds_static) or _fallback_manifest_from_cache(ds_static, "")
-            if not manifest:
-                return None
-            cached_image_keys = list(_viewer_cache_inventory(ds_static).get("image_keys") or [])
-            image_keys = cached_image_keys or list(manifest.get("image_keys") or [])
-            manifest_features = manifest.get("features") or {}
-            manifest_profile = manifest.get("data_profile") or {}
-            return {
-                **dataset_semantics(manifest),
-                "total_episodes": int(manifest.get("total_episodes") or len(manifest_episode_ids(manifest))),
-                "image_keys": image_keys,
-                "editable_features": [],
-                "data_version": _normalize_data_version(manifest.get("data_version")),
-                "robot_profile": str(manifest_profile.get("robot_profile") or ""),
-                "signal_schema": str(manifest_profile.get("signal_schema") or ""),
-                "stage_profile": str(manifest_profile.get("stage_profile") or ""),
-                "gripper_encoding": str(manifest_profile.get("gripper_encoding") or ""),
-                "profile_confirmed": bool(manifest_profile.get("confirmed", False)),
-                "has_body_joints": has_body_joint_dimensions(manifest_features),
-                "dataset_format_version": str(manifest.get("codebase_version") or ""),
-            }
-        total_episodes = int(info.get("total_episodes") or 0)
-        features = info.get("features") or {}
-        data_profile = resolve_data_profile(root_path, features)
-        dataset_format_version = str(info.get("codebase_version") or "")
-        is_v3 = dataset_format_version.lower().removeprefix("v").startswith("3.")
-        image_keys = [
-            key
-            for key, feature in features.items()
-            if isinstance(feature, dict)
-            and (feature.get("dtype") == "image" or (is_v3 and feature.get("dtype") == "video"))
-        ]
-        return {
-            **dataset_semantics(info, data_profile),
-            "total_episodes": total_episodes,
-            "image_keys": image_keys,
-            "editable_features": _editable_vector_features(features),
-            "merge_signal_features": {
-                k: features[k] for k in ("action", "state", "observation.state") if k in features
-            },
-            "data_version": data_profile.legacy_data_version,
-            "robot_profile": data_profile.robot_profile,
-            "signal_schema": data_profile.signal_schema,
-            "stage_profile": data_profile.stage_profile,
-            "gripper_encoding": data_profile.gripper_encoding,
-            "profile_confirmed": data_profile.confirmed,
-            "has_body_joints": has_body_joint_dimensions(features),
-            "dataset_format_version": dataset_format_version,
-        }
-
-    def _dataset_index_uses_v3_adapter(dataset_key: tuple[str, str]) -> bool:
-        entry = datasets_index.get(dataset_key)
-        if entry is None:
-            return False
-        info = (
-            _read_light_dataset_info(
-                Path(entry["root"]).expanduser(),
-                Path(entry["output_dir"]).expanduser(),
-            )
-            or {}
-        )
-        version = str(info.get("dataset_format_version") or "").lower().removeprefix("v")
-        return version == "3" or version.startswith("3.")
-
-    def _light_episode_ids(root_path: Path, output_dir: Path) -> list[int]:
-        if _is_dataset_root(root_path):
-            info = _read_light_dataset_info(root_path, output_dir) or {}
-            total = int(info.get("total_episodes") or 0)
-            return list(range(total))
-        manifest = load_viewer_manifest(Path(output_dir).expanduser() / "static")
-        if manifest is None:
-            manifest = _fallback_manifest_from_cache(Path(output_dir).expanduser() / "static", "")
-        return manifest_episode_ids(manifest) if manifest else []
-
-    def _cached_csv_episode_count(static_dir: Path, episode_ids: list[int]) -> int:
-        allowed = {int(episode_id) for episode_id in episode_ids}
-        ids = _viewer_cache_inventory(static_dir)["csv_episode_ids"]
-        return sum(1 for episode_id in ids if int(episode_id) in allowed)
-
-    def _cached_video_count(static_dir: Path, image_keys: list[str], episode_ids: list[int]) -> int:
-        if not image_keys:
-            return 0
-        allowed = {int(episode_id) for episode_id in episode_ids}
-        by_key = _viewer_cache_inventory(static_dir)["video_episode_ids_by_key"]
-        cached = 0
-        for image_key in image_keys:
-            cached += sum(1 for episode_id in by_key.get(image_key, []) if int(episode_id) in allowed)
-        return cached
-
-    def _light_cache_status(root_path: Path, output_dir: Path) -> dict:
-        info = _read_light_dataset_info(root_path, output_dir)
-        if info is None:
-            return _empty_cache_status("unknown")
-
-        episode_ids = _light_episode_ids(root_path, output_dir)
-        total_episodes = len(episode_ids) or int(info["total_episodes"])
-        if not episode_ids:
-            episode_ids = list(range(total_episodes))
-        image_keys = info["image_keys"]
-        ds_static = output_dir / "static"
-        video_total = total_episodes * len(image_keys)
-        video_cached = _cached_video_count(ds_static, image_keys, episode_ids)
-        csv_total = total_episodes
-        csv_cached = _cached_csv_episode_count(ds_static, episode_ids)
-
-        videos_ok = video_total == 0 or video_cached == video_total
-        csv_ok = csv_total == 0 or csv_cached == csv_total
-        return {
-            "status": "cached" if videos_ok and csv_ok else "missing",
-            "videos": {
-                "cached": video_cached,
-                "total": video_total,
-                "status": "cached" if videos_ok else "missing",
-            },
-            "csv": {"cached": csv_cached, "total": csv_total, "status": "cached" if csv_ok else "missing"},
-        }
-
-    def _cached_light_cache_status(root_path: Path, output_dir: Path) -> dict:
-        root_path = Path(root_path).expanduser()
-        output_dir = Path(output_dir).expanduser()
-        return _ttl_get(
-            _light_cache_status_cache,
-            (str(root_path), str(output_dir)),
-            lambda: _light_cache_status(root_path, output_dir),
-        )
-
-    def _invalidate_light_cache_status(root_path: Path, output_dir: Path) -> None:
-        _light_cache_status_cache.pop(
-            (str(Path(root_path).expanduser()), str(Path(output_dir).expanduser())),
-            None,
-        )
-        _viewer_cache_inventory_cache.pop(Path(output_dir).expanduser() / "static", None)
-
-    def _clear_episode_dependent_caches(dataset_key: tuple[str, str] | None = None) -> None:
-        for cached_fn in [get_parquet_file, get_row_group_offsets, cached_image_bytes]:
-            if hasattr(cached_fn, "cache_clear"):
-                cached_fn.cache_clear()
-        if dataset_key is None:
-            _task_caches.clear()
-        else:
-            _task_caches.pop(dataset_key, None)
-        _viewer_tag_map_cache.clear()
-        _viewer_cache_inventory_cache.clear()
-        _issue_episodes_cache.clear()
-        _flagged_episodes_cache.clear()
-        _annotation_issues_by_episode_cache.clear()
-        _flag_sidecar_json_cache.clear()
-        _columns_info_cache.clear()
-        _construction_status_cache.clear()
-        _tagging_status_cache.clear()
-        _embedding_count_cache.clear()
-
-    def _refresh_dataset_after_episode_delete(
-        dataset_key: tuple[str, str],
-        dataset_obj,
-        ds_static: Path,
-    ) -> list[int]:
-        _clear_episode_dependent_caches(dataset_key)
-        _invalidate_light_cache_status(Path(dataset_obj.root), Path(ds_static).parent)
-        remaining_ids = sorted(int(ep) for ep in getattr(dataset_obj.meta, "episodes", {}))
-        if not remaining_ids:
-            remaining_total = int(getattr(dataset_obj, "total_episodes", 0) or 0)
-            remaining_ids = list(range(remaining_total))
-        episodes_by_key[dataset_key] = remaining_ids
-        return remaining_ids
-
-    def _ensure_dataset_loaded(dataset_key: tuple[str, str]) -> tuple[object, Path]:
-        entry = datasets_registry.get(dataset_key)
-        if entry is not None:
-            if not Path(entry[0].root).exists() and not (Path(entry[1]) / "viewer_manifest.json").is_file():
-                datasets_registry.pop(dataset_key, None)
-                raise KeyError(_repo_id_from_key(dataset_key))
-            return entry
-        index_entry = datasets_index.get(dataset_key)
-        if index_entry is None:
-            raise KeyError(_repo_id_from_key(dataset_key))
-
-        root_path = Path(index_entry["root"]).expanduser()
-        output_dir = Path(index_entry["output_dir"]).expanduser()
-        if not _is_dataset_root(root_path) and _root_has_cache_manifest(root_path, output_dir):
-            raise KeyError(f"{_repo_id_from_key(dataset_key)} is cache-only")
-        repo_id = index_entry["repo_id"]
-        dataset_obj = MetaOnlyDataset(repo_id, root=root_path)
-        ds_static = output_dir / "static"
-        _ensure_dataset_static(dataset_obj, ds_static)
-        datasets_registry[dataset_key] = (dataset_obj, ds_static)
-        episodes_by_key[dataset_key] = _dataset_episode_ids(dataset_obj, dataset_key)
-        _task_caches.pop(dataset_key, None)
-        return datasets_registry[dataset_key]
-
-    def _register_dataset(
-        dataset_obj,
-        output_dir: Path,
-        selected_episodes: list[int] | None = None,
-        persist: bool = True,
-    ) -> tuple[str, str]:
-        dataset_key = _repo_key(dataset_obj.repo_id)
-        ds_static = Path(output_dir) / "static"
-        _upsert_dataset_index(_repo_id_from_key(dataset_key), Path(dataset_obj.root), Path(output_dir))
-        _ensure_dataset_static(dataset_obj, ds_static, selected_episodes)
-        datasets_registry[dataset_key] = (dataset_obj, ds_static)
-        if selected_episodes is not None:
-            episodes_by_key[dataset_key] = selected_episodes
-        else:
-            episodes_by_key[dataset_key] = _dataset_episode_ids(dataset_obj, dataset_key)
-        _task_caches.pop(dataset_key, None)
-        if persist:
-            _save_registry()
-        return dataset_key
+    _register_dataset = catalog_service.register_dataset
 
     def _asset_url(dataset_namespace: str, dataset_name: str, rel_path: Path | str) -> str:
         return url_for(
@@ -1539,666 +868,27 @@ def run_server(
         finally:
             cap.release()
 
-    def _manifest_or_cache_episode_ids(manifest: dict | None, static_dir: Path) -> list[int]:
-        if manifest:
-            ids = manifest_episode_ids(manifest)
-            if ids:
-                return ids
-        return list(_viewer_cache_inventory(static_dir)["episode_ids"])
+    _manifest_or_cache_episode_ids = cache_service.manifest_or_cache_episode_ids
 
-    def _cache_status(dataset_obj, ds_static: Path, episode_ids: list[int]) -> dict:
-        image_keys = _dataset_image_keys(dataset_obj)
-        video_total = len(episode_ids) * len(image_keys)
-        video_cached = 0
-        for episode_id in episode_ids:
-            for image_key in image_keys:
-                video_path = ds_static / "videos" / image_key / f"episode_{episode_id:06d}_h264.mp4"
-                if video_path.is_file() and video_path.stat().st_size > 0:
-                    video_cached += 1
+    _episode_cache_status = cache_service.episode_cache_status
 
-        csv_total = len(episode_ids)
-        csv_cached = 0
-        csv_dir = ds_static / "csv"
-        if csv_dir.is_dir():
-            for episode_id in episode_ids:
-                if _find_any_cached_csv(csv_dir, episode_id) is not None:
-                    csv_cached += 1
+    _active_tag_variant = cache_service.active_tag_variant
 
-        videos_ok = video_total == 0 or video_cached == video_total
-        csv_ok = csv_total == 0 or csv_cached == csv_total
-        return {
-            "status": "cached" if videos_ok and csv_ok else "missing",
-            "videos": {
-                "cached": video_cached,
-                "total": video_total,
-                "status": "cached" if videos_ok else "missing",
-            },
-            "csv": {"cached": csv_cached, "total": csv_total, "status": "cached" if csv_ok else "missing"},
-        }
+    _serialize_dataset_light = presentation_service.serialize_dataset_light
 
-    def _episode_cache_status(dataset_obj, ds_static: Path, episode_id: int) -> dict:
-        """Lightweight cache check for viewer navigation.
+    _home_url = presentation_service.home_url
 
-        `_cache_status(..., [episode_id])` has to glob `episode_*_ds*.csv`, which
-        becomes expensive in large cache directories. For opening a single
-        episode we only need a yes/no check, so prefer direct path checks and
-        fall back to the cached inventory.
-        """
-        image_keys = _dataset_image_keys(dataset_obj)
-        video_total = len(image_keys)
-        video_cached = 0
-        for image_key in image_keys:
-            video_path = ds_static / "videos" / image_key / f"episode_{episode_id:06d}_h264.mp4"
-            if video_path.is_file() and video_path.stat().st_size > 0:
-                video_cached += 1
+    _dataset_nav = presentation_service.dataset_nav
 
-        csv_dir = ds_static / "csv"
-        csv_cached = 0
-        ds = (
-            server_state["downsample"] if server_state["downsample"] and server_state["downsample"] > 1 else 1
-        )
-        preferred_csv = resolve_cached_csv(csv_dir / f"episode_{episode_id:06d}_ds{ds}.csv")
-        default_csv = resolve_cached_csv(csv_dir / f"episode_{episode_id:06d}_ds1.csv")
-        if preferred_csv.is_file() or default_csv.is_file():
-            csv_cached = 1
-        elif csv_dir.is_dir():
-            inventory = _viewer_cache_inventory(ds_static)
-            csv_ids = inventory.get("csv_episode_id_set") or set(inventory.get("csv_episode_ids") or [])
-            if int(episode_id) in csv_ids:
-                csv_cached = 1
+    _job_timing_snapshot = job_service.job_timing_snapshot
 
-        videos_ok = video_total == 0 or video_cached == video_total
-        csv_ok = csv_cached == 1
-        return {
-            "status": "cached" if videos_ok and csv_ok else "missing",
-            "videos": {
-                "cached": video_cached,
-                "total": video_total,
-                "status": "cached" if videos_ok else "missing",
-            },
-            "csv": {"cached": csv_cached, "total": 1, "status": "cached" if csv_ok else "missing"},
-        }
+    def _serialize_job(job, *, persistent=None):
+        from flask import has_request_context
 
-    def _count_jsonl(path: Path) -> int:
-        path = Path(path)
-        signature = _file_count_signature(path)
-        cached = _jsonl_count_cache.get(path)
-        if cached is not None and cached[1] == signature:
-            return cached[2]
-        if not path.is_file():
-            _jsonl_count_cache[path] = (time.time(), signature, 0)
-            return 0
-        try:
-            with path.open() as f:
-                count = sum(1 for line in f if line.strip())
-        except OSError:
-            return 0
-        _jsonl_count_cache[path] = (time.time(), signature, count)
-        return count
+        actor = getattr(g, "control_plane_user", None) if has_request_context() else None
+        return job_service.serialize_job(job, persistent=persistent, actor=actor)
 
-    def _labeling_status(dataset_key: tuple[str, str], ds_static: Path) -> dict:
-        repo_id = _repo_id_from_key(dataset_key)
-        labeling_dir = ds_static / "labeling"
-        labels_file = labels_path(labeling_dir)
-        reviewed_file = reviewed_path(labeling_dir)
-        variants = available_label_variants(labeling_dir)
-        active = variants[0] if variants else None
-        return {
-            "status": "ready" if variants or labels_file.is_file() else "missing",
-            "labels_path": str(active["labels_path"]) if active else str(labels_file),
-            "reviewed_path": str(active["reviewed_path"]) if active else str(reviewed_file),
-            "labels_count": active["labels_count"] if active else _count_jsonl(labels_file),
-            "reviewed_count": active["reviewed_count"] if active else _count_jsonl(reviewed_file),
-            "variants": variants,
-            "review_url": f"/{repo_id}/labeling",
-            "merge_url": f"/api/labeling/{repo_id}/merge",
-        }
-
-    def _construction_status(dataset_key: tuple[str, str], dataset_obj, ds_static: Path) -> dict:
-        def _build() -> dict:
-            repo_id = _repo_id_from_key(dataset_key)
-            plan_path = (
-                Path(dataset_obj.root) / "meta" / "construction_plan.json"
-                if hasattr(dataset_obj, "root")
-                else None
-            )
-            records = load_construction_records(dataset_obj.root) if plan_path and plan_path.is_file() else []
-            rejected = sum(1 for record in records if record.get("rejected"))
-            labels_file = labels_path(ds_static / "labeling")
-            return {
-                "status": "ready" if records else "missing",
-                "object_labeling_ready": labels_file.is_file(),
-                "records_count": len(records),
-                "rejected_count": rejected,
-                "review_url": f"/{repo_id}/construction",
-            }
-
-        root = str(Path(getattr(dataset_obj, "root", ds_static)).expanduser())
-        return _ttl_get(_construction_status_cache, (_repo_id_from_key(dataset_key), root), _build)
-
-    def _tagging_status(dataset_key: tuple[str, str], ds_static: Path) -> dict:
-        def _build() -> dict:
-            repo_id = _repo_id_from_key(dataset_key)
-            tagging_dir = ds_static / "tagging"
-            tags_file = tags_path(tagging_dir)
-            reviewed_file = tagging_reviewed_path(tagging_dir)
-            heatmap_file = tagging_dir / "grasp_heatmap.png"
-            variants = available_tag_variants(tagging_dir)
-            active = variants[0] if variants else None
-            active_variant = active["id"] if active and active["id"] != "latest" else None
-            review_url = f"/{repo_id}/tagging" + (f"?variant={active_variant}" if active_variant else "")
-            return {
-                "status": "ready" if active else "missing",
-                "tags_path": active["tags_path"] if active else str(tags_file),
-                "reviewed_path": active["reviewed_path"] if active else str(reviewed_file),
-                "tags_count": active["tags_count"] if active else 0,
-                "reviewed_count": active["reviewed_count"] if active else 0,
-                "variants": variants,
-                "review_url": review_url,
-                "merge_url": f"/api/tagging/{repo_id}/merge"
-                + (f"?variant={active_variant}" if active_variant else ""),
-                "heatmap_url": f"/api/tagging/{repo_id}/heatmap" if heatmap_file.is_file() else None,
-            }
-
-        return _ttl_get(
-            _tagging_status_cache, (_repo_id_from_key(dataset_key), str(Path(ds_static).expanduser())), _build
-        )
-
-    def _active_tag_variant(tagging_dir: Path, variant: str | None = None) -> str | None:
-        variant = variant or None
-        if variant:
-            return variant
-        variants = available_tag_variants(tagging_dir)
-        if not variants:
-            return None
-        active_id = variants[0].get("id")
-        return None if active_id == "latest" else active_id
-
-    def _embedding_status(dataset_key: tuple[str, str], ds_static: Path) -> dict:
-        repo_id = _repo_id_from_key(dataset_key)
-        coords_path = Path(ds_static) / "embedding" / "coords_2d.npz"
-
-        def _count_points() -> int:
-            if not coords_path.is_file():
-                return 0
-            try:
-                data = np.load(coords_path)
-                try:
-                    return int(len(data["episode_index"]))
-                finally:
-                    close = getattr(data, "close", None)
-                    if close is not None:
-                        close()
-            except Exception:
-                return 0
-
-        points_count = _ttl_get(_embedding_count_cache, str(coords_path), _count_points)
-        source = load_embedding_source(ds_static)
-        return {
-            "status": "ready" if points_count else "missing",
-            "points_count": points_count,
-            "scatter_url": f"/{repo_id}/embedding",
-            "source": source,
-        }
-
-    def _compare_status(ds_static: Path) -> dict:
-        compare_dir = ds_static / "compare"
-        count = len([path for path in compare_dir.iterdir() if path.is_dir()]) if compare_dir.is_dir() else 0
-        return {"status": "ready" if count else "missing", "cache_count": count}
-
-    def _load_smoothing_meta(root: Path) -> dict | None:
-        meta_path = Path(root) / "meta" / "preprocess_smooth_action.json"
-        if not meta_path.is_file():
-            return None
-        try:
-            return json.loads(meta_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            return {}
-
-    def _smoothing_created_sort_key(root: Path, meta: dict | None) -> str:
-        if meta and meta.get("created_at"):
-            return str(meta["created_at"])
-        try:
-            return f"{(Path(root) / 'meta' / 'preprocess_smooth_action.json').stat().st_mtime:.6f}"
-        except OSError:
-            return ""
-
-    def _find_derived_smoothing(root: Path) -> dict | None:
-        source_root = str(Path(root).expanduser())
-        matches = []
-        for dataset_key, entry in datasets_index.items():
-            candidate_root = Path(entry["root"]).expanduser()
-            meta = _load_smoothing_meta(candidate_root)
-            if not meta:
-                continue
-            if str(Path(str(meta.get("source_root", ""))).expanduser()) != source_root:
-                continue
-            candidate_repo_id = _repo_id_from_key(dataset_key)
-            matches.append(
-                {
-                    "repo_id": candidate_repo_id,
-                    "root": str(candidate_root),
-                    "report_url": f"/{candidate_repo_id}/smoothing",
-                    "created_at": meta.get("created_at"),
-                    "fields": meta.get("fields") or [meta.get("field") or "action"],
-                    "_sort": _smoothing_created_sort_key(candidate_root, meta),
-                }
-            )
-        if not matches:
-            return None
-        matches.sort(key=lambda item: item["_sort"], reverse=True)
-        latest = dict(matches[0])
-        latest.pop("_sort", None)
-        return latest
-
-    def _smoothing_status(root: Path, repo_id: str) -> dict:
-        root = Path(root).expanduser()
-        meta = _load_smoothing_meta(root)
-        if meta is not None:
-            return {
-                "status": "ready",
-                "report_url": f"/{repo_id}/smoothing",
-                "root": str(root),
-                "source_root": meta.get("source_root"),
-                "fields": meta.get("fields") or [meta.get("field") or "action"],
-                "created_at": meta.get("created_at"),
-            }
-        derived = _find_derived_smoothing(root)
-        if derived:
-            return {
-                "status": "ready",
-                "report_url": derived["report_url"],
-                "root": derived["root"],
-                "source_root": str(root),
-                "derived_repo_id": derived["repo_id"],
-                "fields": derived.get("fields", []),
-                "created_at": derived.get("created_at"),
-            }
-        return {
-            "status": "missing",
-            "report_url": f"/{repo_id}/smoothing",
-        }
-
-    def _serialize_dataset(dataset_key: tuple[str, str]) -> dict:
-        dataset_obj, ds_static = datasets_registry[dataset_key]
-        episode_ids = _dataset_episode_ids(dataset_obj, dataset_key)
-        repo_id = _repo_id_from_key(dataset_key)
-        data_profile = _data_profile_for_dataset(dataset_obj)
-        return {
-            "key": repo_id,
-            "repo_id": repo_id,
-            "loaded": True,
-            **dataset_semantics(dataset_obj.meta.info, data_profile),
-            "cache_only": False,
-            "root": str(getattr(dataset_obj, "root", "")),
-            "output_dir": str(ds_static.parent),
-            "static_dir": str(ds_static),
-            "episodes": episode_ids,
-            "episode_count": len(episode_ids),
-            "image_keys": _dataset_image_keys(dataset_obj),
-            "editable_features": _editable_vector_features(dataset_obj.features),
-            "merge_signal_features": {
-                k: dataset_obj.features[k]
-                for k in ("action", "state", "observation.state")
-                if k in dataset_obj.features
-            },
-            "data_version": data_profile.legacy_data_version,
-            "robot_profile": data_profile.robot_profile,
-            "signal_schema": data_profile.signal_schema,
-            "stage_profile": data_profile.stage_profile,
-            "gripper_encoding": data_profile.gripper_encoding,
-            "profile_confirmed": data_profile.confirmed,
-            "has_body_joints": has_body_joint_dimensions(dataset_obj.features),
-            "dataset_format_version": str(dataset_obj.meta.info.get("codebase_version") or ""),
-            "cache": _cached_light_cache_status(Path(dataset_obj.root), ds_static.parent),
-            "labeling": _labeling_status(dataset_key, ds_static),
-            "construction": _construction_status(dataset_key, dataset_obj, ds_static),
-            "tagging": _tagging_status(dataset_key, ds_static),
-            "embedding": _embedding_status(dataset_key, ds_static),
-            "compare": _compare_status(ds_static),
-            "smoothing": _smoothing_status(Path(dataset_obj.root), repo_id),
-            "viewer_url": f"/{repo_id}/episode_{episode_ids[0] if episode_ids else 0}",
-            "analysis_url": f"/{repo_id}/analysis",
-            **_dataset_protection_payload(dataset_key),
-        }
-
-    def _serialize_dataset_light(dataset_key: tuple[str, str]) -> dict:
-        entry = datasets_index[dataset_key]
-        repo_id = _repo_id_from_key(dataset_key)
-        root_path = Path(entry["root"]).expanduser()
-        output_dir = Path(entry["output_dir"]).expanduser()
-        info = _read_light_dataset_info(root_path, output_dir) or {}
-        episode_ids = _light_episode_ids(root_path, output_dir)
-        episode_count = len(episode_ids) or int(info.get("total_episodes") or 0)
-        image_keys = list(info.get("image_keys") or [])
-        cache_only = not _is_dataset_root(root_path)
-        labeling_status = _labeling_status(dataset_key, output_dir / "static")
-        if cache_only:
-            labeling_status = {**labeling_status, "review_url": "", "merge_url": ""}
-        return {
-            "key": repo_id,
-            "repo_id": repo_id,
-            "loaded": False,
-            "cache_only": cache_only,
-            "root": str(root_path),
-            "output_dir": str(output_dir),
-            "static_dir": str(output_dir / "static"),
-            "episodes": episode_ids if episode_ids else list(range(episode_count)),
-            "episode_count": episode_count or None,
-            "image_keys": image_keys,
-            **{
-                key: info.get(key)
-                for key in ("robot_type", "data_profile", "operation_capabilities", "data_profile_protocol")
-            },
-            "editable_features": list(info.get("editable_features") or []),
-            "merge_signal_features": info.get("merge_signal_features") or {},
-            "data_version": info.get("data_version"),
-            "robot_profile": info.get("robot_profile", ""),
-            "signal_schema": info.get("signal_schema", ""),
-            "stage_profile": info.get("stage_profile", ""),
-            "gripper_encoding": info.get("gripper_encoding", ""),
-            "profile_confirmed": bool(info.get("profile_confirmed", False)),
-            "has_body_joints": bool(info.get("has_body_joints", False)),
-            "dataset_format_version": info.get("dataset_format_version", ""),
-            "cache": _cached_light_cache_status(root_path, output_dir),
-            "labeling": labeling_status,
-            "construction": {
-                "status": "missing",
-                "object_labeling_ready": labels_path(output_dir / "static" / "labeling").is_file(),
-                "records_count": 0,
-                "rejected_count": 0,
-                "review_url": f"/{repo_id}/construction",
-            },
-            "tagging": _tagging_status(dataset_key, output_dir / "static"),
-            "embedding": _embedding_status(dataset_key, output_dir / "static"),
-            "compare": _compare_status(output_dir / "static"),
-            "smoothing": _smoothing_status(root_path, repo_id),
-            "viewer_url": f"/{repo_id}/episode_{episode_ids[0] if episode_ids else 0}",
-            "analysis_url": f"/{repo_id}/analysis",
-            **_dataset_protection_payload(dataset_key),
-        }
-
-    def _serialize_dataset_fast_detail(dataset_key: tuple[str, str]) -> dict:
-        """Return enough detail for the home console without constructing LeRobotDatasetMetadata."""
-        entry = datasets_index[dataset_key]
-        repo_id = _repo_id_from_key(dataset_key)
-        root_path = Path(entry["root"]).expanduser()
-        output_dir = Path(entry["output_dir"]).expanduser()
-        ds_static = output_dir / "static"
-        info = _read_light_dataset_info(root_path, output_dir) or {}
-        episode_ids = _light_episode_ids(root_path, output_dir)
-        total_episodes = len(episode_ids) or int(info.get("total_episodes") or 0)
-        image_keys = list(info.get("image_keys") or [])
-        plan_path = root_path / "meta" / "construction_plan.json"
-        labels_file = labels_path(ds_static / "labeling")
-        cache_only = not _is_dataset_root(root_path)
-        labeling_status = _labeling_status(dataset_key, ds_static)
-        if cache_only:
-            labeling_status = {**labeling_status, "review_url": "", "merge_url": ""}
-        return {
-            "key": repo_id,
-            "repo_id": repo_id,
-            "loaded": True,
-            "lazy_loaded": True,
-            "cache_only": cache_only,
-            "root": str(root_path),
-            "output_dir": str(output_dir),
-            "static_dir": str(ds_static),
-            "episodes": episode_ids if episode_ids else list(range(total_episodes)),
-            "episode_count": total_episodes,
-            "image_keys": image_keys,
-            **{
-                key: info.get(key)
-                for key in ("robot_type", "data_profile", "operation_capabilities", "data_profile_protocol")
-            },
-            "editable_features": list(info.get("editable_features") or []),
-            "data_version": info.get("data_version"),
-            "dataset_format_version": info.get("dataset_format_version", ""),
-            "cache": _cached_light_cache_status(root_path, output_dir),
-            "labeling": labeling_status,
-            "construction": {
-                "status": "ready" if plan_path.is_file() else "missing",
-                "object_labeling_ready": labels_file.is_file(),
-                "records_count": None,
-                "rejected_count": None,
-                "review_url": f"/{repo_id}/construction",
-            },
-            "tagging": _tagging_status(dataset_key, ds_static),
-            "embedding": _embedding_status(dataset_key, ds_static),
-            "compare": _compare_status(ds_static),
-            "smoothing": _smoothing_status(root_path, repo_id),
-            "viewer_url": f"/{repo_id}/episode_{episode_ids[0] if episode_ids else 0}",
-            "analysis_url": f"/{repo_id}/analysis",
-            **_dataset_protection_payload(dataset_key),
-        }
-
-    def _home_url(repo_id: str | None = None, tab: str | None = None) -> str:
-        params = []
-        if repo_id:
-            params.append(f"select={quote(repo_id, safe='')}")
-        if tab:
-            params.append(f"tab={quote(tab, safe='')}")
-        return "/" + (f"?{'&'.join(params)}" if params else "")
-
-    def _dataset_nav(
-        repo_id: str,
-        first_episode: int = 0,
-        active: str = "",
-        dataset_obj=None,
-        ds_static: Path | None = None,
-        cache_only: bool = False,
-        manifest: dict | None = None,
-    ) -> dict:
-        dataset_key = _repo_key(repo_id)
-        if (dataset_obj is None or ds_static is None) and dataset_key in datasets_registry:
-            dataset_obj, ds_static = datasets_registry[dataset_key]
-        viewer_ready = active == "viewer"
-        labeling_ready = active == "labeling"
-        construction_ready = active == "construction"
-        tagging_ready = active == "tagging"
-        embedding_ready = active == "embedding"
-        smoothing_ready = active == "smoothing"
-        smoothing_href = f"/{repo_id}/smoothing"
-        data_version = (
-            _normalize_data_version((manifest or {}).get("data_version")) if manifest else DATA_VERSION_DVT1
-        )
-        tagging_status = {"review_url": f"/{repo_id}/tagging"}
-        if cache_only and ds_static is not None:
-            viewer_ready = True
-            labeling_status = _labeling_status(dataset_key, Path(ds_static))
-            labeling_ready = labeling_ready or labeling_status["status"] == "ready"
-            tagging_status = _tagging_status(dataset_key, Path(ds_static))
-            tagging_ready = tagging_ready or tagging_status["status"] == "ready"
-            embedding_ready = embedding_ready or (Path(ds_static) / "embedding" / "coords_2d.npz").is_file()
-            construction_ready = construction_ready or (Path(ds_static) / "construction").exists()
-        if dataset_obj is not None and ds_static is not None:
-            try:
-                viewer_ready = (
-                    viewer_ready
-                    or _cached_light_cache_status(Path(dataset_obj.root), Path(ds_static).parent)["status"]
-                    == "cached"
-                )
-            except Exception:
-                viewer_ready = viewer_ready
-            data_version = _data_profile_for_dataset(dataset_obj).legacy_data_version
-            labeling_ready = labeling_ready or labels_path(ds_static / "labeling").is_file()
-            tagging_status = _tagging_status(dataset_key, ds_static)
-            tagging_ready = tagging_ready or tagging_status["status"] == "ready"
-            embedding_ready = embedding_ready or (ds_static / "embedding" / "coords_2d.npz").is_file()
-            try:
-                construction_ready = (
-                    construction_ready
-                    or _construction_status(dataset_key, dataset_obj, ds_static)["status"] == "ready"
-                )
-            except Exception:
-                construction_ready = construction_ready
-            smoothing_status = _smoothing_status(Path(dataset_obj.root), repo_id)
-            smoothing_ready = smoothing_ready or smoothing_status["status"] == "ready"
-            smoothing_href = smoothing_status.get("report_url") or smoothing_href
-        inspect_href = f"/{repo_id}/inspect"
-        if (datasets_index.get(dataset_key) or {}).get("internal_remote_cache"):
-            inspect_href = f"/remote/{Path(datasets_index[dataset_key]['output_dir']).name}/inspect"
-        links = [
-            {
-                "key": "inspect",
-                "label": "Data Inspect",
-                "href": inspect_href,
-                "enabled": True,
-                "hint": "Preview a small window of source records or Viewer CSV.",
-            },
-            {
-                "key": "viewer",
-                "label": "Viewer",
-                "href": f"/{repo_id}/episode_{first_episode}?data_version={quote(data_version or '', safe='')}",
-                "enabled": viewer_ready,
-                "hint": "Prepare video and CSV cache first.",
-            },
-            {
-                "key": "analysis",
-                "label": "Analysis",
-                "href": f"/{repo_id}/analysis",
-                "enabled": True,
-                "hint": "",
-            },
-            {
-                "key": "labeling",
-                "label": "Labeling",
-                "href": f"/{repo_id}/labeling",
-                "enabled": labeling_ready,
-                "hint": "Run Object Labeling first.",
-            },
-            {
-                "key": "construction",
-                "label": "Construction",
-                "href": f"/{repo_id}/construction",
-                "enabled": construction_ready,
-                "hint": "Run Data Construction first.",
-            },
-            {
-                "key": "tagging",
-                "label": "Tagging",
-                "href": tagging_status.get("review_url", f"/{repo_id}/tagging")
-                if ds_static is not None
-                else f"/{repo_id}/tagging",
-                "enabled": tagging_ready,
-                "hint": "Run Auto-tagging first.",
-            },
-            {
-                "key": "embedding",
-                "label": "Embedding",
-                "href": f"/{repo_id}/embedding",
-                "enabled": embedding_ready,
-                "hint": "Run Embedding first.",
-            },
-            {
-                "key": "smoothing",
-                "label": "Smoothing",
-                "href": smoothing_href,
-                "enabled": smoothing_ready,
-                "hint": "Run Smooth action first.",
-            },
-            {
-                "key": "compare",
-                "label": "Compare",
-                "href": _home_url(repo_id, "compare"),
-                "enabled": True,
-                "hint": "",
-            },
-        ]
-        links = [link for link in links if _open_link_enabled(link["key"])]
-        return {
-            "home_url": _home_url(repo_id),
-            "nav_active": active,
-            "nav_links": links,
-            "task_configuration_enabled": any(_tab_enabled(tab) for tab in ("versions", "curation_manifest")),
-        }
-
-    def _job_timing_snapshot(job: dict, now: float | None = None) -> tuple[int, int | None]:
-        started_at = job.get("started_at")
-        if started_at is None:
-            return 0, None
-
-        end_at = job.get("finished_at") or now or time.time()
-        elapsed_seconds = int(max(0, end_at - started_at))
-        status = job.get("status")
-        if status in {"done", "error"}:
-            return elapsed_seconds, 0
-
-        current = int(job.get("current") or 0)
-        total = int(job.get("total") or 0)
-        if status == "running" and current > 0 and total > current:
-            eta_seconds = int((elapsed_seconds / current) * (total - current))
-            return elapsed_seconds, max(0, eta_seconds)
-        return elapsed_seconds, None
-
-    def _serialize_job(job: dict, *, persistent: dict | None = None) -> dict:
-        controls = {}
-        control_id = job.get("control_job_id") or job.get("persistent_job_id")
-        if control_plane_store is not None and control_id:
-            from flask import has_request_context
-
-            from lerobot.data_platform.local_execution import local_job_payload
-
-            actor = getattr(g, "control_plane_user", None) if has_request_context() else None
-            if persistent is None:
-                persistent = control_plane_store.job_manager.decorate(
-                    control_plane_store.get_job(control_id), actor
-                )
-            job = local_job_payload(control_plane_store, persistent)
-            controls = {
-                key: persistent.get(key)
-                for key in (
-                    "requested_by",
-                    "requested_by_username",
-                    "revision",
-                    "phase",
-                    "action_reasons",
-                    "queue_ahead",
-                )
-            }
-            controls["control_job_id"] = control_id
-            controls["available_actions"] = (
-                [action for action in persistent["available_actions"] if action in {"retry", "cancel"}]
-                if actor and persistent.get("requested_by") == actor["user_id"]
-                else []
-            )
-        elapsed_seconds, eta_seconds = _job_timing_snapshot(job)
-        return {
-            **controls,
-            "id": job["id"],
-            "job_type": job.get("job_type", "precompute"),
-            "dataset_key": job.get("dataset_key"),
-            "related_dataset_keys": job.get("related_dataset_keys", []),
-            "status": job["status"],
-            "progress": job.get("progress", 0),
-            "current": job.get("current", 0),
-            "total": job.get("total", 0),
-            "elapsed_seconds": elapsed_seconds,
-            "eta_seconds": eta_seconds,
-            "message": (
-                f"Queued: {controls['queue_ahead']} task(s) ahead"
-                if job["status"] == "queued" and "queue_ahead" in controls
-                else job.get("message", "")
-            ),
-            "error": job.get("error"),
-            "viewer_url": job.get("viewer_url"),
-            "review_url": job.get("review_url"),
-            "output_root": job.get("output_root"),
-            "output_dataset_key": job.get("output_dataset_key"),
-            "result_summary": job.get("result_summary"),
-            "created_at": job.get("created_at"),
-            "started_at": job.get("started_at"),
-            "finished_at": job.get("finished_at"),
-            "updated_at": job.get("updated_at"),
-            "logs": job.get("logs", [])[-80:],
-        }
-
-    def _append_job_log(job: dict, message: str) -> None:
-        if not message:
-            return
-        job.setdefault("logs", []).append({"time": time.strftime("%H:%M:%S"), "message": message})
-        if len(job["logs"]) > 200:
-            del job["logs"][:-200]
+    _append_job_log = job_service.append_job_log
 
     def _append_operation_log(
         static_dir: Path | list[Path] | tuple[Path, ...] | None,
@@ -2371,244 +1061,12 @@ def run_server(
             parent_event_id=audit_context.get("request_event_id"),
         )
 
-    def _parse_int_list(value) -> list[int] | None:
-        if value in (None, "", []):
-            return None
-        if isinstance(value, list):
-            raw_tokens = [str(v).strip() for v in value if str(v).strip()]
-        else:
-            normalized = re.sub(r"\s*-\s*", "-", str(value).strip())
-            raw_tokens = [token for token in re.split(r"[\s,]+", normalized) if token]
-        out: list[int] = []
-        for token in raw_tokens:
-            if re.fullmatch(r"\d+", token):
-                out.append(int(token))
-                continue
-            match = re.fullmatch(r"(\d+)-(\d+)", token)
-            if not match:
-                raise ValueError(f"invalid integer/range token: {token!r}")
-            start = int(match.group(1))
-            end = int(match.group(2))
-            if end < start:
-                raise ValueError(f"range end must be >= start: {token!r}")
-            out.extend(range(start, end + 1))
-        return out
+    _lifecycle_store = catalog_service.lifecycle_store
 
-    def _parse_positive_int(value, default: int = 1) -> int:
-        if value in (None, ""):
-            return default
-        return max(1, int(value))
+    _load_registry = catalog_service.load_registry
 
-    def _parse_str_list(value) -> list[str] | None:
-        if value in (None, "", []):
-            return None
-        if isinstance(value, list):
-            return [str(v).strip() for v in value if str(v).strip()]
-        tokens = re.split(r"[\s,]+", str(value).strip())
-        return [token for token in tokens if token]
-
-    def _bool_option(options: dict, key: str, default: bool = False) -> bool:
-        value = options.get(key, default)
-        if isinstance(value, str):
-            return value.lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    def _float_option(options: dict, key: str, default: float) -> float:
-        value = options.get(key, default)
-        if value in (None, ""):
-            return default
-        return float(value)
-
-    def _registry_path_for_root(root_dir: Path | None) -> Path:
-        if control_plane_store is not None or root_dir is None:
-            return static_folder / "datasets_registry.json"
-        return root_dir / "vis" / "_console" / "static" / "datasets_registry.json"
-
-    def _set_registry_root(root_dir: Path | None, load: bool = True) -> None:
-        root_dir = Path(root_dir).expanduser() if root_dir is not None else None
-        old_path = registry_state["path"]
-        registry_state["datasets_root"] = root_dir
-        registry_state["path"] = _registry_path_for_root(root_dir)
-        if load:
-            _load_registry(clear_loaded=registry_state["path"] != old_path)
-
-    def _lifecycle_store() -> LifecycleStore:
-        return LifecycleStore(Path(registry_state["path"]).parent / "lifecycle")
-
-    def _save_registry() -> None:
-        if os.environ.get("DATA_PLATFORM_INTERNAL_EXECUTION"):
-            return
-        registry_path = registry_state["path"]
-        entries = []
-        for dataset_key, entry in sorted(datasets_index.items()):
-            root_path = Path(entry["root"]).expanduser()
-            output_dir = Path(entry["output_dir"]).expanduser()
-            if not _is_dataset_root(root_path) and not _root_has_cache_manifest(root_path, output_dir):
-                continue
-            entries.append(
-                {
-                    "repo_id": _repo_id_from_key(dataset_key),
-                    "root": str(root_path),
-                    "output_dir": str(output_dir),
-                    "stage": str(entry.get("stage") or infer_dataset_stage(root_path)),
-                    "manual_source": bool(entry.get("manual_source", False)),
-                    "manual_source_reason": str(entry.get("manual_source_reason") or ""),
-                    "internal_remote_cache": _is_internal_remote_cache_entry(entry),
-                }
-            )
-        try:
-            registry_path.parent.mkdir(parents=True, exist_ok=True)
-            registry_path.write_text(
-                json.dumps(
-                    {
-                        "datasets": entries,
-                        "protected_source_roots": sorted(registry_state["protected_source_roots"]),
-                    },
-                    indent=2,
-                )
-            )
-        except OSError as exc:
-            logging.warning("Could not save dataset registry to %s: %s", registry_path, exc)
-
-    def _load_registry(clear_loaded: bool = False) -> None:
-        datasets_index.clear()
-        registry_state["protected_source_roots"] = set(registry_state["configured_source_roots"])
-        if clear_loaded:
-            datasets_registry.clear()
-            episodes_by_key.clear()
-            _task_caches.clear()
-        registry_path = registry_state["path"]
-        if not registry_path.is_file():
-            return
-        try:
-            data = json.loads(registry_path.read_text())
-        except (json.JSONDecodeError, OSError) as exc:
-            logging.warning("Could not load dataset registry from %s: %s", registry_path, exc)
-            return
-        persisted_source_roots = {
-            str(normalized_path(value))
-            for value in data.get("protected_source_roots", [])
-            if str(value).strip()
-        }
-        registry_state["protected_source_roots"] = (
-            set(registry_state["configured_source_roots"]) | persisted_source_roots
-        )
-        for entry in data.get("datasets", []):
-            root_path = Path(str(entry.get("root", ""))).expanduser()
-            repo_id = str(entry.get("repo_id") or f"local/{root_path.name or 'dataset'}")
-            output_dir = Path(entry.get("output_dir") or get_default_output_dir(root_path)).expanduser()
-            if not _is_dataset_root(root_path) and not _root_has_cache_manifest(root_path, output_dir):
-                continue
-            dataset_key = _upsert_dataset_index(repo_id, root_path, output_dir)
-            datasets_index[dataset_key].update(
-                {
-                    "stage": str(entry.get("stage") or infer_dataset_stage(root_path)),
-                    "manual_source": bool(entry.get("manual_source", False)),
-                    "manual_source_reason": str(entry.get("manual_source_reason") or ""),
-                    "internal_remote_cache": bool(entry.get("internal_remote_cache", False))
-                    or root_path.name == "remote_source",
-                }
-            )
-
-    def _visible_dataset_keys() -> list[tuple[str, str]]:
-        from flask import has_request_context
-
-        user = getattr(g, "control_plane_user", None) if has_request_context() else None
-        allowed = control_plane_store.restricted_dataset_keys(user["user_id"]) if user else None
-        return [
-            dataset_key
-            for dataset_key in sorted(datasets_index)
-            if (allowed is None or _repo_id_from_key(dataset_key) in allowed)
-            and not _is_internal_remote_cache_entry(datasets_index[dataset_key])
-            and (
-                _is_dataset_root(Path(datasets_index[dataset_key]["root"]).expanduser())
-                or _root_has_cache_manifest(
-                    Path(datasets_index[dataset_key]["root"]).expanduser(),
-                    Path(datasets_index[dataset_key]["output_dir"]).expanduser(),
-                )
-            )
-        ]
-
-    def _dataset_candidates(root_dir: Path | None = None, *, discover: bool = True) -> list[dict]:
-        if root_dir is None:
-            return []
-        root_dir = Path(root_dir).expanduser()
-        if not root_dir.exists():
-            return []
-
-        roots: list[Path] = []
-        if not discover:
-            base = normalized_path(root_dir)
-            roots = [
-                normalized_path(entry["root"])
-                for entry in datasets_index.values()
-                if not _is_internal_remote_cache_entry(entry)
-                and normalized_path(entry["root"]).is_relative_to(base)
-            ]
-        elif _is_dataset_root(root_dir):
-            roots.append(root_dir)
-        else:
-            stack = [root_dir]
-            while stack:
-                current = stack.pop()
-                if current != root_dir and _is_dataset_root(current):
-                    roots.append(current)
-                    continue
-                try:
-                    children = sorted(current.iterdir(), key=lambda item: item.name, reverse=True)
-                except OSError:
-                    continue
-                for child in children:
-                    if not child.is_dir():
-                        continue
-                    if child.name.startswith(".") or child.name in {"meta", "data", "videos"}:
-                        continue
-                    stack.append(child)
-        normalized_roots: dict[Path, Path | None] = {}
-        for root in roots:
-            if _is_dataset_root(root):
-                normalized_roots.setdefault(root, None)
-        roots = sorted(normalized_roots, key=lambda item: item.as_posix())
-
-        candidates = []
-        registered_by_root = {
-            str(normalized_path(entry["root"])): _repo_id_from_key(dataset_key)
-            for dataset_key, entry in datasets_index.items()
-        }
-        output_by_root = {
-            str(normalized_path(entry["root"])): entry["output_dir"] for entry in datasets_index.values()
-        }
-        for dataset_root in roots:
-            dataset_root = normalized_path(dataset_root)
-            repo_id = f"local/{dataset_root.name or 'dataset'}"
-            registered_key = registered_by_root.get(str(dataset_root))
-            default_output_dir = normalized_roots.get(dataset_root) or get_default_output_dir(dataset_root)
-            output_dir = Path(output_by_root.get(str(dataset_root), str(default_output_dir)))
-            info = _read_light_dataset_info(dataset_root, output_dir) or {}
-            protection = evaluate_dataset_protection(
-                dataset_root,
-                source_roots=_protected_source_roots(),
-                stage=_dataset_stage(dataset_root),
-            ).to_dict()
-            candidates.append(
-                {
-                    "name": dataset_root.name,
-                    "root": str(dataset_root),
-                    "repo_id": registered_key or repo_id,
-                    "output_dir": str(output_dir),
-                    "registered": registered_key is not None,
-                    "registered_key": registered_key,
-                    "data_version": info.get("data_version"),
-                    "dataset_format_version": info.get("dataset_format_version", ""),
-                    "cache_only": False,
-                    "cache": _cached_light_cache_status(dataset_root, output_dir),
-                    "stage": protection["stage"],
-                    "source_protected": protection["protected"],
-                    "retention_class": protection["retention_class"],
-                    "protection": protection,
-                }
-            )
-        return candidates
+    def _visible_dataset_keys():
+        return catalog_service.visible_dataset_keys(getattr(g, "control_plane_user", None))
 
     def _check_edit_permission(static_dir: Path, episode_id):
         """Check if editing is allowed for the given episode."""
@@ -3053,659 +1511,9 @@ def run_server(
             control_plane_user=getattr(g, "control_plane_user", None),
         )
 
-    @app.route("/api/datasets")
-    def api_datasets():
-        return jsonify({"datasets": [_serialize_dataset_light(key) for key in _visible_dataset_keys()]})
-
-    @app.route("/api/datasets/<string:dataset_namespace>/<string:dataset_name>")
-    def api_dataset_detail(dataset_namespace, dataset_name):
-        dataset_key = (dataset_namespace, dataset_name)
-        if request.args.get("full") not in {"1", "true", "yes"}:
-            if dataset_key not in datasets_index:
-                return jsonify({"error": f"dataset is not registered: {_repo_id_from_key(dataset_key)}"}), 404
-            return jsonify({"dataset": _serialize_dataset_fast_detail(dataset_key)})
-        if dataset_key in datasets_index:
-            entry = datasets_index[dataset_key]
-            root_path = Path(entry["root"]).expanduser()
-            if not _is_dataset_root(root_path):
-                return jsonify({"dataset": _serialize_dataset_fast_detail(dataset_key)})
-        try:
-            _ensure_dataset_loaded(dataset_key)
-        except KeyError:
-            return jsonify({"error": f"dataset is not registered: {_repo_id_from_key(dataset_key)}"}), 404
-        except Exception as exc:
-            logging.exception("Failed to load dataset %s", _repo_id_from_key(dataset_key))
-            return jsonify({"error": str(exc)}), 400
-        return jsonify({"dataset": _serialize_dataset(dataset_key)})
-
-    @app.route("/api/datasets/<string:dataset_namespace>/<string:dataset_name>", methods=["DELETE"])
-    def api_delete_dataset(dataset_namespace, dataset_name):
-        if not _admin_authenticated():
-            return jsonify({"error": "administrator access is required to unregister datasets"}), 403
-        dataset_key = (dataset_namespace, dataset_name)
-        if dataset_key not in datasets_index and dataset_key not in datasets_registry:
-            return jsonify({"error": f"dataset is not registered: {_repo_id_from_key(dataset_key)}"}), 404
-
-        datasets_index.pop(dataset_key, None)
-        datasets_registry.pop(dataset_key, None)
-        episodes_by_key.pop(dataset_key, None)
-        _task_caches.pop(dataset_key, None)
-        _save_registry()
-        return jsonify({"status": "ok", "dataset_key": _repo_id_from_key(dataset_key)})
-
-    @app.route(
-        "/api/datasets/<string:dataset_namespace>/<string:dataset_name>/protection",
-        methods=["PATCH"],
-    )
-    def api_dataset_protection(dataset_namespace, dataset_name):
-        dataset_key = (dataset_namespace, dataset_name)
-        entry = datasets_index.get(dataset_key)
-        if entry is None:
-            return jsonify({"error": f"dataset is not registered: {_repo_id_from_key(dataset_key)}"}), 404
-        body = request.get_json(silent=True) or {}
-        if "protected" not in body:
-            return jsonify({"error": "protected is required"}), 400
-        manual_source = _bool_option(body, "protected", False)
-        entry["manual_source"] = manual_source
-        entry["manual_source_reason"] = (
-            str(body.get("reason") or "Manual source protection") if manual_source else ""
-        )
-        _save_registry()
-        protection = _dataset_protection_for_key(dataset_key)
-        ds_static = _static_dir_for_key(dataset_key)
-        if ds_static is not None:
-            _append_operation_log(
-                ds_static,
-                "dataset_protection_update",
-                dataset_key=dataset_key,
-                dataset_root=Path(entry["root"]),
-                details={"protection": protection},
-            )
-        return jsonify({"dataset": _serialize_dataset_fast_detail(dataset_key)})
-
-    @app.route("/api/source_roots", methods=["GET", "PATCH"])
-    def api_source_roots():
-        if request.method == "GET":
-            return jsonify({"source_roots": [str(path) for path in _protected_source_roots()]})
-        body = request.get_json(silent=True) or {}
-        root_value = str(body.get("root") or "").strip()
-        if not root_value:
-            return jsonify({"error": "root is required"}), 400
-        root_path = normalized_path(root_value)
-        if not root_path.is_dir():
-            return jsonify({"error": f"source root does not exist: {root_path}"}), 400
-        protected = _bool_option(body, "protected", True)
-        value = str(root_path)
-        if protected:
-            registry_state["protected_source_roots"].add(value)
-        else:
-            if value in registry_state["configured_source_roots"]:
-                return jsonify(
-                    {"error": "source root is configured by the CLI and requires a restart to remove"}
-                ), 409
-            registry_state["protected_source_roots"].discard(value)
-        _save_registry()
-        return jsonify(
-            {
-                "source_roots": [str(path) for path in _protected_source_roots()],
-                "datasets": [_serialize_dataset_light(key) for key in _visible_dataset_keys()],
-            }
-        )
-
-    @app.route("/api/dataset_roots")
-    def api_dataset_roots():
-        scan = request.args.get("scan", "1").lower()
-        if scan not in {"0", "1", "false", "true", "no", "yes"}:
-            return jsonify({"error": "scan must be 0 or 1"}), 400
-        discover = scan in {"1", "true", "yes"}
-        root_value = request.args.get("root_dir")
-        root_dir = Path(root_value).expanduser() if root_value else registry_state["datasets_root"]
-        if root_dir is not None and root_dir.exists():
-            _set_registry_root(
-                root_dir, load=discover or _registry_path_for_root(root_dir) != registry_state["path"]
-            )
-        return jsonify(
-            {
-                "root_dir": str(root_dir) if root_dir else "",
-                "candidates": _dataset_candidates(root_dir, discover=discover),
-                "registry_path": str(registry_state["path"]),
-                "source_roots": [str(path) for path in _protected_source_roots()],
-                "root_protected": bool(
-                    root_dir
-                    and evaluate_dataset_protection(
-                        root_dir,
-                        source_roots=_protected_source_roots(),
-                    ).protected
-                ),
-            }
-        )
-
-    @app.route("/api/datasets/register", methods=["POST"])
-    def api_register_dataset():
-        body = request.get_json(silent=True) or {}
-        roots_value = body.get("roots")
-        if roots_value is None:
-            root_value = str(body.get("root", "")).strip()
-            roots = [root_value] if root_value else []
-        elif isinstance(roots_value, list):
-            roots = [str(value).strip() for value in roots_value if str(value).strip()]
-        else:
-            roots = [str(roots_value).strip()] if str(roots_value).strip() else []
-        if not roots:
-            return jsonify({"error": "root or roots is required"}), 400
-
-        registered = []
-        errors = []
-        for idx, root_value in enumerate(roots):
-            root_path = Path(root_value).expanduser()
-            try:
-                if not root_path.exists():
-                    raise ValueError(f"dataset root does not exist: {root_path}")
-                if not _is_dataset_root(root_path):
-                    raise ValueError(
-                        "cache-only registration is temporarily unavailable; "
-                        f"a dataset requires {root_path / 'meta' / 'info.json'}"
-                    )
-                explicit_output_dir = str(body.get("output_dir") or "").strip()
-
-                explicit_repo_id = str(body.get("repo_id") or "").strip() if len(roots) == 1 else ""
-                repo_id = explicit_repo_id or f"local/{root_path.name or 'dataset'}"
-                if "/" not in repo_id:
-                    repo_id = f"local/{repo_id}"
-                output_dir = Path(explicit_output_dir or get_default_output_dir(root_path)).expanduser()
-                dataset_key = _upsert_dataset_index(repo_id, root_path, output_dir)
-                registered.append(_serialize_dataset_light(dataset_key))
-                _append_operation_log(
-                    output_dir / "static",
-                    "dataset_register",
-                    dataset_key=dataset_key,
-                    dataset_root=root_path,
-                    details={"root": str(root_path), "batch_index": idx, "batch_size": len(roots)},
-                )
-            except Exception as exc:
-                logging.exception("Failed to register dataset %s", root_path)
-                errors.append({"root": str(root_path), "error": str(exc)})
-
-        if registered:
-            _save_registry()
-        if not registered:
-            return jsonify(
-                {"error": errors[0]["error"] if errors else "no dataset registered", "errors": errors}
-            ), 400
-
-        payload = {"datasets": registered, "errors": errors}
-        if len(registered) == 1:
-            payload["dataset"] = registered[0]
-        return jsonify(payload)
-
-    @app.route("/api/precompute/start", methods=["POST"])
-    def api_start_precompute():
-        body = request.get_json(silent=True) or {}
-        dataset_key_value = str(body.get("dataset_key") or body.get("repo_id") or "").strip()
-        if not dataset_key_value:
-            return jsonify({"error": "dataset_key is required"}), 400
-        dataset_key = _repo_key(dataset_key_value)
-        index_entry = datasets_index.get(dataset_key)
-        if index_entry is None:
-            return jsonify({"error": f"dataset is not registered: {dataset_key_value}"}), 404
-
-        root_path = Path(index_entry["root"]).expanduser()
-        output_dir = Path(index_entry["output_dir"]).expanduser()
-        repo_id = index_entry["repo_id"]
-        info = _read_light_dataset_info(root_path, output_dir) or {}
-        options = body.get("options") or {}
-        if not _tab_enabled("cache"):
-            return jsonify({"error": f"cache preparation is disabled in {console_mode} console mode"}), 403
-        if console_mode == CONSOLE_MODE_VISUALIZE:
-            options = dict(options)
-            for field in [
-                "fix_episode_indices",
-                "write_parquet",
-                "write_subtask",
-                "overwrite_parquet",
-                "overwrite_subtask_text",
-                "annotate",
-            ]:
-                options[field] = False
-            options["visualize_only"] = True
-            options["precomputed_only"] = True
-        try:
-            if any(
-                options.get(key)
-                for key in (
-                    "force_recompute_stage",
-                    "annotate",
-                    "write_parquet",
-                    "write_subtask",
-                    "overwrite_parquet",
-                    "overwrite_subtask_text",
-                )
-            ):
-                require_dataset_operation(
-                    root_path, "auto_stage", data_version_override=options.get("data_version")
-                )
-            if options.get("embed_policy"):
-                require_operation(info, "embedding")
-            if info.get("robot_type", "").lower() == "umi" and options.get("data_version"):
-                raise ValueError("UMI data cannot use a DVT processing profile")
-            fallback_stage_count = int(options.get("fallback_stage_count") or DEFAULT_FALLBACK_STAGE_COUNT)
-            if fallback_stage_count < 2:
-                raise ValueError("fallback_stage_count must be at least 2")
-        except ValueError as exc:
-            return jsonify(error=str(exc)), 400
-        selected_episodes = _parse_int_list(options.get("episodes"))
-        downsample_opt = options.get("downsample")
-        downsample_opt = int(downsample_opt) if downsample_opt not in (None, "") else None
-        data_version = resolve_processing_profile(
-            root_path, data_version_override=options.get("data_version")
-        ).legacy_data_version
-        total_episodes = (
-            len(selected_episodes) if selected_episodes is not None else int(info.get("total_episodes") or 0)
-        )
-
-        server_state["max_frames"] = None
-        server_state["downsample"] = downsample_opt
-        server_state["prepare_videos"] = _bool_option(options, "prepare_videos", True)
-        server_state["precomputed_only"] = _bool_option(options, "precomputed_only", True)
-        server_state["data_version"] = data_version
-
-        job_id = uuid.uuid4().hex[:12]
-        now = time.time()
-        job = {
-            "id": job_id,
-            "dataset_key": _repo_id_from_key(dataset_key),
-            "status": "queued",
-            "progress": 0,
-            "current": 0,
-            "total": total_episodes,
-            "message": "Queued",
-            "error": None,
-            "viewer_url": None,
-            "created_at": now,
-            "started_at": None,
-            "finished_at": None,
-            "updated_at": now,
-            "elapsed_seconds": 0,
-            "eta_seconds": None,
-            "logs": [],
-        }
-        with _jobs_lock:
-            jobs_registry[job_id] = job
-
-        def _update_job(payload: dict) -> None:
-            route_context.update_job(job, payload)
-
-        def _run_job() -> None:
-            try:
-                _update_job({"status": "running", "message": "Starting precompute"})
-                _update_job(
-                    {
-                        "status": "running",
-                        "message": (
-                            f"Using robot/Stage profile: {data_version}; "
-                            f"force stage recompute: {_bool_option(options, 'force_recompute_stage', False)}; "
-                            f"overwrite CSV: {_bool_option(options, 'overwrite_csv', False)}"
-                        ),
-                    }
-                )
-                dataset_format_version = str(info.get("dataset_format_version") or "")
-                source_is_v3 = dataset_format_version.lower().removeprefix("v").startswith("3.")
-                if source_is_v3:
-                    _update_job(
-                        {
-                            "status": "running",
-                            "message": "Using the read-only v3.0 viewer cache adapter",
-                        }
-                    )
-                    result = run_v3_viewer_precompute(
-                        root=root_path,
-                        repo_id=repo_id,
-                        episodes=selected_episodes,
-                        output_dir=output_dir,
-                        prepare_videos=_bool_option(options, "prepare_videos", True),
-                        prepare_csv=_bool_option(options, "prepare_csv", True),
-                        workers=_parse_positive_int(options.get("prepare_workers"), 8),
-                        downsample=downsample_opt,
-                        overwrite_videos=_bool_option(options, "overwrite", False),
-                        overwrite_csv=_bool_option(options, "overwrite_csv", False),
-                        data_version=data_version,
-                        progress_callback=_update_job,
-                        fallback_stage_count=fallback_stage_count,
-                        force_recompute_stage=_bool_option(options, "force_recompute_stage", False),
-                    )
-                else:
-                    result = run_precompute(
-                        root=root_path,
-                        repo_id=repo_id,
-                        episodes=selected_episodes,
-                        image_keys=None,
-                        output_dir=output_dir,
-                        prepare_videos=_bool_option(options, "prepare_videos", True),
-                        prepare_csv=_bool_option(options, "prepare_csv", True),
-                        prepare_workers=_parse_positive_int(options.get("prepare_workers"), 8),
-                        max_frames=None,
-                        downsample=downsample_opt,
-                        overwrite=_bool_option(options, "overwrite", False),
-                        overwrite_csv=_bool_option(options, "overwrite_csv", False),
-                        fix_episode_indices_enabled=_bool_option(options, "fix_episode_indices", False),
-                        annotate=_bool_option(options, "annotate", False),
-                        write_parquet=_bool_option(options, "write_parquet", False),
-                        force_recompute_stage=_bool_option(options, "force_recompute_stage", False),
-                        fallback_stage_count=_parse_positive_int(
-                            options.get("fallback_stage_count"),
-                            DEFAULT_FALLBACK_STAGE_COUNT,
-                        ),
-                        task_config=_lifecycle_store().tasks.snapshot(repo_id).to_dict(),
-                        write_subtask=_bool_option(options, "write_subtask", False),
-                        overwrite_parquet=_bool_option(options, "overwrite_parquet", False),
-                        overwrite_subtask_text=_bool_option(options, "overwrite_subtask_text", False),
-                        visualize_only=_bool_option(options, "visualize_only", False),
-                        data_version=data_version,
-                        progress_callback=_update_job,
-                        show_progress=False,
-                    )
-                result_key = _upsert_dataset_index(result.repo_id, result.root, result.output_dir)
-                datasets_registry.pop(result_key, None)
-                episodes_by_key[result_key] = result.episodes
-                _task_caches.pop(result_key, None)
-                _invalidate_light_cache_status(result.root, result.output_dir)
-                _save_registry()
-                first_episode = result.episodes[0] if result.episodes else 0
-                viewer_url = f"/{result.repo_id}/episode_{first_episode}"
-                with _jobs_lock:
-                    finished_at = time.time()
-                    job["status"] = "done"
-                    job["progress"] = 100
-                    job["current"] = job.get("total") or len(result.episodes)
-                    job["total"] = job.get("total") or len(result.episodes)
-                    job["message"] = "Precompute complete"
-                    job["viewer_url"] = viewer_url
-                    job["finished_at"] = finished_at
-                    elapsed_seconds, eta_seconds = _job_timing_snapshot(job, finished_at)
-                    job["elapsed_seconds"] = elapsed_seconds
-                    job["eta_seconds"] = eta_seconds
-                    job["updated_at"] = finished_at
-                    _append_job_log(job, "Precompute complete")
-                _audit_job(job, "success")
-            except Exception as exc:
-                logging.exception("Precompute job failed")
-                with _jobs_lock:
-                    finished_at = time.time()
-                    job["status"] = "error"
-                    job["error"] = str(exc)
-                    job["message"] = "Precompute failed"
-                    job["finished_at"] = finished_at
-                    elapsed_seconds, eta_seconds = _job_timing_snapshot(job, finished_at)
-                    job["elapsed_seconds"] = elapsed_seconds
-                    job["eta_seconds"] = eta_seconds
-                    job["updated_at"] = finished_at
-                    _append_job_log(job, f"Error: {exc}")
-                _audit_job(job, "failed", exc)
-
-        launch_background(
-            target=_run_job,
-            name=f"precompute-{job_id}",
-            daemon=True,
-            thread_factory=threading.Thread,
-            command=build_command(
-                "viewer.prepare",
-                run_precompute,
-                root=root_path,
-                repo_id=repo_id,
-                episodes=selected_episodes,
-                image_keys=None,
-                output_dir=output_dir,
-                prepare_videos=_bool_option(options, "prepare_videos", True),
-                prepare_csv=_bool_option(options, "prepare_csv", True),
-                prepare_workers=_parse_positive_int(options.get("prepare_workers"), 8),
-                max_frames=None,
-                downsample=downsample_opt,
-                overwrite=_bool_option(options, "overwrite", False),
-                overwrite_csv=_bool_option(options, "overwrite_csv", False),
-                fix_episode_indices_enabled=_bool_option(options, "fix_episode_indices", False),
-                annotate=_bool_option(options, "annotate", False),
-                write_parquet=_bool_option(options, "write_parquet", False),
-                force_recompute_stage=_bool_option(options, "force_recompute_stage", False),
-                fallback_stage_count=_parse_positive_int(
-                    options.get("fallback_stage_count"), DEFAULT_FALLBACK_STAGE_COUNT
-                ),
-                task_config=_lifecycle_store().tasks.snapshot(repo_id).to_dict(),
-                write_subtask=_bool_option(options, "write_subtask", False),
-                overwrite_parquet=_bool_option(options, "overwrite_parquet", False),
-                overwrite_subtask_text=_bool_option(options, "overwrite_subtask_text", False),
-                visualize_only=_bool_option(options, "visualize_only", False),
-                data_version=data_version,
-                show_progress=False,
-            ),
-        )
-        return jsonify({"job": _serialize_job(job)})
-
     @app.route("/api/labeling/capabilities")
     def api_labeling_capabilities():
         return jsonify(get_labeling_capabilities())
-
-    @app.route("/api/labeling/start", methods=["POST"])
-    def api_start_labeling():
-        body = request.get_json(silent=True) or {}
-        options = body.get("options") or {}
-        backend = str(options.get("backend") or DEFAULT_BACKEND).strip() or DEFAULT_BACKEND
-        capabilities = get_labeling_capabilities()
-        backend_capabilities = capabilities.get("backends", {}).get(backend)
-        if backend_capabilities is None:
-            return jsonify({"error": f"Unknown detector backend: {backend}"}), 400
-        if not backend_capabilities.get("available"):
-            if backend == "qwen_remote":
-                install_hint = "Object labeling with Remote Qwen requires `gradio-client`."
-                pip_hint = "Install via `pip install gradio-client`."
-            else:
-                install_hint = "Object labeling requires `transformers` and `torch`."
-                pip_hint = "Install via `pip install transformers torch torchvision`."
-            return jsonify(
-                {
-                    "error": f"{install_hint} {pip_hint}",
-                    "details": backend_capabilities.get("error"),
-                }
-            ), 400
-
-        dataset_key_value = str(body.get("dataset_key") or body.get("repo_id") or "").strip()
-        if not dataset_key_value:
-            return jsonify({"error": "dataset_key is required"}), 400
-        dataset_key = _repo_key(dataset_key_value)
-        try:
-            dataset_obj, ds_static = _ensure_dataset_loaded(dataset_key)
-        except KeyError:
-            return jsonify({"error": f"dataset is not registered: {dataset_key_value}"}), 404
-        except Exception as exc:
-            logging.exception("Failed to load dataset for object labeling %s", dataset_key_value)
-            return jsonify({"error": str(exc)}), 400
-
-        selected_episodes = _parse_int_list(options.get("episodes"))
-        model_id = str(options.get("model_id") or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
-        default_endpoint = (
-            DEFAULT_DASHSCOPE_BASE_URL if backend == "qwen_dashscope" else DEFAULT_QWEN_ENDPOINT
-        )
-        default_qwen_model = DEFAULT_DASHSCOPE_MODEL if backend == "qwen_dashscope" else DEFAULT_QWEN_MODEL
-        endpoint = str(options.get("endpoint") or default_endpoint).strip() or default_endpoint
-        qwen_model = str(options.get("qwen_model") or default_qwen_model).strip() or default_qwen_model
-        qwen_token = str(options.get("qwen_token") or "").strip() or None
-        if (
-            backend_capabilities.get("requires_token")
-            and not qwen_token
-            and not backend_capabilities.get("token_configured")
-        ):
-            token_env = (backend_capabilities.get("token_env_vars") or ["DASHSCOPE_API_KEY"])[0]
-            return jsonify(
-                {"error": f"{backend} requires a token. Set {token_env} or paste it in the token field."}
-            ), 400
-        min_pixels = int(options.get("min_pixels") or 1024)
-        max_pixels = int(options.get("max_pixels") or 9800)
-        workers = max(1, int(options.get("workers") or 8))
-        devices = str(options.get("devices") or "").strip()
-        box_threshold = _float_option(options, "box_threshold", DEFAULT_BOX_THRESHOLD)
-        text_threshold = _float_option(options, "text_threshold", DEFAULT_TEXT_THRESHOLD)
-        save_vis = _bool_option(options, "save_vis", False)
-        trial = _bool_option(options, "trial", False)
-        labeling_run_mode = str(options.get("run_mode") or "missing").strip().lower()
-        if labeling_run_mode not in {"missing", "full"}:
-            return jsonify({"error": "labeling run_mode must be 'missing' or 'full'"}), 400
-        trial_per_type = max(1, int(options.get("trial_per_type") or 20))
-        trial_seed_value = options.get("trial_seed")
-        trial_seed = int(trial_seed_value) if trial_seed_value not in (None, "") else int(time.time())
-        server_state["annotate"] = _bool_option(options, "annotate", True)
-
-        output_variant = None
-        sample_result = None
-        if trial:
-            sample_result = sample_episodes_by_task_type(
-                dataset_obj.root,
-                dataset_obj.meta,
-                per_type=trial_per_type,
-                episodes=selected_episodes,
-                seed=trial_seed,
-            )
-            selected_episodes = sample_result.episodes
-            output_variant = f"{backend}_trial"
-            if not selected_episodes:
-                return jsonify({"error": "No supported episodes found for trial labeling."}), 400
-
-        total = (
-            len(selected_episodes)
-            if selected_episodes is not None
-            else len(_dataset_episode_ids(dataset_obj, dataset_key))
-        )
-        job_id = uuid.uuid4().hex[:12]
-        now = time.time()
-        repo_id = _repo_id_from_key(dataset_key)
-        job = {
-            "id": job_id,
-            "job_type": "labeling",
-            "dataset_key": repo_id,
-            "status": "queued",
-            "progress": 0,
-            "current": 0,
-            "total": total,
-            "message": "Queued",
-            "error": None,
-            "viewer_url": None,
-            "review_url": f"/{repo_id}/labeling" + (f"?variant={output_variant}" if output_variant else ""),
-            "created_at": now,
-            "started_at": None,
-            "finished_at": None,
-            "updated_at": now,
-            "elapsed_seconds": 0,
-            "eta_seconds": None,
-            "logs": [],
-        }
-        with _jobs_lock:
-            jobs_registry[job_id] = job
-
-        def _update_job(payload: dict) -> None:
-            route_context.update_job(job, payload)
-
-        def _run_job() -> None:
-            try:
-                start_message = (
-                    f"Starting object labeling ({backend}, mode={labeling_run_mode}, workers={workers})"
-                )
-                if trial and sample_result is not None:
-                    start_message = (
-                        f"Starting trial object labeling ({backend}, mode={labeling_run_mode}, workers={workers}, "
-                        f"per_type={trial_per_type}, seed={sample_result.seed}, "
-                        f"sampled={len(selected_episodes)}, counts={sample_result.counts})"
-                    )
-                _update_job(
-                    {
-                        "status": "running",
-                        "message": start_message,
-                    }
-                )
-                result = run_labeling(
-                    root=dataset_obj.root,
-                    meta=dataset_obj.meta,
-                    episodes=selected_episodes,
-                    static_dir=ds_static,
-                    backend=backend,
-                    model_id=model_id,
-                    endpoint=endpoint,
-                    qwen_model=qwen_model,
-                    qwen_token=qwen_token,
-                    min_pixels=min_pixels,
-                    max_pixels=max_pixels,
-                    box_threshold=box_threshold,
-                    text_threshold=text_threshold,
-                    save_vis=save_vis,
-                    workers=workers,
-                    devices=devices,
-                    output_variant=output_variant,
-                    run_mode=labeling_run_mode,
-                    progress_callback=_update_job,
-                    show_progress=False,
-                )
-                refreshed = MetaOnlyDataset(dataset_obj.repo_id, root=dataset_obj.root)
-                _register_dataset(refreshed, ds_static.parent, None if trial else result.episodes)
-                review_url = f"/{result.repo_id}/labeling" + (
-                    f"?variant={output_variant}" if output_variant else ""
-                )
-                with _jobs_lock:
-                    finished_at = time.time()
-                    job["status"] = "done"
-                    job["progress"] = 100
-                    job["current"] = len(result.episodes)
-                    job["total"] = len(result.episodes)
-                    job["message"] = "Object labeling complete"
-                    job["review_url"] = review_url
-                    job["finished_at"] = finished_at
-                    elapsed_seconds, eta_seconds = _job_timing_snapshot(job, finished_at)
-                    job["elapsed_seconds"] = elapsed_seconds
-                    job["eta_seconds"] = eta_seconds
-                    job["updated_at"] = finished_at
-                    _append_job_log(job, "Object labeling complete")
-                _audit_job(job, "success")
-            except Exception as exc:
-                logging.exception("Object labeling job failed")
-                with _jobs_lock:
-                    finished_at = time.time()
-                    job["status"] = "error"
-                    job["error"] = str(exc)
-                    job["message"] = "Object labeling failed"
-                    job["finished_at"] = finished_at
-                    elapsed_seconds, eta_seconds = _job_timing_snapshot(job, finished_at)
-                    job["elapsed_seconds"] = elapsed_seconds
-                    job["eta_seconds"] = eta_seconds
-                    job["updated_at"] = finished_at
-                    _append_job_log(job, f"Error: {exc}")
-                _audit_job(job, "failed", exc)
-
-        launch_background(
-            target=_run_job,
-            name=f"labeling-{job_id}",
-            daemon=True,
-            thread_factory=threading.Thread,
-            command=build_command(
-                "curation.labeling",
-                run_labeling,
-                root=dataset_obj.root,
-                meta=dataset_obj.meta,
-                episodes=selected_episodes,
-                static_dir=ds_static,
-                backend=backend,
-                model_id=model_id,
-                endpoint=endpoint,
-                qwen_model=qwen_model,
-                qwen_token=qwen_token,
-                min_pixels=min_pixels,
-                max_pixels=max_pixels,
-                box_threshold=box_threshold,
-                text_threshold=text_threshold,
-                save_vis=save_vis,
-                workers=workers,
-                devices=devices,
-                output_variant=output_variant,
-                run_mode=labeling_run_mode,
-                show_progress=False,
-            ),
-        )
-        return jsonify({"job": _serialize_job(job)})
 
     @app.route("/api/jobs")
     def api_jobs():
@@ -3763,150 +1571,6 @@ def run_server(
                 return jsonify({"error": "job not found"}), 404
             return jsonify({"job": _serialize_job(job)})
 
-    @app.route("/api/viewer/preload", methods=["POST"])
-    def api_viewer_preload():
-        body = request.get_json(silent=True) or {}
-        dataset_key_value = str(body.get("dataset_key") or "").strip()
-        episode_id = int(body.get("episode_id") or 0)
-        data_version = _normalize_data_version(body.get("data_version"))
-        if not dataset_key_value:
-            return jsonify({"error": "dataset_key is required"}), 400
-        dataset_key = _repo_key(dataset_key_value)
-        if dataset_key not in datasets_index and dataset_key not in datasets_registry:
-            return jsonify({"error": f"dataset is not registered: {dataset_key_value}"}), 404
-
-        target_url = url_for(
-            "show_episode",
-            dataset_namespace=dataset_key[0],
-            dataset_name=dataset_key[1],
-            episode_id=episode_id,
-            data_version=data_version,
-            direct=1,
-        )
-        now = time.time()
-        job = {
-            "id": uuid.uuid4().hex[:12],
-            "job_type": "viewer_preload",
-            "dataset_key": _repo_id_from_key(dataset_key),
-            "status": "queued",
-            "progress": 0,
-            "current": 0,
-            "total": 4,
-            "message": "Queued",
-            "error": None,
-            "viewer_url": target_url,
-            "review_url": None,
-            "output_root": None,
-            "created_at": now,
-            "started_at": None,
-            "finished_at": None,
-            "updated_at": now,
-            "elapsed_seconds": 0,
-            "eta_seconds": None,
-            "logs": [],
-        }
-        with _jobs_lock:
-            jobs_registry[job["id"]] = job
-
-        def _update(current: int, message: str) -> None:
-            with _jobs_lock:
-                update_time = time.time()
-                job["status"] = "running"
-                if job.get("started_at") is None:
-                    job["started_at"] = update_time
-                job["current"] = current
-                job["progress"] = int((current / job["total"]) * 100)
-                job["message"] = message
-                job["updated_at"] = update_time
-                elapsed_seconds, eta_seconds = _job_timing_snapshot(job, update_time)
-                job["elapsed_seconds"] = elapsed_seconds
-                job["eta_seconds"] = eta_seconds
-                _append_job_log(job, message)
-
-        def _run_job() -> None:
-            try:
-                _update(1, "Loading dataset metadata")
-                index_entry = datasets_index.get(dataset_key)
-                manifest_adapter_index = False
-                if index_entry is not None:
-                    root_path = Path(index_entry["root"]).expanduser()
-                    output_dir = Path(index_entry["output_dir"]).expanduser()
-                    manifest_adapter_index = (
-                        not _is_dataset_root(root_path) and _root_has_cache_manifest(root_path, output_dir)
-                    ) or _dataset_index_uses_v3_adapter(dataset_key)
-                manifest, manifest_static = (
-                    _manifest_for_key(dataset_key) if manifest_adapter_index else (None, None)
-                )
-                if manifest_adapter_index:
-                    if manifest is None or manifest_static is None:
-                        raise RuntimeError("Viewer cache manifest is missing; run Prepare video + CSV first")
-                    _update(2, f"Checking episode {episode_id} cache")
-                    episode_ids = manifest_episode_ids(manifest)
-                    if episode_id not in episode_ids:
-                        raise RuntimeError(f"Episode {episode_id} is not present in viewer cache")
-                    _update(3, "Using cache-only viewer manifest")
-                    _update(4, "Viewer ready")
-                    with _jobs_lock:
-                        finished_at = time.time()
-                        job["status"] = "done"
-                        job["progress"] = 100
-                        job["message"] = "Viewer ready"
-                        job["finished_at"] = finished_at
-                        job["updated_at"] = finished_at
-                        elapsed_seconds, eta_seconds = _job_timing_snapshot(job, finished_at)
-                        job["elapsed_seconds"] = elapsed_seconds
-                        job["eta_seconds"] = eta_seconds
-                        _append_job_log(job, "Viewer ready")
-                    _audit_job(job, "success")
-                    return
-                dataset_obj, ds_static = _ensure_dataset_loaded(dataset_key)
-                _update(2, f"Checking episode {episode_id} video/CSV cache")
-                cache_for_episode = _episode_cache_status(dataset_obj, ds_static, episode_id)
-                if server_state["precomputed_only"] and cache_for_episode["status"] != "cached":
-                    raise RuntimeError(
-                        "Viewer cache is missing: "
-                        f"video {cache_for_episode['videos']['cached']}/{cache_for_episode['videos']['total']}, "
-                        f"csv {cache_for_episode['csv']['cached']}/{cache_for_episode['csv']['total']}"
-                    )
-                _update(3, "Warming episode metadata")
-                _dataset_episode_ids(dataset_obj, dataset_key)
-                _update(4, "Viewer ready")
-                with _jobs_lock:
-                    finished_at = time.time()
-                    job["status"] = "done"
-                    job["progress"] = 100
-                    job["message"] = "Viewer ready"
-                    job["finished_at"] = finished_at
-                    job["updated_at"] = finished_at
-                    elapsed_seconds, eta_seconds = _job_timing_snapshot(job, finished_at)
-                    job["elapsed_seconds"] = elapsed_seconds
-                    job["eta_seconds"] = eta_seconds
-                    _append_job_log(job, "Viewer ready")
-                _audit_job(job, "success")
-            except Exception as exc:
-                logging.exception("Viewer preload failed")
-                with _jobs_lock:
-                    finished_at = time.time()
-                    job["status"] = "error"
-                    job["error"] = str(exc)
-                    job["message"] = "Viewer preload failed"
-                    job["finished_at"] = finished_at
-                    job["updated_at"] = finished_at
-                    elapsed_seconds, eta_seconds = _job_timing_snapshot(job, finished_at)
-                    job["elapsed_seconds"] = elapsed_seconds
-                    job["eta_seconds"] = eta_seconds
-                    _append_job_log(job, f"Error: {exc}")
-                _audit_job(job, "failed", exc)
-
-        launch_background(
-            compatibility_operator="viewer.preload",
-            target=_run_job,
-            name=f"viewer-preload-{job['id']}",
-            daemon=True,
-            thread_factory=threading.Thread,
-        )
-        return jsonify({"job": _serialize_job(job)})
-
     @app.route("/api/viewer/<string:dataset_namespace>/<string:dataset_name>/task_map")
     def api_viewer_task_map(dataset_namespace, dataset_name):
         dataset_key = (dataset_namespace, dataset_name)
@@ -3932,145 +1596,9 @@ def run_server(
                     task_episode_map.setdefault(task, []).append(ep_id)
         return jsonify({"task_episode_map": task_episode_map})
 
-    def _viewer_tag_value_key(name: str, value) -> str | None:
-        if value in (None, ""):
-            return None
-        if name == "object_count":
-            try:
-                count = int(value)
-            except (TypeError, ValueError):
-                return None
-            return "4+" if count >= 4 else str(count)
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if isinstance(value, (int, float, str)):
-            return str(value)
-        return None
+    _file_signature = cache_service.file_signature
 
-    def _file_signature(path: Path) -> tuple[str, int, int]:
-        path = Path(path)
-        try:
-            stat = path.stat()
-            return str(path), int(stat.st_mtime_ns), int(stat.st_size)
-        except OSError:
-            return str(path), 0, -1
-
-    def _fast_active_tag_variant(tagging_dir: Path, variant: str | None = None) -> str | None:
-        """Pick the active tagging variant without loading/counting JSONL contents."""
-        variant = variant or None
-        if variant:
-            return variant
-        tagging_dir = Path(tagging_dir)
-        candidates: list[tuple[float, int, str, str | None]] = []
-
-        latest_path = tags_path(tagging_dir)
-        if latest_path.is_file():
-            try:
-                modified_at = latest_path.stat().st_mtime
-            except OSError:
-                modified_at = 0.0
-            candidates.append((modified_at, 0, "latest", None))
-
-        for path in tagging_dir.glob("tags_*.jsonl"):
-            if path.name.startswith("tags_reviewed"):
-                continue
-            variant_id = path.stem.removeprefix("tags_")
-            if not variant_id:
-                continue
-            try:
-                modified_at = path.stat().st_mtime
-            except OSError:
-                modified_at = 0.0
-            preferred = 1 if variant_id == "trial" else 99
-            candidates.append((modified_at, preferred, variant_id, variant_id))
-
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
-        return candidates[0][3]
-
-    def _viewer_tag_map_signature(ds_static: Path, episode_ids: list[int], dataset_obj=None) -> tuple:
-        ds_static = Path(ds_static).expanduser()
-        tagging_dir = ds_static / "tagging"
-        active_variant = _fast_active_tag_variant(tagging_dir)
-        tag_file = tagging_resolved_tags_path(tagging_dir, active_variant)
-        reviewed_file = tagging_resolved_reviewed_path(tagging_dir, active_variant)
-        source_file = tagging_source_path(tagging_dir, active_variant)
-        try:
-            static_key = str(ds_static.resolve())
-        except OSError:
-            static_key = str(ds_static)
-        episode_sig = (
-            len(episode_ids),
-            int(episode_ids[0]) if episode_ids else -1,
-            int(episode_ids[-1]) if episode_ids else -1,
-            sum(int(ep) for ep in episode_ids),
-        )
-        meta_sig = None
-        if dataset_obj is not None and hasattr(dataset_obj, "meta"):
-            episodes_meta = getattr(dataset_obj.meta, "episodes", {})
-            meta_sig = (id(episodes_meta), len(episodes_meta))
-        return (
-            static_key,
-            episode_sig,
-            active_variant,
-            _file_signature(tag_file),
-            _file_signature(reviewed_file),
-            _file_signature(source_file),
-            meta_sig,
-        )
-
-    def _viewer_tag_episode_map(
-        ds_static: Path, episode_ids: list[int], dataset_obj=None
-    ) -> dict[str, dict[str, list[int]]]:
-        signature = _viewer_tag_map_signature(ds_static, episode_ids, dataset_obj)
-        cached = _viewer_tag_map_cache.get(signature)
-        if cached is not None:
-            return cached
-
-        started_at = time.time()
-        tag_records = {}
-        try:
-            tagging_dir = Path(ds_static) / "tagging"
-            active_variant = _fast_active_tag_variant(tagging_dir)
-            tag_records = (
-                current_tags(tagging_dir, active_variant)
-                if active_variant or tags_path(tagging_dir).is_file()
-                else {}
-            )
-        except Exception:
-            logging.exception("Failed to load current tagging output for viewer tag map")
-            tag_records = {}
-
-        tag_episode_map: dict[str, dict[str, list[int]]] = {}
-        for ep_id in episode_ids:
-            record = tag_records.get(int(ep_id)) or {}
-            tags = record.get("tags") or {}
-            if not tags and dataset_obj is not None and hasattr(dataset_obj, "meta"):
-                episodes_meta = getattr(dataset_obj.meta, "episodes", {})
-                ep_info = episodes_meta.get(ep_id) or episodes_meta.get(str(ep_id)) or {}
-                tags = ep_info.get("tags") or {}
-            if not isinstance(tags, dict):
-                continue
-            for name, value in tags.items():
-                key = _viewer_tag_value_key(str(name), value)
-                if key is None:
-                    continue
-                tag_episode_map.setdefault(str(name), {}).setdefault(key, []).append(int(ep_id))
-        if len(_viewer_tag_map_cache) > 32:
-            _viewer_tag_map_cache.clear()
-        _viewer_tag_map_cache[signature] = tag_episode_map
-        elapsed = time.time() - started_at
-        if elapsed > 0.5:
-            tag_values = sum(len(values) for values in tag_episode_map.values())
-            logging.info(
-                "Built viewer tag map for %s (%s episodes, %s tag values) in %.2fs",
-                Path(ds_static),
-                len(episode_ids),
-                tag_values,
-                elapsed,
-            )
-        return tag_episode_map
+    _viewer_tag_episode_map = cache_service.viewer_tag_episode_map
 
     @app.route("/api/viewer/<string:dataset_namespace>/<string:dataset_name>/tag_map")
     def api_viewer_tag_map(dataset_namespace, dataset_name):
@@ -4508,22 +2036,7 @@ def run_server(
             return namespace, name
         raise ValueError("dataset_key is required")
 
-    def _unregister_missing_dataset(location):
-        cache = Path(route_context.remote_cache_root) / location["location_id"]
-        local_source = location["node_id"] in {
-            node["node_id"] for node in control_plane_store.list_nodes() if node["name"].startswith("local-")
-        }
-        for key, entry in list(datasets_index.items()):
-            source, output = Path(entry["root"]), Path(entry["output_dir"])
-            cached = source.is_relative_to(cache) or output.is_relative_to(cache)
-            if not cached and not (local_source and str(source) == location["root"]):
-                continue
-            datasets_index.pop(key, None)
-            datasets_registry.pop(key, None)
-            episodes_by_key.pop(key, None)
-            _clear_episode_dependent_caches(key)
-            _invalidate_light_cache_status(source, output)
-        _save_registry()
+    _unregister_missing_dataset = catalog_service.unregister_missing_dataset
 
     route_context = RouteContext(
         datasets_index=datasets_index,
@@ -4559,6 +2072,26 @@ def run_server(
         dataset_is_protected=_dataset_is_protected,
         unregister_missing_dataset=_unregister_missing_dataset,
     )
+    route_context.console_submissions = ConsoleSubmissionService(
+        route_context,
+        catalog_service,
+        cache_service,
+        console_mode,
+        _tab_enabled,
+        run_precompute,
+        run_v3_viewer_precompute,
+        run_labeling,
+        delete_episodes_inplace,
+        threading.Thread,
+        episodes,
+    )
+    route_context.dataset_catalog = catalog_service
+    route_context.dataset_presentation = presentation_service
+    route_context.admin_authenticated = _admin_authenticated
+    register_console_dataset_routes(app, route_context)
+    register_console_job_routes(app, route_context)
+    app.extensions["data_platform_console_state"] = console_state
+    app.extensions["data_platform_catalog"] = catalog_service
     app.extensions["data_platform_route_context"] = route_context
     app.config["DATA_PLATFORM_CONSOLE_MODE"] = console_mode
     app.config["DATA_PLATFORM_LEGACY_MUTATIONS"] = legacy_mutations_enabled
@@ -4570,19 +2103,7 @@ def run_server(
 
         register_processing_routes(app, route_context)
 
-    def _complete_local_execution(result):
-        if result.get("local_preprocess"):
-            from lerobot.data_platform.processing.lineage import register_local_preprocess
-
-            register_local_preprocess(_lifecycle_store(), result["local_preprocess"])
-        for entry in result.get("local_registrations") or []:
-            root = Path(entry["root"])
-            if not _is_dataset_root(root):
-                continue
-            refreshed = MetaOnlyDataset(entry["repo_id"], root=root)
-            key = _register_dataset(refreshed, Path(entry["output_dir"]))
-            _refresh_dataset_after_episode_delete(key, refreshed, Path(entry["output_dir"]) / "static")
-        _clear_episode_dependent_caches()
+    _complete_local_execution = catalog_service.complete_local_execution
 
     app.extensions["data_platform_complete_local"] = _complete_local_execution
     if control_plane_store is not None:
@@ -4602,6 +2123,7 @@ def run_server(
             legacy_mutations_enabled=legacy_mutations_enabled,
             task_catalog_store=_lifecycle_store().tasks,
         )
+        console_state.remote_cache_root = cache_root
         route_context.remote_cache_root = cache_root
         from lerobot.data_platform.routes import register_source_cleanup_routes
 
@@ -7815,168 +5337,6 @@ def run_server(
             else None,
         }
 
-    @app.route("/api/preprocess/delete_episodes/start", methods=["POST"])
-    def api_preprocess_delete_episodes_start():
-        body = request.get_json(silent=True) or {}
-        dataset_key_value = str(body.get("dataset_key") or body.get("repo_id") or "").strip()
-        if not dataset_key_value:
-            return jsonify({"error": "dataset_key is required"}), 400
-        dataset_key = _repo_key(dataset_key_value)
-        try:
-            dataset_obj, ds_static = _ensure_dataset_loaded(dataset_key)
-        except KeyError:
-            return jsonify({"error": f"dataset is not registered: {dataset_key_value}"}), 404
-        except Exception as exc:
-            logging.exception("Failed to load dataset for episode deletion %s", dataset_key_value)
-            return jsonify({"error": str(exc)}), 400
-
-        options = body.get("options") or body
-        reason = str(options.get("reason") or "").strip()
-        if not reason:
-            return jsonify({"error": "reason is required for in-place episode deletion"}), 400
-        if len(reason) > 500:
-            return jsonify({"error": "reason must be 500 characters or fewer"}), 400
-        episode_ids = _parse_int_list(options.get("episodes") or options.get("episode_ids"))
-        if not episode_ids:
-            return jsonify({"error": "episodes is required, e.g. 0,1,2"}), 400
-        episode_ids = sorted(set(episode_ids), reverse=True)
-        existing = set(_dataset_episode_ids(dataset_obj, dataset_key))
-        missing = sorted(set(episode_ids) - existing)
-        if missing:
-            return jsonify({"error": f"episodes not found: {missing}"}), 400
-
-        repo_id = _repo_id_from_key(dataset_key)
-        job_id = uuid.uuid4().hex[:12]
-        now = time.time()
-        job = {
-            "id": job_id,
-            "job_type": "preprocess_delete_episodes",
-            "dataset_key": repo_id,
-            "status": "queued",
-            "progress": 0,
-            "current": 0,
-            "total": len(episode_ids),
-            "message": "Queued",
-            "error": None,
-            "viewer_url": None,
-            "review_url": None,
-            "output_root": str(dataset_obj.root),
-            "created_at": now,
-            "started_at": None,
-            "finished_at": None,
-            "updated_at": now,
-            "elapsed_seconds": 0,
-            "eta_seconds": None,
-            "logs": [],
-        }
-        with _jobs_lock:
-            jobs_registry[job_id] = job
-
-        def _update_delete_job(payload: dict) -> None:
-            route_context.update_job(job, payload)
-
-        def _run_job() -> None:
-            try:
-                total = len(episode_ids)
-                _update_delete_job(
-                    {
-                        "status": "running",
-                        "current": 0,
-                        "total": total,
-                        "message": f"Deleting episodes {list(reversed(episode_ids))}",
-                    }
-                )
-
-                def _log_job(message: str) -> None:
-                    with _jobs_lock:
-                        _append_job_log(job, message)
-
-                result = delete_episodes_inplace(
-                    dataset_obj,
-                    episode_ids,
-                    static_folder=ds_static,
-                    log=_log_job,
-                )
-                _clear_episode_dependent_caches()
-                if episodes is not None:
-                    remaining_ids = sorted(getattr(dataset_obj.meta, "episodes", {}))
-                    if not remaining_ids:
-                        remaining_total = int(getattr(dataset_obj, "total_episodes", 0) or 0)
-                        remaining_ids = list(range(remaining_total))
-                    episodes.clear()
-                    episodes.extend(remaining_ids)
-                _append_operation_log(
-                    ds_static,
-                    "preprocess_delete_episodes",
-                    dataset_key=dataset_key,
-                    dataset_root=Path(dataset_obj.root),
-                    episode_ids=list(reversed(episode_ids)),
-                    details={"result": result, "job_id": job_id, "reason": reason},
-                )
-                _update_delete_job(
-                    {
-                        "status": "running",
-                        "current": total,
-                        "total": total,
-                        "message": "Deleted selected episodes; repaired indices once",
-                    }
-                )
-
-                _invalidate_light_cache_status(dataset_obj.root, ds_static.parent)
-                remaining_ids = sorted(getattr(dataset_obj.meta, "episodes", {}).keys())
-                if not remaining_ids:
-                    remaining_total = int(getattr(dataset_obj, "total_episodes", 0) or 0)
-                    remaining_ids = list(range(remaining_total))
-                episodes_by_key[dataset_key] = remaining_ids
-                _task_caches.pop(dataset_key, None)
-                first_episode = episodes_by_key[dataset_key][0] if episodes_by_key[dataset_key] else None
-                viewer_url = f"/{repo_id}/episode_{first_episode}" if first_episode is not None else None
-                with _jobs_lock:
-                    finished_at = time.time()
-                    job["status"] = "done"
-                    job["progress"] = 100
-                    job["current"] = total
-                    job["total"] = total
-                    job["message"] = "Episode deletion complete"
-                    job["viewer_url"] = viewer_url
-                    job["finished_at"] = finished_at
-                    elapsed_seconds, eta_seconds = _job_timing_snapshot(job, finished_at)
-                    job["elapsed_seconds"] = elapsed_seconds
-                    job["eta_seconds"] = eta_seconds
-                    job["updated_at"] = finished_at
-                    _append_job_log(job, f"Deleted episodes: {list(reversed(episode_ids))}")
-                    _append_job_log(job, f"Remaining episodes: {result['new_total_episodes']}")
-                _audit_job(job, "success")
-            except Exception as exc:
-                logging.exception("Episode deletion job failed")
-                with _jobs_lock:
-                    finished_at = time.time()
-                    job["status"] = "error"
-                    job["error"] = str(exc)
-                    job["message"] = "Episode deletion failed"
-                    job["finished_at"] = finished_at
-                    elapsed_seconds, eta_seconds = _job_timing_snapshot(job, finished_at)
-                    job["elapsed_seconds"] = elapsed_seconds
-                    job["eta_seconds"] = eta_seconds
-                    job["updated_at"] = finished_at
-                    _append_job_log(job, f"Error: {exc}")
-                _audit_job(job, "failed", exc)
-
-        launch_background(
-            target=_run_job,
-            name=f"preprocess-delete-episodes-{job_id}",
-            daemon=True,
-            thread_factory=threading.Thread,
-            command=build_command(
-                "mutation.delete_episodes",
-                delete_episodes_inplace,
-                dataset_obj,
-                episode_ids,
-                static_folder=ds_static,
-            ),
-        )
-        return jsonify({"job": _serialize_job(job)})
-
     # Auto-flag issue episodes so they appear highlighted in the sidebar
     _issue_eps = _load_issue_episodes(static_folder)
     if _issue_eps:
@@ -8031,71 +5391,6 @@ def run_server(
 def get_ep_csv_fname(episode_id: int):
     ep_csv_fname = f"episode_{episode_id}.csv"
     return ep_csv_fname
-
-
-def _get_feature_shape(feature) -> tuple:
-    if isinstance(feature, dict):
-        shape = feature.get("shape")
-        if isinstance(shape, int):
-            return (shape,)
-        return tuple(shape) if shape is not None else ()
-    if hasattr(feature, "shape"):
-        return tuple(feature.shape)
-    return ()
-
-
-def _is_exist_label_feature(column_name: str, feature: dict) -> bool:
-    if column_name != "exist_label":
-        return False
-    dtype = str(feature.get("dtype", ""))
-    return dtype.startswith(("float", "int", "uint")) or dtype in {"bool", "boolean"}
-
-
-def _is_plot_feature(column_name: str, feature: dict) -> bool:
-    return feature.get("dtype") in ["float32", "int32"] or _is_exist_label_feature(column_name, feature)
-
-
-def get_columns_info(dataset: LeRobotDataset | IterableNamespace | MetaOnlyDataset):
-    columns = []
-    # subtask_state is excluded because the precompute pipeline exports it as a
-    # task-dependent normalized "stage" series for plotting.
-    _exclude = {"timestamp", "subtask_state"}
-    selected_columns = [
-        col for col, ft in dataset.features.items() if _is_plot_feature(col, ft) and col not in _exclude
-    ]
-
-    ignored_columns = []
-    filtered_columns = []
-    for column_name in selected_columns:
-        shape = _get_feature_shape(dataset.features[column_name])
-        shape_dim = len(shape)
-        if shape_dim > 1:
-            ignored_columns.append(column_name)
-        else:
-            filtered_columns.append(column_name)
-    selected_columns = filtered_columns
-
-    for column_name in selected_columns:
-        if isinstance(dataset, LeRobotDataset):
-            dim_state = dataset.meta.shapes[column_name][0]
-        else:
-            shape = _get_feature_shape(dataset.features[column_name])
-            dim_state = shape[0] if shape else 0
-
-        if "names" in dataset.features[column_name] and dataset.features[column_name]["names"]:
-            column_names = dataset.features[column_name]["names"]
-            while not isinstance(column_names, list):
-                column_names = list(column_names.values())[0]
-            if not isinstance(column_names, list) or len(column_names) != dim_state:
-                column_names = [f"{column_name}_{i}" for i in range(dim_state)]
-        elif column_name == "exist_label" and dim_state == 1:
-            column_names = ["exist_label"]
-        else:
-            column_names = [f"{column_name}_{i}" for i in range(dim_state)]
-        columns.append({"key": column_name, "value": column_names})
-
-    selected_columns.insert(0, "timestamp")
-    return columns, ignored_columns, selected_columns
 
 
 def get_episode_data(

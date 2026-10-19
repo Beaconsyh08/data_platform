@@ -1,0 +1,191 @@
+<div class="space-y-4 px-4 py-4" x-show="activeTab === 'labeling'">
+                    <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
+                        <div class="font-semibold text-slate-200">Labeling status</div>
+                        <div class="mt-1" x-show="selectedDataset && selectedDataset.labeling">
+                            <span x-text="selectedDataset ? `labels ${selectedDataset.labeling?.labels_count || 0}, reviewed ${selectedDataset.labeling?.reviewed_count || 0}` : ''"></span>
+                        </div>
+                        <div class="mt-1 text-slate-500" x-show="!selectedDataset || !selectedDataset.labeling">No labeling result has been loaded for this dataset.</div>
+                    </div>
+
+                    <div class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs">
+                        <div class="mb-2 text-slate-400">Backend</div>
+                        <div class="grid gap-2 md:grid-cols-3">
+                            <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2"
+                                   :class="labeling.backend === 'grounding_dino' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'"
+                                   :title="labelingBackendError('grounding_dino')">
+                                <input type="radio" value="grounding_dino" x-model="labeling.backend"
+                                       @change="applyLabelingBackendDefaults(true)"
+                                       :disabled="!labelingBackendAvailable('grounding_dino')">
+                                <span>Local GroundingDINO</span>
+                            </label>
+                            <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2"
+                                   :class="labeling.backend === 'qwen_remote' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'"
+                                   :title="labelingBackendError('qwen_remote')">
+                                <input type="radio" value="qwen_remote" x-model="labeling.backend"
+                                       @change="applyLabelingBackendDefaults(true)"
+                                       :disabled="!labelingBackendAvailable('qwen_remote')">
+                                <span>Qwen Gradio</span>
+                            </label>
+                            <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2"
+                                   :class="labeling.backend === 'qwen_dashscope' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'"
+                                   :title="labelingBackendError('qwen_dashscope')">
+                                <input type="radio" value="qwen_dashscope" x-model="labeling.backend"
+                                       @change="applyLabelingBackendDefaults(true)"
+                                       :disabled="!labelingBackendAvailable('qwen_dashscope')">
+                                <span>OpenAI-compatible VLM</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="rounded border border-amber-800 bg-amber-950/30 px-3 py-3 text-xs text-amber-200"
+                         x-show="labelingCapabilities && !selectedLabelingBackendAvailable()">
+                        Selected backend is unavailable.
+                        <div class="mt-1 text-amber-300/80" x-text="labelingBackendError(labeling.backend)"></div>
+                    </div>
+                    <div class="rounded border border-amber-800 bg-amber-950/30 px-3 py-3 text-xs text-amber-200"
+                         x-show="isQwenBackend(labeling.backend) && labelingBackendAvailable(labeling.backend) && !qwenTokenReady()">
+                        <div x-text="labelingBackendError(labeling.backend)"></div>
+                    </div>
+
+                    <div class="rounded border border-red-900/70 bg-red-950/30 px-3 py-3 text-xs text-red-200"
+                         x-show="isQwenBackend(labeling.backend)">
+                        Qwen backends upload the first frame image to an external API service. Use them only for data that can leave this machine.
+                    </div>
+
+                    <div class="grid gap-3 md:grid-cols-2"
+                         :class="labelingCapabilities && !selectedLabelingBackendAvailable() ? 'pointer-events-none opacity-50' : ''">
+                        <label class="block md:col-span-2" x-show="labeling.backend === 'grounding_dino'">
+                            <span class="mb-1 block text-xs text-slate-400">model_id</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="labeling.model_id">
+                        </label>
+                        <label class="block" x-show="labeling.backend === 'grounding_dino'">
+                            <span class="mb-1 block text-xs text-slate-400">box threshold</span>
+                            <input type="number" min="0" max="1" step="0.01"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="labeling.box_threshold">
+                        </label>
+                        <label class="block" x-show="labeling.backend === 'grounding_dino'">
+                            <span class="mb-1 block text-xs text-slate-400">text threshold</span>
+                            <input type="number" min="0" max="1" step="0.01"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="labeling.text_threshold">
+                        </label>
+                        <label class="block md:col-span-2" x-show="labeling.backend === 'grounding_dino'">
+                            <span class="mb-1 block text-xs text-slate-400">devices</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="labeling.devices"
+                                   placeholder="auto, or: cuda:0,cuda:1,cuda:2,cuda:3">
+                        </label>
+                        <label class="block md:col-span-2" x-show="isQwenBackend(labeling.backend)">
+                            <span class="mb-1 block text-xs text-slate-400" x-text="labeling.backend === 'qwen_dashscope' ? 'base_url' : 'endpoint'"></span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="labeling.endpoint">
+                            <span class="mt-1 block text-[11px] text-slate-500" x-show="labeling.backend === 'qwen_remote'">
+                                Use the ModelScope API endpoint, not the public ms.show page.
+                            </span>
+                            <span class="mt-1 block text-[11px] text-slate-500" x-show="labeling.backend === 'qwen_dashscope'">
+                                OpenAI-compatible base_url, e.g. DashScope compatible-mode/v1 or local vLLM/SGLang http://localhost:8000/v1.
+                            </span>
+                        </label>
+                        <label class="block md:col-span-2" x-show="isQwenBackend(labeling.backend)">
+                            <span class="mb-1 block text-xs text-slate-400" x-text="labeling.backend === 'qwen_dashscope' ? 'API key' : 'ModelScope SDK token'"></span>
+                            <input type="password"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="labeling.qwen_token"
+                                   :placeholder="labeling.backend === 'qwen_dashscope' ? 'Leave blank to use the shared server API key' : 'optional if MODELSCOPE_SDK_TOKEN is set before launching data_platform'">
+                            <span class="mt-1 block text-[11px] text-slate-500" x-show="labeling.backend === 'qwen_dashscope'">Uses DASHSCOPE_API_KEY on the server for the configured endpoint. A custom endpoint requires its own key, or EMPTY for local servers.</span>
+                        </label>
+                        <label class="block" x-show="isQwenBackend(labeling.backend)">
+                            <span class="mb-1 block text-xs text-slate-400">model</span>
+                            <select class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                    x-model="labeling.qwen_model">
+                                <template x-for="model in labelingQwenModels()" :key="model">
+                                    <option :value="model" x-text="model"></option>
+                                </template>
+                                <option x-show="labeling.qwen_model && !labelingQwenModels().includes(labeling.qwen_model)"
+                                        :value="labeling.qwen_model"
+                                        x-text="labeling.qwen_model"></option>
+                                <option value="">Custom...</option>
+                            </select>
+                            <input x-show="!labeling.qwen_model || !labelingQwenModels().includes(labeling.qwen_model)"
+                                   class="mt-2 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="labeling.qwen_model"
+                                   placeholder="custom model id, e.g. qwen3.6-plus">
+                        </label>
+                        <label class="block" x-show="labeling.backend === 'qwen_remote'">
+                            <span class="mb-1 block text-xs text-slate-400">min pixels</span>
+                            <input type="number" min="1" step="1"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="labeling.min_pixels">
+                        </label>
+                        <label class="block" x-show="labeling.backend === 'qwen_remote'">
+                            <span class="mb-1 block text-xs text-slate-400">max pixels</span>
+                            <input type="number" min="1" step="1"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="labeling.max_pixels">
+                        </label>
+                        <label class="block" x-show="isQwenBackend(labeling.backend) || labeling.backend === 'grounding_dino'">
+                            <span class="mb-1 block text-xs text-slate-400">workers</span>
+                            <input type="number" min="1" max="8" step="1"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="labeling.workers">
+                        </label>
+                        <label class="block md:col-span-2">
+                            <span class="mb-1 block text-xs text-slate-400">episodes</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="labeling.episodes"
+                                   placeholder="all, or: 0 1 2">
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">run mode</span>
+                            <select class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                    x-model="labeling.run_mode">
+                                <option value="missing">Only missing, keep existing</option>
+                                <option value="full">Full rerun, replace selected</option>
+                            </select>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2">
+                            <input type="checkbox" class="accent-sky-500" x-model="labeling.trial">
+                            <span>Trial sample</span>
+                        </label>
+                        <label class="block" x-show="labeling.trial">
+                            <span class="mb-1 block text-xs text-slate-400">per task type</span>
+                            <input type="number" min="1" max="200" step="1"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="labeling.trial_per_type">
+                        </label>
+                        <label class="block" x-show="labeling.trial">
+                            <span class="mb-1 block text-xs text-slate-400">random seed</span>
+                            <input type="number" step="1"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="labeling.trial_seed"
+                                   placeholder="auto">
+                        </label>
+                    </div>
+
+                    <div class="grid gap-2 md:grid-cols-2">
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2">
+                            <input type="checkbox" class="accent-sky-500" x-model="labeling.save_vis">
+                            <span>Save vis PNG</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-emerald-800 bg-emerald-950/30 px-3 py-2">
+                            <input type="checkbox" class="accent-sky-500" x-model="labeling.annotate">
+                            <span>Allow metadata merge</span>
+                        </label>
+                    </div>
+
+                    <div class="dp-action-row">
+                        <button class="dp-btn dp-btn-primary"
+                                @click="startLabeling()"
+                                :disabled="!canStartLabeling() || busy">
+                            Start labeling
+                        </button>
+                        <button class="dp-btn dp-btn-secondary"
+                                x-show="legacyMutationsEnabled && adminModeEnabled"
+                                @click="mergeLabels()"
+                                :disabled="!canMergeLabels() || busy">
+                            Merge to metadata
+                        </button>
+                    </div>
+                </div>

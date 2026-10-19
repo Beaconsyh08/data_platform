@@ -169,7 +169,7 @@ def test_every_background_entry_has_an_explicit_registered_adapter():
     from pathlib import Path
 
     root = Path(__file__).parents[2] / "lerobot/data_platform"
-    for path in [root / "viewer.py", *(root / "routes").glob("*.py")]:
+    for path in [root / "viewer.py", *(root / "routes").glob("*.py"), *(root / "processing").glob("*.py")]:
         for call in ast.walk(ast.parse(path.read_text())):
             if (
                 not isinstance(call, ast.Call)

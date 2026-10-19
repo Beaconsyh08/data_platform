@@ -1,0 +1,278 @@
+<div class="space-y-4 px-4 py-4" x-show="activeTab === 'split_merge'">
+                    <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
+                        <div class="font-semibold text-slate-200">Dataset materialization</div>
+                        <div class="mt-1 leading-5">Split, merge, and subtract always write a new sibling dataset and register it after validation. The working dataset remains unchanged.</div>
+                    </div>
+
+                    <div class="grid gap-2 md:grid-cols-3">
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               :class="preprocess.split_merge_op === 'split' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="split" x-model="preprocess.split_merge_op">
+                            <span>Split current dataset</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               x-show="!selectedDataset?.remote || remoteMergeAvailable()"
+                               :class="preprocess.split_merge_op === 'merge' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="merge" x-model="preprocess.split_merge_op" @change="prefillMergeOutput()">
+                            <span>Merge datasets</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               x-show="!selectedDataset?.remote"
+                               :class="preprocess.split_merge_op === 'subtract' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="subtract" x-model="preprocess.split_merge_op">
+                            <span>Subtract from current dataset</span>
+                        </label>
+                    </div>
+
+                    <div class="grid gap-3 md:grid-cols-2" x-show="preprocess.split_merge_op === 'split'">
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">episode range</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.episode_range"
+                                   placeholder="e.g. 0:50">
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">task filter</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.task_filter"
+                                   placeholder="task text or task_index, comma-separated">
+                        </label>
+                        <label class="block md:col-span-2">
+                            <span class="mb-1 block text-xs text-slate-400">output root</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.split_out_root"
+                                   placeholder="auto: <src>_split_<timestamp>">
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-300">
+                            <input type="checkbox" class="accent-sky-500" x-model="preprocess.split_dry_run">
+                            <span>Dry run only</span>
+                        </label>
+                    </div>
+
+                    <div class="space-y-3" x-show="preprocess.split_merge_op === 'merge'">
+                        <div class="rounded border border-slate-800 bg-slate-950 p-2 text-xs">
+                            <div class="mb-2 flex items-center justify-between gap-2 text-slate-400">
+                                <span>sources</span>
+                                <span x-text="`selected ${(preprocess.merge_src_keys || []).length} · showing ${filteredMergeDatasets().length} / ${mergeCandidates().length}`"></span>
+                            </div>
+                            <p class="mb-2 text-slate-500" x-show="selectedDataset?.remote">Sources are limited to the selected Agent. Merge writes a new dataset there and prepares its Viewer.</p>
+                            <div class="mb-2 flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-2 py-2">
+                                <input class="min-w-0 flex-1 bg-transparent text-xs text-slate-100 outline-none placeholder:text-slate-600"
+                                       x-model.debounce.150ms="preprocess.merge_dataset_search"
+                                       placeholder="search name / path / tag">
+                                <button class="text-xs text-slate-500 hover:text-slate-300"
+                                        x-show="preprocess.merge_dataset_search"
+                                        @click="preprocess.merge_dataset_search = ''">clear</button>
+                            </div>
+                            <div class="mb-2 flex flex-wrap gap-1" x-show="(preprocess.merge_src_keys || []).length">
+                                <template x-for="key in preprocess.merge_src_keys" :key="key">
+                                    <button type="button"
+                                            class="rounded-full border border-sky-900/60 bg-sky-950/30 px-2 py-1 text-[11px] text-sky-100"
+                                            @click="removeMergeSource(key)"
+                                            x-text="mergeDatasetLabel(key)"></button>
+                                </template>
+                            </div>
+                            <div class="mb-2 space-y-2 rounded border border-slate-800 bg-slate-950/80 p-2"
+                                 x-show="(preprocess.merge_src_keys || []).length">
+                                <div class="text-[11px] text-slate-500">Optional: exclude episodes from each source before merge. Source datasets are not modified.</div>
+                                <template x-for="key in preprocess.merge_src_keys" :key="`delete-${key}`">
+                                    <label class="grid gap-1 md:grid-cols-[minmax(0,1fr)_160px] md:items-center">
+                                        <span class="truncate text-[11px] text-slate-400" x-text="mergeDatasetLabel(key)"></span>
+                                        <input class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-sky-500"
+                                               x-model="preprocess.merge_delete_episodes[key]"
+                                               placeholder="delete e.g. 1,3-10">
+                                    </label>
+                                </template>
+                            </div>
+                            <div class="max-h-48 space-y-1 overflow-y-auto pr-1">
+                                <template x-for="dataset in filteredMergeDatasets()" :key="dataset.key">
+                                    <label class="flex items-center gap-2 rounded px-2 py-1 hover:bg-slate-900">
+                                        <input type="checkbox" class="accent-sky-500" :value="dataset.key" x-model="preprocess.merge_src_keys">
+                                        <span class="truncate" x-text="datasetName(dataset)"></span>
+                                    </label>
+                                </template>
+                                <p class="rounded border border-slate-800 px-2 py-2 text-slate-500"
+                                   x-show="mergeCandidates().length > 0 && filteredMergeDatasets().length === 0">No dataset matches the keyword.</p>
+                            </div>
+                        </div>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400" x-text="selectedDataset?.remote ? 'output root on Agent' : 'output folder name'"></span>
+                            <span class="mb-1 block truncate text-[11px] text-slate-500"
+                                  x-text="selectedDataset?.remote ? `writable roots: ${(selectedRemoteNode()?.writable_roots || []).join(', ')}` : (rootDir ? `base: ${rootDir}` : 'base: root_dir not set')"></span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.merge_out_root"
+                                   :placeholder="selectedDataset?.remote ? 'auto: new sibling dataset, or an absolute path' : 'e.g. merged_0602'">
+                            <span class="mt-1 block truncate text-[11px] text-slate-500"
+                                  x-text="mergeOutputPreview()"></span>
+                            <span class="mt-1 block text-xs text-amber-200" x-show="mergeOutputError()" x-text="mergeOutputError()"></span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">workers</span>
+                            <input type="number"
+                                   min="1"
+                                   max="32"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="preprocess.merge_workers">
+                            <span class="mt-1 block text-[11px] text-slate-500">Parallel parquet writers. Default: 8.</span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">Signal dimensions</span>
+                            <select class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                                    x-model="preprocess.merge_dimension_policy">
+                                <option value="strict">Strict: same dimensions and order</option>
+                                <option value="min" x-text="preprocess.merge_mapping_mode === 'indices' ? 'Remove selected dimensions' : 'Minimum: keep the smallest named layout'"></option>
+                                <option value="pad">Padding: insert missing dimensions</option>
+                            </select>
+                            <span class="mt-1 block text-[11px] text-slate-500">Remove selected source dimensions or insert padding at output positions. Source datasets stay unchanged. Advanced settings also support alignment by name.</span>
+                        </label>
+                        <div class="space-y-3 rounded border border-slate-700 p-3" x-show="preprocess.merge_dimension_policy !== 'strict'">
+                            <details>
+                                <summary class="cursor-pointer text-xs text-slate-400">Advanced: alignment method</summary>
+                            <label class="mt-2 block">Dimension correspondence
+                                <select class="ml-2 rounded bg-slate-950 p-2" x-model="preprocess.merge_mapping_mode">
+                                    <option value="indices">Enter dimension positions</option>
+                                    <option value="names">Use names from dataset metadata</option>
+                                    <option value="explicit">Explicit mapping (source index → shared name)</option>
+                                </select>
+                            </label>
+                            </details>
+                            <div class="space-y-3" x-show="preprocess.merge_mapping_mode === 'indices'">
+                                <p class="text-xs text-slate-300" x-text="preprocess.merge_dimension_policy === 'pad' ? 'Enter padding positions in the OUTPUT, starting at 1. Example: 17-19 inserts three values before the old final dimension of a 17D signal.' : 'Enter ORIGINAL source dimensions to remove, starting at 1. Example: 17-19 removes those three dimensions and keeps dimension 20.'"></p>
+                                <p class="text-xs text-slate-400">Use commas or ranges: 3,7,17-19. Leave blank to keep this source unchanged. Remaining dimensions align in order; check that their meanings match.</p>
+                                <p class="text-xs text-slate-400">Click cells to toggle positions: red = deleted, blue = padding. Cells show the first 256 positions; use the input for larger signals.</p>
+                                <label class="flex gap-2 text-xs"><input type="checkbox" x-model="preprocess.merge_index_shared">Use each dataset's action positions for state too</label>
+                                <template x-for="row in mergeMappingRows()" :key="`indices-${row.id}`">
+                                    <div class="rounded border border-slate-800 p-2 space-y-2">
+                                        <label class="block text-xs">
+                                            <span x-text="`${mergeDatasetLabel(row.key)} · ${row.field} · ${row.dimension}D input`"></span>
+                                            <input class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2 font-mono disabled:opacity-50"
+                                                   :aria-label="`${mergeDatasetLabel(row.key)} ${row.field} dimension positions`"
+                                                   :disabled="mergeIndexUsesAction(row)"
+                                                   :value="mergeIndexText(row)" @input="setMergeIndexText(row, $event.target.value)"
+                                                   :placeholder="preprocess.merge_dimension_policy === 'pad' ? 'Padding output positions, e.g. 17-19; blank = unchanged' : 'Delete source positions, e.g. 17-19; blank = unchanged'">
+                                        </label>
+                                        <p class="text-xs text-amber-200" x-show="mergeIndexRowError(row)" x-text="mergeIndexRowError(row)"></p>
+                                        <p class="text-xs text-slate-400" x-text="mergeIndexSummary(row)"></p>
+                                        <details class="text-xs text-slate-400"><summary class="cursor-pointer">Show index mapping</summary><p class="mt-1 break-words font-mono" x-text="mergeIndexSummary(row, true)"></p></details>
+                                        <div class="flex flex-wrap gap-1" role="group" :aria-label="`${row.field} dimension positions`">
+                                            <template x-for="cell in mergeIndexCells(row)" :key="cell.position">
+                                                <button type="button" class="rounded border px-2 py-1 text-xs font-mono"
+                                                        :disabled="mergeIndexUsesAction(row)" :aria-pressed="cell.selected"
+                                                        :title="cell.label" :aria-label="cell.label"
+                                                        :class="cell.selected ? (preprocess.merge_dimension_policy === 'pad' ? 'border-sky-500 bg-sky-950 text-sky-200' : 'border-red-500 bg-red-950 text-red-200') : 'border-slate-700 text-slate-300'"
+                                                        @click="toggleMergeIndex(row, cell.position)" x-text="cell.position"></button>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                                <p class="text-xs text-amber-200" x-show="mergeIndexError()" x-text="mergeIndexError()"></p>
+                            </div>
+                            <div class="space-y-3" x-show="preprocess.merge_mapping_mode === 'explicit'">
+                                <p class="text-xs text-amber-200">Only use shared names for dimensions you know have the same meaning and units. All dimension numbers below start at 1. This mapping applies only to the new output.</p>
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <label>Shared first <input type="number" min="0" class="w-16 rounded bg-slate-950 p-2" x-model.number="preprocess.merge_prefix_dims"></label>
+                                    <label>Shared last <input type="number" min="0" class="w-16 rounded bg-slate-950 p-2" x-model.number="preprocess.merge_tail_dims"></label>
+                                    <button class="dp-btn" @click="applyMergeLayoutPreset()">Apply prefix / tail preset</button>
+                                </div>
+                                <p class="text-xs text-slate-400">Example only — for 17D ↔ 20D with a known shared prefix and tail: first 16 + last 1. Minimum drops source dimensions 17–19 from 20D. Padding inserts three fill values before the last dimension of 17D. Edit action and state independently below.</p>
+                                <template x-for="row in mergeMappingRows()" :key="row.id">
+                                    <label class="block text-xs">
+                                        <span x-text="`${mergeDatasetLabel(row.key)} · ${row.field} · ${row.dimension} dimensions`"></span>
+                                        <input class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2 font-mono"
+                                               :value="row.text" @input="setMergeDimensionNames(row.key, row.field, $event.target.value)"
+                                               placeholder="One unique name per source dimension, separated by commas">
+                                    </label>
+                                </template>
+                                <label class="flex gap-2 text-xs text-amber-200">
+                                    <input type="checkbox" :checked="preprocess.merge_mapping_confirmation === mergeMappingSignature()"
+                                           @change="preprocess.merge_mapping_confirmation = $event.target.checked ? mergeMappingSignature() : ''">
+                                    I confirm that shared names identify the same signals across these selected sources.
+                                </label>
+                            </div>
+                            <label class="block" x-show="preprocess.merge_dimension_policy === 'pad'">Padding value
+                                <input type="number" step="any" class="ml-2 w-28 rounded bg-slate-950 p-2" x-model.number="preprocess.merge_padding_value">
+                            </label>
+                            <div class="space-y-2 text-xs" aria-live="polite" x-show="preprocess.merge_mapping_mode !== 'indices'">
+                                <p class="font-semibold">Mapping preview (output dimension ← source dimension)</p>
+                                <template x-for="row in mergeAlignmentPreview()" :key="row.id">
+                                    <p class="break-words font-mono" x-text="row.text"></p>
+                                </template>
+                            </div>
+                        </div>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-300">
+                            <input type="checkbox" class="accent-sky-500" x-model="preprocess.merge_dry_run">
+                            <span>Dry run only</span>
+                        </label>
+                    </div>
+
+                    <div class="space-y-3" x-show="preprocess.split_merge_op === 'subtract'">
+                        <div class="rounded border border-slate-800 bg-slate-950 p-2 text-xs">
+                            <div class="mb-2 flex items-center justify-between gap-2 text-slate-400">
+                                <span>subtract sources</span>
+                                <span x-text="`selected ${(preprocess.subtract_src_keys || []).length} · showing ${filteredSubtractDatasets().length} / ${datasets.length}`"></span>
+                            </div>
+                            <div class="mb-2 text-[11px] text-slate-500">
+                                Base is the current dataset. Episodes with matching content fingerprints in selected sources are excluded from the output.
+                            </div>
+                            <div class="mb-2 flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-2 py-2">
+                                <input class="min-w-0 flex-1 bg-transparent text-xs text-slate-100 outline-none placeholder:text-slate-600"
+                                       x-model.debounce.150ms="preprocess.subtract_dataset_search"
+                                       placeholder="search name / path / tag">
+                                <button class="text-xs text-slate-500 hover:text-slate-300"
+                                        x-show="preprocess.subtract_dataset_search"
+                                        @click="preprocess.subtract_dataset_search = ''">clear</button>
+                            </div>
+                            <div class="mb-2 flex flex-wrap gap-1" x-show="(preprocess.subtract_src_keys || []).length">
+                                <template x-for="key in preprocess.subtract_src_keys" :key="key">
+                                    <button type="button"
+                                            class="rounded-full border border-sky-900/60 bg-sky-950/30 px-2 py-1 text-[11px] text-sky-100"
+                                            @click="removeSubtractSource(key)"
+                                            x-text="subtractDatasetLabel(key)"></button>
+                                </template>
+                            </div>
+                            <div class="max-h-48 space-y-1 overflow-y-auto pr-1">
+                                <template x-for="dataset in filteredSubtractDatasets()" :key="dataset.key">
+                                    <label class="flex items-center gap-2 rounded px-2 py-1 hover:bg-slate-900">
+                                        <input type="checkbox" class="accent-sky-500" :value="dataset.key" x-model="preprocess.subtract_src_keys">
+                                        <span class="truncate" x-text="datasetName(dataset)"></span>
+                                    </label>
+                                </template>
+                                <p class="rounded border border-slate-800 px-2 py-2 text-slate-500"
+                                   x-show="datasets.length > 0 && filteredSubtractDatasets().length === 0">No dataset matches the keyword.</p>
+                            </div>
+                        </div>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">output folder name</span>
+                            <span class="mb-1 block truncate text-[11px] text-slate-500"
+                                  x-text="rootDir ? `base: ${rootDir}` : 'base: root_dir not set'"></span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.subtract_out_root"
+                                   placeholder="e.g. dataset_minus_reviewed">
+                            <span class="mt-1 block truncate text-[11px] text-slate-500"
+                                  x-text="subtractOutputPreview()"></span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">workers</span>
+                            <input type="number"
+                                   min="1"
+                                   max="32"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="preprocess.subtract_workers">
+                            <span class="mt-1 block text-[11px] text-slate-500">Parallel parquet writers. Default: 8.</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-300">
+                            <input type="checkbox" class="accent-sky-500" x-model="preprocess.subtract_dry_run">
+                            <span>Dry run only</span>
+                        </label>
+                    </div>
+
+                    <p class="text-xs text-amber-200" x-show="splitMergeDisabledReason()"
+                       x-text="splitMergeDisabledReason()"></p>
+                    <div class="dp-action-row">
+                        <button class="dp-btn dp-btn-primary dp-full"
+                                @click="startSplitMerge()"
+                                :disabled="!canStartSplitMerge() || busy">
+                            Run <span x-text="preprocess.split_merge_op"></span>
+                        </button>
+                    </div>
+                </div>

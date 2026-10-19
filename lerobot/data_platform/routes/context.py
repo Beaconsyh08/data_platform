@@ -2,7 +2,12 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from lerobot.data_platform.processing.console_submissions import ConsoleSubmissionService
+    from lerobot.data_platform.services.catalog import DatasetCatalog
+    from lerobot.data_platform.services.presentation import DatasetPresentation
 
 
 @dataclass
@@ -43,6 +48,10 @@ class RouteContext:
     dataset_is_protected: Callable[[tuple[str, str]], bool] | None = None
     remote_cache_root: Path | None = None
     caption_read_relay: Any | None = None
+    dataset_catalog: "DatasetCatalog | None" = None
+    dataset_presentation: "DatasetPresentation | None" = None
+    admin_authenticated: Callable[[], bool] | None = None
+    console_submissions: "ConsoleSubmissionService | None" = None
     unregister_missing_dataset: Callable[[dict], None] | None = None
 
     def update_job(self, job: dict, payload: dict) -> None:

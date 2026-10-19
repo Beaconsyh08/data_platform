@@ -139,3 +139,5 @@ to this dataset.
 ## Data Platform processing architecture
 
 See [Unified operators and pipelines](data_platform_operators.md) for operator contracts, the migration inventory, APIs, review gates and recovery.
+
+- [Architecture upgrade completion review](data_platform_architecture_review.md): implementation coverage, console service boundaries and remaining runtime acceptance.

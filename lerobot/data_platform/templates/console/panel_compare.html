@@ -1,0 +1,24 @@
+<div class="space-y-4 px-4 py-4" x-show="activeTab === 'compare'">
+                    <div class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs text-slate-400">
+                        <div class="text-slate-300">Dataset A</div>
+                        <div class="mt-1 truncate" x-text="selectedDataset ? datasetName(selectedDataset) : 'none'"></div>
+                    </div>
+                    <label class="block">
+                        <span class="mb-1 block text-xs text-slate-400">Dataset B</span>
+                        <select class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                x-model="compare.dataset_key_b">
+                            <option value="">select dataset</option>
+                            <template x-for="dataset in compareCandidates" :key="dataset.key">
+                                <option :value="dataset.key" x-text="datasetName(dataset)"></option>
+                            </template>
+                        </select>
+                    </label>
+                    <div class="grid gap-2 text-xs md:grid-cols-2">
+                        <div class="rounded border border-slate-800 bg-slate-950 px-3 py-2" x-text="selectedDataset ? `A tags: ${(selectedDataset.tagging || {}).status || 'missing'}` : 'A not selected'"></div>
+                        <div class="rounded border border-slate-800 bg-slate-950 px-3 py-2" x-text="compareDatasetB() ? `B cache: ${compareDatasetB().cache.status}` : 'B not selected'"></div>
+                    </div>
+                    <div class="dp-action-row">
+                        <button class="dp-btn dp-btn-primary dp-full"
+                                @click="startCompare()" :disabled="!canStartCompare() || busy">Build compare cache</button>
+                    </div>
+                </div>

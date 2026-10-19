@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from lerobot.data_platform import viewer
+from tests.datasets.console_templates import template_source
 
 TEMPLATES = Path(viewer.__file__).parent / "templates"
 
@@ -100,7 +101,7 @@ def _run_methods(names: list[str], script: str) -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is required for browser-script behavior checks")
-    source = (TEMPLATES / "visualize_dataset_homepage.html").read_text()
+    source = template_source(TEMPLATES / "visualize_dataset_homepage.html")
     methods = []
     for name in names:
         match = re.search(rf"^                (?:async )?{name}\([^\n]*\) \{{", source, re.MULTILINE)
@@ -108,7 +109,12 @@ def _run_methods(names: list[str], script: str) -> None:
         end = re.search(r"^                \},", source[match.end() :], re.MULTILINE)
         assert end, name
         methods.append(source[match.start() : match.end() + end.end()])
-    code = "const assert = require('node:assert/strict'); const app = {" + "\n".join(methods) + "};\n"
+    code = (
+        template_source("console/context.js")
+        + "\nconst assert = require('node:assert/strict'); const app = {"
+        + "\n".join(methods)
+        + "};\n"
+    )
     code += "(async () => {\n" + script + "\n})().catch(e => {console.error(e);process.exitCode=1;});"
     result = subprocess.run([node, "-e", code], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr

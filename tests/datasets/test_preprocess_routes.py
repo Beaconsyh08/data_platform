@@ -8,6 +8,7 @@ from flask import Flask
 
 from lerobot.data_platform.precompute.preprocess.common import PreprocessResult
 from lerobot.data_platform.routes import preprocess as preprocess_routes
+from tests.datasets.console_templates import template_source
 
 
 class _ImmediateThread:
@@ -609,13 +610,13 @@ def test_delete_all_flagged_refreshes_viewer_episode_state_before_job_finishes(
 
 
 def test_convert_v3_homepage_wiring():
-    template = (
+    template = template_source(
         Path(__file__).parents[2]
         / "lerobot"
         / "data_platform"
         / "templates"
         / "visualize_dataset_homepage.html"
-    ).read_text()
+    )
 
     assert 'value="convert_v3"' in template
     assert "/api/preprocess/convert_v3/start" in template

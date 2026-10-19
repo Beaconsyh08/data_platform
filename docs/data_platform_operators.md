@@ -140,6 +140,32 @@ the planned final output and matching metadata. Fingerprints are checked again b
   output reuse is rejected; data/metadata symlinks that could escape output boundaries are rejected.
   This avoids laundry's pending-decision resume and hard-link overwrite failure paths.
 
+## Console service and page boundaries
+
+The legacy API and CLI contracts remain in place. `services/catalog.py` owns dataset registration,
+loading, persisted registry state and publication callbacks; `services/cache.py` owns cache summaries,
+metadata/video inventory and invalidation; `services/presentation.py` owns the existing dataset response
+and navigation shapes. They share one `ConsoleState` and the existing `RouteContext` references.
+`processing/console_submissions.py` accepts parsed legacy request payloads and owns their scheduling and
+worker result handling. `routes/console_datasets.py` and `routes/console_jobs.py` preserve the original
+paths and endpoint names, so authorization, audit and the local executor keep their existing contracts.
+`viewer.py` assembles these services and retains episode rendering and the dedicated guarded annotation
+and source-edit workflows. Its remaining size does not indicate a second registry or submission service.
+
+The homepage composes `templates/console/` modules for navigation, accounts, dataset browsing, operator
+forms, lifecycle records and run tracking. Each module creates its own state per console instance;
+composition rejects duplicate property owners. Existing bindings call the composed Alpine facade.
+Operator panels are Jinja includes, with no frontend build requirement. Read results are scoped to their
+account/environment and applicable dataset or browsing revision; superseded responses cannot replace the
+current selection's data or errors.
+
+`Preprocessing > Pipeline` and `/pipelines` mount the same editor. The embedded editor uses an isolated
+DOM/style root; switching its dataset/account or leaving the view disposes requests and polling. Accepted
+Jobs continue through the scheduler. Saving creates an immutable version as before.
+
+See [architecture completion review](data_platform_architecture_review.md) for requirement-level evidence
+and the distinction between implementation, runtime acceptance and production promotion.
+
 ## Compatibility and migration inventory
 
 The table below accounts for the existing computation families. Original route paths, CLI flags, defaults,

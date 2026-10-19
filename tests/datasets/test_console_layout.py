@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from lerobot.data_platform import viewer
+from tests.datasets.console_templates import template_source
 
 
 @pytest.mark.parametrize("page", ["visualize_dataset_homepage.html", "data_platform_control_plane.html"])
@@ -14,7 +15,7 @@ def test_remote_lists_load_independently_when_jobs_fail(page):
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the page behavior check")
-    template = (Path(viewer.__file__).parent / "templates" / page).read_text()
+    template = template_source(Path(viewer.__file__).parent / "templates" / page)
     method = "loadRemoteSources" if page.startswith("visualize") else "load"
     match = re.search(rf"^                async {method}\([^\n]*\) \{{", template, re.MULTILINE)
     assert match is not None
@@ -426,6 +427,7 @@ def test_full_console_navigation_uses_workspace_page_tab_hierarchy():
         "standardize",
         "transform",
         "split_merge",
+        "pipelines",
     ]
     assert [tab["key"] for tab in pages["explore"]["tabs"]] == [
         "explore_overview",
@@ -459,13 +461,13 @@ def test_visualize_console_keeps_dataset_runs_explore_and_allowed_legacy_page():
 
 
 def test_homepage_uses_single_canvas_dataset_page_and_on_demand_job_drawer():
-    template = (
+    template = template_source(
         Path(__file__).parents[2]
         / "lerobot"
         / "data_platform"
         / "templates"
         / "visualize_dataset_homepage.html"
-    ).read_text()
+    )
 
     assert "dp-console-grid" not in template
     assert "Job & Artifacts" not in template
@@ -511,13 +513,13 @@ def test_homepage_uses_single_canvas_dataset_page_and_on_demand_job_drawer():
 
 
 def test_homepage_uses_consistent_visual_hierarchy_and_context_states():
-    template = (
+    template = template_source(
         Path(__file__).parents[2]
         / "lerobot"
         / "data_platform"
         / "templates"
         / "visualize_dataset_homepage.html"
-    ).read_text()
+    )
 
     assert "dp-app-header" in template
     assert "dp-page-surface" in template
@@ -554,13 +556,13 @@ def test_homepage_uses_consistent_visual_hierarchy_and_context_states():
 
 
 def test_explore_overview_surfaces_visualizations_and_preparation_paths():
-    template = (
+    template = template_source(
         Path(__file__).parents[2]
         / "lerobot"
         / "data_platform"
         / "templates"
         / "visualize_dataset_homepage.html"
-    ).read_text()
+    )
 
     assert "Visualization center" in template
     assert "visualizationItems()" in template
@@ -581,13 +583,13 @@ def test_explore_overview_surfaces_visualizations_and_preparation_paths():
 
 
 def test_local_and_remote_datasets_use_the_shared_curation_workspace():
-    template = (
+    template = template_source(
         Path(__file__).parents[2]
         / "lerobot"
         / "data_platform"
         / "templates"
         / "visualize_dataset_homepage.html"
-    ).read_text()
+    )
 
     assert "window.location.assign(this.curationUrl(pageKey))" not in template
     assert "window.syncCurationWorkspace($refs.curationWorkspace" in template
@@ -604,7 +606,7 @@ def test_local_and_remote_datasets_use_the_shared_curation_workspace():
 
 def test_robot_profile_and_viewer_signal_layout_are_presented_separately():
     templates_dir = Path(__file__).parents[2] / "lerobot" / "data_platform" / "templates"
-    homepage = (templates_dir / "visualize_dataset_homepage.html").read_text()
+    homepage = template_source(templates_dir / "visualize_dataset_homepage.html")
     viewer_template = (templates_dir / "visualize_dataset_template.html").read_text()
 
     assert "DVT processing profile" in homepage
@@ -623,7 +625,7 @@ def test_processing_defaults_and_umi_stage_form_behavior():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the homepage behavior check")
-    template = (Path(viewer.__file__).parent / "templates/visualize_dataset_homepage.html").read_text()
+    template = template_source(Path(viewer.__file__).parent / "templates/visualize_dataset_homepage.html")
     methods = []
     for name in (
         "operationAvailable",
@@ -685,7 +687,7 @@ def test_curation_tabs_stay_in_console_and_skip_legacy_local_loaders():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the navigation behavior check")
-    template = (Path(viewer.__file__).parent / "templates/visualize_dataset_homepage.html").read_text()
+    template = template_source(Path(viewer.__file__).parent / "templates/visualize_dataset_homepage.html")
     methods = []
     for name in ["unifiedCurationActive", "curationTarget", "selectTab", "selectPage"]:
         match = re.search(
@@ -742,7 +744,7 @@ def test_agent_dataset_can_open_mcap_import_page():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the navigation behavior check")
-    template = (Path(viewer.__file__).parent / "templates/visualize_dataset_homepage.html").read_text()
+    template = template_source(Path(viewer.__file__).parent / "templates/visualize_dataset_homepage.html")
     methods = []
     for name in ["selectTab", "selectPage"]:
         match = re.search(rf"^                async {name}\(.*?^                \}},", template, re.M | re.S)
@@ -850,7 +852,7 @@ def test_delayed_console_startup_does_not_override_user_navigation():
 
     if not shutil.which("node"):
         pytest.skip("Node required")
-    template = (Path(viewer.__file__).parent / "templates/visualize_dataset_homepage.html").read_text()
+    template = template_source(Path(viewer.__file__).parent / "templates/visualize_dataset_homepage.html")
     assert 'x-init="init()"' not in template
     method = re.search(r"^                async init\(\) \{.*?^                \},", template, re.M | re.S)
     assert method
@@ -910,7 +912,7 @@ def test_jobs_use_durable_progress_and_ignore_stale_responses():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the page behavior check")
-    template = (Path(viewer.__file__).parent / "templates" / "visualize_dataset_homepage.html").read_text()
+    template = template_source(Path(viewer.__file__).parent / "templates" / "visualize_dataset_homepage.html")
     methods = []
     for name in ("remoteJobForRuns", "mergeRemoteJob"):
         match = re.search(rf"^                {name}\(job\) \{{", template, re.MULTILINE)
