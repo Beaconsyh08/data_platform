@@ -24,13 +24,13 @@ class SourceCleanup(ManagementBase):
     revision: Mapped[str] = mapped_column(String(64))
     witness: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(24), index=True)
-    first_seen: Mapped[float] = mapped_column(Float)
-    updated_at: Mapped[float] = mapped_column(Float)
+    first_seen: Mapped[float] = mapped_column(Float(53))
+    updated_at: Mapped[float] = mapped_column(Float(53))
     node_done: Mapped[bool] = mapped_column(Boolean, default=False)
     job_cursor: Mapped[str] = mapped_column(String(36), default="")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    lease_until: Mapped[float] = mapped_column(Float, default=0)
+    lease_until: Mapped[float] = mapped_column(Float(53), default=0)
 
 
 @dataclass(frozen=True)

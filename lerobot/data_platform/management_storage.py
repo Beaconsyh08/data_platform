@@ -99,6 +99,31 @@ class DatasetScan(ManagementBase):
     updated_at: Mapped[float] = mapped_column(Float, default=time.time)
 
 
+def _migrate_source_cleanup_clock(conn) -> None:
+    """Widen the additive cleanup table without changing older executor contracts."""
+    if conn.dialect.name != "mysql":
+        return
+    columns = inspect(conn).get_columns("dp_source_cleanups")
+    if not any(
+        str(column["type"].compile(dialect=conn.dialect)).upper().startswith("FLOAT") for column in columns
+    ):
+        return
+    conn.exec_driver_sql(
+        "ALTER TABLE dp_source_cleanups MODIFY first_seen DOUBLE NOT NULL, "
+        "MODIFY updated_at DOUBLE NOT NULL, MODIFY lease_until DOUBLE NOT NULL"
+    )
+    # An earlier FLOAT observation cannot provide a reliable five-second boundary.
+    # Renew only the proof timestamp; do not release task leases or touch cached data.
+    from lerobot.data_platform.source_cleanup import SourceCleanup
+
+    now = time.time()
+    conn.execute(
+        SourceCleanup.__table__.update()
+        .where(SourceCleanup.status == "observed")
+        .values(first_seen=now, updated_at=now)
+    )
+
+
 def migrate_management(engine) -> None:
     """Create additive tables and serialize startup migrations across processes."""
     import hashlib
@@ -119,6 +144,7 @@ def migrate_management(engine) -> None:
             conn.exec_driver_sql("BEGIN IMMEDIATE")
         try:
             ManagementBase.metadata.create_all(conn)
+            _migrate_source_cleanup_clock(conn)
             if conn.scalar(select(SchemaMigration.version).where(SchemaMigration.version == 1)) is None:
                 conn.execute(SchedulerLock.__table__.insert().values(lock_id=1, revision=0))
                 conn.execute(SchemaMigration.__table__.insert().values(version=1))

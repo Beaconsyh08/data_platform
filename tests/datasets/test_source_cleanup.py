@@ -421,3 +421,37 @@ def test_missing_secondary_merge_input_cancels_queued_job(setup, monkeypatch):
             operation="viewer.prepare",
             options={"source_location_ids": [setup.location["location_id"]]},
         )
+
+
+def test_mysql_cleanup_clock_has_double_precision_and_renews_legacy_proofs(monkeypatch):
+    from sqlalchemy.dialects import mysql
+
+    from lerobot.data_platform import management_storage
+    from lerobot.data_platform.source_cleanup import SourceCleanup
+
+    dialect = mysql.dialect()
+    for name in ("first_seen", "updated_at", "lease_until"):
+        assert SourceCleanup.__table__.c[name].type.precision == 53
+    calls = []
+    connection = SimpleNamespace(
+        dialect=dialect,
+        exec_driver_sql=lambda statement: calls.append(statement),
+        execute=lambda statement: calls.append(statement),
+    )
+    monkeypatch.setattr(
+        management_storage,
+        "inspect",
+        lambda conn: SimpleNamespace(get_columns=lambda table: [{"type": mysql.FLOAT()}]),
+    )
+    management_storage._migrate_source_cleanup_clock(connection)
+    assert "MODIFY first_seen DOUBLE" in calls[0]
+    assert "MODIFY lease_until DOUBLE" in calls[0]
+    assert calls[1].compile().params["status_1"] == "observed"
+    calls.clear()
+    monkeypatch.setattr(
+        management_storage,
+        "inspect",
+        lambda conn: SimpleNamespace(get_columns=lambda table: [{"type": mysql.DOUBLE()}]),
+    )
+    management_storage._migrate_source_cleanup_clock(connection)
+    assert calls == []

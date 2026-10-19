@@ -497,6 +497,7 @@ Server 与 Agent 均需支持 `source_cleanup_protocol=1`，且执行器发行�
 控制面在维护模式暂停检查与确认；普通 Refresh 不进行目录扫描。节点后台以 15 秒间隔分页检查
 已登记路径，两次一致的缺失证据后清理。大量数据集按页轮转，不能用 30 秒作为完成时限。
 `dp_source_cleanups` 保存 location、令牌、阶段、错误、任务页游标及短租约；重启会续清理。
+MySQL 的确认/更新时间及租约使用双精度列，避免 epoch 秒被普通 FLOAT 舍入。升级自动扩宽旧清理表并重新计时未确认的缺失证据。
 `dataset.source_cleanup` 事件写入现有审计。`deleting`/`deleted` 不允许新 Job 或 Pipeline 输入，
 普通位置列表隐藏它们；历史查询仍保留原 location 和 Job 外键。
 历史 Job 的手动重试和 MCAP 自动恢复也校验全部输入；已删除输入不会重新排队，Jobs 显示不可重试原因。
