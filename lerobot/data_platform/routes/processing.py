@@ -1,6 +1,7 @@
 """Thin authenticated endpoints for operator discovery and versioned pipelines."""
 
 from functools import wraps
+from pathlib import PurePosixPath
 
 from flask import g, jsonify, render_template, request, send_file
 
@@ -163,12 +164,31 @@ def register_processing_routes(app, ctx):
             from lerobot.data_platform.curation import CurationSnapshot, register_snapshot
 
             value = CurationSnapshot.from_dict(json.loads((destination / "snapshot.json").read_text()))
+            from lerobot.data_platform.execution import replace_paths
+
             expected = {item["version"]["version_id"] for item in job["options"]["version_inputs"]}
-            if (
-                set(value.version["parent_version_ids"]) != expected
-                or value.version["root"] != job["options"]["out_root"]
-            ):
+            final = PurePosixPath(job["options"]["out_root"])
+            staging = final.parent / f".dp-{job['job_id']}-{attempt}" / final.name
+            if set(value.version["parent_version_ids"]) != expected or value.version["root"] not in {
+                str(final),
+                str(staging),
+            }:
                 raise ValueError("Derived version does not match the planned inputs and output")
+            if value.version["root"] == str(staging):
+                # Retained executors may have spooled their snapshot before the atomic rename.
+                # Accept only this authenticated attempt's exact staging path and confirmed output.
+                confirmed = returned.get("dataset_location") or {}
+                if confirmed.get("root") != str(final) or confirmed.get("metadata") != result.get(
+                    "dataset_location", {}
+                ).get("metadata"):
+                    raise ValueError("Derived publication does not confirm its planned output")
+                value = CurationSnapshot.from_dict(
+                    {**value.to_dict(), "version": {**value.version, "root": str(final)}}
+                )
+                result = replace_paths(result, {str(staging): str(final)})
+                result["dataset_location"] = confirmed
+            if result.get("dataset_location", {}).get("root") != str(final):
+                raise ValueError("Derived result does not match the planned output")
             derived = manager.store.sync_locations(job["node_id"], [result["dataset_location"]])[0]
             register_snapshot(ledger, value, derived)
             result["output_location_id"] = derived["location_id"]

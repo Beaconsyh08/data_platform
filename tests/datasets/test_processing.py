@@ -1,6 +1,8 @@
 """Persistent sequential plans reuse acknowledged jobs and enforce current authorization."""
 
+import copy
 import json
+from pathlib import Path
 
 import pytest
 from flask import Flask, g
@@ -195,7 +197,10 @@ def test_changed_input_blocks_execution(setup):
     assert not store.list_jobs()
 
 
-def test_preprocess_output_registers_version_and_preserves_episode_identity(setup, tmp_path, monkeypatch):
+@pytest.mark.parametrize("publication", ["direct", "supervised", "legacy-staged"])
+def test_preprocess_output_registers_version_and_preserves_episode_identity(
+    setup, tmp_path, monkeypatch, publication
+):
     import shutil
     from types import SimpleNamespace
 
@@ -234,7 +239,18 @@ def test_preprocess_output_registers_version_and_preserves_episode_identity(setu
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, destination)
 
-    agent.client.upload_artifact = upload
+    final = Path(job["options"]["out_root"])
+    computed_job = copy.deepcopy(job)
+    if publication != "direct":
+        from lerobot.data_platform.execution import SpoolingClient
+
+        work = tmp_path / "supervisor" / attempt
+        staging = final.parent / f".dp-{job['job_id']}-{attempt}"
+        staging.mkdir()
+        computed_job["options"]["out_root"] = str(staging / final.name)
+        agent.client = SpoolingClient("http://127.0.0.1:1", work)
+    else:
+        agent.client.upload_artifact = upload
     from lerobot.data_platform import agent as agent_module
     from lerobot.data_platform.operators import dataset_versions
 
@@ -245,17 +261,48 @@ def test_preprocess_output_registers_version_and_preserves_episode_identity(setu
             lambda *args: (_ for _ in ()).throw(RuntimeError("metadata failure")),
         )
         with pytest.raises(RuntimeError, match="metadata failure"):
-            agent.execute_job(job)
+            agent.execute_job(computed_job)
     with monkeypatch.context() as retry:
         retry.setattr(
             agent_module,
             "run_preprocess_op",
             lambda *args, **kwargs: pytest.fail("Completed computation must not rerun"),
         )
-        result = agent.execute_job(job)
+        result = agent.execute_job(computed_job)
+    if publication != "direct":
+        from lerobot.data_platform import execution as execution_module
+        from lerobot.data_platform.curation import validate_bundle
+        from tests.datasets.test_execution_supervisor import Client, fake_agent
+
+        supervisor = execution_module.ExecutionSupervisor(fake_agent(tmp_path, Client()))
+        marker = {"job": job, "work": str(work), "staging": str(staging), "final": str(final)}
+        if publication == "legacy-staged":
+            # A retained old executor can finish with the earlier staging-root bundle.
+            with monkeypatch.context() as legacy:
+                legacy.setattr(execution_module, "rebase_curation_bundle", lambda *args: None)
+                result = supervisor.publish(marker, {"status": "done", "result": result})["result"]
+        else:
+            result = supervisor.publish(marker, {"status": "done", "result": result})["result"]
+        bundle = work / "curation-artifacts"
+        validate_bundle(bundle, job["operation"], job["options"]["target"])
+        if publication == "supervised":
+            assert json.loads((bundle / "snapshot.json").read_text())["version"]["root"] == str(final)
+            assert json.loads((bundle / "result.json").read_text())["dataset_location"]["root"] == str(final)
+        for record in (work / "uploads").glob("*.json"):
+            descriptor = json.loads(record.read_text())
+            upload(None, job["job_id"], descriptor["relative_path"], Path(descriptor["path"]), curation=True)
     app = Flask(__name__)
     register_processing_routes(app, SimpleNamespace(control_plane_store=store, lifecycle_store=ledger))
     with app.test_request_context(headers={"X-Job-Attempt": attempt}):
+        if publication == "legacy-staged":
+            with pytest.raises(ValueError, match="does not confirm its planned output"):
+                app.extensions["data_platform_complete_operator"](
+                    job,
+                    {
+                        **result,
+                        "dataset_location": {**result["dataset_location"], "root": str(tmp_path / "other")},
+                    },
+                )
         result = app.extensions["data_platform_complete_operator"](job, result)
     execution = job["execution"]
     store.job_manager.checkpoint(

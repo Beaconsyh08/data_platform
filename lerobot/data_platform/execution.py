@@ -175,6 +175,30 @@ def replace_paths(value, replacements):
     return value
 
 
+def rebase_curation_bundle(work: Path, replacements: dict[str, str], result: dict) -> None:
+    """Finalize spooled version/result paths after the dataset's atomic publication."""
+    from lerobot.data_platform.curation import bundle_manifest
+
+    bundle = work / "curation-artifacts"
+    manifest_path = bundle / "curation-manifest.json"
+    if not replacements or not manifest_path.is_file():
+        return
+    manifest = json.loads(manifest_path.read_text())
+    snapshot_path = bundle / "snapshot.json"
+    if snapshot_path.is_file():
+        snapshot = json.loads(snapshot_path.read_text())
+        # Root is a replica path; content and identity digests remain immutable.
+        snapshot["version"] = replace_paths(snapshot["version"], replacements)
+        atomic_json(snapshot_path, snapshot)
+    result_path = bundle / "result.json"
+    if result_path.is_file():
+        value = replace_paths(json.loads(result_path.read_text()), replacements)
+        if result.get("dataset_location"):
+            value["dataset_location"] = result["dataset_location"]
+        atomic_json(result_path, value)
+    bundle_manifest(bundle, operation=manifest["operation"], target=manifest["target"])
+
+
 def publish_viewer_cache(cache: Path, target: Path, source: Path) -> None:
     """Promote one attempt's cache, retaining the previous cache and supporting replay."""
     cache, target, source = Path(cache), Path(target), Path(source).resolve()
@@ -1024,6 +1048,7 @@ class ExecutionSupervisor:
                 checkpoints = Path(marker["final"]).parent / ".mcap-checkpoints" / marker["job"]["job_id"]
                 if checkpoints.is_dir():
                     shutil.rmtree(checkpoints)
+        rebase_curation_bundle(Path(marker["work"]), replacements, payload.get("result") or {})
         for path in (Path(marker["work"]) / "uploads").glob("*.json"):
             record = json.loads(path.read_text())
             artifact = Path(record["path"])
