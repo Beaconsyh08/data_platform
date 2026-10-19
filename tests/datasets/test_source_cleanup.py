@@ -219,6 +219,10 @@ def test_viewer_cleanup_refuses_unproven_or_shared_paths(setup, case):
 
 
 def test_console_state_kept_when_cache_and_console_share_directory(setup):
+    (setup.cache / ".result-sync-backups").mkdir()
+    (setup.cache / ".result-sync-backups/saved").write_text("cache")
+    (setup.cache / ".edited-csv.json").write_text("{}")
+    (setup.cache / "static/operation_log.jsonl").write_text("audit")
     (setup.cache / "management").mkdir()
     (setup.cache / "management/db").write_text("keep")
     (setup.cache / "static/lifecycle").mkdir()
@@ -229,6 +233,9 @@ def test_console_state_kept_when_cache_and_console_share_directory(setup):
     assert not (setup.cache / "static/evidence.json").exists()
     assert (setup.cache / "static/lifecycle/db").read_text() == "keep"
     assert (setup.cache / "management/db").read_text() == "keep"
+    assert (setup.cache / "static/operation_log.jsonl").read_text() == "audit"
+    assert not (setup.cache / ".result-sync-backups").exists()
+    assert not (setup.cache / ".edited-csv.json").exists()
 
 
 def test_node_cleanup_keeps_final_derived_output_and_unacknowledged_work(tmp_path):
@@ -455,3 +462,37 @@ def test_mysql_cleanup_clock_has_double_precision_and_renews_legacy_proofs(monke
     )
     management_storage._migrate_source_cleanup_clock(connection)
     assert calls == []
+
+
+def test_custom_cache_cleanup_can_retry_after_its_manifest_is_removed(setup, monkeypatch):
+    cache = setup.tmp / "custom-cache"
+    static = cache / "static"
+    static.mkdir(parents=True)
+    manifest = static / "viewer_manifest.json"
+    manifest.write_text(json.dumps({"root": str(setup.source), "repo_id": setup.location["dataset_key"]}))
+    (static / "data").write_text("cached")
+    task = {**setup.location, "output_dir": str(cache), "token": str(uuid.uuid4())}
+    original = shutil.rmtree
+
+    def interrupted(path):
+        manifest.unlink()
+        raise PermissionError("temporary permission failure")
+
+    monkeypatch.setattr(shutil, "rmtree", interrupted)
+    with pytest.raises(PermissionError):
+        prune_viewer_cache(task, [setup.tmp], state_root=setup.tmp / "agent")
+    assert cache.exists() and not manifest.exists()
+    monkeypatch.setattr(shutil, "rmtree", original)
+    prune_viewer_cache(task, [setup.tmp], state_root=setup.tmp / "agent")
+    assert not cache.exists()
+
+
+def test_shared_console_static_symlink_never_deletes_its_target(setup):
+    outside = setup.tmp / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("source")
+    shutil.rmtree(setup.cache / "static")
+    (setup.cache / "static").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(PermissionError, match="symbolic link"):
+        prune_viewer_cache(setup.location, [setup.tmp], state_root=setup.cache / "management")
+    assert (outside / "keep").read_text() == "source"

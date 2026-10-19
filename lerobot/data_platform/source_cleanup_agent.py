@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ from lerobot.data_platform.source_cleanup_files import (
     missing_witness,
     prune_node_job_cache,
     prune_viewer_cache,
+    remove_owned,
 )
 
 
@@ -117,9 +119,14 @@ class SourceCleanupWorker:
                     if not page:
                         break
             if not self.stop.is_set():
-                self.request(
+                state = self.agent.state_path.parent
+                key = hashlib.sha256(task["location_id"].encode()).hexdigest()
+                remove_owned(state / "result-sync" / f"{key}.json", state)
+                acknowledged = self.request(
                     "POST", f"/api/agents/source-cleanup/{task['token']}/ack", json={"status": "done"}
                 )
+                if acknowledged.get("status") == "done":
+                    remove_owned(state / "source-cleanup-receipts" / f"{task['token']}.json", state)
         except Exception as exc:
             self.request(
                 "POST",

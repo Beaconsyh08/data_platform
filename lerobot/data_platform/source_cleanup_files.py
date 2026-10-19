@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import shutil
 import stat
+import uuid
 from pathlib import Path
+
+from lerobot.data_platform.execution import atomic_json
 
 
 def missing_witness(root: Path, allowed_roots: list[Path]) -> dict | None:
@@ -86,13 +89,23 @@ def prune_viewer_cache(task: dict, writable_roots: list[Path], *, state_root: Pa
     protected = [Path(root).resolve() for root in task.get("protected_roots", [])]
     if any(root == output.resolve() or root.is_relative_to(output.resolve()) for root in protected):
         raise PermissionError("Viewer cache contains another registered source")
+    if (output / "static").is_symlink():
+        raise PermissionError("Viewer cache static directory must not be a symbolic link")
     manifest = output / "static/viewer_manifest.json"
     known = output.resolve() == get_default_output_dir(source).resolve()
     if manifest.is_file():
         value = json.loads(manifest.read_text())
         known = value.get("root") == str(source) and value.get("repo_id") == task["dataset_key"]
+    token = task.get("token")
+    receipt = state_root / "source-cleanup-receipts" / f"{uuid.UUID(token)}.json" if token else None
+    entry = output.stat()
+    identity = {"root": str(source), "output_dir": str(output), "device": entry.st_dev, "inode": entry.st_ino}
+    if not manifest.exists() and receipt and receipt.is_file():
+        known = known or json.loads(receipt.read_text()) == identity
     if not known:
         raise PermissionError("Viewer cache ownership cannot be verified")
+    if receipt:
+        atomic_json(receipt, identity)
     # A single-dataset console may store platform state beside its cache.
     platform_state = output / "management"
     critical = {
@@ -113,8 +126,16 @@ def prune_viewer_cache(task: dict, writable_roots: list[Path], *, state_root: Pa
         static = output / "static"
         if static.is_dir():
             for path in static.iterdir():
-                if path.name not in critical:
+                if path.name not in critical and not path.name.startswith("operation_log.jsonl"):
                     remove_owned(path, static, protected_roots=protected)
+        for name in (
+            ".edited-csv.json",
+            ".result-sync.json",
+            ".result-sync-backups",
+            ".viewer-publication.json",
+            ".execution-owner.json",
+        ):
+            remove_owned(output / name, output, protected_roots=protected)
     else:
         remove_owned(output, output.parent, protected_roots=protected)
 
