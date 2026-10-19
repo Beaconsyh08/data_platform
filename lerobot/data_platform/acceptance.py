@@ -121,7 +121,7 @@ def installed_browser(base_url, release_root, executable, username, password):
                 page.locator("#submit").click()
             if not response.value.ok:
                 raise RuntimeError("Installed browser login failed")
-            page.wait_for_url(lambda url: url.path != "/login")
+            page.wait_for_url(lambda url: urlsplit(url).path != "/login")
             for route, field in (
                 ("/api/control/jobs?summary=1&page_size=50", "jobs"),
                 ("/api/pipelines?page_size=50", "pipelines"),

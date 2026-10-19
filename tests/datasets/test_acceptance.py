@@ -37,3 +37,34 @@ def test_matrix_validates_existing_attempt_and_original_release(setup, archive):
         collect_matrix(
             store, archive, [{**item, "attempt_id": "missing"}], "release-a", changed_operators=set()
         )
+
+
+def test_installed_login_url_predicate_accepts_playwright_string_urls(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import MagicMock
+
+    from lerobot.data_platform.acceptance import installed_browser
+
+    (tmp_path / "release.json").write_text(json.dumps({"release": "candidate"}))
+    runtime = MagicMock()
+    page = runtime.chromium.launch.return_value.new_page.return_value
+    responses = []
+    for payload in (
+        {"release": "candidate", "environment": "dev", "maintenance": False, "instance_id": "dev-id"},
+        {"jobs": []},
+        {"pipelines": []},
+        {"runs": []},
+    ):
+        response = MagicMock()
+        response.ok = True
+        response.json.return_value = payload
+        responses.append(response)
+    page.request.get.side_effect = responses
+    manager = MagicMock()
+    manager.__enter__.return_value = runtime
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: manager)
+    result = installed_browser("https://example.test", tmp_path, "/browser", "test-user", "test-only")
+    predicate = page.wait_for_url.call_args.args[0]
+    assert not predicate("https://example.test/login")
+    assert predicate("https://example.test/?page=datasets")
+    assert result["passed"] and result["instance_id"] == "dev-id"
