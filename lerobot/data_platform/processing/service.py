@@ -144,6 +144,17 @@ class PipelineManager:
                 output = {"type": operator.output_type}
                 if operator.output_type == "dataset":
                     output["path_template"] = self._output(location, node, "{run_id}", step.step_id)
+                    local = node["name"].startswith("local-") and node["capabilities"].get("local_requests")
+                    if not local and not any(
+                        PurePosixPath(output["path_template"]).is_relative_to(PurePosixPath(path))
+                        for path in node["allowed_roots"]
+                    ):
+                        blocked.append(
+                            {
+                                "step_id": step.step_id,
+                                "reason": "Dataset output must be inside this node's configured read roots",
+                            }
+                        )
                 resolved.append(
                     {
                         "step_id": step.step_id,

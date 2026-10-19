@@ -202,3 +202,142 @@ def test_caption_read_threads_stop_and_close_their_sessions(monkeypatch, transpo
         agent.close()
     assert all(not thread.is_alive() for thread in agent._caption_read_threads)
     assert all(client.closed for client in clients)
+
+
+def test_confirmed_local_output_is_readable_by_the_next_pipeline_step(tmp_path):
+    import shutil
+    from pathlib import Path
+
+    from lerobot.data_platform.agent import _require_within
+    from lerobot.data_platform.operators.registry import worker_manifest
+    from tests.datasets.test_control_plane import _app, _bootstrap, _store
+    from tests.datasets.test_quality_eef import make_eef
+
+    store = _store(tmp_path)
+    app = _app(tmp_path, store)
+    app.static_folder = str(tmp_path / "console/static")
+    client = app.test_client()
+    assert _bootstrap(client).status_code == 200
+    source = make_eef(tmp_path / "source")
+    output_parent = tmp_path / "outputs"
+    output_parent.mkdir()
+    output = output_parent / "derived"
+    token, node = store.enroll_node(
+        name="local-test",
+        hostname="localhost",
+        allowed_roots=[str(source)],
+        writable_roots=[str(output_parent)],
+        enrollment_token="test",
+        expected_token="test",
+        capabilities={
+            **worker_manifest(),
+            "operations": ["preprocess.split"],
+            "local_requests": True,
+            "job_protocol": 2,
+            "data_profile_protocol": 100,
+        },
+    )
+    location = store.sync_locations(
+        node["node_id"],
+        [
+            {
+                "root": str(source),
+                "dataset_key": "local/source",
+                "output_dir": str(tmp_path / "cache"),
+                "metadata": json.loads((source / "meta/info.json").read_text()),
+            }
+        ],
+    )[0]
+    management = tmp_path / "console/management"
+    management.mkdir(parents=True)
+    state = management / "local-agent.json"
+    state.write_text(json.dumps({"node_id": node["node_id"], "name": node["name"]}))
+    config_path = management / "local-executor.json"
+    original = {
+        "state_file": str(state),
+        "allowed_roots": [str(source)],
+        "writable_roots": [str(output_parent)],
+        "allow_source_mutations": False,
+    }
+    config_path.write_text(json.dumps(original))
+    job = store.create_job(
+        location_id=location["location_id"],
+        requested_by=store.list_users()[0]["user_id"],
+        operation="preprocess.split",
+        options={
+            "out_root": str(output),
+            "operator_snapshot": {"operator_id": "preprocess.split", "version": "1.0.0"},
+        },
+    )
+    claimed = store.claim_job(node["node_id"], worker_instance_id="local-worker")
+    assert claimed["job_id"] == job["job_id"]
+    shutil.copytree(source, output)
+    result = {
+        "dataset_location": {
+            "root": str(output),
+            "dataset_key": "local/derived",
+            "output_dir": str(output_parent / "vis/derived"),
+            "metadata": json.loads((output / "meta/info.json").read_text()),
+        }
+    }
+    response = client.post(
+        f"/api/agents/jobs/{job['job_id']}/complete",
+        json={"status": "done", "result": result},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Job-Attempt": claimed["execution"]["attempt_id"],
+            "X-Job-Credential": claimed["execution"]["credential"],
+        },
+    )
+    assert response.status_code == 200, response.json
+    updated = json.loads(config_path.read_text())
+    assert updated["allowed_roots"] == sorted([str(source), str(output)])
+    assert updated["writable_roots"] == original["writable_roots"]
+    assert updated["allow_source_mutations"] is False
+    assert store.list_nodes()[0]["allowed_roots"] == updated["allowed_roots"]
+    assert _require_within(output, [Path(root) for root in updated["allowed_roots"]], "next input") == output
+    with pytest.raises(PermissionError):
+        _require_within(
+            output_parent / "unregistered", [Path(root) for root in updated["allowed_roots"]], "input"
+        )
+
+
+@pytest.mark.parametrize("escape", [False, True])
+def test_local_derived_read_permission_rejects_unplanned_or_escaping_output(tmp_path, escape):
+
+    from lerobot.data_platform.local_execution import permit_local_derived_input
+
+    source = tmp_path / "source"
+    source.mkdir()
+    allowed_output = tmp_path / "outputs"
+    allowed_output.mkdir()
+    output = (tmp_path / "outside") if escape else (allowed_output / "unplanned")
+    output.mkdir()
+    management = tmp_path / "management"
+    management.mkdir()
+    state = management / "local-agent.json"
+    state.write_text(json.dumps({"node_id": "local-node", "name": "local-test"}))
+    config = {
+        "state_file": str(state),
+        "allowed_roots": [str(source)],
+        "writable_roots": [str(allowed_output)],
+        "allow_source_mutations": False,
+    }
+    path = management / "local-executor.json"
+    path.write_text(json.dumps(config))
+    node = {"node_id": "local-node", "name": "local-test", "capabilities": {"local_requests": True}}
+    location = {"node_id": "local-node", "location_id": "derived", "root": str(output)}
+    store = SimpleNamespace(
+        get_location=lambda key: location if key == "derived" else {"root": str(source)},
+        configure_local_execution_roots=lambda *args: pytest.fail("Rejected paths cannot expand read roots"),
+    )
+    job = {
+        "location_id": "source",
+        "options": {
+            "operator_snapshot": {"operator_id": "preprocess.split"},
+            "out_root": str(allowed_output / "planned"),
+        },
+    }
+    with pytest.raises(PermissionError):
+        permit_local_derived_input(store, node, job, location, management)
+    assert json.loads(path.read_text()) == config

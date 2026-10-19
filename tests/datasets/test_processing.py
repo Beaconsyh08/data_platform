@@ -509,3 +509,15 @@ def test_pose_review_binds_existing_curation_username_owner_and_revision(setup, 
             evidence,
             {**answer, "workspace_revision": workspace.revision + 1},
         )
+
+
+def test_preview_rejects_remote_derived_outputs_outside_configured_read_roots(setup):
+    from lerobot.data_platform.control_plane import ControlPlaneNode
+
+    store, manager, actor, node, location = setup
+    with store.sessions.begin() as session:
+        session.get(ControlPlaneNode, node["node_id"]).allowed_roots = [location["root"]]
+    preview = manager.preview(actor["user_id"], location["location_id"], definition())
+    assert preview["can_execute"] is False
+    assert any("configured read roots" in item["reason"] for item in preview["blocked"])
+    assert store.list_jobs() == []

@@ -277,6 +277,41 @@ def enqueue_local(
         return persisted
 
 
+def permit_local_derived_input(store, node: dict, job: dict, location: dict, management: Path) -> None:
+    """Add only a registered, confirmed output to the local executor's existing read scope."""
+    if not node["name"].startswith("local-") or not node.get("capabilities", {}).get("local_requests"):
+        return
+    options = job.get("options") or {}
+    if not options.get("operator_snapshot") or not options.get("out_root"):
+        return
+    from lerobot.data_platform.agent import _require_safe_output, _require_within
+
+    registered = store.get_location(location["location_id"])
+    if registered["node_id"] != node["node_id"] or registered["root"] != location["root"]:
+        raise PermissionError("Derived input must be registered on this local executor")
+    config_path = management / "local-executor.json"
+    with (management / ".local-config-lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        config = json.loads(config_path.read_text())
+        state = json.loads(Path(config["state_file"]).read_text())
+        if state["node_id"] != node["node_id"] or state["name"] != node["name"]:
+            raise PermissionError("Derived input does not belong to the configured local executor")
+        source = store.get_location(job["location_id"])
+        _require_within(
+            Path(source["root"]), [Path(value).resolve() for value in config["allowed_roots"]], "source"
+        )
+        output = _require_safe_output(
+            Path(registered["root"]),
+            Path(source["root"]),
+            [Path(value).resolve() for value in config["writable_roots"]],
+        )
+        if output != Path(options["out_root"]).resolve() or not output.is_dir():
+            raise PermissionError("Derived input does not match the confirmed output")
+        allowed = sorted(set(config["allowed_roots"]) | {str(output)})
+        store.configure_local_execution_roots(node["node_id"], allowed, config["writable_roots"])
+        atomic_json(config_path, {**config, "allowed_roots": allowed})
+
+
 def local_job_payload(store, persistent):
     snapshot = dict((persistent.get("options") or {}).get("local_job") or {})
     snapshot.update((persistent.get("result") or {}).get("local_job") or {})

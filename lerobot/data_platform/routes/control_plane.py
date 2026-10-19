@@ -862,6 +862,11 @@ def register_control_plane_routes(
                     store.inherit_import_access(current["location_id"], synced_location["location_id"])
                 if current["operation"] == "import.mcap.convert":
                     store.inherit_import_access(current["location_id"], synced_location["location_id"])
+                from lerobot.data_platform.local_execution import permit_local_derived_input
+
+                permit_local_derived_input(
+                    store, node, current, synced_location, Path(app.static_folder).parent / "management"
+                )
                 if (
                     not current.get("options", {}).get("local_compute")
                     and current["operation"] in _DERIVED_VIEWER_OPERATIONS

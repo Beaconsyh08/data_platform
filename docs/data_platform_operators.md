@@ -11,7 +11,10 @@ The existing control plane owns authentication, dataset scopes, Job/Attempt admi
 stop confirmation and immutable release installation. `processing/` owns saved plans and orchestration;
 `operators/` owns computation descriptions and dispatch. `TaskCatalog` continues to describe robot tasks.
 Pipeline steps run sequentially on one node. Dataset inputs may reference earlier dataset outputs;
-evidence references do not replace the dataset input. Source mutations use their dedicated guarded forms.
+evidence references do not replace the dataset input. Source mutations use their dedicated guarded forms. A confirmed, registered local dataset output
+is added to that executor's read configuration before downstream work; its writable roots and mutation
+switches remain unchanged. A directory selection cannot grant this derived-output permission. Remote dataset outputs must remain
+inside the node's configured read roots; preview rejects an incompatible output location.
 
 ```mermaid
 flowchart LR
