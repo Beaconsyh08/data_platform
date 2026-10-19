@@ -528,7 +528,10 @@ fields in the database; full detail reads preserve the original contract.
 Release builds require `--browser-executable /usr/bin/google-chrome` (the deployment CLI default).
 Browser tests execute separately, produce JUnit evidence included in the package checksum manifest,
 and must execute every required scenario without skips. Installed development acceptance remains
-separate from these fixture-backed browser tests.
+separate from these fixture-backed browser tests. For deterministic fixture tests, set
+`DATA_PLATFORM_BROWSER_ASSETS` to a directory containing `ui-tailwind.js` and `ui-alpine.js`;
+the gate records their SHA-256 values and rejects files changed during testing. This does not
+replace installed acceptance against the served application.
 
 OSS is optional and independent of compute publication. The Server bundle includes the pinned official
 OSS SDK. Configure a private service-owned JSON file through `DATA_PLATFORM_ARCHIVE_CONFIG`; credentials

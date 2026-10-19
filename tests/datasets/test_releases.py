@@ -706,3 +706,27 @@ def test_browser_gate_rejects_skips_and_empty_reports(tmp_path):
         report.write_text(contents)
         with pytest.raises(RuntimeError):
             check_browser_report(report)
+
+
+def test_browser_gate_preserves_explicit_fixture_assets(tmp_path, monkeypatch):
+    from lerobot.data_platform.browser_validation import REQUIRED_CASES, run_browser_validation
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    for name in ("ui-tailwind.js", "ui-alpine.js"):
+        (assets / name).write_text("/* deterministic fixture */")
+    executable = tmp_path / "chrome"
+    executable.touch()
+    executable.chmod(0o700)
+    monkeypatch.setenv("DATA_PLATFORM_BROWSER_ASSETS", str(assets))
+
+    def runner(command, **kwargs):
+        assert kwargs["env"]["DATA_PLATFORM_BROWSER_ASSETS"] == str(assets)
+        report = Path(next(arg.split("=", 1)[1] for arg in command if arg.startswith("--junitxml=")))
+        report.write_text(
+            "<testsuite>" + "".join(f'<testcase name="{name}"/>' for name in REQUIRED_CASES) + "</testsuite>"
+        )
+
+    result = run_browser_validation("python", tmp_path, executable, tmp_path, {}, runner)
+    assert result["passed"] == 2
+    assert set(result["assets_sha256"]) == {"ui-tailwind.js", "ui-alpine.js"}

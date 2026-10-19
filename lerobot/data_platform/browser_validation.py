@@ -1,5 +1,6 @@
 """Explicit browser release gate; a skipped test is not acceptance evidence."""
 
+import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -38,6 +39,16 @@ def run_browser_validation(python, source, executable, destination, env, runner)
         )
     report = destination / "browser-validation.xml"
     browser_env = {**env, "DATA_PLATFORM_BROWSER_EXECUTABLE": str(Path(executable).resolve())}
+    assets = os.environ.get("DATA_PLATFORM_BROWSER_ASSETS")
+    asset_hashes = {}
+    if assets:
+        directory = Path(assets).resolve()
+        for name in ("ui-tailwind.js", "ui-alpine.js"):
+            payload = (directory / name).read_bytes()
+            if not payload:
+                raise RuntimeError("Browser fixture assets must be nonempty JavaScript files")
+            asset_hashes[name] = hashlib.sha256(payload).hexdigest()
+        browser_env["DATA_PLATFORM_BROWSER_ASSETS"] = str(directory)
     with (destination / "browser-validation.txt").open("w") as log:
         runner(
             [python, "-m", "pytest", *BROWSER_TESTS, "-q", f"--junitxml={report}"],
@@ -46,4 +57,12 @@ def run_browser_validation(python, source, executable, destination, env, runner)
             stdout=log,
             stderr=subprocess.STDOUT,
         )
-    return check_browser_report(report)
+    result = check_browser_report(report)
+    if assets:
+        if any(
+            hashlib.sha256((directory / name).read_bytes()).hexdigest() != sha
+            for name, sha in asset_hashes.items()
+        ):
+            raise RuntimeError("Browser fixture assets changed during validation")
+        result["assets_sha256"] = asset_hashes
+    return result
