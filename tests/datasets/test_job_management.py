@@ -603,3 +603,53 @@ def test_mysql_scheduler_lock_serializes_claims_without_row_changes():
     assert sum(claim is not None for claim in claims) == 1
     assert revision() == before
     store.engine.dispose()
+
+
+@pytest.mark.parametrize("secondary", [False, True])
+def test_deleted_input_disables_retry_and_rejects_direct_command(setup, secondary):
+    from lerobot.data_platform.control_plane import DatasetLocation
+
+    store, admin, owner, node, location, create = setup
+    job = create()
+    command(store, job, owner, "cancel")
+    retired = location
+    if secondary:
+        retired = store.sync_locations(
+            node["node_id"],
+            [{"root": "/data/other", "dataset_key": "other", "output_dir": "/data/other-cache"}],
+        )[0]
+    with store.sessions.begin() as session:
+        session.get(DatasetLocation, retired["location_id"]).state = "deleting"
+        if secondary:
+            session.get(RemoteJob, job["job_id"]).options = {"source_location_ids": [retired["location_id"]]}
+    visible = store.job_manager.decorate(store.get_job(job["job_id"]), owner)
+    assert "retry" not in visible["available_actions"]
+    assert "deleted" in visible["action_reasons"]["retry"]
+    with pytest.raises(JobConflictError, match="deleted"):
+        command(store, job, owner, "retry")
+    assert store.get_job(job["job_id"])["status"] == "cancelled"
+
+
+def test_deleted_input_cannot_trigger_automatic_mcap_recovery(setup):
+    from types import SimpleNamespace
+
+    from lerobot.data_platform.control_plane import DatasetLocation
+    from lerobot.data_platform.job_management import PROCESS_LOSS_ERROR
+
+    store, admin, owner, node, location, create = setup
+    job = create()
+    with store.sessions.begin() as session:
+        row = session.get(RemoteJob, job["job_id"])
+        row.operation, row.status = "import.mcap.convert", "running"
+        session.get(DatasetLocation, location["location_id"]).state = "deleting"
+        assert (
+            store.job_manager._recovery_number(
+                session,
+                row,
+                SimpleNamespace(stop_mode=None, phase="computing"),
+                SimpleNamespace(protocol=2),
+                "error",
+                PROCESS_LOSS_ERROR,
+            )
+            is None
+        )

@@ -32,6 +32,19 @@ PROCESS_LOSS_ERROR = "Compute process exited without a result"
 SAFE_OPERATIONS = operation_ids(remote=True, cancellable=True)
 
 
+def _inputs_available(session, location_id: str, options: dict | None) -> bool:
+    from lerobot.data_platform.control_plane import DatasetLocation
+
+    options = options or {}
+    keys = {location_id, *options.get("source_location_ids", [])}
+    keys.update(
+        item["location_id"] for item in options.get("_source_locations", []) if item.get("location_id")
+    )
+    return all(
+        (row := session.get(DatasetLocation, key)) is not None and row.state == "available" for key in keys
+    )
+
+
 class JobConflictError(ValueError):
     pass
 
@@ -217,10 +230,7 @@ class JobManager:
                 ):
                     continue
                 source_ids = [job.location_id, *(job.options or {}).get("source_location_ids", [])]
-                if any(
-                    (location := session.get(DatasetLocation, key)) is None or location.state != "available"
-                    for key in source_ids
-                ):
+                if not _inputs_available(session, job.location_id, job.options):
                     continue
                 if any(
                     not self.store.dataset_access_allowed(
@@ -398,6 +408,7 @@ class JobManager:
             or not isinstance(error, str)
             or error != PROCESS_LOSS_ERROR
             or job.status not in {"running", "interrupted"}
+            or not _inputs_available(session, job.location_id, job.options)
             or control.stop_mode
             or control.phase == "finalizing"
             or attempt is None
@@ -502,6 +513,8 @@ class JobManager:
                     raise ValueError("priority must be 0, 1 or 2")
                 control.priority = priority
             elif action == "retry":
+                if not _inputs_available(session, job.location_id, job.options):
+                    raise JobConflictError("A source dataset was deleted or is being cleaned up")
                 if job.status not in {"error", "cancelled", "interrupted"} or not control.stop_confirmed:
                     raise JobConflictError("Retry requires a terminal job and confirmed process exit")
                 if job.operation not in SAFE_OPERATIONS or (attempt and attempt.protocol < 2):
@@ -831,6 +844,7 @@ class JobManager:
                         and actor["user_id"] == payload["requested_by"]
                     )
                 )
+                inputs_available = _inputs_available(session, payload["location_id"], payload.get("options"))
                 actions = []
                 if owner:
                     if payload["status"] == "queued":
@@ -854,7 +868,8 @@ class JobManager:
                             ):
                                 actions.append("terminate")
                     if (
-                        payload["operation"] in SAFE_OPERATIONS
+                        inputs_available
+                        and payload["operation"] in SAFE_OPERATIONS
                         and control
                         and control.stop_confirmed
                         and payload["status"] in {"error", "cancelled", "interrupted"}
@@ -869,6 +884,8 @@ class JobManager:
                         continue
                     if not owner:
                         reason = "Only the submitter or an administrator can control this task"
+                    elif action == "retry" and not inputs_available:
+                        reason = "A source dataset was deleted or is being cleaned up"
                     elif action == "retry" and payload["status"] not in {"error", "cancelled", "interrupted"}:
                         reason = "Retry is available after a failed or cancelled execution"
                     elif action == "retry" and (not control or not control.stop_confirmed):

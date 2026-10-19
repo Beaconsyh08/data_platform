@@ -499,6 +499,7 @@ Server 与 Agent 均需支持 `source_cleanup_protocol=1`，且执行器发行�
 `dp_source_cleanups` 保存 location、令牌、阶段、错误、任务页游标及短租约；重启会续清理。
 `dataset.source_cleanup` 事件写入现有审计。`deleting`/`deleted` 不允许新 Job 或 Pipeline 输入，
 普通位置列表隐藏它们；历史查询仍保留原 location 和 Job 外键。
+历史 Job 的手动重试和 MCAP 自动恢复也校验全部输入；已删除输入不会重新排队，Jobs 显示不可重试原因。
 
 若清理停留在 waiting，先查看该位置及缓存别名的运行、取消确认和 interrupted 任务；不要强制删除缓存。
 node/server 阶段失败时检查登记 output_dir 的归属、可写根、文件系统身份、共享缓存和独立数据保护。
