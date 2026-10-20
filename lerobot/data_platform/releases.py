@@ -22,6 +22,7 @@ SCHEMA_VERSION = 6
 VALIDATION_TESTS = [
     "tests/datasets/test_ai_assistant.py",
     "tests/datasets/test_ai_assistant_context.py",
+    "tests/datasets/test_ai_assistant_security.py",
     "tests/datasets/test_mem_export.py",
     "tests/datasets/test_artifact_store.py",
     "tests/datasets/test_report_archive.py",

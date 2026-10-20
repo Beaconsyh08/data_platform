@@ -71,7 +71,16 @@ Requests include the user's text, recent conversation, the last validated draft,
 selected dataset counts plus at most 40 field schemas, and sanitized Quality/task summaries. Context
 results are capped at 20 KiB each and 60 KiB cumulatively, with at most 20 anomaly examples or task events.
 Legacy report reads stop at 256 KiB and report unavailability rather than reading an entire large artifact.
-Raw rows, images, videos, full logs and filesystem paths are not automatically sent. Avoid entering secrets or sensitive data in prompts. The chosen Qwen endpoint receives
+Raw rows, images, videos, full logs and filesystem paths are not automatically sent.
+All outbound messages (including user text, history and tool results) pass a server-side disclosure filter.
+Typical requests for source, internal instructions, database dumps or credentials are refused without a model
+call. Known configured sensitive values and common credential/path patterns are removed before transmission
+and history storage; sensitive model replies are replaced with a fixed refusal and their draft is discarded.
+Legacy history/receipts are filtered on read. AI drafts cannot set file, directory, endpoint or credential
+parameters; use existing authorized manual forms for these. API responses are not browser-cacheable, and
+errors do not expose stack traces or SQL. Refusals count toward the existing quota and audit only a category.
+These filters supplement object authorization and the fixed tool allowlist; they are not a guarantee against
+all prompt injection or secret encodings. Existing backups are not rewritten. Avoid entering secrets or sensitive data in prompts. The chosen Qwen endpoint receives
 this context, so configure a suitable region/provider policy for the installation.
 
 Conversations are private to the account, environment, dataset and typed target. Jobs bind Attempt identity; Quality binds version and report fingerprints. The browser remembers the current

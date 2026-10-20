@@ -82,7 +82,7 @@ function mountPipelineAssistant(root, options) {
       await refresh(expected);
       if (disposed || expected !== epoch) return;
       busy = false; render();
-      status(result.error || 'Draft only. Review it in the editor before running.');
+      status(result.error || (result.security ? 'Request restricted. See the assistant response.' : result.proposal ? 'Draft only. Review it in the editor before running.' : 'Response ready.'));
     } catch (error) {
       if (!disposed && expected === epoch) {busy = false; conversation = null; render(); status(error.message);}
     }
@@ -132,7 +132,7 @@ function mountPipelineAssistant(root, options) {
       await refresh(expected);
       if (disposed || expected !== epoch) return;
       busy = false; if (!result.error) $('ai-message').value = ''; render();
-      status(result.error || 'Draft only. Review it in the editor before running.');
+      status(result.error || (result.security ? 'Request restricted. See the assistant response.' : result.proposal ? 'Draft only. Review it in the editor before running.' : 'Response ready.'));
     } catch (error) {
       if (disposed || expected !== epoch) return;
       status(error.message);

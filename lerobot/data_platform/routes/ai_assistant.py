@@ -5,6 +5,7 @@ from functools import wraps
 from flask import jsonify, render_template, request
 from sqlalchemy.exc import SQLAlchemyError
 
+from lerobot.data_platform.ai_tools.security import DisclosureGuard
 from lerobot.data_platform.ai_tools.service import (
     AssistantBusyError,
     AssistantService,
@@ -20,6 +21,14 @@ def register_ai_assistant_routes(app, ctx):
         return
     app.extensions["data_platform_assistant"] = AssistantService(manager)
 
+    @app.after_request
+    def assistant_private_response(response):
+        if request.path.startswith("/api/ai-assistant/") or request.path == "/assistant":
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
     def checked(function):
         @wraps(function)
         def wrapped(*args, **kwargs):
@@ -33,20 +42,25 @@ def register_ai_assistant_routes(app, ctx):
             try:
                 return function(actor["user_id"], app.extensions["data_platform_assistant"], *args, **kwargs)
             except PermissionError as exc:
-                return jsonify(error=str(exc)), 403
+                return jsonify(error=DisclosureGuard.from_environment().redact(str(exc))), 403
             except KeyError:
                 return jsonify(error="Conversation, request or dataset was not found"), 404
             except JobConflictError as exc:
-                return jsonify(error=str(exc)), 409
+                return jsonify(error=DisclosureGuard.from_environment().redact(str(exc))), 409
             except AssistantBusyError as exc:
-                return jsonify(error=str(exc)), 429
+                return jsonify(error=DisclosureGuard.from_environment().redact(str(exc))), 429
             except AssistantUnavailableError as exc:
-                return jsonify(error=str(exc)), 503
+                return jsonify(error=DisclosureGuard.from_environment().redact(str(exc))), 503
             except SQLAlchemyError:
                 # Driver exceptions may contain bound conversation text; never log their SQL payloads.
                 return jsonify(error="Assistant storage is unavailable. Please retry later."), 503
-            except (ValueError, TypeError) as exc:
-                return jsonify(error=str(exc)), 400
+            except (ValueError, TypeError):
+                return jsonify(
+                    error="Invalid assistant request. Check IDs, context, revision and draft parameters; file paths, endpoints and credentials are not accepted."
+                ), 400
+            except Exception:
+                # Unexpected failures must not expose stack frames, SQL, or request contents.
+                return jsonify(error="Assistant request failed. Please retry later."), 503
 
         return wrapped
 
