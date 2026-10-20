@@ -135,6 +135,8 @@ Each step uses input "source" or a prior dataset-producing step ID. Pass evidenc
 prior step IDs. Include required snapshot/evidence producers, and preserve human review requirements.
 curation.snapshot binds the original dataset BEFORE Quality, Viewer or other dataset operations.
 Its input is source, artifacts is [], parameters is {}, and it needs no review. It is NOT an output snapshot.
+Snapshot produces an identity artifact, NOT a dataset. Quality and Viewer after Snapshot must still use
+input "source"; a preceding Quality report is also evidence, never a dataset input.
 First version supports one selected dataset, at most 12 steps, and no extra step options.
 Do not propose source edits, extra source datasets, arbitrary file paths or shell commands.
 Call preview_pipeline to return an editable draft, never put a purported runnable plan only in prose.

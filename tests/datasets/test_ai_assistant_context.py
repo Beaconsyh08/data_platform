@@ -211,6 +211,46 @@ def test_snapshot_repair_moves_existing_step_without_duplication():
     assert definition["steps"][0]["step_id"] == "quality"
 
 
+def test_snapshot_dataset_reference_repair_is_revalidated_without_job(assistant, tmp_path):  # noqa: F811
+    service, fake, owner, value = assistant
+    bind_lifecycle(service, tmp_path)
+    initial = quality_plan()
+    initial["steps"].insert(
+        0, {"step_id": "snapshot", "operator_id": "curation.snapshot", "version": "1.0.0", "parameters": {}}
+    )
+    for step in initial["steps"][1:]:
+        step.update(input="snapshot", artifacts=["snapshot"])
+    assert (
+        service.manager.preview(owner, value["location_id"], initial)["blocked"][0]["code"] == "invalid_input"
+    )
+    fake.responses = [
+        call("describe_operator", {"operator_id": op})
+        for op in ("curation.snapshot", "curation.quality", "viewer.prepare")
+    ]
+    fake.responses.append(call("preview_pipeline", {"summary": "Draft", "definition": initial}))
+    result = service.submit(owner, value)
+    proposal = result["proposal"]
+    assert proposal["can_execute"]
+    assert all(step["input"] == "source" for step in proposal["definition"]["steps"])
+    assert len(proposal["repairs"]) == 2
+    assert all(item["action"] == "reference_fixed" for item in proposal["repairs"])
+    assert initial["steps"][1]["input"] == "snapshot"
+    assert not service.store.list_jobs() and not service.manager.list(owner)
+
+
+@pytest.mark.parametrize("snapshot_input", ["derived", "future"])
+def test_snapshot_repair_does_not_guess_derived_or_forward_input(snapshot_input):
+    from lerobot.data_platform.ai_tools.repairs import bind_source_snapshot
+
+    definition = quality_plan()
+    definition["steps"][0]["input"] = "snapshot"
+    definition["steps"].append(
+        {"step_id": "snapshot", "operator_id": "curation.snapshot", "input": snapshot_input}
+    )
+    fixed, repairs = bind_source_snapshot(definition, [{"code": "invalid_input"}])
+    assert fixed == definition and not repairs
+
+
 def test_provider_failure_keeps_last_blocked_draft(assistant, tmp_path, monkeypatch):  # noqa: F811
     service, fake, owner, value = assistant
     bind_lifecycle(service, tmp_path)

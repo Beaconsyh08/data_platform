@@ -43,7 +43,10 @@ show changes before application and support undo. **Validate and run** previews 
 **Confirm run** saves a version and submits through the existing authorized, idempotent service.
 
 The assistant feeds structured blockers back to the model and revalidates repairs, with at most three
-correction attempts. A deterministic draft-only rule inserts or moves an unambiguous source Snapshot before its users, then revalidates it; other blockers return to the model. It reuses Snapshot/evidence producers and cannot remove requested steps, alter their
+correction attempts. A deterministic draft-only rule inserts or moves an unambiguous source Snapshot before
+its users, then revalidates it. It also corrects dataset inputs that mistakenly reference a preceding source
+Snapshot: Snapshot binds identity, while subsequent reads still use `source`. Derived or forward references
+are not guessed. Other blockers return to the model. It reuses Snapshot/evidence producers and cannot remove requested steps, alter their
 parameters or bypass review while repairing prerequisites. Ambiguous choices require user input.
 Blocked drafts remain visible with step ID, position, operator, code, reason and suggested remedy.
 Strict save/run validation is unchanged; parser diagnostics are structured in preview only.
