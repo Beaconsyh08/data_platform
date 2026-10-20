@@ -272,3 +272,17 @@ def test_node_choices_do_not_mutate_shared_operator_schema(assistant):  # noqa: 
     described = OperatorCatalog(service.manager, owner, value["location_id"]).describe(spec)
     assert "enum" in described["parameters"]["properties"]["checks"]["items"]
     assert spec.to_dict() == original
+
+
+def test_legacy_job_inputs_recheck_all_nested_dataset_scopes(assistant, monkeypatch):  # noqa: F811
+    service, _, owner, value = assistant
+    job = service.store.create_job(
+        location_id=value["location_id"], requested_by=owner, operation="viewer.prepare"
+    )
+    with service.store.sessions.begin() as session:
+        session.get(RemoteJob, job["job_id"]).options = {"legacy": {"src_keys": ["private/source"]}}
+    monkeypatch.setattr(service.store, "restricted_dataset_keys", lambda owner: {"public/source"})
+    with service.store.sessions() as session, pytest.raises(PermissionError, match="Task input"):
+        resolve_context(
+            service.manager, session, owner, value["location_id"], {"type": "job", "target_id": job["job_id"]}
+        )

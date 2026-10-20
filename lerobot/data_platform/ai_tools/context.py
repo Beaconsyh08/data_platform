@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 from sqlalchemy import select
 
 from lerobot.data_platform.control_plane import RemoteJob, RemoteJobEvent
+from lerobot.data_platform.dataset_references import dataset_references
 from lerobot.data_platform.job_management import JobConflictError
 from lerobot.data_platform.management_storage import JobControl
 from lerobot.data_platform.task_catalog import content_digest
@@ -144,7 +145,11 @@ def resolve_context(manager, session, owner, location_id, context):
         job = session.get(RemoteJob, target)
         if not job or job.location_id != location_id:
             raise KeyError("Context not found for this dataset")
-        for source in (job.options or {}).get("source_location_ids", []):
+        keys, locations = dataset_references(job.options or {})
+        allowed_keys = manager.store.restricted_dataset_keys(owner)
+        if allowed_keys is not None and not keys.issubset(allowed_keys):
+            raise PermissionError("Task input is outside this account's data permissions")
+        for source in locations:
             manager._location(session, source, owner, write=False)
         actor = manager._actor(session, owner, write=False)
         if kind == "job" and actor.role != "admin" and job.requested_by != owner:

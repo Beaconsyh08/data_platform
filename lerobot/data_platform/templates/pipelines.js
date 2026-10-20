@@ -400,7 +400,13 @@ function mountPipelineEditor(root, options) {
     const epoch = state.epoch;
     const result = await api('/api/pipeline-runs/' + encodeURIComponent(runId));
     if (epoch !== state.epoch) return;
-    state.run = result; $('run-history').open = true; renderRun(); $('runs').value = runId;
+    if (!state.dirty || !state.steps.length) {
+      const edit = state.edit, [pipelineId, revision] = result.version_id.split(':');
+      const saved = await api('/api/pipelines/' + encodeURIComponent(pipelineId) + '?revision=' + encodeURIComponent(revision));
+      if (epoch !== state.epoch) return;
+      if (edit === state.edit) {state.pipeline = saved; state.steps = saved.definition.steps; $('name').value = saved.definition.name; state.dirty = false;}
+    }
+    state.run = result; $('run-history').open = true; render(); renderRun(); $('runs').value = runId;
     if (!options.embedded) history.replaceState(null, '', '?location_id=' + encodeURIComponent(result.location_id) + '&run_id=' + encodeURIComponent(runId));
     poll(runId, epoch);
   }

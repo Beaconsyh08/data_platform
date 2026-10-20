@@ -157,6 +157,7 @@ def test_pipeline_browser_edit_run_restore_review_and_role(tmp_path):
             page.reload()
             page.get_by_role("button", name="Approve", exact=True).wait_for()
             assert page.locator("#runs").input_value() == run_id
+            playwright.expect(page.locator("#steps article")).to_have_count(3)
             page.get_by_role("button", name="Approve", exact=True).click()
             page.wait_for_function("!document.querySelector('#run-steps button')")
             execute_next()
