@@ -114,6 +114,7 @@ def test_console_browse_forms_pipeline_switching_and_viewer_role(tmp_path, monke
             assert "Snapshot" not in page.locator("#preview-result").inner_text()
             assert "curation.snapshot" not in page.get_by_label("Operator", exact=True).inner_text()
             page.locator("#pipeline-ask-ai").click()
+            assert page.get_by_role("button", name="Ask AI", exact=True).count() == 0
             # The header must respond to the remaining workspace width, not the viewport.
             page.get_by_role("button", name="Open jobs", exact=True).click(timeout=3000)
             page.keyboard.press("Escape")

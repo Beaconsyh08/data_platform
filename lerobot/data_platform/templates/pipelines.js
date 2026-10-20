@@ -51,15 +51,18 @@ function mountPipelineEditor(root, options) {
       }
       return true;
     }};
-  let assistant;
+  let assistant, assistantControls;
   if (options.embedded && window.registerPlatformAssistantEditor) {
     $('pipeline-assistant-host').remove();
+    $('assistant-reopen').remove();
     assistant = window.registerPlatformAssistantEditor(assistantOptions);
     $('pipeline-ask-ai').onclick = () => window.openPlatformAssistant({locationId:$('location').value, type:'pipeline'});
   } else {
     assistant = mountPipelineAssistant(root, assistantOptions);
-    $('pipeline-ask-ai').onclick = () => {$('pipeline-assistant-host').hidden = false; document.body.classList.add('standalone-pipeline');};
-    $('pipeline-ai-collapse').onclick = () => {$('pipeline-assistant-host').hidden = true; document.body.classList.remove('standalone-pipeline');};
+    assistantControls = bindAssistantControls({panel:$('pipeline-assistant-host'), trigger:$('assistant-reopen'), collapse:$('pipeline-ai-collapse'),
+      enabled:() => !disposed, isOpen:() => !$('pipeline-assistant-host').hidden,
+      setOpen:value => {$('pipeline-assistant-host').hidden = !value; document.body.classList.toggle('standalone-pipeline', value);}});
+    $('pipeline-ask-ai').onclick = assistantControls.open;
   }
   $('location').addEventListener('change', () => assistant.reset());
   const button = (text, action, disabled = false) => {
@@ -455,7 +458,7 @@ function mountPipelineEditor(root, options) {
     state.pipeline = null; $('saved').value = ''; state.invalid.clear(); invalidate(); render();
   }));
   $('runs').addEventListener('change', guard(async () => {if ($('runs').value) await openRun($('runs').value);}));
-  const destroy = () => {disposed = true; assistant.destroy(); state.epoch++; clearTimeout(timer); for (const controller of controllers) controller.abort(); window.removeEventListener('pagehide', destroy);};
+  const destroy = () => {disposed = true; assistantControls?.destroy(); assistant.destroy(); state.epoch++; clearTimeout(timer); for (const controller of controllers) controller.abort(); window.removeEventListener('pagehide', destroy);};
   window.addEventListener('pagehide', destroy);
   for (const id of ['add', 'preview', 'save', 'name', 'use-template', 'check-run']) $(id).disabled = !canEdit || id === 'add';
   guard(async () => {

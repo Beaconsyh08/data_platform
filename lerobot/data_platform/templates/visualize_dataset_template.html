@@ -4342,6 +4342,8 @@
     <script>
         window.__stageEditEnabled = {{ 'true' if stage_edit_enabled and annotation_editable else 'false' }};
         window.addEventListener('keydown', (e) => {
+            if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.metaKey || e.altKey ||
+                e.composedPath().some(node => node.id === 'platform-assistant-workspace')) return;
             // Use the space bar to play and pause, instead of default action (e.g. scrolling)
             const { keyCode, key } = e;
             const tagName = e.target && e.target.tagName ? e.target.tagName.toLowerCase() : "";

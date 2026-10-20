@@ -43,8 +43,15 @@ flowchart LR
 点击 **Validate and run** 查看目标节点、输出和复核要求，再点击 **Confirm run** 保存版本并提交任务。
 也可仅 Preview 或 Save version。AI 自身不提交任务、不批准复核、不修改源数据。
 
-数据集顶部 **Ask AI**、Quality 已打开报告中的 **Ask AI about this report**、Jobs 的 **Ask AI about this task**
-打开右侧常驻助手；主界面仍可继续操作。窄屏使用可收起的底部面板。可解读字段、覆盖范围、质量候选和任务阶段，并通过证据链接回到页面；Viewer 账号只读问答。
+右下角带对话图标的 **AI assistant** 是统一入口，页面顶部不再重复显示 Ask AI。
+**Ctrl + Shift + Space**（Mac：**Cmd + Shift + Space**）唤出或收起；焦点在助手内时按 **Esc** 收起，
+并返回先前的操作位置。普通空格、中文输入法候选操作、下拉框及平台弹窗的 Esc 保持原行为。
+收起不会清空对话或未发送文字，也不会取消正在生成的回答或已经提交的任务。
+
+Quality 的 **Explain report with AI**、Jobs 的 **Explain task with AI** 和 Pipeline 的
+**Edit workflow with AI** 会明确携带当前对象打开同一助手。主界面仍可继续操作，
+窄屏使用可收起的底部面板；独立 Pipeline 页和 Viewer 也支持入口及快捷键。
+可解读字段、覆盖范围、质量候选和任务阶段，并通过证据链接回到页面；Viewer 账号只读问答。
 输入框 **Enter** 发送、**Shift+Enter** 换行，中文输入法选字不会误发送。默认不再限制每小时对话次数；同一账号仍需等待当前请求完成。
 如需执行，输入“帮我准备 Viewer”或“运行质量检测”，核对卡片的数据集、节点和参数后点击 **Confirm and run**。
 卡片会显示任务状态，并提供 **Open run / Open Jobs**；重复确认不会创建重复任务。更复杂的操作仍生成流程草稿。

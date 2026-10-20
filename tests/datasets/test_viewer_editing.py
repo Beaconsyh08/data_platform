@@ -10,6 +10,37 @@ from lerobot.data_platform import viewer
 from tests.datasets.test_control_plane import _bootstrap, _store
 
 
+def test_viewer_shortcuts_ignore_assistant_shadow_content_and_modifiers():
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for Viewer behavior checks")
+    template = (Path(viewer.__file__).parent / "templates/visualize_dataset_template.html").read_text()
+    source = template.rsplit("window.__stageEditEnabled =", 1)[1].split("\n", 1)[1].split("</script>", 1)[0]
+    source = source.replace("{{ episodes | tojson }}", "[]").replace("{{ episode_id }}", "0")
+    harness = """
+const assert = require('node:assert/strict');
+let handler, clicks = 0, prevented = 0;
+global.window = {addEventListener:(_name, fn) => {handler = fn;}};
+global.document = {querySelector:() => ({classList:{contains:() => true}, click:() => clicks++})};
+"""
+    checks = """
+const body = {tagName:'BODY'}, host = {tagName:'DIV', id:'platform-assistant-workspace'};
+const event = extra => ({key:' ', keyCode:32, target:body, composedPath:() => [body],
+  preventDefault:() => prevented++, ...extra});
+handler(event({target:host, composedPath:() => [{tagName:'TEXTAREA'}, host]}));
+handler(event({target:host, composedPath:() => [{tagName:'BUTTON'}, host], key:'f', keyCode:70}));
+for (const key of ['ctrlKey','metaKey','altKey','isComposing','defaultPrevented']) handler(event({[key]:true}));
+assert.equal(clicks, 0); assert.equal(prevented, 0);
+handler(event({}));
+assert.equal(clicks, 1); assert.equal(prevented, 1);
+"""
+    result = subprocess.run([node, "-e", harness + source + checks], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.fixture(params=[(1, False), (5, False), (1, True), (5, True)])
 def cached_viewer(tmp_path, monkeypatch, request):
     store = _store(tmp_path)

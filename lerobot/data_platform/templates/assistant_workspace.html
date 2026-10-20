@@ -15,10 +15,11 @@
 <style>
 :host{font:14px system-ui;color:#e2e8f0}button,select,textarea,input{font:inherit;color:inherit;background:#0f172a;border:1px solid #475569;border-radius:6px;padding:8px;box-sizing:border-box}button{cursor:pointer}button:disabled{opacity:.5;cursor:default}a{color:#7dd3fc}select,textarea{max-width:100%}[hidden]{display:none!important}.muted,small{color:#94a3b8}.error{color:#fda4af}
 #assistant-dock{position:fixed;right:0;top:0;height:100dvh;max-width:100vw;z-index:45;background:#020617;border-left:1px solid #334155;padding:12px;box-sizing:border-box;overflow:auto}
-#assistant-header{display:flex;align-items:center;justify-content:space-between;gap:8px}#assistant-target{overflow-wrap:anywhere;font-size:12px}#assistant-pinned{font-size:12px;color:#fcd34d}#assistant-reopen{position:fixed;right:18px;bottom:18px;z-index:45;background:#075985}#assistant-width{width:100%}
+#assistant-header{display:flex;align-items:center;justify-content:space-between;gap:8px}#assistant-target{overflow-wrap:anywhere;font-size:12px}#assistant-pinned{font-size:12px;color:#fcd34d}#assistant-width{width:100%}
+{% include "assistant_trigger.css" %}
 @media(max-width:999px){ #assistant-dock{top:auto;bottom:0;height:62dvh;width:100vw!important;border-top:1px solid #475569}#assistant-size{display:none}.assistant-history{max-height:25dvh}}
 </style>
-<button id="assistant-reopen" aria-label="Open AI assistant">AI assistant</button>
+{% include "assistant_trigger.html" %}
 <aside id="assistant-dock" aria-label="AI assistant workspace" hidden>
   <div id="assistant-header"><strong>AI assistant</strong><button id="assistant-close" aria-label="Collapse AI assistant">Collapse</button></div>
   <p id="assistant-target"></p><p id="assistant-pinned" hidden>Conversation target is pinned. Browsing does not change pending operations.</p>

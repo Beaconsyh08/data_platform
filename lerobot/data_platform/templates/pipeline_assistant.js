@@ -1,3 +1,4 @@
+{% include "assistant_controls.js" %}
 const pipelineSystemStep = step => step.operator_id === 'curation.snapshot';
 const pipelineStepTitle = step => ({'curation.snapshot': 'Data preparation', 'curation.quality': 'Quality', 'viewer.prepare': 'Viewer'}[step.operator_id] || step.operator_id.split('.').pop().replaceAll('_', ' '));
 const pipelineIssueText = issue => issue.code === 'missing_snapshot' ? 'Data preparation is required before this step.' : issue.reason.replace(/curation\.snapshot|Snapshot|snapshot/g, 'data preparation');

@@ -106,6 +106,15 @@ context notice offers a new conversation for the current dataset. History restor
 rechecks authorization and input identity. The same panel serves dataset, Quality, Jobs and the embedded
 Pipeline editor; standalone Pipeline and Viewer pages retain assistant access.
 
+The highlighted bottom-right **AI assistant** launcher replaces the generic header **Ask AI** button.
+`Ctrl+Shift+Space` (or `Cmd+Shift+Space` on Mac) toggles the sidebar and focuses the message input when
+available. Escape inside the assistant collapses it and restores the previous focus; Escape in a native
+select, composition events, repeated keydown events and platform modal dialogs retain their own behavior.
+Plain Space does not toggle the assistant. The toggle consumes the shortcut before Viewer playback handles
+it. Collapse retains the conversation and unsent draft, and never cancels model requests or jobs.
+Context actions remain explicit: **Explain report with AI**, **Explain task with AI**, **Edit workflow with AI**.
+Keyboard handlers are removed on account changes, editor disposal and page teardown.
+
 `GET /api/ai-assistant/conversations?limit=20&cursor=...` returns only the current account's authorized
 conversation summaries, with at most 50 returned and 100 scanned rows per request. Changed input identities
 are marked unavailable. Missing/revoked targets are omitted before reading message titles. No full report,

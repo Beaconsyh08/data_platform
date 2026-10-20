@@ -53,13 +53,49 @@ def test_workspace_remains_interactive_and_restores_shared_history_preferences(a
                 base + "/api/auth/login", data={"username": "admin", "password": "strong-admin-password"}
             )
             page.goto(base + "/workspace")
+            playwright.expect(page.locator("#ai-message")).to_be_enabled()
+            page.locator("#work").focus()
+            page.evaluate(
+                "window.spaceEvents = 0; window.addEventListener('keydown', e => {if(e.code === 'Space') window.spaceEvents++;})"
+            )
+            page.keyboard.press("Control+Shift+Space")
+            playwright.expect(page.locator("#ai-message")).to_be_focused()
+            assert page.evaluate("window.spaceEvents") == 0  # Viewer playback must not receive the shortcut.
+            page.locator("#ai-message").fill("Unsent draft")
+            page.locator("#ai-message").dispatch_event("keydown", {"key": "Escape", "isComposing": True})
+            playwright.expect(page.locator("#assistant-dock")).to_be_visible()
+            page.keyboard.press("Escape")
+            playwright.expect(page.locator("#work")).to_be_focused()
+            playwright.expect(page.locator("#assistant-dock")).to_be_hidden()
+            page.keyboard.press("Meta+Shift+Space")
+            playwright.expect(page.locator("#ai-message")).to_have_value("Unsent draft")
+            page.locator("#ai-message").dispatch_event(
+                "keydown", {"code": "Space", "key": " ", "ctrlKey": True, "shiftKey": True, "repeat": True}
+            )
+            playwright.expect(page.locator("#assistant-dock")).to_be_visible()
+            page.keyboard.press("Control+Shift+Space")
+            playwright.expect(page.locator("#work")).to_be_focused()
+            assert page.evaluate("window.spaceEvents") == 0
+            page.evaluate(
+                "const modal = document.createElement('dialog'); modal.id = 'test-modal'; modal.textContent = 'Platform dialog'; document.body.append(modal); modal.showModal();"
+            )
+            page.keyboard.press("Control+Shift+Space")
+            playwright.expect(page.locator("#assistant-dock")).to_be_hidden()
+            page.keyboard.press("Escape")
+            page.locator("#test-modal").evaluate("node => node.remove()")
             page.get_by_role("button", name="Open AI assistant", exact=True).click()
+            assert page.locator("#assistant-reopen").get_attribute("aria-keyshortcuts")
             page.locator("#work").click()
+            page.keyboard.press("Escape")  # Escape outside the assistant belongs to the platform.
+            playwright.expect(page.locator("#assistant-dock")).to_be_visible()
             assert page.locator("#work").inner_text() == "Still working"
             assert page.locator("dialog").count() == 0 and page.locator("iframe").count() == 0
             page.locator("#ai-prefs-toggle").click()
             playwright.expect(page.locator("#ai-prefs-save")).to_be_enabled()
             page.locator("#ai-pref-language").select_option("en")
+            page.locator("#ai-pref-language").focus()
+            page.keyboard.press("Escape")
+            playwright.expect(page.locator("#assistant-dock")).to_be_visible()
             page.locator("#ai-pref-detail").select_option("concise")
             page.locator("#ai-pref-favorites").select_option("viewer.prepare")
             page.locator("#ai-prefs-save").click()
@@ -89,6 +125,8 @@ def test_workspace_remains_interactive_and_restores_shared_history_preferences(a
             playwright.expect(page.locator("#assistant-dock")).to_be_hidden()
             page.get_by_role("button", name="Open AI assistant", exact=True).click()
             page.evaluate("window.syncPlatformAssistant({owner:null})")
+            assert page.locator("#platform-assistant-workspace").count() == 0
+            page.keyboard.press("Control+Shift+Space")
             assert page.locator("#platform-assistant-workspace").count() == 0
             assert not errors
             browser.close()

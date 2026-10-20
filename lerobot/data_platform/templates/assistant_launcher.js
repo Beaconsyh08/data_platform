@@ -1,6 +1,6 @@
 // Nonmodal, account-scoped workspace. Conversation targets stay pinned across navigation.
 (() => {
-  let owner = null, role = null, current = null, target = null, host = null, root = null, controller = null, editor = null, opened = false, width = 420;
+  let owner = null, role = null, current = null, target = null, host = null, root = null, controller = null, controls = null, editor = null, opened = false, width = 420;
   const key = () => `assistant-workspace:${location.origin}:${owner}`;
   const read = () => {try {return JSON.parse(sessionStorage.getItem(key()) || 'null');} catch (_) {return null;}};
   const save = () => {if (owner) try {sessionStorage.setItem(key(), JSON.stringify({target, opened, width}));} catch (_) {}};
@@ -12,6 +12,7 @@
   function display() {
     if (!host) return;
     $('assistant-dock').hidden = !opened; $('assistant-reopen').hidden = opened;
+    controls?.refresh();
     document.body.classList.toggle('platform-assistant-open', opened);
     document.documentElement.style.setProperty('--assistant-width', width + 'px');
     $('assistant-dock').style.width = width + 'px';
@@ -39,9 +40,8 @@
     const template = document.getElementById('assistant-workspace-template'); if (!template) return;
     host = document.createElement('div'); host.id = 'platform-assistant-workspace'; root = host.attachShadow({mode:'open'});
     root.append(template.content.cloneNode(true)); document.body.append(host);
-    $('assistant-close').onclick = () => {opened = false; display(); $('assistant-reopen').focus();};
-    $('assistant-reopen').onclick = () => {opened = true; display(); $('ai-message').focus();};
-    root.addEventListener('keydown', event => {if (event.key === 'Escape') {opened = false; display(); $('assistant-reopen').focus();}});
+    controls = bindAssistantControls({panel:$('assistant-dock'), trigger:$('assistant-reopen'), collapse:$('assistant-close'),
+      enabled:() => !!owner, isOpen:() => opened, setOpen:value => {opened = value; display();}});
     $('assistant-use-current').onclick = () => window.openPlatformAssistant({...current, type:'dataset', targetId:current.locationId});
     $('assistant-width').value = width;
     $('assistant-width').oninput = event => {width = Number(event.target.value); display();};
@@ -58,7 +58,7 @@
   }
   window.syncPlatformAssistant = value => {
     if (owner !== value.owner || role !== value.role) {
-      controller?.destroy(); host?.remove(); host = root = controller = null; target = null; opened = false;
+      controls?.destroy(); controls = null; controller?.destroy(); host?.remove(); host = root = controller = null; target = null; opened = false;
       document.body.classList.remove('platform-assistant-open'); owner = value.owner; role = value.role;
       if (owner) {const saved = read(); target = saved?.target || null; opened = !!saved?.opened; width = Math.max(320,Math.min(640,Number(saved?.width) || 420));}
     }
@@ -71,14 +71,15 @@
   window.openPlatformAssistant = value => {
     const next = {...value, label:value.label || (current?.locationId === value.locationId ? current.label : value.locationId), type:value.type || 'dataset', targetId:value.targetId || value.locationId};
     const changed = !target || target.locationId !== next.locationId || target.type !== next.type || target.targetId !== next.targetId;
-    target = next; opened = true; create(); display(); if (changed) controller?.reset().then(() => $('ai-message')?.focus()); else $('ai-message')?.focus();
+    target = next; create(); controls?.open(); display();
+    if (changed) controller?.reset().then(() => {if (opened && target === next) $('ai-message')?.focus();});
   };
-  window.closePlatformAssistant = () => {opened = false; display();};
+  window.closePlatformAssistant = () => controls?.close();
   window.registerPlatformAssistantEditor = value => {
     editor = value;
     return {reset:() => {}, destroy:() => {if (editor === value) editor = null;}};
   };
-  window.addEventListener('pagehide', () => controller?.destroy());
+  window.addEventListener('pagehide', () => {controls?.destroy(); controller?.destroy();});
   // Viewer pages do not own the console's account/selection state. Restore only after authentication.
   if (document.body.dataset.assistantStandalone === 'true') {
     api('/api/ai-assistant/capabilities').then(result => window.syncPlatformAssistant({owner:result.owner})).catch(() => {});

@@ -20,6 +20,7 @@
     @media(max-width:800px){.flow-layout{grid-template-columns:1fr}#step-editor{position:static}.dependency-svg{display:none}}
   body.standalone-pipeline{padding-right:400px}#pipeline-assistant-host{position:fixed;right:0;top:0;width:400px;height:100dvh;overflow:auto;padding:12px;box-sizing:border-box;background:#020617;border-left:1px solid #334155;z-index:45}
     @media(max-width:999px){body.standalone-pipeline{padding-right:0;padding-bottom:62dvh}#pipeline-assistant-host{top:auto;bottom:0;width:100%;height:62dvh}}
+    {% include "assistant_trigger.css" %}
   </style>
 <main data-can-edit="{{ 'true' if can_edit else 'false' }}">
   <header><h1>Pipelines</h1><nav><a href="/">Datasets</a> · <a href="/?page=runs">Jobs</a> · <a id="review-link" href="/curation">Review</a></nav></header>
@@ -34,8 +35,9 @@
   </details>
   <label class="grow">Name<input id="name" aria-label="Name" maxlength="128" value="New pipeline"></label>
   <div id="feedback" role="status" aria-live="polite"></div>
-  <button id="pipeline-ask-ai">AI assistant</button>
-  <aside id="pipeline-assistant-host" aria-label="AI assistant workspace"><button id="pipeline-ai-collapse">Collapse</button>
+  <button id="pipeline-ask-ai">Edit workflow with AI</button>
+  {% include "assistant_trigger.html" %}
+  <aside id="pipeline-assistant-host" aria-label="AI assistant workspace"><button id="pipeline-ai-collapse" aria-label="Collapse AI assistant">Collapse</button>
     {% include "assistant_panel.html" %}
   </aside>
   <details><summary>Start from a template</summary><div class="row"><label>Template<select id="template"><option value="quality">Quality</option><option value="subset">Split → Quality</option><option value="viewer">Viewer</option></select></label><button id="use-template">Use template</button></div></details>
