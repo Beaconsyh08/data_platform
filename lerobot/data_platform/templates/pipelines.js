@@ -30,6 +30,9 @@ function mountPipelineEditor(root, options) {
     } finally {controllers.delete(controller);}
   };
   const definition = () => ({name: $('name').value, steps: state.steps});
+  const visibleSteps = () => state.steps.filter(step => $('show-system').checked || !pipelineSystemStep(step));
+  const evidenceLabels = step => (step.artifacts || []).filter(id => $('show-system').checked || !pipelineSystemStep(state.steps.find(item => item.step_id === id) || {})).join(', ') || 'none';
+  const title = step => operator(step)?.presentation?.title || pipelineStepTitle(step);
   const operator = step => state.operators.find(value => value.operator_id === step.operator_id);
   const invalidate = () => {state.edit++; state.preview = null; state.dirty = true; state.runKey = null; $('run').hidden = true; $('run').disabled = true; $('preview-panel').hidden = true; feedback('Unsaved changes · validate before running.'); updateNodeStatus();};
   const guard = fn => async (...args) => {
@@ -50,24 +53,27 @@ function mountPipelineEditor(root, options) {
   };
   function render() {
     const root = $('steps'); root.replaceChildren(); $('step-editor').replaceChildren();
-    if (!state.steps.some(step => step.step_id === state.selected)) state.selected = state.steps[0]?.step_id;
+    const visible = visibleSteps();
+    if (!visible.some(step => step.step_id === state.selected)) state.selected = visible[0]?.step_id;
     if (!state.steps.length) root.append(el('p', 'Describe a workflow above or add a step.'));
-    state.steps.forEach((step, index) => {
+    visible.forEach((step, visibleIndex) => {
+      const index = state.steps.indexOf(step);
+      const previous = state.steps.indexOf(visible[visibleIndex - 1]), nextIndex = state.steps.indexOf(visible[visibleIndex + 1]);
       const node = el('article', undefined, {tabIndex: 0, draggable: canEdit}); node.dataset.stepId = step.step_id; node.setAttribute('aria-current', String(state.selected === step.step_id));
       node.addEventListener('click', event => {if (event.target === node || !event.target.closest('button')) {state.selected = step.step_id; render();}});
-      node.addEventListener('keydown', guard(event => {if (event.target !== node) return; if (event.altKey && ['ArrowUp','ArrowDown'].includes(event.key)) {event.preventDefault(); move(index, event.key === 'ArrowUp' ? -1 : 1);} else if (event.key === 'Enter') {state.selected = step.step_id; render();}}));
+      node.addEventListener('keydown', guard(event => {if (event.target !== node) return; if (event.altKey && ['ArrowUp','ArrowDown'].includes(event.key)) {event.preventDefault(); move(index, event.key === 'ArrowUp' ? previous - index : nextIndex - index);} else if (event.key === 'Enter') {state.selected = step.step_id; render();}}));
       node.addEventListener('dragstart', event => {event.dataTransfer.setData('text/plain', step.step_id);});
       node.addEventListener('dragover', event => event.preventDefault());
       node.addEventListener('drop', guard(event => {event.preventDefault(); const from = state.steps.findIndex(item => item.step_id === event.dataTransfer.getData('text/plain')); if (from >= 0) move(from, index - from);}));
       const card = el('section');
       const header = el('div', undefined, {className: 'row step-title'});
-      header.append(el('strong', `${index + 1}. ${operator(step)?.presentation?.title || step.operator_id}`));
+      header.append(el('strong', `${visibleIndex + 1}. ${title(step)}`));
       const actions = el('div', undefined, {className: 'row'});
-      actions.append(button('↑', () => move(index, -1), index === 0), button('↓', () => move(index, 1), index === state.steps.length - 1), button('Remove', () => {const users = state.steps.filter(item => item.input === step.step_id || (item.artifacts || []).includes(step.step_id)); if (users.length) throw new Error('Update references in: ' + users.map(item => item.step_id).join(', ')); state.steps.splice(index, 1); state.invalid = new Set([...state.invalid].filter(key => !key.startsWith(step.step_id + ':'))); invalidate(); render();}));
+      actions.append(button('↑', () => move(index, previous - index), visibleIndex === 0), button('↓', () => move(index, nextIndex - index), visibleIndex === visible.length - 1), button('Remove', () => {const users = state.steps.filter(item => item.input === step.step_id || (item.artifacts || []).includes(step.step_id)); if (users.length) throw new Error('Update references in: ' + users.map(item => item.step_id).join(', ')); state.steps.splice(index, 1); state.invalid = new Set([...state.invalid].filter(key => !key.startsWith(step.step_id + ':'))); invalidate(); render();}));
       actions.append(button('+', () => addStep(index + 1)));
       header.append(actions); node.append(header);
       node.append(el('p', Object.entries(step.parameters || {}).filter(([k,v]) => JSON.stringify(v) !== JSON.stringify(operator(step)?.parameters?.properties?.[k]?.default)).map(([k,v]) => `${k}: ${JSON.stringify(v)}`).join(' · ') || 'Default parameters', {className: 'step-summary'}));
-      node.append(el('small', `Data: ${step.input || 'source'} · Evidence: ${(step.artifacts || []).join(', ') || 'none'}`));
+      node.append(el('small', `Data: ${step.input || 'source'} · Evidence: ${evidenceLabels(step)}`));
       if (step.review_before || operator(step)?.review_required) node.append(el('p', 'Human review required'));
       if (state.added.includes(step.step_id)) node.append(el('small', 'AI added · required prerequisite'));
       const status = el('p', '', {className: 'step-status', role: 'status'}); node.append(status);
@@ -76,7 +82,7 @@ function mountPipelineEditor(root, options) {
       card.append(el('h2', operator(step)?.presentation?.title || step.operator_id));
       card.append(el('small', `${step.step_id} · ${step.operator_id} · ${step.version}`));
       const selection = el('select', undefined, {disabled: !canEdit, 'ariaLabel': 'Operator'});
-      state.operators.filter(value => value.pipeline_allowed || value.operator_id === step.operator_id).forEach(value => {
+      state.operators.filter(value => (value.pipeline_allowed || value.operator_id === step.operator_id) && ($('show-system').checked || !pipelineSystemStep(value))).forEach(value => {
         const option = el('option', (value.presentation?.title || value.operator_id) + (value.reason ? ` · ${value.reason}` : ''), {value: value.operator_id, disabled: !value.available});
         selection.append(option);
       });
@@ -105,7 +111,7 @@ function mountPipelineEditor(root, options) {
       card.append(inputs);
       if (index) {
         const dependencies = el('div', 'Evidence: ', {className: 'row'});
-        state.steps.slice(0, index).forEach(item => {
+        state.steps.slice(0, index).filter(item => $('show-system').checked || !pipelineSystemStep(item)).forEach(item => {
           const checked = (step.artifacts || []).includes(item.step_id);
           const box = el('input', undefined, {type: 'checkbox', checked, disabled: !canEdit});
           box.addEventListener('change', () => {step.artifacts = (step.artifacts || []).filter(value => value !== item.step_id); if (box.checked) step.artifacts.push(item.step_id); invalidate();});
@@ -215,11 +221,11 @@ function mountPipelineEditor(root, options) {
       const step = state.steps.find(item => item.step_id === node.dataset.stepId);
       if (step) {
         node.querySelector('.step-summary').textContent = Object.entries(step.parameters || {}).filter(([k,v]) => JSON.stringify(v) !== JSON.stringify(operator(step)?.parameters?.properties?.[k]?.default)).map(([k,v]) => `${k}: ${JSON.stringify(v)}`).join(' · ') || 'Default parameters';
-        node.querySelector('small').textContent = `Data: ${step.input || 'source'} · Evidence: ${(step.artifacts || []).join(', ') || 'none'}`;
+        node.querySelector('small').textContent = `Data: ${step.input || 'source'} · Evidence: ${evidenceLabels(step)}`;
       }
       const run = !state.dirty && state.run?.steps.find(item => item.step_id === node.dataset.stepId);
       const status = node.querySelector('.step-status');
-      status.textContent = issues.length ? issues.map(item => item.reason).join(' · ') : run ? run.status : state.preview?.can_execute ? 'Validated' : 'Not validated';
+      status.textContent = issues.length ? issues.map(pipelineIssueText).join(' · ') : run ? run.status : state.preview?.can_execute ? 'Validated' : 'Not validated';
       status.className = 'step-status ' + (issues.length ? 'error' : 'muted');
     }
   }
@@ -260,15 +266,24 @@ function mountPipelineEditor(root, options) {
     $('saved').value = selected;
     state.savedCursor = data.next_cursor; $('saved-more').hidden = !data.has_more;
   }
-  async function preview() {
+  async function preview(prepare = true) {
     if (state.invalid.size) throw new Error('Correct the invalid parameter fields.');
     const epoch = state.epoch, edit = state.edit;
     const result = await api('/api/processing/preview', 'POST', {location_id: $('location').value, definition: definition()});
     if (epoch !== state.epoch) return;
     if (edit !== state.edit) return;
+    if (prepare && result.blocked.some(item => item.code === 'missing_snapshot')) {
+      const spec = state.operators.find(item => item.operator_id === 'curation.snapshot' && item.available);
+      const existing = state.steps.find(item => pipelineSystemStep(item) && (item.input || 'source') === 'source' && !item.review_before && !(item.artifacts || []).length);
+      if (spec && (existing || state.steps.length < 50)) {
+        if (existing) state.steps.splice(state.steps.indexOf(existing), 1);
+        state.steps.unshift(existing || {step_id: 'prepare_' + crypto.randomUUID().slice(0, 8), operator_id: spec.operator_id, version: spec.version, parameters: {}, input: 'source', artifacts: []});
+        invalidate(); render(); return preview(false);
+      }
+    }
     state.preview = result;
     $('preview-panel').hidden = false;
-    $('preview-result').textContent = result.blocked.length ? result.blocked.map(item => `${item.step_id}: ${item.reason}`).join('\n') : result.definition.steps.map(item => `${item.step_id}: ${item.operator_id}@${item.version} · input ${item.input}${item.review_before ? ' · review required' : ''}`).join('\n');
+    $('preview-result').textContent = result.blocked.length ? result.blocked.map(item => {const step = state.steps.find(step => step.step_id === item.step_id); return `${step && pipelineSystemStep(step) ? 'Data preparation' : title(step || {operator_id: item.operator_id || 'Step'})}: ${pipelineIssueText(item)}`;}).join('\n') : visibleSteps().map(item => `${title(item)} · input ${item.input}${item.review_before ? ' · review required' : ''}`).join('\n');
     $('run').disabled = !canEdit || !result.can_execute || !state.pipeline || state.dirty;
     feedback(result.can_execute ? 'Plan is ready.' : 'Resolve the blocked steps before running.', !result.can_execute); updateNodeStatus(); return result;
   }
@@ -287,8 +302,8 @@ function mountPipelineEditor(root, options) {
     const value = state.run; $('run-panel').hidden = !value; if (!value) return;
     $('run-status').textContent = `${value.status}${value.error ? ': ' + value.error : ''}`;
     $('run-steps').replaceChildren();
-    value.steps.forEach(step => {
-      const row = el('div', undefined, {className: 'row'}); row.append(el('p', `${step.step_id}: ${step.status}`));
+    value.steps.filter(step => $('show-system').checked || !pipelineSystemStep(step) || ['error', 'waiting_review'].includes(step.status)).forEach(step => {
+      const row = el('div', undefined, {className: 'row'}); row.append(el('p', `${pipelineSystemStep(step) ? 'Data preparation' : title(step)}: ${step.status}`));
       if (step.job_id) row.append(el('a', 'Open Jobs', {href: '/?page=runs&job_id=' + encodeURIComponent(step.job_id)}));
       if (step.status === 'waiting_review') {
         row.append(el('a', 'Review evidence', {href: '/curation?location_id=' + encodeURIComponent(step.input_location_id || value.location_id)}));
@@ -330,12 +345,13 @@ function mountPipelineEditor(root, options) {
   $('location').addEventListener('change', guard(async () => {clearTimeout(timer); state.run = null; renderRun(); invalidate(); await Promise.all([loadOperators(), loadRuns()]);}));
   $('name').addEventListener('input', invalidate);
   function addStep(position = state.steps.length) {
-    const available = state.operators.filter(value => value.available && value.pipeline_allowed);
-    const spec = available.find(value => value.operator_id === 'curation.snapshot') || available[0];
+    const available = state.operators.filter(value => value.available && value.pipeline_allowed && ($('show-system').checked || !pipelineSystemStep(value)));
+    const spec = available.find(value => value.operator_id === ($('show-system').checked ? 'curation.snapshot' : 'curation.quality')) || available[0];
     if (!spec) throw new Error('Choose a dataset with an available execution node.');
     const step = {step_id: 'step_' + crypto.randomUUID().slice(0, 8), operator_id: spec.operator_id, version: spec.version, parameters: {}, input: 'source', artifacts: [], review_before: !!spec.review_required, options: {}}; state.steps.splice(position, 0, step); state.selected = step.step_id;
     invalidate(); render();
   }
+  $('show-system').addEventListener('change', () => {render(); renderRun();});
   $('add').addEventListener('click', guard(() => addStep()));
   $('saved').addEventListener('change', guard(async () => {
     const epoch = ++state.epoch;
@@ -347,6 +363,7 @@ function mountPipelineEditor(root, options) {
   }));
   $('preview').addEventListener('click', guard(preview));
   async function saveVersion() {
+    if (!await preview()) return;
     if (state.invalid.size) throw new Error('Correct the invalid parameter fields.');
     const epoch = state.epoch, edit = state.edit, current = state.pipeline;
     const saved = await api(current ? '/api/pipelines/' + current.pipeline_id : '/api/pipelines', current ? 'PUT' : 'POST', {definition: definition(), expected_revision: current?.revision});
@@ -359,7 +376,7 @@ function mountPipelineEditor(root, options) {
   $('save').addEventListener('click', guard(saveVersion));
   $('check-run').addEventListener('click', guard(async () => {
     const result = await preview(); if (!result?.can_execute) return;
-    $('preview-result').textContent += '\nServer: ' + (state.locations.find(item => item.location_id === $('location').value)?.node_name || '') + '\n' + result.steps.map(step => `${step.step_id}: ${step.output.type} ${step.output.path_template || ''}${step.review_before ? ' · Human review' : ''}`).join('\n');
+    $('preview-result').textContent += '\nServer: ' + (state.locations.find(item => item.location_id === $('location').value)?.node_name || '') + '\n' + result.steps.filter(step => $('show-system').checked || !pipelineSystemStep(step)).map(step => `${title(step)}: ${step.output.type} ${step.output.path_template || ''}${step.review_before ? ' · Human review' : ''}`).join('\n');
     $('run').hidden = false; $('run').disabled = false;
   }));
   $('run').addEventListener('click', guard(async () => {

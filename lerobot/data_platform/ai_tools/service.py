@@ -137,6 +137,8 @@ curation.snapshot binds the original dataset BEFORE Quality, Viewer or other dat
 Its input is source, artifacts is [], parameters is {}, and it needs no review. It is NOT an output snapshot.
 Snapshot produces an identity artifact, NOT a dataset. Quality and Viewer after Snapshot must still use
 input "source"; a preceding Quality report is also evidence, never a dataset input.
+Snapshot is internal bookkeeping. Include it in tool definitions when needed, but explain only business
+steps to the user. Do not ask users to add/configure Snapshot or mention it unless they explicitly ask.
 First version supports one selected dataset, at most 12 steps, and no extra step options.
 Do not propose source edits, extra source datasets, arbitrary file paths or shell commands.
 Call preview_pipeline to return an editable draft, never put a purported runnable plan only in prose.

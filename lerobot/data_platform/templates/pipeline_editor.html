@@ -35,7 +35,8 @@
   <section>
     {% include "assistant_panel.html" %}
   </section>
-  <details><summary>Start from a template</summary><div class="row"><label>Template<select id="template"><option value="quality">Snapshot → Quality</option><option value="subset">Snapshot → Split → Quality</option><option value="viewer">Snapshot → Viewer</option></select></label><button id="use-template">Use template</button></div></details>
+  <details><summary>Start from a template</summary><div class="row"><label>Template<select id="template"><option value="quality">Quality</option><option value="subset">Split → Quality</option><option value="viewer">Viewer</option></select></label><button id="use-template">Use template</button></div></details>
+  <details><summary>Technical details</summary><label><input type="checkbox" id="show-system">Show internal steps</label></details>
   <p class="muted">↓ Execution order · Blue: dataset input · Dashed: evidence. Select a step to edit.</p>
   <div class="flow-layout"><div id="steps" aria-label="Pipeline flow"></div><aside id="step-editor" aria-label="Step parameters"></aside></div>
   <div class="row"><button id="add" disabled>Add step</button><button id="preview">Preview</button><button id="save">Save version</button><button id="check-run" class="primary">Validate and run</button><button id="run" hidden disabled>Confirm run</button></div>

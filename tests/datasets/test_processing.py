@@ -472,6 +472,50 @@ def test_coordinator_opens_only_shared_durable_state(setup, tmp_path, monkeypatc
     assert manager.store.get_location(location["location_id"])["root"] == location["root"]
 
 
+@pytest.mark.parametrize("mismatch", [None, "dataset_version_id", "location_id", "missing_version"])
+def test_snapshot_evidence_uses_acknowledged_output_version(setup, tmp_path, mismatch):
+    from types import SimpleNamespace
+
+    from lerobot.data_platform.curation import register_snapshot, snapshot_from_version
+    from lerobot.data_platform.lifecycle import LifecycleStore
+    from lerobot.data_platform.processing.planner import PipelineStep
+
+    store, _, actor, node, location = setup
+    ledger = LifecycleStore(tmp_path / "evidence-ledger")
+    version = ledger.ingest(tmp_path / "source", location["dataset_key"])
+    register_snapshot(ledger, snapshot_from_version(ledger, version, tmp_path / "source"), location)
+    target = {
+        "location_id": location["location_id"],
+        "dataset_key": location["dataset_key"],
+        "dataset_version_id": None,
+    }
+    result = {"dataset_version_id": version.version_id}
+    if mismatch == "location_id":
+        target["location_id"] = "another-location"
+    elif mismatch == "dataset_version_id":
+        result["dataset_version_id"] = "another-version"
+    elif mismatch == "missing_version":
+        result = {}
+    record = {"operation": "curation.snapshot", "target": target, "result": result}
+    ledger._put_record("curation_runs", "snapshot-job", record, immutable=True)
+    folder = ledger.root / "curation/runs/snapshot-job"
+    folder.mkdir(parents=True)
+    (folder / "curation-manifest.json").write_text(json.dumps({"target": target, "files": {}}))
+    manager = PipelineManager(store, ledger)
+    run = SimpleNamespace(run_id="run", owner=actor["user_id"])
+    step = PipelineStep("quality", "curation.quality", "1.0.0", {"checks": ["s3"]})
+    evidence = [SimpleNamespace(job_id="snapshot-job")]
+    if mismatch:
+        with pytest.raises(ValueError, match="(different dataset version|no acknowledged dataset version)"):
+            manager._command(run, step, location, node, evidence)
+    else:
+        options = manager._command(run, step, location, node, evidence)
+        assert options["target"]["dataset_version_id"] == version.version_id
+        assert options["parameters"] == {"checks": ["s3"]}
+        assert ledger._get_record("curation_runs", "snapshot-job") == record
+    assert not store.list_jobs()
+
+
 def test_pose_review_binds_existing_curation_username_owner_and_revision(setup, tmp_path):
     from dataclasses import asdict
     from types import SimpleNamespace

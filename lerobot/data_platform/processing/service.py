@@ -507,7 +507,7 @@ class PipelineManager:
                     self.lifecycle._get_record("curation_runs", previous.job_id) if self.lifecycle else None
                 )
                 if record:
-                    if record["target"] != target:
+                    if self._evidence_target(record) != target:
                         raise ValueError("Evidence belongs to a different dataset version")
                     folder = self.lifecycle.root / "curation" / "runs" / previous.job_id
                     manifest = json.loads((folder / "curation-manifest.json").read_text())
@@ -607,7 +607,8 @@ class PipelineManager:
                     else self.lifecycle.root / "operator-results"
                 ) / previous.job_id
                 manifest = json.loads((folder / "curation-manifest.json").read_text())
-                if manifest["target"] != options["target"]:
+                evidence_target = self._evidence_target(curation) if curation else manifest["target"]
+                if evidence_target != options["target"]:
                     raise ValueError("Input artifacts belong to a different dataset version")
                 for name, descriptor in manifest["files"].items():
                     if name.startswith("static/"):
@@ -662,6 +663,17 @@ class PipelineManager:
             "source_fingerprint": (snapshot or {}).get("version", {}).get("fingerprint"),
         }
         return options
+
+    @staticmethod
+    def _evidence_target(record):
+        """Snapshot evidence describes its acknowledged bound version, not its pre-scan input."""
+        target = dict(record["target"])
+        if record["operation"] == "curation.snapshot":
+            version_id = record["result"].get("dataset_version_id")
+            if not version_id:
+                raise ValueError("Snapshot evidence has no acknowledged dataset version")
+            target["dataset_version_id"] = version_id
+        return target
 
     def tick(self, run_id: str) -> None:
         from lerobot.data_platform.control_plane import RemoteJob

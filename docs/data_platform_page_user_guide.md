@@ -33,7 +33,7 @@ flowchart LR
 
 **Data Platform > Preprocessing > Pipeline** 子视图可组合顺序步骤；顶部 **Pipelines** 快捷入口进入同一子视图，原 `/pipelines` 地址继续可用。
 
-在 **AI assistant · Qwen** 描述需求，助手查询算子并预览；缺少 Snapshot 或明确的证据依赖时会补齐并重新校验。
+在 **AI assistant · Qwen** 描述需求，助手查询算子并预览；缺少必要前置步骤或明确的证据依赖时会补齐并重新校验。数据版本绑定由平台自动处理，默认流程图只展示业务步骤；手动编辑也会在校验时自动补齐。内部步骤仅在折叠的 **Technical details** 中供排查使用。
 不能自动解决的问题按步骤显示；Blocked 草稿不能运行。AI added 标识本轮补入的前置步骤。
 点击 **Load draft into editor** 应用草稿；已有编辑时先查看差异，可用 **Undo AI changes** 撤销本次应用。
 
@@ -55,7 +55,7 @@ flowchart LR
 Jobs 展示实际任务进度，Review 保存人工决策；Recent runs 可恢复等待复核的运行。
 Split、Merge、Quality、Viewer 优先显示常用参数，其他参数在 Advanced parameters 中。
 表单与 Parameter JSON 共用状态；Merge 可选择同节点且当前账户可读的数据集。
-模板提供 Snapshot → Quality、Snapshot → Split → Quality、Snapshot → Viewer；仍需预览、保存后运行。
+模板提供 Quality、Split → Quality、Viewer；后台保留必要的数据版本绑定步骤，仍需校验并确认后运行。
 位姿插值需先在 Review 保存与流程参数完全一致的 pose repair 草稿，再从 Review draft 选择器选中草稿批准；提交会重新检查权限和 revision。
 历史列表支持 Load more，展开的任务详情不会因新页到达而关闭。
 Archived report 只在打开时读取 OSS；暂时不可用不会改变任务的完成状态。

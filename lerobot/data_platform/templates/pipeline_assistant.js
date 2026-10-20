@@ -1,3 +1,6 @@
+const pipelineSystemStep = step => step.operator_id === 'curation.snapshot';
+const pipelineStepTitle = step => ({'curation.snapshot': 'Data preparation', 'curation.quality': 'Quality', 'viewer.prepare': 'Viewer'}[step.operator_id] || step.operator_id.split('.').pop().replaceAll('_', ' '));
+const pipelineIssueText = issue => issue.code === 'missing_snapshot' ? 'Data preparation is required before this step.' : issue.reason.replace(/curation\.snapshot|Snapshot|snapshot/g, 'data preparation');
 function mountPipelineAssistant(root, options) {
   'use strict';
   const {api, canEdit, getLocation, loadDraft} = options;
@@ -27,13 +30,17 @@ function mountPipelineAssistant(root, options) {
     $('ai-references').replaceChildren();
     for (const item of conversation?.references || []) {const link = document.createElement('a'); link.textContent = item.title; link.href = item.url; $('ai-references').append(link);}
     $('ai-proposal-summary').replaceChildren();
-    for (const [index, step] of (proposal?.definition.steps || []).entries()) {
-      const node = document.createElement('div'); node.textContent = `${index + 1}. ${step.operator_id} · ${step.version}`;
+    for (const [index, step] of (proposal?.definition.steps || []).filter(step => !pipelineSystemStep(step)).entries()) {
+      const node = document.createElement('div'); node.textContent = `${index + 1}. ${pipelineStepTitle(step)}`;
       if ((proposal.added_steps || []).includes(step.step_id)) node.append(document.createTextNode(' · AI added'));
       for (const issue of (proposal.blocked || []).filter(item => item.step_id === step.step_id)) {
-        const text = document.createElement('p'); text.className = 'error'; text.textContent = `Step ${index + 1} · ${step.operator_id}: ${issue.reason}`; node.append(text);
+        const text = document.createElement('p'); text.className = 'error'; text.textContent = `Step ${index + 1} · ${pipelineStepTitle(step)}: ${pipelineIssueText(issue)}`; node.append(text);
       }
       $('ai-proposal-summary').append(node);
+    }
+    for (const issue of proposal?.blocked || []) {
+      if (!(proposal.definition.steps || []).some(step => pipelineSystemStep(step) && step.step_id === issue.step_id)) continue;
+      const text = document.createElement('p'); text.className = 'error'; text.textContent = 'Data preparation: ' + pipelineIssueText(issue); $('ai-proposal-summary').append(text);
     }
     for (const item of conversation?.suggestions || []) {
       if (item.type !== 'prepare_draft' || !capabilities?.can_edit) continue;
@@ -43,14 +50,15 @@ function mountPipelineAssistant(root, options) {
     const current = options.getDraft?.();
     const changes = [];
     if (proposal && current?.steps.length) {
-      const next = new Map(proposal.definition.steps.map(step => [step.step_id, step]));
-      const old = new Map(current.steps.map(step => [step.step_id, step]));
-      for (const step of proposal.definition.steps) {
-        if (!old.has(step.step_id)) changes.push(`+ ${step.operator_id}`);
+      const nextSteps = proposal.definition.steps.filter(step => !pipelineSystemStep(step)), oldSteps = current.steps.filter(step => !pipelineSystemStep(step));
+      const next = new Map(nextSteps.map(step => [step.step_id, step]));
+      const old = new Map(oldSteps.map(step => [step.step_id, step]));
+      for (const step of nextSteps) {
+        if (!old.has(step.step_id)) changes.push(`+ ${pipelineStepTitle(step)}`);
         else if (JSON.stringify(step) !== JSON.stringify(old.get(step.step_id))) changes.push(`Change ${step.step_id}: ${JSON.stringify(step.parameters)} · input ${step.input || 'source'}`);
       }
-      for (const step of current.steps) if (!next.has(step.step_id)) changes.push(`− ${step.operator_id}`);
-      if (current.steps.map(s => s.step_id).join() !== proposal.definition.steps.map(s => s.step_id).join()) changes.push('Step order changes');
+      for (const step of oldSteps) if (!next.has(step.step_id)) changes.push(`− ${pipelineStepTitle(step)}`);
+      if (oldSteps.map(s => s.step_id).join() !== nextSteps.map(s => s.step_id).join()) changes.push('Step order changes');
     }
     $('ai-diff').textContent = changes.length ? 'Changes when applied:\n' + changes.join('\n') : '';
 

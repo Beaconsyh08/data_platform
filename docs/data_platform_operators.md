@@ -48,6 +48,11 @@ its users, then revalidates it. It also corrects dataset inputs that mistakenly 
 Snapshot: Snapshot binds identity, while subsequent reads still use `source`. Derived or forward references
 are not guessed. Other blockers return to the model. It reuses Snapshot/evidence producers and cannot remove requested steps, alter their
 parameters or bypass review while repairing prerequisites. Ambiguous choices require user input.
+When referenced as evidence, Snapshot binds to its published, acknowledged output version; other evidence
+retains its original input-version checks. A missing or mismatched published version blocks submission.
+Snapshot is an internal preparation step: the default graph, assistant proposal and templates show business
+steps only. Manual editing also inserts this prerequisite during preview. Technical details can reveal
+internal steps for diagnosis without changing the stored plan or execution order.
 Blocked drafts remain visible with step ID, position, operator, code, reason and suggested remedy.
 Strict save/run validation is unchanged; parser diagnostics are structured in preview only.
 

@@ -103,8 +103,6 @@ def test_console_browse_forms_pipeline_switching_and_viewer_role(tmp_path, monke
             page.wait_for_function("window.Alpine && document.querySelector('[x-data]')._x_dataStack")
             page.get_by_label("Dataset", exact=True).select_option(locations[0]["location_id"])
             page.get_by_role("button", name="Add step", exact=True).click()
-            page.get_by_label("Operator", exact=True).select_option("curation.snapshot")
-            page.get_by_role("button", name="Add step", exact=True).click()
             page.get_by_label("Operator", exact=True).select_option("preprocess.split")
             page.get_by_label("episode_range", exact=True).fill("0:1")
             page.get_by_label("Name", exact=True).fill("Console pipeline")
@@ -112,10 +110,15 @@ def test_console_browse_forms_pipeline_switching_and_viewer_role(tmp_path, monke
             page.wait_for_function(
                 "document.querySelector('[x-effect=\"syncPipelineWorkspace($el)\"]').shadowRoot.querySelector('#saved').value !== ''"
             )
+            playwright.expect(page.locator("#steps article")).to_have_count(1)
+            assert "Snapshot" not in page.locator("#preview-result").inner_text()
+            assert "curation.snapshot" not in page.get_by_label("Operator", exact=True).inner_text()
             page.locator("#ai-message").fill("提取第一个 episode")
             page.get_by_role("button", name="Ask Qwen", exact=True).click()
             page.get_by_role("button", name="Load draft into editor", exact=True).click()
             playwright.expect(page.get_by_label("Name", exact=True)).to_have_value("First episode")
+            playwright.expect(page.locator("#steps article")).to_have_count(1)
+            assert "curation.snapshot" not in page.locator("#ai-proposal-summary").inner_text()
             assert page.locator("#run").is_disabled()
             assert not store.list_jobs()
             # Changing the active dataset rebuilds the embedded editor, never reuses the old preview.

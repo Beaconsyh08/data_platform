@@ -83,6 +83,8 @@ def test_pipeline_browser_edit_run_restore_review_and_role(tmp_path):
             )
             assert response.status == 200
             page.goto(base + "/pipelines?location_id=" + location["location_id"])
+            page.get_by_text("Technical details", exact=True).click()
+            page.get_by_label("Show internal steps", exact=True).check()
             page.get_by_role("button", name="Add step", exact=True).click()
             page.locator("#step-editor").get_by_label("Operator", exact=True).select_option(
                 "curation.snapshot"
@@ -157,7 +159,7 @@ def test_pipeline_browser_edit_run_restore_review_and_role(tmp_path):
             page.reload()
             page.get_by_role("button", name="Approve", exact=True).wait_for()
             assert page.locator("#runs").input_value() == run_id
-            playwright.expect(page.locator("#steps article")).to_have_count(3)
+            playwright.expect(page.locator("#steps article")).to_have_count(2)
             page.get_by_role("button", name="Approve", exact=True).click()
             page.wait_for_function("!document.querySelector('#run-steps button')")
             execute_next()
