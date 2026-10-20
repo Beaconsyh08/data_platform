@@ -1,0 +1,8 @@
+    <details id="ai-panel" open><summary>AI assistant · Qwen</summary>
+      <p id="ai-status" class="muted" role="status">Loading assistant…</p>
+      <p class="muted">Uses limited metadata and sanitized summaries. Review drafts before running.</p>
+      <div id="ai-history" aria-live="polite" style="max-height:150px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></div>
+      <label>Describe your workflow<textarea id="ai-message" maxlength="3000" placeholder="Check motion quality, then prepare the Viewer." disabled></textarea></label>
+      <div class="row"><button id="ai-send" disabled>Ask Qwen</button><button id="ai-new">New chat</button></div>
+      <div id="ai-proposal" hidden><p id="ai-validation" role="status"></p><div id="ai-proposal-summary" class="proposal-flow"></div><div id="ai-diff"></div><button id="ai-load" disabled>Load draft into editor</button><button id="ai-undo" disabled>Undo AI changes</button></div>
+    <div id="ai-references" class="row"></div></details>

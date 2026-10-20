@@ -120,15 +120,27 @@ class PipelineManager:
         return location["metadata"]
 
     def preview(self, owner: str, location_id: str, definition: dict) -> dict:
-        spec = PipelineSpec.from_dict(definition)
+        from lerobot.data_platform.processing.planner import PipelineValidationError
+
         with self.store.sessions() as session:
             location, node = self._location(session, location_id, owner)
+            try:
+                spec = PipelineSpec.from_dict(definition)
+            except PipelineValidationError as exc:
+                return {
+                    "definition": definition,
+                    "location_id": location_id,
+                    "can_execute": False,
+                    "blocked": [exc.issue],
+                    "steps": [],
+                    "input_identity": location_identity(location),
+                }
             blocked, resolved = [], []
             source_info = self._info(location)
             synchronized_source = bool(
                 self.lifecycle and self.lifecycle._get_record("curation_locations", location_id)
             )
-            for step in spec.steps:
+            for position, step in enumerate(spec.steps, 1):
                 operator = get_operator(step.operator_id, step.version)
                 info = source_info if step.input == "source" else {}
                 reason = availability(
@@ -139,12 +151,13 @@ class PipelineManager:
                     validate_dataset=step.input == "source"
                     and bool(info.get("features") or not synchronized_source),
                 )
+                code, suggestion = getattr(reason, "code", "operator_unavailable"), None
                 if (
                     operator.family == "curation"
                     and operator.operator_id == "curation.snapshot"
                     and step.input == "source"
                 ):
-                    synchronized_source = True
+                    synchronized_source = not reason
                 elif (
                     self.lifecycle
                     and step.input == "source"
@@ -153,10 +166,22 @@ class PipelineManager:
                     and not operator.operator_id.startswith("import.mcap.")
                 ):
                     reason = "Add a Snapshot step first to bind the source dataset version"
+                    code = "missing_snapshot"
+                    suggestion = {"operator_id": "curation.snapshot", "input": "source", "parameters": {}}
                 if operator.review_required and self.store.restricted_dataset_keys(owner) is not None:
                     reason = "Curation review requires unrestricted dataset access"
+                    code = "permission_denied"
                 if reason:
-                    blocked.append({"step_id": step.step_id, "reason": reason})
+                    blocked.append(
+                        {
+                            "step_id": step.step_id,
+                            "operator_id": step.operator_id,
+                            "position": position,
+                            "code": code,
+                            "reason": reason,
+                            "suggestion": suggestion,
+                        }
+                    )
                 for source_id in step.options.get("source_location_ids", []):
                     self._location(session, source_id, owner, node["node_id"])
                     if self.lifecycle and not self.lifecycle._get_record("curation_locations", source_id):
@@ -164,6 +189,9 @@ class PipelineManager:
                             {
                                 "step_id": step.step_id,
                                 "reason": "Synchronize every Merge input dataset version first",
+                                "operator_id": step.operator_id,
+                                "position": position,
+                                "code": "missing_source_snapshot",
                             }
                         )
                 output = {"type": operator.output_type}
@@ -178,6 +206,9 @@ class PipelineManager:
                             {
                                 "step_id": step.step_id,
                                 "reason": "Dataset output must be inside this node's configured read roots",
+                                "operator_id": step.operator_id,
+                                "position": position,
+                                "code": "output_scope",
                             }
                         )
                 resolved.append(

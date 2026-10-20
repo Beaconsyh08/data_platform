@@ -431,6 +431,12 @@ window.createCurationWorkspace = (root, initialTarget) => {
     if (request !== resultRequest || $('result').value !== run) return;
     result = loaded;
     $('result-body').replaceChildren(); $('artifacts').replaceChildren();
+    if (result?.operation === 'curation.quality' && target.location_id) {
+      const link = text('a','Ask AI about this report');
+      link.href = '/assistant?' + new URLSearchParams({type:'quality',target_id:result.run,location_id:target.location_id});
+      link.onclick = event => {if (window.openPlatformAssistant) {event.preventDefault(); window.openPlatformAssistant({type:'quality',targetId:result.run,locationId:target.location_id});}};
+      $('result-body').append(link);
+    }
     const rows = Object.values(result.labels || {}).map(item => [item.episode_index,item.task || '',item.selected ? 'Target selected' : 'No target selected']);
     Object.values(result.tags || {}).forEach(item => rows.push([item.episode_index,'Tags',Object.entries(item.tags || {}).map(([key,value]) => `${key}: ${JSON.stringify(value)}`).join(', ')]));
     if (result.operation === 'curation.quality') drawQualityResult();
@@ -637,7 +643,11 @@ window.createCurationWorkspace = (root, initialTarget) => {
   const captionApiBase = target.location_id ? `/api/control/locations/${encodeURIComponent(target.location_id)}/temporal-caption` : `/api/temporal-caption/${target.dataset_key}`;
   captionController = window.createTemporalCaptionTask($('caption-task'), {api:captionApiBase,reviewUrl:captionBase+'/temporal-caption/review'});
   drawForms(); bind();
-  refresh().then(() => { loadReview(true); return refreshJobs(); }).catch(error => notice(error.message,true));
+  refresh().then(async () => {
+    loadReview(true); await refreshJobs();
+    const requested = new URLSearchParams(location.search).get('run');
+    if (requested && [...$('result').options].some(option => option.value === requested)) { $('result').value = requested; await loadResult(); }
+  }).catch(error => notice(error.message,true));
   return {selectPage, destroy() {
     destroyed = true; clearTimeout(timer); captionController?.destroy();
     window.removeEventListener('data-platform:before-dataset-change', beforeDatasetChange);

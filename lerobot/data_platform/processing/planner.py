@@ -10,6 +10,21 @@ from lerobot.data_platform.operators.schema import validate_parameters
 from lerobot.data_platform.task_catalog import content_digest
 
 
+class PipelineValidationError(ValueError):
+    """A strict parse failure with a safe, step-addressable preview diagnostic."""
+
+    def __init__(self, reason, row, position, code="invalid_step", **details):
+        super().__init__(reason)
+        self.issue = {
+            "step_id": row.get("step_id", "") if isinstance(row, dict) else "",
+            "operator_id": row.get("operator_id", "") if isinstance(row, dict) else "",
+            "position": position,
+            "code": code,
+            "reason": reason,
+            **details,
+        }
+
+
 @dataclass(frozen=True)
 class PipelineStep:
     step_id: str
@@ -46,85 +61,122 @@ class PipelineSpec:
         if not isinstance(rows, list) or not 1 <= len(rows) <= 50:
             raise ValueError("A pipeline requires 1–50 steps")
         known, steps = {}, []
-        for row in rows:
-            if not isinstance(row, dict) or set(row) - {
-                "step_id",
-                "operator_id",
-                "version",
-                "parameters",
-                "input",
-                "artifacts",
-                "review_before",
-                "options",
-            }:
-                raise ValueError("Invalid pipeline step")
-            key = row.get("step_id")
-            if (
-                not isinstance(key, str)
-                or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]{0,39}", key)
-                or key in known
-                or key == "source"
-            ):
-                raise ValueError("Step IDs must be unique identifiers of at most 40 characters")
-            spec = get_operator(str(row.get("operator_id") or ""), row.get("version"))
-            if not spec.pipeline_allowed:
-                raise ValueError(f"{spec.operator_id} requires its dedicated authorized entry point")
-            if value.get("schema_version", 1) != 1:
-                raise ValueError("Unsupported pipeline schema version")
-            source = row.get("input", "source")
-            if not isinstance(source, str):
-                raise ValueError("Dataset input must be a step identifier")
-            if source != "source" and (source not in known or known[source].output_type != "dataset"):
-                raise ValueError("Dataset input must reference source or an earlier dataset output")
-            if not isinstance(source, str):
-                raise ValueError("Dataset input must be a step identifier")
-            artifacts = row.get("artifacts", [])
-            if not isinstance(artifacts, (list, tuple)) or any(
-                not isinstance(item, str) or item not in known for item in artifacts
-            ):
-                raise ValueError("Evidence must reference earlier pipeline steps")
-            options = row.get("options", {})
-            allowed = {
-                "source_location_ids",
-                "workspace_id",
-                "expected_revision",
-                "manifest_id",
-                "profile_id",
-            }
-            if not isinstance(options, dict) or set(options) - allowed:
-                raise ValueError("Unsupported pipeline step options")
-            if "source_location_ids" in options and (
-                spec.operator_id not in {"preprocess.merge", "preprocess.subtract"}
-                or not isinstance(options["source_location_ids"], list)
-                or any(not isinstance(item, str) for item in options["source_location_ids"])
-            ):
-                raise ValueError("Registered secondary inputs are supported only for Merge and Subtract")
-            parameters = validate_parameters(spec, row.get("parameters", {}))
-            if spec.output_type == "dataset" and parameters.get("dry_run"):
-                raise ValueError("A dataset-producing pipeline step cannot be a dry run")
-            review = row.get("review_before", False)
-            if type(review) is not bool:
-                raise ValueError("review_before must be a boolean")
-            provided = {kind for item in artifacts for kind in known[item].provides}
-            if not set(spec.requires) <= provided:
-                raise ValueError(
-                    f"Missing required evidence: {', '.join(sorted(set(spec.requires) - provided))}"
+        for position, row in enumerate(rows, 1):
+            try:
+                if not isinstance(row, dict) or set(row) - {
+                    "step_id",
+                    "operator_id",
+                    "version",
+                    "parameters",
+                    "input",
+                    "artifacts",
+                    "review_before",
+                    "options",
+                }:
+                    raise ValueError("Invalid pipeline step")
+                key = row.get("step_id")
+                if (
+                    not isinstance(key, str)
+                    or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]{0,39}", key)
+                    or key in known
+                    or key == "source"
+                ):
+                    raise ValueError("Step IDs must be unique identifiers of at most 40 characters")
+                spec = get_operator(str(row.get("operator_id") or ""), row.get("version"))
+                if not spec.pipeline_allowed:
+                    raise ValueError(f"{spec.operator_id} requires its dedicated authorized entry point")
+                if value.get("schema_version", 1) != 1:
+                    raise ValueError("Unsupported pipeline schema version")
+                source = row.get("input", "source")
+                if not isinstance(source, str):
+                    raise ValueError("Dataset input must be a step identifier")
+                if source != "source" and (source not in known or known[source].output_type != "dataset"):
+                    raise PipelineValidationError(
+                        "Dataset input must reference source or an earlier dataset output",
+                        row,
+                        position,
+                        "invalid_input",
+                    )
+                if not isinstance(source, str):
+                    raise ValueError("Dataset input must be a step identifier")
+                artifacts = row.get("artifacts", [])
+                if not isinstance(artifacts, (list, tuple)) or any(
+                    not isinstance(item, str) or item not in known for item in artifacts
+                ):
+                    raise PipelineValidationError(
+                        "Evidence must reference earlier pipeline steps",
+                        row,
+                        position,
+                        "invalid_evidence_reference",
+                    )
+                options = row.get("options", {})
+                allowed = {
+                    "source_location_ids",
+                    "workspace_id",
+                    "expected_revision",
+                    "manifest_id",
+                    "profile_id",
+                }
+                if not isinstance(options, dict) or set(options) - allowed:
+                    raise ValueError("Unsupported pipeline step options")
+                if "source_location_ids" in options and (
+                    spec.operator_id not in {"preprocess.merge", "preprocess.subtract"}
+                    or not isinstance(options["source_location_ids"], list)
+                    or any(not isinstance(item, str) for item in options["source_location_ids"])
+                ):
+                    raise ValueError("Registered secondary inputs are supported only for Merge and Subtract")
+                try:
+                    parameters = validate_parameters(spec, row.get("parameters", {}))
+                except (ValueError, TypeError) as exc:
+                    raise PipelineValidationError(str(exc), row, position, "invalid_parameters") from exc
+                if spec.output_type == "dataset" and parameters.get("dry_run"):
+                    raise ValueError("A dataset-producing pipeline step cannot be a dry run")
+                review = row.get("review_before", False)
+                if type(review) is not bool:
+                    raise ValueError("review_before must be a boolean")
+                provided = {
+                    kind
+                    for item in artifacts
+                    if next(previous for previous in steps if previous.step_id == item).input == source
+                    for kind in known[item].provides
+                }
+                if not set(spec.requires) <= provided:
+                    raise PipelineValidationError(
+                        f"Missing required evidence: {', '.join(sorted(set(spec.requires) - provided))}",
+                        row,
+                        position,
+                        "missing_evidence",
+                        required=sorted(set(spec.requires) - provided),
+                        suggestion="Reference a compatible earlier producer on the same dataset input, or add it first.",
+                    )
+                review = review or spec.review_required
+                steps.append(
+                    PipelineStep(
+                        key,
+                        spec.operator_id,
+                        spec.version,
+                        parameters,
+                        source,
+                        tuple(artifacts),
+                        review,
+                        dict(options),
+                    )
                 )
-            review = review or spec.review_required
-            steps.append(
-                PipelineStep(
-                    key,
-                    spec.operator_id,
-                    spec.version,
-                    parameters,
-                    source,
-                    tuple(artifacts),
-                    review,
-                    dict(options),
-                )
-            )
-            known[key] = spec
+                known[key] = spec
+            except PipelineValidationError:
+                raise
+            except (ValueError, TypeError, KeyError) as exc:
+                raise PipelineValidationError(str(exc), row, position) from exc
         return cls(name, tuple(steps))
+
+
+class AvailabilityReason(str):
+    """String-compatible reason with a stable preview category."""
+
+    def __new__(cls, message, code):
+        instance = super().__new__(cls, message)
+        instance.code = code
+        return instance
 
 
 def availability(
@@ -133,7 +185,7 @@ def availability(
     """Intersect dataset semantics with the owning node's installed implementation."""
     caps = node.get("capabilities", {})
     if not spec.pipeline_allowed:
-        return "Use the dedicated authorized operation form"
+        return AvailabilityReason("Use the dedicated authorized operation form", "permission_denied")
     version = str(info.get("codebase_version") or "")
     if (
         validate_dataset
@@ -141,7 +193,7 @@ def availability(
         and spec.input_type == "dataset"
         and version not in spec.supported_formats
     ):
-        return "Dataset format is unsupported by this operator"
+        return AvailabilityReason("Dataset format is unsupported by this operator", "unsupported_data")
     if caps.get("job_protocol", 1) < 2:
         return "Upgrade this node to durable Job protocol 2"
     if node.get("status") != "online":
@@ -194,7 +246,9 @@ def availability(
             if parameters is None:
                 checks = list(installed)
             if not checks or not set(checks).issubset(installed):
-                return "Selected quality checks are unavailable on this node"
+                return AvailabilityReason(
+                    "Selected quality checks are unavailable on this node", "invalid_parameters"
+                )
             if validate_dataset:
                 from lerobot.data_platform.precompute.data_profile import (
                     profile_from_info,
@@ -208,7 +262,7 @@ def availability(
                     if not supported.get(check, {}).get("available")
                 ]
                 if reasons and (parameters is not None or len(reasons) == len(checks)):
-                    return "; ".join(reasons)
+                    return AvailabilityReason("; ".join(reasons), "unsupported_data")
         if spec.operator_id in {"curation.labeling", "curation.tagging", "curation.embedding"}:
             kind = spec.operator_id.split(".")[1]
             backend = caps.get("curation_backends", {}).get(kind, {})
@@ -226,5 +280,5 @@ def availability(
             if not backend.get("available"):
                 return backend.get("error") or "Selected model backend is unavailable"
     except (ValueError, TypeError, KeyError) as exc:
-        return str(exc)
+        return AvailabilityReason(str(exc), "invalid_parameters")
     return None

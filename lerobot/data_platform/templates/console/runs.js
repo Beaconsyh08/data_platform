@@ -336,6 +336,17 @@ function consoleRunsState() {
                         }
                     }
                     await remoteRefresh;
+                    const requested = new URLSearchParams(location.search).get('job_id');
+                    if (requested && !this._assistantJobOpened) {
+                        this._assistantJobOpened = true;
+                        const current = consoleReadScope(this, 'assistantJobLink');
+                        try {
+                            const result = await this.requestJson('/api/control/jobs/' + encodeURIComponent(requested));
+                            if (!current()) return;
+                            if (!this.remoteJobs.some(item => item.job_id === requested)) this.remoteJobs.push(result.job);
+                            this.mergeRemoteJobsIntoRuns(); this.selectedJobId = requested; this.jobDrawerOpen = true;
+                        } catch (error) {if (current()) this.jobControlError = error.message;}
+                    }
                 },
                 async loadOperationLogs() {
                     const current = consoleReadScope(this, 'loadOperationLogs', 'dataset');

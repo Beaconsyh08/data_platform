@@ -1,5 +1,7 @@
 """Shared authorized operator descriptions for forms and model tools."""
 
+from copy import deepcopy
+
 from lerobot.data_platform.operators.presentation import presentation
 from lerobot.data_platform.processing.planner import availability
 
@@ -27,8 +29,13 @@ class OperatorCatalog:
             reason = "Use the dedicated authorized operation form"
         if self.role == "viewer":
             reason = "Viewer accounts are read-only"
+        description = deepcopy(spec.to_dict())
+        if spec.operator_id == "curation.quality" and self.node:
+            description["parameters"]["properties"]["checks"]["items"]["enum"] = sorted(
+                self.node.get("capabilities", {}).get("quality_checks", [])
+            )
         return {
-            **spec.to_dict(),
+            **description,
             "available": reason is None,
             "reason": reason,
             "presentation": presentation(spec.operator_id),

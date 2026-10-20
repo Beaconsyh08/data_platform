@@ -86,3 +86,11 @@ log; administrators register and grant the required locations. Source-local data
 registered control-plane location cannot be selected. Existing explicit grants are preserved.
 Lifecycle/curation APIs use version/workspace IDs without registered-location scope mapping; they
 require unrestricted access until that mapping exists, rather than exposing out-of-scope artifacts.
+
+### AI 上下文助手
+
+Viewer 可在其数据权限范围内使用只读 AI 解读；操作角色可生成流程草稿和准备操作。
+聊天接口不注册任务提交、重试、审批、删除或发布工具；最终动作仍使用原入口的授权与确认。
+任务解释遵守原有 owner/admin 可见性，Quality 报告沿用 Curation 的范围限制。
+服务端在读取上下文、返回结果和恢复对话时重查权限及对象身份；降为 Viewer 后不返回可应用草稿。
+所有账号共享现有用户/全局并发及额度限制；密钥仅在服务端配置。

@@ -267,9 +267,10 @@ def test_http_auth_roles_validation_and_server_only_configuration(assistant, tmp
     )
     with service.store.sessions.begin() as session:
         session.get(ControlPlaneUser, owner).role = "viewer"
-    assert not client.get("/api/ai-assistant/capabilities").json["available"]
-    assert client.post("/api/ai-assistant/turns", json=value).status_code == 403
-    assert client.get("/api/ai-assistant/conversations/" + value["conversation_id"]).status_code == 403
+    assert client.get("/api/ai-assistant/capabilities").json["available"]
+    assert not client.get("/api/ai-assistant/capabilities").json["can_edit"]
+    assert client.post("/api/ai-assistant/turns", json=value).json["proposal"] is None
+    assert client.get("/api/ai-assistant/conversations/" + value["conversation_id"]).json["proposal"] is None
 
 
 def test_retention_history_and_stale_revision(assistant):

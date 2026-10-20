@@ -205,7 +205,13 @@ def register_control_plane_auth_routes(
                         return jsonify({"error": "job not found"}), 404
             if (
                 request.method not in {"GET", "HEAD", "OPTIONS"}
-                and path not in {"/api/auth/logout", "/api/dev/role-session", "/api/auth/password"}
+                and path
+                not in {
+                    "/api/auth/logout",
+                    "/api/dev/role-session",
+                    "/api/auth/password",
+                    "/api/ai-assistant/turns",
+                }
                 and user.get("role") == "viewer"
             ):
                 return jsonify({"error": "viewer accounts are read-only"}), 403

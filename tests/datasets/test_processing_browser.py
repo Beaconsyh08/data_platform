@@ -84,32 +84,32 @@ def test_pipeline_browser_edit_run_restore_review_and_role(tmp_path):
             assert response.status == 200
             page.goto(base + "/pipelines?location_id=" + location["location_id"])
             page.get_by_role("button", name="Add step", exact=True).click()
-            page.locator("article").nth(0).get_by_label("Operator", exact=True).select_option(
+            page.locator("#step-editor").get_by_label("Operator", exact=True).select_option(
                 "curation.snapshot"
             )
             page.get_by_role("button", name="Add step", exact=True).click()
-            page.locator("article").nth(1).get_by_label("Operator", exact=True).select_option(
+            page.locator("#step-editor").get_by_label("Operator", exact=True).select_option(
                 "preprocess.split"
             )
-            page.locator("article").nth(1).get_by_label("episode_range", exact=True).fill("0:1")
-            page.locator("article").nth(1).get_by_label("episode_range", exact=True).press("Tab")
+            page.locator("#step-editor").get_by_label("episode_range", exact=True).fill("0:1")
+            page.locator("#step-editor").get_by_label("episode_range", exact=True).press("Tab")
             page.get_by_role("button", name="Add step", exact=True).click()
-            page.locator("article").nth(2).get_by_label("Operator", exact=True).select_option(
+            page.locator("#step-editor").get_by_label("Operator", exact=True).select_option(
                 "preprocess.split"
             )
             page.locator("article").nth(2).get_by_role("button", name="↑", exact=True).click()
             page.locator("article").nth(1).get_by_role("button", name="↓", exact=True).click()
-            source_step = page.locator("article").nth(1).locator("strong").inner_text().split(". ", 1)[1]
-            page.locator("article").nth(2).get_by_label("Dataset input", exact=True).select_option(
-                source_step
-            )
-            page.locator("article").nth(2).get_by_label("Review before this step", exact=True).check()
+            source_step = page.locator("#steps article").nth(1).get_attribute("data-step-id")
+            page.locator("#steps article").nth(2).click()
+            page.locator("#step-editor").get_by_label("Dataset input", exact=True).select_option(source_step)
+            page.locator("#step-editor").get_by_label("Review before this step", exact=True).check()
             page.get_by_label("Name", exact=True).fill("Browser pipeline")
             page.get_by_role("button", name="Save version", exact=True).click()
             page.wait_for_function("!document.getElementById('run').disabled")
             # Invalid JSON must invalidate the previously executable preview.
-            page.locator("article").nth(1).get_by_text("Advanced parameters", exact=True).click()
-            field = page.locator("article").nth(1).get_by_label("task_filter", exact=True)
+            page.locator("#steps article").nth(1).click()
+            page.locator("#step-editor").get_by_text("Advanced parameters", exact=True).click()
+            field = page.locator("#step-editor").get_by_label("task_filter", exact=True)
             field.fill("[")
             field.press("Tab")
             assert page.locator("#run").is_disabled()
@@ -117,7 +117,8 @@ def test_pipeline_browser_edit_run_restore_review_and_role(tmp_path):
             field.press("Tab")
             page.get_by_role("button", name="Save version", exact=True).click()
             page.wait_for_function("!document.getElementById('run').disabled")
-            page.get_by_role("button", name="Run saved version", exact=True).click()
+            page.get_by_role("button", name="Validate and run", exact=True).click()
+            page.get_by_role("button", name="Confirm run", exact=True).click()
             page.wait_for_url("**&run_id=*")
             run_id = parse_qs(urlsplit(page.url).query)["run_id"][0]
 

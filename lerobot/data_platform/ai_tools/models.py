@@ -12,6 +12,7 @@ class AssistantConversation(ManagementBase):
     owner: Mapped[str] = mapped_column(String(36), index=True)
     location_id: Mapped[str] = mapped_column(String(36))
     input_identity: Mapped[dict] = mapped_column(JSON)
+    context: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     revision: Mapped[int] = mapped_column(Integer, default=0)
     history: Mapped[list] = mapped_column(JSON, default=list)
     proposal: Mapped[dict | None] = mapped_column(JSON, nullable=True)

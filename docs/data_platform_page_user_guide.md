@@ -33,16 +33,24 @@ flowchart LR
 
 **Data Platform > Preprocessing > Pipeline** 子视图可组合顺序步骤；顶部 **Pipelines** 快捷入口进入同一子视图，原 `/pipelines` 地址继续可用。
 
-展开 **AI assistant · Qwen**，描述希望完成的处理；助手会查询算子参数并生成经过预览校验的草稿，
-也可能先询问必要信息。点击 **Load draft into editor** 会替换当前编辑器的未保存步骤，
-检查参数后再 **Save version → Run saved version**。AI 本身不会创建计算任务、批准复核或修改源数据。
-对话按账号和数据集隔离，可刷新恢复；**New chat** 新建对话。未配置服务器 Qwen Key 时入口会显示原因，
-手动编辑仍可用。请求会向 Qwen 发送对话和字段结构，请勿在提示词中输入密钥或敏感原始数据。
+在 **AI assistant · Qwen** 描述需求，助手查询算子并预览；缺少 Snapshot 或明确的证据依赖时会补齐并重新校验。
+不能自动解决的问题按步骤显示；Blocked 草稿不能运行。AI added 标识本轮补入的前置步骤。
+点击 **Load draft into editor** 应用草稿；已有编辑时先查看差异，可用 **Undo AI changes** 撤销本次应用。
+
+流程图按顺序执行。点击节点在侧栏编辑参数，使用拖动、上下按钮或 Alt+方向键重排；
+输入和证据生产步骤必须位于使用者之前，删除被引用节点需先处理引用。蓝色连线表示数据来源，虚线表示证据；
+检测报告不替代源数据。模板、保存的流程和运行历史默认收起，高级参数和原有多数据源选项仍可使用。
+点击 **Validate and run** 查看目标节点、输出和复核要求，再点击 **Confirm run** 保存版本并提交任务。
+也可仅 Preview 或 Save version。AI 自身不提交任务、不批准复核、不修改源数据。
+
+数据集顶部 **Ask AI**、Quality 已打开报告中的 **Ask AI about this report**、Jobs 的 **Ask AI about this task**
+打开同一上下文助手。可解读字段、覆盖范围、质量候选和任务阶段，并通过证据链接回到页面；Viewer 账号只读问答。
+对话按账号、环境及目标隔离，可刷新恢复；输入版本、任务 Attempt 或报告变化后需 New chat。
+请求发送用户文字、受限元数据及脱敏摘要，不自动上传原始行、图像视频、完整日志或文件路径。
+请勿在提示词中输入凭据。未配置 Qwen 或服务暂不可用时，手动编辑仍可使用。
 详见 [助手的数据范围与额度](data_platform_operators.md#qwen-draft-assistant)。
 
-操作时：选择已登记的数据集，添加 Snapshot、数据转换或检测，
-编辑参数后点击 Preview，再 Save version、Run saved version。Dataset input 可引用前一步的数据输出；
-Evidence 传递报告。每次保存生成不可变 revision，运行固定该版本。多数据源必须来自同一节点。
+每次保存生成不可变 revision，运行固定该版本。多数据源必须来自同一节点。
 
 Jobs 展示实际任务进度，Review 保存人工决策；Recent runs 可恢复等待复核的运行。
 Split、Merge、Quality、Viewer 优先显示常用参数，其他参数在 Advanced parameters 中。

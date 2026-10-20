@@ -165,6 +165,10 @@ def migrate_management(engine) -> None:
                         "ALTER TABLE dp_job_controls ADD COLUMN extra_quota BOOLEAN NOT NULL DEFAULT 0"
                     )
                 conn.execute(SchemaMigration.__table__.insert().values(version=6))
+            if "context" not in {
+                column["name"] for column in inspect(conn).get_columns("dp_ai_conversations")
+            }:
+                conn.exec_driver_sql("ALTER TABLE dp_ai_conversations ADD COLUMN context JSON NULL")
             conn.commit()
         finally:
             if mysql:

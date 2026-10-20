@@ -9,7 +9,7 @@ import pytest
 from werkzeug.serving import make_server
 
 from lerobot.data_platform.operators.registry import operation_ids, worker_manifest
-from tests.datasets.test_ai_assistant import FakeQwen
+from tests.datasets.test_ai_assistant import FakeQwen, call, draft
 from tests.datasets.test_console_services import console_app
 from tests.datasets.test_control_plane import _bootstrap, _store
 from tests.datasets.test_quality_eef import make_eef
@@ -24,7 +24,17 @@ def test_console_browse_forms_pipeline_switching_and_viewer_role(tmp_path, monke
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-only-key")
     store = _store(tmp_path)
     app = console_app(tmp_path, database_url=str(store.engine.url))
-    fake_qwen = FakeQwen()
+    plan = draft()
+    plan["steps"].insert(
+        0, {"step_id": "snapshot", "operator_id": "curation.snapshot", "version": "1.0.0", "parameters": {}}
+    )
+    fake_qwen = FakeQwen(
+        [
+            call("describe_operator", {"operator_id": "preprocess.split"}),
+            call("describe_operator", {"operator_id": "curation.snapshot"}),
+            call("preview_pipeline", {"summary": "First episode", "definition": plan}),
+        ]
+    )
     app.extensions["data_platform_assistant"].client_factory = lambda **kwargs: fake_qwen
     client = app.test_client()
     assert _bootstrap(client).status_code == 200
@@ -95,19 +105,18 @@ def test_console_browse_forms_pipeline_switching_and_viewer_role(tmp_path, monke
             page.get_by_role("button", name="Add step", exact=True).click()
             page.get_by_label("Operator", exact=True).select_option("curation.snapshot")
             page.get_by_role("button", name="Add step", exact=True).click()
-            page.get_by_label("Operator", exact=True).nth(1).select_option("preprocess.split")
+            page.get_by_label("Operator", exact=True).select_option("preprocess.split")
             page.get_by_label("episode_range", exact=True).fill("0:1")
             page.get_by_label("Name", exact=True).fill("Console pipeline")
             page.get_by_role("button", name="Save version", exact=True).click()
             page.wait_for_function(
                 "document.querySelector('[x-effect=\"syncPipelineWorkspace($el)\"]').shadowRoot.querySelector('#saved').value !== ''"
             )
-            page.locator("#ai-panel > summary").click()
             page.locator("#ai-message").fill("提取第一个 episode")
             page.get_by_role("button", name="Ask Qwen", exact=True).click()
             page.get_by_role("button", name="Load draft into editor", exact=True).click()
             playwright.expect(page.get_by_label("Name", exact=True)).to_have_value("First episode")
-            assert page.get_by_role("button", name="Run saved version", exact=True).is_disabled()
+            assert page.locator("#run").is_disabled()
             assert not store.list_jobs()
             # Changing the active dataset rebuilds the embedded editor, never reuses the old preview.
             page.evaluate(
@@ -119,7 +128,7 @@ def test_console_browse_forms_pipeline_switching_and_viewer_role(tmp_path, monke
                 "id => document.querySelector('[x-effect=\"syncPipelineWorkspace($el)\"]').shadowRoot.querySelector('#location').value === id",
                 arg=locations[1]["location_id"],
             )
-            assert page.get_by_role("button", name="Run saved version", exact=True).is_disabled()
+            assert page.locator("#run").is_disabled()
             # Existing form state survives navigation between modules.
             page.evaluate("async () => {await Alpine.$data(document.body).selectTab('transform');}")
             page.locator('input[type="radio"][value="smooth_action"]').check()

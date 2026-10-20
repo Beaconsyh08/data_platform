@@ -2,7 +2,7 @@
 
 from functools import wraps
 
-from flask import jsonify, request
+from flask import jsonify, render_template, request
 from sqlalchemy.exc import SQLAlchemyError
 
 from lerobot.data_platform.ai_tools.service import (
@@ -26,8 +26,6 @@ def register_ai_assistant_routes(app, ctx):
             actor = _current_user()
             if not actor:
                 return jsonify(error="Authentication required"), 401
-            if request.method != "GET" and actor["role"] not in {"admin", "data_manager", "operator"}:
-                return jsonify(error="Viewer accounts are read-only"), 403
             if request.method == "POST" and not request.content_length:
                 return jsonify(error="Assistant requests require a positive Content-Length"), 411
             if request.content_length and request.content_length > 16384:
@@ -51,6 +49,13 @@ def register_ai_assistant_routes(app, ctx):
                 return jsonify(error=str(exc)), 400
 
         return wrapped
+
+    @app.get("/assistant")
+    @checked
+    def assistant_page(owner, service):
+        return render_template(
+            "data_platform_assistant.html", can_edit=service.capabilities(owner)["can_edit"]
+        )
 
     @app.get("/api/ai-assistant/capabilities")
     @checked

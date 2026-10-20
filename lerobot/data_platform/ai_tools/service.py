@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import delete, func, select
 
+from lerobot.data_platform.ai_tools.context import bounded, normalize_context, resolve_context, safe_summary
 from lerobot.data_platform.ai_tools.models import AssistantConversation, AssistantTurn
 from lerobot.data_platform.job_management import JobConflictError, scheduler_lock
 from lerobot.data_platform.operators import get_operator, list_operators
@@ -73,6 +74,12 @@ def _tool(name, description, properties, required):
 
 TOOLS = [
     _tool(
+        "read_context",
+        "Read authorized dataset, Quality or current task summary and evidence references.",
+        {},
+        [],
+    ),
+    _tool(
         "describe_operator",
         "Read an operator's exact parameter schema and evidence requirements before proposing it.",
         {"operator_id": {"type": "string"}},
@@ -126,10 +133,18 @@ Use parameters from its schema; ask for missing intent or unknown physical units
 Prefer available operators. Explain unavailable capabilities honestly. Do not invent inspection results.
 Each step uses input "source" or a prior dataset-producing step ID. Pass evidence via artifacts listing
 prior step IDs. Include required snapshot/evidence producers, and preserve human review requirements.
+curation.snapshot binds the original dataset BEFORE Quality, Viewer or other dataset operations.
+Its input is source, artifacts is [], parameters is {}, and it needs no review. It is NOT an output snapshot.
 First version supports one selected dataset, at most 12 steps, and no extra step options.
 Do not propose source edits, extra source datasets, arbitrary file paths or shell commands.
 Call preview_pipeline to return an editable draft, never put a purported runnable plan only in prose.
-If you need clarification, ask a concise question without calling preview_pipeline."""
+If you need clarification, ask a concise question without calling preview_pipeline.
+For explanations, use read_context and cite its reference IDs. Never claim you inspected source rows/media.
+Quality flags are candidates, not Keep/Exclude decisions. Distinguish queued, computing, publishing and acknowledged.
+When preview is blocked, repair missing snapshot/evidence prerequisites and preview again.
+Reuse existing compatible producers. Do not remove requested operations, weaken checks, change the goal,
+guess physical units or bypass review/permissions. Ask when producers or parameters are ambiguous.
+Read-only users may receive explanations and evidence links only; never propose write actions."""
 
 
 class AssistantService:
@@ -146,19 +161,22 @@ class AssistantService:
             reason = "The AI assistant is disabled on this server."
         elif not dashscope_env_api_key():
             reason = "Ask an administrator to configure the server's Qwen API key."
-        if role == "viewer":
-            reason = "Viewer accounts are read-only."
         return {
             "available": reason is None,
             "reason": reason,
             "model": self.config.model,
             "owner": owner,
+            "can_edit": role != "viewer",
             "hourly_limit": self.config.hourly_limit,
         }
 
-    def _target(self, session, owner, location_id, identity=None):
-        location, _ = self.manager._location(session, location_id, owner)
+    def _target(self, session, owner, location_id, identity=None, context=None):
+        location, _ = self.manager._location(session, location_id, owner, write=False)
         current = location_identity(location)
+        context = normalize_context(context or (identity or {}).get("assistant_context"), location_id)
+        if context["type"] not in {"pipeline", "dataset"}:
+            details = resolve_context(self.manager, session, owner, location_id, context)
+            current.update(assistant_context=context, context_identity=details["identity"])
         if identity is not None and current != identity:
             raise JobConflictError("Dataset identity changed. Start a new conversation.")
         return current
@@ -167,7 +185,7 @@ class AssistantService:
         row = session.get(AssistantConversation, conversation_id)
         if row is None or row.owner != owner:
             raise KeyError("Conversation not found")
-        self._target(session, owner, row.location_id, row.input_identity)
+        self._target(session, owner, row.location_id, row.input_identity, row.context)
         return row
 
     @staticmethod
@@ -175,6 +193,7 @@ class AssistantService:
         return {
             "conversation_id": row.conversation_id,
             "location_id": row.location_id,
+            "context": row.context or normalize_context(None, row.location_id),
             "revision": row.revision,
             "history": row.history,
             "proposal": row.proposal,
@@ -191,8 +210,16 @@ class AssistantService:
                 )
                 .limit(1)
             )
+            context = resolve_context(
+                self.manager, session, owner, row.location_id, normalize_context(row.context, row.location_id)
+            )
+            view = self._view(row)
+            if self.manager._actor(session, owner, write=False).role == "viewer":
+                view["proposal"] = None
             return {
-                **self._view(row),
+                **view,
+                "references": context["references"],
+                "suggestions": context["suggestions"],
                 "pending_request": turn.request_id if turn else None,
             }
 
@@ -204,7 +231,10 @@ class AssistantService:
                 raise KeyError("Request not found")
             self._conversation(session, owner, row.conversation_id)
             self._expire(row)
-            return self._turn_view(row)
+            result = self._turn_view(row)
+            if self.manager._actor(session, owner, write=False).role == "viewer":
+                result["proposal"] = None
+            return result
 
     @staticmethod
     def _expire(row):
@@ -222,21 +252,41 @@ class AssistantService:
         }
 
     def _reserve(self, owner, value):
-        allowed = {"request_id", "conversation_id", "expected_revision", "location_id", "message"}
+        allowed = {
+            "request_id",
+            "conversation_id",
+            "expected_revision",
+            "location_id",
+            "message",
+            "context",
+            "draft",
+        }
         if not isinstance(value, dict) or set(value) - allowed:
             raise ValueError("Unsupported assistant request fields")
         request_id, conversation_id = _uuid(value.get("request_id")), _uuid(value.get("conversation_id"))
         _uuid(value.get("location_id"))
+        context = normalize_context(value.get("context"), value["location_id"])
         message = value.get("message")
         if not isinstance(message, str) or not 1 <= len(message.strip()) <= 3000:
             raise ValueError("A message must contain 1–3000 characters")
+        draft = value.get("draft")
+        if draft is not None:
+            if (
+                not isinstance(draft, dict)
+                or not isinstance(draft.get("steps"), list)
+                or not 1 <= len(draft["steps"]) <= 12
+            ):
+                raise ValueError("Assistant editing supports 1–12 steps")
+            if any(not isinstance(step, dict) or step.get("options") for step in draft["steps"]):
+                raise ValueError("Edit advanced input/review options in the manual editor")
+            self.manager.preview(owner, value["location_id"], draft)
         revision = value.get("expected_revision")
         if type(revision) is not int or revision < 0:
             raise ValueError("An integer conversation revision is required")
         now, digest = int(time.time()), content_digest(value)
         with self.store.sessions.begin() as session:
             scheduler_lock(session)
-            identity = self._target(session, owner, value.get("location_id"))
+            identity = self._target(session, owner, value.get("location_id"), context=context)
             previous = session.get(AssistantTurn, request_id)
             if previous:
                 if previous.owner != owner:
@@ -245,7 +295,10 @@ class AssistantService:
                 if previous.request_digest != digest:
                     raise JobConflictError("Request identity was already used for different content")
                 self._expire(previous)
-                return self._turn_view(previous), None
+                result = self._turn_view(previous)
+                if self.manager._actor(session, owner, write=False).role == "viewer":
+                    result["proposal"] = None
+                return result, None
             capabilities = self.capabilities(owner)
             if not capabilities["available"]:
                 raise AssistantUnavailableError(capabilities["reason"])
@@ -266,7 +319,11 @@ class AssistantService:
             row = session.get(AssistantConversation, conversation_id)
             if row:
                 row = self._conversation(session, owner, conversation_id)
-                if row.location_id != value["location_id"] or row.revision != revision:
+                if (
+                    row.location_id != value["location_id"]
+                    or row.revision != revision
+                    or normalize_context(row.context, row.location_id) != context
+                ):
                     raise JobConflictError("Conversation changed. Reload it before sending another message.")
             else:
                 if revision != 0:
@@ -276,6 +333,7 @@ class AssistantService:
                     owner=owner,
                     location_id=value["location_id"],
                     input_identity=identity,
+                    context=context,
                     revision=0,
                     history=[],
                     proposal=None,
@@ -292,7 +350,7 @@ class AssistantService:
                 request_digest=digest,
                 status="running",
                 created_at=now,
-                lease_until=now + 90,
+                lease_until=now + 120,
                 result={},
             )
             session.add(turn)
@@ -303,6 +361,8 @@ class AssistantService:
                 request_id=request_id,
                 model=self.config.model,
                 message_length=len(message),
+                context_type=context["type"],
+                target_id=context["target_id"],
             )
             # Incremental retention keeps cleanup bounded and never removes an active request.
             old_ids = list(
@@ -362,6 +422,8 @@ class AssistantService:
                 turn.status, turn.result = "error", {"error": "Dataset access or identity changed."}
                 # Commit the terminal state; a later read still checks authorization.
                 return self._turn_view(turn)
+            if self.manager._actor(session, owner, write=False).role == "viewer":
+                result["proposal"] = None
             turn.status = "error" if "error" in result else "done"
             if turn.status == "done":
                 row.history = (
@@ -400,7 +462,11 @@ class AssistantService:
     def _generate(self, owner, value, history, proposal, identity):
         catalog = self._catalog(owner, value["location_id"], identity)
         info = catalog.info
-        # Only schema and counts leave Server A; no rows, media, roots, job logs, or credentials.
+        scope = normalize_context(value.get("context"), value["location_id"])
+        with self.store.sessions() as session:
+            context_data = resolve_context(self.manager, session, owner, value["location_id"], scope)
+        readonly = catalog.role == "viewer"
+        # Only bounded metadata and sanitized summaries leave Server A.
         dataset = {
             key: info[key]
             for key in ("codebase_version", "fps", "total_episodes", "total_frames")
@@ -432,9 +498,16 @@ class AssistantService:
         ]
         context = _json(
             {
-                "dataset": dataset,
-                "operators": summaries,
-                "previous_draft": proposal.get("definition") if proposal else None,
+                "dataset": safe_summary(dataset),
+                "context": context_data["summary"],
+                "references": context_data["references"],
+                "read_only": readonly,
+                "operators": [safe_summary(item) for item in summaries],
+                "previous_draft": safe_summary(
+                    value.get("draft") or (proposal or {}).get("definition"), max_depth=10
+                )
+                if not readonly
+                else None,
             }
         )
         if len(context.encode()) > 60000:
@@ -447,25 +520,39 @@ class AssistantService:
         ]
         client = self.client_factory(timeout_s=15, max_response_bytes=262144)
         usage = {"prompt_tokens": 0, "completion_tokens": 0}
-        deadline = time.monotonic() + 55
-        described = set()
-        for _ in range(4):
+        deadline = time.monotonic() + 75
+        described, seen_previews = set(), set()
+        last_draft, initial_steps, preview_count = None, None, 0
+        original_steps = None
+        stop = False
+        context_bytes = len(context.encode())
+        for _ in range(8):
             if time.monotonic() >= deadline:
                 break
             if len(_json(messages).encode()) > 160000:
                 break
             catalog = self._catalog(owner, value["location_id"], identity)
-            response = client.post_chat_completion(
-                {
-                    "model": self.config.model,
-                    "messages": messages,
-                    "tools": TOOLS,
-                    "tool_choice": "auto",
-                    "enable_thinking": False,
-                    "max_tokens": 2500,
-                    "temperature": 0.2,
-                }
-            )
+            client.timeout_s = min(15, max(0.1, deadline - time.monotonic()))
+            try:
+                response = client.post_chat_completion(
+                    {
+                        "model": self.config.model,
+                        "messages": messages,
+                        "tools": [
+                            tool
+                            for tool in TOOLS
+                            if not readonly or tool["function"]["name"] != "preview_pipeline"
+                        ],
+                        "tool_choice": "auto",
+                        "enable_thinking": False,
+                        "max_tokens": 2500,
+                        "temperature": 0.2,
+                    }
+                )
+            except Exception:
+                if last_draft:
+                    break
+                raise
             for key in usage:
                 count = (response.get("usage") or {}).get(key, 0)
                 if type(count) is int and count >= 0:
@@ -481,7 +568,12 @@ class AssistantService:
                 text = message.get("content")
                 if not isinstance(text, str) or not text.strip():
                     raise ValueError("Empty model response")
-                return {"message": text[:6000], "proposal": None, "usage": usage}
+                return {
+                    "message": text[:6000],
+                    "proposal": last_draft,
+                    "references": context_data["references"],
+                    "usage": usage,
+                }
             if not isinstance(calls, list) or len(calls) > 4:
                 raise ValueError("Too many tool calls")
             messages.append({"role": "assistant", "content": message.get("content"), "tool_calls": calls})
@@ -499,13 +591,21 @@ class AssistantService:
                     args = json.loads(arguments)
                     if not isinstance(args, dict):
                         raise ValueError("Tool arguments must be an object")
-                    if function["name"] == "describe_operator" and set(args) == {"operator_id"}:
+                    if function["name"] == "read_context" and not args:
+                        with self.store.sessions() as session:
+                            output = resolve_context(
+                                self.manager, session, owner, value["location_id"], scope
+                            )
+                            output = {"summary": output["summary"], "references": output["references"]}
+                    elif function["name"] == "describe_operator" and set(args) == {"operator_id"}:
                         spec = get_operator(args["operator_id"])
                         if not spec.pipeline_allowed:
                             raise ValueError("This operation is outside the assistant's tools")
                         output = catalog.describe(spec)
                         described.add(spec.operator_id)
                     elif function["name"] == "preview_pipeline" and set(args) == {"definition", "summary"}:
+                        if readonly:
+                            raise PermissionError("Viewer accounts may only request explanations")
                         definition = args["definition"]
                         steps = definition.get("steps") if isinstance(definition, dict) else None
                         if not isinstance(steps, list) or not 1 <= len(steps) <= 12:
@@ -519,29 +619,88 @@ class AssistantService:
                             raise ValueError(
                                 "Describe each operator first; extra step options are unsupported"
                             )
+                        if original_steps is not None:
+                            revised = {step.get("step_id"): step for step in steps}
+                            for old in original_steps:
+                                new = revised.get(old["step_id"])
+                                if (
+                                    not new
+                                    or any(
+                                        new.get(key) != old.get(key)
+                                        for key in ("operator_id", "version", "parameters")
+                                    )
+                                    or old.get("review_before")
+                                    and not new.get("review_before")
+                                ):
+                                    raise ValueError(
+                                        "Repair may only add prerequisites or fix references; preserve requested steps and parameters"
+                                    )
+                        from lerobot.data_platform.ai_tools.repairs import bind_source_snapshot
+
                         preview = self.manager.preview(owner, value["location_id"], definition)
+                        repaired, repairs = bind_source_snapshot(definition, preview["blocked"])
+                        if repairs:
+                            # This unique prerequisite needs no business choice. It still passes the
+                            # same availability, permission and parameter checks as any manual step.
+                            definition = repaired
+                            preview = self.manager.preview(owner, value["location_id"], definition)
+                            described.add("curation.snapshot")
                         summary = args["summary"]
                         if not isinstance(summary, str) or not 1 <= len(summary) <= 3000:
                             raise ValueError("Provide a short draft summary")
-                        return {
-                            "message": summary,
-                            "proposal": {
-                                "definition": preview["definition"],
-                                "can_execute": preview["can_execute"],
-                                "blocked": preview["blocked"],
-                            },
-                            "usage": usage,
+                        preview_count += 1
+                        if initial_steps is None:
+                            initial_steps = {step["step_id"] for step in steps}
+                            original_steps = steps
+                        last_draft = {
+                            "definition": preview["definition"],
+                            "can_execute": preview["can_execute"],
+                            "blocked": preview["blocked"],
+                            "added_steps": [
+                                step["step_id"]
+                                for step in definition["steps"]
+                                if step["step_id"] not in initial_steps
+                            ],
+                            "repairs": repairs,
+                        }
+                        signature = content_digest(last_draft)
+                        if preview["can_execute"]:
+                            return {
+                                "message": summary,
+                                "proposal": last_draft,
+                                "references": context_data["references"],
+                                "usage": usage,
+                            }
+                        if signature in seen_previews or preview_count >= 4:
+                            stop = True
+                            break
+                        seen_previews.add(signature)
+                        output = {
+                            "can_execute": False,
+                            "blocked": safe_summary(preview["blocked"]),
+                            "instruction": "Repair these prerequisites, describe any new operator, then preview again. Do not weaken the goal or review.",
                         }
                     else:
-                        output = {"error": "Unknown tool. Only describe_operator and preview_pipeline exist."}
+                        output = {
+                            "error": "Unknown tool. Only read_context, describe_operator and preview_pipeline exist."
+                        }
                 except (ValueError, TypeError, KeyError):
                     # Do not echo arbitrary exception contents (which may contain private paths).
                     output = {
                         "error": "Invalid operator, parameters or evidence. Consult the exact operator schema and required evidence; use at most 12 steps and no extra options."
                     }
+                output = bounded(output)
+                context_bytes += len(_json(output).encode())
+                if context_bytes > 60 * 1024:
+                    break
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": _json(output)})
+            if context_bytes > 60 * 1024 or stop:
+                break
         return {
-            "message": "未能在本次请求内生成有效流程。请缩小处理范围，或说明希望使用的算子和参数。",
-            "proposal": None,
+            "message": "草稿仍有阻塞，请查看对应步骤；需要你补充信息或处理不可用条件后重新校验。"
+            if last_draft
+            else "本次未能完成，请补充处理目标或重试。",
+            "proposal": last_draft,
+            "references": context_data["references"],
             "usage": usage,
         }

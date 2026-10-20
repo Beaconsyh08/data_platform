@@ -290,7 +290,9 @@
                     </button>
                 </template>
             </nav>
-        </header>
+        <button class="dp-btn" :disabled="!(selectedRemoteLocation?.location_id || selectedDataset?.remote_location_id)" @click="openPlatformAssistant({locationId:selectedRemoteLocation?.location_id || selectedDataset?.remote_location_id})">Ask AI</button>
+<div x-effect="[controlPlaneUser?.user_id, selectedDatasetKey, selectedRemoteLocation?.location_id]; window.closePlatformAssistant?.()"></div>
+</header>
 
         <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm"
              x-cloak x-show="adminDialogOpen && !controlPlaneEnabled"
@@ -861,7 +863,8 @@
                 {% if control_plane_enabled %}
                 <div x-show="activeTab === 'pipelines'" x-effect="syncPipelineWorkspace($el)"></div>
                 {% endif %}
-                {% include "console/panel_cache.html" %}
+
+{% include "console/panel_cache.html" %}
                 {% include "console/panel_temporal_caption.html" %}
                 {% include "console/panel_stage_subtask.html" %}
                 {% include "console/panel_quality_flags.html" %}
@@ -1051,6 +1054,7 @@
                         <div class="mb-2 flex items-center justify-between">
                             <div>
                                 <h3 class="text-xs font-semibold text-slate-200">Live logs</h3>
+<button class="dp-btn" x-show="selectedJob()?.remote" @click="openPlatformAssistant({type:'job',targetId:selectedJob().id,locationId:selectedJob().dataset_key?.replace(/^remote:/,'')})">Ask AI about this task</button>
                                 <label class="text-xs text-slate-400" x-show="selectedJob()?.remote"><input type="checkbox" x-model="showDetailedJobLogs" @change="mergeRemoteJobsIntoRuns()"> Detailed events</label>
                                 <p class="mt-0.5 text-[11px] text-slate-500">Streaming output for the selected job</p>
                             </div>
@@ -1271,6 +1275,7 @@
 {% include "pipelines.js" %}
 {% include "console/pipeline.js" %}
 {% include "console/context.js" %}
+{% include "assistant_launcher.js" %}
 {% include "console/shell.js" %}
 {% include "console/account.js" %}
 {% include "console/browse.js" %}
