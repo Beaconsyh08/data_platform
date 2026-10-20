@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from werkzeug.serving import make_server
 
+from lerobot.data_platform.operation_log import append_operation_event
 from lerobot.data_platform.operators.registry import operation_ids, worker_manifest
 from tests.datasets.test_ai_assistant import FakeQwen, call, draft
 from tests.datasets.test_console_services import console_app
@@ -138,6 +139,34 @@ def test_console_browse_forms_pipeline_switching_and_viewer_role(tmp_path, monke
                 arg=locations[1]["location_id"],
             )
             assert page.locator("#run").is_disabled()
+            # Lists stay small, and expanding one audit event fetches its complete record.
+            audit = append_operation_event(
+                tmp_path / "console/static",
+                "browser_audit",
+                status="success",
+                details={"result": ["audit-detail-marker" * 100] * 100},
+            )
+            page.evaluate(
+                "async () => {const app=Alpine.$data(document.body); app.runsFilter.scope='all'; await app.selectPage('runs'); await app.loadOperationLogs();}"
+            )
+            assert page.evaluate("Alpine.$data(document.body).operationLogs.every(e=>e.summary)")
+            entry = page.locator("details").filter(has=page.locator("summary", has_text="browser audit"))
+            with page.expect_response(lambda r: "/api/operation_log?event_id=" in r.url):
+                entry.locator("summary").click()
+            playwright.expect(entry.locator("pre")).to_contain_text("audit-detail-marker")
+            assert (
+                page.evaluate(
+                    "Alpine.$data(document.body).operationLogs.find(e=>e.operation==='browser_audit').fullDetail.event_id"
+                )
+                == audit["event_id"]
+            )
+            page.evaluate("Alpine.$data(document.body).loadOperationLogs()")
+            playwright.expect(entry.locator("pre")).to_contain_text("audit-detail-marker")
+            page.route("**/api/operation_log?**", lambda route: route.abort())
+            page.evaluate("Alpine.$data(document.body).loadOperationLogs()")
+            assert page.evaluate("Boolean(Alpine.$data(document.body).operationLogsError)")
+            assert page.evaluate("Alpine.$data(document.body).operationLogs.length > 0")
+            page.unroute("**/api/operation_log?**")
             # Existing form state survives navigation between modules.
             page.evaluate("async () => {await Alpine.$data(document.body).selectTab('transform');}")
             page.locator('input[type="radio"][value="smooth_action"]').check()

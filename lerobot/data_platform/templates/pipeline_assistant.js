@@ -1,4 +1,5 @@
 {% include "assistant_controls.js" %}
+{% include "assistant_markdown.js" %}
 const pipelineSystemStep = step => step.operator_id === 'curation.snapshot';
 const pipelineStepTitle = step => ({'curation.snapshot': 'Data preparation', 'curation.quality': 'Quality', 'viewer.prepare': 'Viewer'}[step.operator_id] || step.operator_id.split('.').pop().replaceAll('_', ' '));
 const pipelineIssueText = issue => issue.code === 'missing_snapshot' ? 'Data preparation is required before this step.' : issue.reason.replace(/curation\.snapshot|Snapshot|snapshot/g, 'data preparation');
@@ -102,7 +103,7 @@ function mountPipelineAssistant(root, options) {
     for (const item of history) {
       const text = document.createElement('div'); text.className = 'assistant-message ' + (item.role === 'user' ? 'user' : 'assistant');
       const label = document.createElement('small'); label.textContent = item.role === 'user' ? 'You' : 'Assistant';
-      text.append(label, document.createTextNode(item.content)); $('ai-history').append(text);
+      text.append(label, item.role === 'user' ? document.createTextNode(item.content) : assistantFormattedText(item.content)); $('ai-history').append(text);
     }
     $('ai-history').scrollTop = $('ai-history').scrollHeight;
     renderAction();

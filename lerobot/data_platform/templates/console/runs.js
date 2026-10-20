@@ -5,6 +5,7 @@ function consoleRunsState() {
                 activeJob: null,
                 operationLogs: [],
                 operationLogsLoading: false,
+                operationLogsError: '',
                 operationLogFilter: {status: '', operation: ''},
                 jobDrawerOpen: false,
                 selectedJobId: '',
@@ -352,18 +353,37 @@ function consoleRunsState() {
                     const current = consoleReadScope(this, 'loadOperationLogs', 'dataset');
                     if (this.datasetAccessRestricted) { this.operationLogs = []; return; }
                     this.operationLogsLoading = true;
+                    this.operationLogsError = '';
                     try {
-                        const params = new URLSearchParams({limit: '200'});
+                        const params = new URLSearchParams({limit: '200', summary: '1'});
                         const currentDatasetOnly = this.activePage !== 'runs' || this.runsFilter.scope === 'current';
                         if (currentDatasetOnly && this.selectedDatasetKey) params.set('dataset_key', this.selectedDatasetKey);
                         if (this.operationLogFilter.status) params.set('status', this.operationLogFilter.status);
                         if (this.operationLogFilter.operation) params.set('operation', this.operationLogFilter.operation);
                         const data = await this.requestJson(`/api/operation_log?${params.toString()}`);
                         if (!current()) return;
-                        this.operationLogs = data.operations || [];
+                        const previous = new Map(this.operationLogs.map(entry => [entry.event_id, entry]));
+                        this.operationLogs = (data.operations || []).map(entry => Object.assign(previous.get(entry.event_id) || {}, entry));
+                    } catch (error) {
+                        if (current()) this.operationLogsError = error.message;
                     } finally {
                         if (current()) this.operationLogsLoading = false;
                     }
+                },
+                async loadOperationDetail(entry) {
+                    if (!entry.summary || entry.fullDetail || entry.detailLoading) return;
+                    const current = consoleReadScope(this, 'operationDetail:' + entry.event_id, 'dataset');
+                    entry.detailLoading = true; entry.detailError = '';
+                    try {
+                        const params = new URLSearchParams({event_id: entry.event_id, limit: '1'});
+                        const currentDatasetOnly = this.activePage !== 'runs' || this.runsFilter.scope === 'current';
+                        if (currentDatasetOnly && this.selectedDatasetKey) params.set('dataset_key', this.selectedDatasetKey);
+                        const result = await this.requestJson('/api/operation_log?' + params);
+                        if (!current()) return;
+                        if (!result.operations?.length) throw new Error('This event is no longer in retained history.');
+                        entry.fullDetail = result.operations[0];
+                    } catch (error) {if (current()) entry.detailError = error.message;}
+                    finally {if (current()) entry.detailLoading = false;}
                 },
                 operationLabel(entry) {
                     return String(entry.operation || entry.op || 'unknown').replaceAll('_', ' ');

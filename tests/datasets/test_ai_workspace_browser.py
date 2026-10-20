@@ -101,10 +101,27 @@ def test_workspace_remains_interactive_and_restores_shared_history_preferences(a
             page.locator("#ai-prefs-save").click()
             playwright.expect(page.locator("#ai-prefs-status")).to_have_text("Preferences saved.")
             assert preferences(service, owner)["settings"]["language"] == "en"
-            fake.responses = [{"choices": [{"message": {"content": "A remembered response"}}]}]
+            reply = (
+                "A remembered response\n\n"
+                "1.  **解释算子**：功能、参数和证据。\n"
+                "2.  **预览流水线草稿**：不会直接执行。\n\n"
+                "- **查看器**：准备 `viewer.prepare` 缓存。\n"
+                "- **预处理**：`preprocess.pose_interpolate`。\n\n"
+                '<img src=x onerror="window.injected=true">\n'
+                "[unsafe](javascript:alert(1))\n\n"
+                "```html\n<script>window.injected=true</script>\n```"
+            )
+            fake.responses = [{"choices": [{"message": {"content": reply}}]}]
             page.locator("#ai-message").fill("Remember this conversation")
             page.locator("#ai-message").press("Enter")
             playwright.expect(page.locator("#ai-history")).to_contain_text("A remembered response")
+            reply_node = page.locator(".assistant-message.assistant").last
+            playwright.expect(reply_node.locator("ol li")).to_have_count(2)
+            playwright.expect(reply_node.locator("ul li")).to_have_count(2)
+            playwright.expect(reply_node.locator("strong").first).to_have_text("解释算子")
+            playwright.expect(reply_node.locator("li code").first).to_have_text("viewer.prepare")
+            assert reply_node.locator("img, script, a, iframe").count() == 0
+            assert not page.evaluate("Boolean(window.injected)")
             page.locator("#ai-new").click()
             page.locator("#ai-chats-toggle").click()
             page.locator("#ai-chats button").first.click()

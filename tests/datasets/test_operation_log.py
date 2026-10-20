@@ -225,6 +225,10 @@ def test_web_mutation_failure_is_queryable_and_redacted(tmp_path: Path, monkeypa
     assert event["status"] == "failed"
     assert event["details"]["parameters"]["token"] == "<redacted>"
     assert "web-secret" not in json.dumps(history)
+    summary = client.get("/api/operation_log?summary=1").get_json()["operations"]
+    assert all(item["summary"] and "parameters" not in item["details"] for item in summary)
+    detail = client.get("/api/operation_log", query_string={"event_id": event["event_id"]}).get_json()
+    assert detail["operations"] == [event]
 
 
 def test_legacy_plain_archive_is_compressed_and_remains_queryable(tmp_path):
@@ -298,3 +302,39 @@ def test_web_routine_polls_skip_audit_but_changes_and_failures_remain(tmp_path, 
         "poll_lease",
     }
     assert next(item for item in events if item["operation"] == "poll_heartbeat")["status"] == "failed"
+
+
+def test_recent_summary_skips_archives_and_preserves_lazy_detail(tmp_path, monkeypatch):
+    from lerobot.data_platform import operation_log
+
+    event = append_operation_event(
+        tmp_path, "large_result", status="success", details={"result": ["x" * 4000] * 200}
+    )
+    (tmp_path / f"{LOG_FILENAME}.1.gz").write_bytes(b"not-gzip-must-not-be-read")
+    rows = read_operation_events(tmp_path, limit=1, summary=True)
+    assert rows[0]["event_id"] == event["event_id"]
+    assert len(json.dumps(rows)) < 2500
+    assert rows[0]["summary"] is True
+    assert read_operation_events(tmp_path, limit=1, event_id=event["event_id"])[0] == event
+    # Parsing does not hold the thread lock and therefore cannot block audit appends.
+    original = operation_log._recent_log_lines
+
+    def unlocked(*args, **kwargs):
+        assert operation_log._WRITE_LOCK.acquire(blocking=False)
+        operation_log._WRITE_LOCK.release()
+        yield from original(*args, **kwargs)
+
+    monkeypatch.setattr(operation_log, "_recent_log_lines", unlocked)
+    assert read_operation_events(tmp_path, limit=1)[0] == event
+
+
+def test_filtered_archives_legacy_ids_and_malformed_lines(tmp_path):
+    old = append_operation_event(tmp_path, "repair", status="failed", dataset_keys=["local/source"])
+    path = tmp_path / LOG_FILENAME
+    path.rename(tmp_path / f"{LOG_FILENAME}.1")
+    append_operation_event(tmp_path, "viewer", status="success")
+    with path.open("a") as stream:
+        stream.write('null\n[]\nmalformed\n{"op":"legacy","time":"2026-01-01"}\n')
+    assert read_operation_events(tmp_path, limit=1, status="failed", dataset_key="local/source")[0] == old
+    legacy = read_operation_events(tmp_path, operation="legacy", summary=True)[0]
+    assert read_operation_events(tmp_path, event_id=legacy["event_id"])[0]["op"] == "legacy"

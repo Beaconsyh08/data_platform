@@ -253,24 +253,30 @@ def _rotate_operation_log(path: Path, incoming_bytes: int) -> None:
     path.unlink()
 
 
-def _recent_log_lines(path: Path, limit: int) -> list[str]:
-    if path.suffix == ".gz":
-        with gzip.open(path, "rt", encoding="utf-8", errors="replace") as stream:
-            return list(deque(stream, maxlen=limit))
-    with path.open("rb") as stream:
-        position = stream.seek(0, os.SEEK_END)
-        chunks = []
-        newlines = 0
-        while position and newlines <= limit:
-            size = min(position, 64 * 1024)
-            position -= size
-            stream.seek(position)
-            chunk = stream.read(size)
-            chunks.append(chunk)
-            newlines += chunk.count(b"\n")
-    return [
-        line.decode("utf-8", errors="replace") for line in b"".join(reversed(chunks)).splitlines()[-limit:]
-    ]
+def _recent_log_lines(stream, limit: int, *, compressed: bool = False):
+    """Yield newest lines lazily; the caller owns a rotation-safe open file descriptor."""
+    if compressed:
+        with gzip.GzipFile(fileobj=stream) as archive:
+            for line in reversed(deque(archive, maxlen=limit)):
+                yield line
+        return
+    position = stream.seek(0, os.SEEK_END)
+    pending = b""
+    count = 0
+    while position:
+        size = min(position, 64 * 1024)
+        position -= size
+        stream.seek(position)
+        parts = (stream.read(size) + pending).split(b"\n")
+        pending = parts[0]
+        for line in reversed(parts[1:]):
+            if line:
+                yield line
+                count += 1
+                if count >= limit:
+                    return
+    if pending and count < limit:
+        yield pending
 
 
 def append_operation_event(
@@ -299,6 +305,45 @@ def _event_timestamp(event: dict) -> str:
     return str(event.get("timestamp") or event.get("time") or "")
 
 
+def summarize_operation_event(event: dict) -> dict:
+    """Bound list payloads without altering the audit ledger or legacy detail responses."""
+    result = {}
+    for key in (
+        "schema_version",
+        "event_id",
+        "parent_event_id",
+        "timestamp",
+        "time",
+        "operation",
+        "op",
+        "phase",
+        "status",
+        "source",
+        "dataset_key",
+        "dataset_root",
+    ):
+        value = event.get(key)
+        result[key] = (
+            value[:500]
+            if isinstance(value, str)
+            else value
+            if isinstance(value, (int, float, bool))
+            else None
+        )
+    result["actor"] = {"username": str((event.get("actor") or {}).get("username") or "")[:200]}
+    for key in ("dataset_keys", "dataset_roots", "episode_ids"):
+        values = event.get(key) or []
+        result[key] = [str(value)[:500] if not isinstance(value, int) else value for value in values[:20]]
+    details = event.get("details") or {}
+    result["details"] = {
+        key: str(details[key])[:500]
+        for key in ("job_id", "error", "duration_ms", "status_code")
+        if key in details
+    }
+    result["summary"] = True
+    return result
+
+
 def read_operation_events(
     log_dirs: Path | str | Iterable[Path | str | None] | None,
     *,
@@ -306,6 +351,8 @@ def read_operation_events(
     dataset_key: str | None = None,
     status: str | None = None,
     operation: str | None = None,
+    event_id: str | None = None,
+    summary: bool = False,
 ) -> list[dict]:
     """Read newest matching events, deduplicating mirrored ledgers."""
     limit = max(1, min(5000, int(limit)))
@@ -314,51 +361,71 @@ def read_operation_events(
     status_aliases = {"success": {"success", "ok"}, "failed": {"failed", "error"}}
     accepted_statuses = status_aliases.get(status, {status}) if status else None
     for path in _normalized_paths(log_dirs):
-        try:
-            with _operation_log_lock(path, write=False):
-                lines = []
-                for candidate in [
-                    path,
-                    *(
-                        candidate
-                        for i in range(1, LOG_BACKUP_COUNT + 1)
-                        for candidate in (
-                            path.with_name(f"{path.name}.{i}"),
-                            path.with_name(f"{path.name}.{i}.gz"),
-                        )
-                    ),
-                ]:
-                    if candidate.is_file():
-                        lines.extend(_recent_log_lines(candidate, max(5000, limit * 20)))
-        except OSError:
-            continue
-        for line in lines:
+        matched = 0
+        # Open a consistent set of inodes under the rotation lock, then release it before
+        # parsing/decompression. Writers can rotate/unlink these files without blocking reads.
+        with contextlib.ExitStack() as stack:
+            streams = []
             try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
+                with _operation_log_lock(path, write=False):
+                    for candidate in [
+                        path,
+                        *(
+                            candidate
+                            for i in range(1, LOG_BACKUP_COUNT + 1)
+                            for candidate in (
+                                path.with_name(f"{path.name}.{i}"),
+                                path.with_name(f"{path.name}.{i}.gz"),
+                            )
+                        ),
+                    ]:
+                        with contextlib.suppress(FileNotFoundError):
+                            streams.append(
+                                (stack.enter_context(candidate.open("rb")), candidate.suffix == ".gz")
+                            )
+            except OSError:
                 continue
-            event_id = event.get("event_id")
-            if event_id:
-                dedupe_key = str(event_id)
-            else:
-                canonical = json.dumps(event, ensure_ascii=False, sort_keys=True)
-                dedupe_key = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-            if dedupe_key in seen:
-                continue
-            keys = event.get("dataset_keys") or (
-                [event.get("dataset_key")] if event.get("dataset_key") else []
-            )
-            if dataset_key and dataset_key not in keys:
-                continue
-            if accepted_statuses and str(event.get("status") or "") not in accepted_statuses:
-                continue
-            event_operation = str(event.get("operation") or event.get("op") or "")
-            if operation and operation.lower() not in event_operation.lower():
-                continue
-            event.setdefault("operation", event_operation)
-            event.setdefault("timestamp", _event_timestamp(event))
-            candidates.append(event)
-            seen.add(dedupe_key)
+            for stream, compressed in streams:
+                try:
+                    for line in _recent_log_lines(stream, max(5000, limit * 20), compressed=compressed):
+                        try:
+                            event = json.loads(line)
+                        except (ValueError, UnicodeDecodeError):
+                            continue
+                        if not isinstance(event, dict):
+                            continue
+                        keys = event.get("dataset_keys") or (
+                            [event.get("dataset_key")] if event.get("dataset_key") else []
+                        )
+                        if dataset_key and dataset_key not in keys:
+                            continue
+                        if accepted_statuses and str(event.get("status") or "") not in accepted_statuses:
+                            continue
+                        event_operation = str(event.get("operation") or event.get("op") or "")
+                        if operation and operation.lower() not in event_operation.lower():
+                            continue
+                        identity = (
+                            event.get("event_id")
+                            or hashlib.sha256(
+                                json.dumps(event, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                            ).hexdigest()
+                        )
+                        if event_id and str(identity) != event_id:
+                            continue
+                        if str(identity) in seen:
+                            continue
+                        event.setdefault("event_id", str(identity))
+                        event.setdefault("operation", event_operation)
+                        event.setdefault("timestamp", _event_timestamp(event))
+                        candidates.append(summarize_operation_event(event) if summary else event)
+                        seen.add(str(identity))
+                        matched += 1
+                        if matched >= limit:
+                            break
+                except (OSError, EOFError):
+                    continue
+                if matched >= limit:
+                    break
     candidates.sort(key=_event_timestamp, reverse=True)
     return candidates[:limit]
 

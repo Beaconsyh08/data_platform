@@ -43,6 +43,8 @@ flowchart LR
 点击 **Validate and run** 查看目标节点、输出和复核要求，再点击 **Confirm run** 保存版本并提交任务。
 也可仅 Preview 或 Save version。AI 自身不提交任务、不批准复核、不修改源数据。
 
+助手回复按段落、编号/项目列表、加粗和代码样式展示；算子 ID 用行内代码区分。回复中的 HTML 与任意链接不会执行，证据跳转和操作仍使用授权卡片。
+
 右下角带对话图标的 **AI assistant** 是统一入口，页面顶部不再重复显示 Ask AI。
 **Ctrl + Shift + Space**（Mac：**Cmd + Shift + Space**）唤出或收起；焦点在助手内时按 **Esc** 收起，
 并返回先前的操作位置。普通空格、中文输入法候选操作、下拉框及平台弹窗的 Esc 保持原行为。
@@ -850,7 +852,7 @@ Operator/Admin 可启动 `Prepare viewer`。Embedding、标注和构造等入口
 
 ### 11.3 Pipeline Runs 与 Operation history
 
-`Data Platform > Pipeline Runs` 提供最近任务、输出和日志，可按全局/当前数据集及任务状态筛选。Operation history 是统一的操作审计记录，可按 status 和 operation 筛选。展开单条记录可查看：
+`Data Platform > Pipeline Runs` 提供最近任务、输出和日志，可按全局/当前数据集及任务状态筛选。Operation history 是统一的操作审计记录，可按 status 和 operation 筛选。列表仅加载摘要，展开单条记录时再读取完整详情；加载失败可重试，刷新失败保留上次成功列表。展开可查看：
 
 - 操作时间和 actor；
 - 数据集和 operation；

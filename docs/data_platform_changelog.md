@@ -4,6 +4,15 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## V0.2.4 · AuditAssistantReadability · 2026-10-20
+
+- Operation history 默认读取轻量摘要；展开单条记录后按事件 ID 获取完整审计内容，失败可重试并保留上次列表。
+- 日志从最新记录向后读取，达到数量后停止；解析与解压不再占用写入锁，完整日志和原 API 响应保持兼容。
+- 助手回复支持段落、编号/项目列表、加粗、行内代码和代码块，网页/Viewer/Pipeline 共用。
+- 模型 HTML 和任意链接仍按文本处理；可跳转的证据和操作继续使用服务端授权卡片。
+- **影响范围**：审计文件读取与 Server 网页；无数据库迁移、Agent 任务协议或算子版本变化。
+  Server/Agent 继续使用同一不可变发行包；CLI 保持 0.2.0，无需重装。
+
 ## V0.2.3 · AssistantEntryShortcuts · 2026-10-20
 
 - 统一入口：移除主页面重复的 Ask AI，使用醒目的浮动 AI assistant 按钮，显示图标和快捷键。

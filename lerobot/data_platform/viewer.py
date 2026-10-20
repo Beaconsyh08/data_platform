@@ -3635,7 +3635,9 @@ def run_server(
             log_dirs.append(ds_static)
         operations = read_operation_events(
             log_dirs,
-            limit=limit,
+            limit=1 if request.args.get("event_id") else limit,
+            event_id=str(request.args.get("event_id") or "").strip() or None,
+            summary=request.args.get("summary") == "1",
             dataset_key=dataset_key,
             status=str(request.args.get("status") or "").strip() or None,
             operation=str(request.args.get("operation") or "").strip() or None,
