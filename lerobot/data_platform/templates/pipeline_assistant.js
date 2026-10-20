@@ -6,7 +6,7 @@ function mountPipelineAssistant(root, options) {
   const {api, canEdit, getLocation, loadDraft} = options;
   const scope = () => options.getContext?.() || {type: 'pipeline', target_id: getLocation()};
   const $ = id => root.querySelector(`[id="${id}"]`);
-  let epoch = 0, disposed = false, busy = false, capabilities = null, conversation = null, timer;
+  let epoch = 0, disposed = false, busy = false, capabilities = null, conversation = null, timer, actionTimer, pendingMessage = '';
   const storageKey = () => `pipeline-assistant:${location.origin}:${capabilities?.owner}:${getLocation()}:${scope().type}:${scope().target_id}`;
   const storage = (key, value) => {
     try {if (value !== undefined) sessionStorage.setItem(key, value); else return sessionStorage.getItem(key);} catch (_) {}
@@ -16,11 +16,16 @@ function mountPipelineAssistant(root, options) {
     $('ai-message').disabled = $('ai-send').disabled = !capabilities?.available || !getLocation() || busy;
     $('ai-new').disabled = busy;
     $('ai-history').replaceChildren();
-    for (const item of conversation?.history || []) {
-      const text = document.createElement('p'); text.textContent = (item.role === 'user' ? 'You: ' : 'Qwen: ') + item.content;
-      $('ai-history').append(text);
+    const history = [...(conversation?.history || [])];
+    if (pendingMessage) history.push({role:'user', content:pendingMessage});
+    if (busy) history.push({role:'assistant', content:'Working…'});
+    for (const item of history) {
+      const text = document.createElement('div'); text.className = 'assistant-message ' + (item.role === 'user' ? 'user' : 'assistant');
+      const label = document.createElement('small'); label.textContent = item.role === 'user' ? 'You' : 'Assistant';
+      text.append(label, document.createTextNode(item.content)); $('ai-history').append(text);
     }
     $('ai-history').scrollTop = $('ai-history').scrollHeight;
+    renderAction();
     const proposal = conversation?.proposal;
     $('ai-proposal').hidden = !proposal;
     $('ai-load').disabled = !canEdit || !capabilities?.can_edit || busy || !proposal;
@@ -63,6 +68,49 @@ function mountPipelineAssistant(root, options) {
     $('ai-diff').textContent = changes.length ? 'Changes when applied:\n' + changes.join('\n') : '';
 
   }
+  function renderAction() {
+    const box = $('ai-action'), action = conversation?.action;
+    box.replaceChildren(); box.hidden = !action; clearTimeout(actionTimer);
+    if (!action) return;
+    const title = document.createElement('strong'); title.textContent = action.title;
+    const target = document.createElement('p'); target.textContent = `Dataset: ${action.dataset} · Node: ${action.node}`;
+    const parameters = document.createElement('pre'); parameters.textContent = Object.keys(action.parameters).length ? JSON.stringify(action.parameters, null, 2) : 'Parameters: defaults';
+    box.append(title, target, parameters);
+    if (action.execution) {
+      const link = document.createElement('a'); link.href = action.execution.url; link.textContent = `Task ${action.execution.status} · Open run`; box.append(link);
+      const jobs = document.createElement('a'); jobs.href = action.execution.jobs_url || '/?page=runs'; jobs.textContent = ' · Open Jobs'; box.append(jobs);
+      if (!['done','error','cancelled'].includes(action.execution.status)) actionTimer = setTimeout(() => pollAction(action.action_id, epoch), 2000);
+    } else {
+      const issue = document.createElement('p'); issue.textContent = action.is_current === false ? 'Conversation changed. Ask to prepare this operation again.' : (action.blocked || []).map(pipelineIssueText).join(' · ');
+      const button = document.createElement('button'); button.textContent = 'Confirm and run';
+      button.disabled = busy || !capabilities?.can_edit || !action.can_execute || action.is_current === false;
+      button.onclick = () => confirmAction(action); box.append(issue, button);
+    }
+  }
+  async function pollAction(actionId, expected) {
+    if (disposed || epoch !== expected || conversation?.action?.action_id !== actionId) return;
+    try {
+      const receipt = await api('/api/ai-assistant/actions/' + encodeURIComponent(actionId));
+      if (disposed || epoch !== expected || conversation?.action?.action_id !== actionId) return;
+      conversation.action.execution = receipt; renderAction();
+    } catch (_) {
+      if (!disposed && epoch === expected && conversation?.action?.action_id === actionId) {
+        const notice = document.createElement('small'); notice.textContent = 'Status unavailable. Check Jobs.'; $('ai-action').append(notice);
+      }
+    }
+  }
+  async function confirmAction(action) {
+    if (busy || !capabilities?.can_edit) return;
+    const expected = epoch; busy = true; render(); status('Submitting operation…');
+    try {
+      const receipt = await api('/api/ai-assistant/actions/' + encodeURIComponent(action.action_id) + '/confirm', 'POST', {revision:action.revision});
+      if (disposed || expected !== epoch) return;
+      action.execution = receipt; busy = false; render(); status('Task submitted. Follow progress here or in Jobs.');
+    } catch (error) {
+      if (disposed || expected !== epoch) return;
+      busy = false; render(); status(error.message + ' You can retry confirmation; the same action will not run twice.');
+    }
+  }
   function fresh() {
     conversation = {conversation_id: crypto.randomUUID(), revision: 0, history: [], proposal: null};
     storage(storageKey(), conversation.conversation_id);
@@ -70,7 +118,7 @@ function mountPipelineAssistant(root, options) {
   async function refresh(expected) {
     const updated = await api('/api/ai-assistant/conversations/' + conversation.conversation_id);
     if (disposed || expected !== epoch) return;
-    conversation = updated; render();
+    conversation = updated; pendingMessage = ''; render();
     return updated;
   }
   async function poll(requestId, expected) {
@@ -81,21 +129,21 @@ function mountPipelineAssistant(root, options) {
       if (result.status === 'running') {timer = setTimeout(() => poll(requestId, expected), 1500); return;}
       await refresh(expected);
       if (disposed || expected !== epoch) return;
-      busy = false; render();
+      busy = false; pendingMessage = ''; if (!result.error) $('ai-message').value = ''; render(); $('ai-message').focus();
       status(result.error || (result.security ? 'Request restricted. See the assistant response.' : result.proposal ? 'Draft only. Review it in the editor before running.' : 'Response ready.'));
     } catch (error) {
-      if (!disposed && expected === epoch) {busy = false; conversation = null; render(); status(error.message);}
+      if (!disposed && expected === epoch) {busy = false; pendingMessage = ''; conversation = null; render(); status(error.message);}
     }
   }
   async function reset() {
-    const expected = ++epoch; clearTimeout(timer); busy = false; conversation = null;
-    $('ai-message').value = ''; render();
+    const expected = ++epoch; clearTimeout(timer); clearTimeout(actionTimer); busy = false; conversation = null;
+    pendingMessage = ''; $('ai-message').value = ''; render();
     status('Loading assistant…');
     try {
       const result = await api('/api/ai-assistant/capabilities');
       if (disposed || expected !== epoch) return;
       capabilities = result;
-      status(result.reason || (getLocation() ? `${result.model} · ${result.hourly_limit} requests per hour${result.can_edit ? '' : ' · Read-only explanations'}` : 'Choose a dataset first.'));
+      status(result.reason || (getLocation() ? `${result.model}${result.hourly_limit == null ? '' : ` · ${result.hourly_limit} requests per hour`}${result.can_edit ? '' : ' · Read-only explanations'}` : 'Choose a dataset first.'));
       render();
       if (!result.available || !getLocation()) return;
       const saved = new URLSearchParams(location.search).get('assistant_conversation') || storage(storageKey());
@@ -113,8 +161,17 @@ function mountPipelineAssistant(root, options) {
   }
   $('ai-new').addEventListener('click', () => {
     const url = new URL(location.href); url.searchParams.delete('assistant_conversation'); history.replaceState(null, '', url);
-    epoch++; clearTimeout(timer); busy = false; fresh(); $('ai-message').value = ''; render();
+    epoch++; clearTimeout(timer); clearTimeout(actionTimer); busy = false; fresh(); $('ai-message').value = ''; render();
     status(capabilities?.reason || 'New conversation. Describe the workflow you want.');
+  });
+  $('ai-message').addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+      event.preventDefault(); if (!event.repeat) $('ai-send').click();
+    }
+  });
+  $('ai-message').addEventListener('input', () => {
+    $('ai-message').style.height = 'auto';
+    $('ai-message').style.height = Math.min(200, $('ai-message').scrollHeight) + 'px';
   });
   $('ai-send').addEventListener('click', async () => {
     const message = $('ai-message').value.trim();
@@ -124,14 +181,14 @@ function mountPipelineAssistant(root, options) {
     const body = {request_id: requestId, conversation_id: conversation.conversation_id,
       expected_revision: conversation.revision, location_id: getLocation(), context: conversation.context || scope(), message};
     const editorDraft = options.getDraft?.(); if (capabilities?.can_edit && editorDraft?.steps.length) body.draft = structuredClone(editorDraft);
-    busy = true; render(); status('Qwen is working…');
+    pendingMessage = message; busy = true; render(); status('Qwen is working…');
     try {
       const result = await api('/api/ai-assistant/turns', 'POST', body);
       if (disposed || expected !== epoch) return;
       if (result.status === 'running') {poll(requestId, expected); return;}
       await refresh(expected);
       if (disposed || expected !== epoch) return;
-      busy = false; if (!result.error) $('ai-message').value = ''; render();
+      busy = false; pendingMessage = ''; if (!result.error) $('ai-message').value = ''; render(); $('ai-message').focus();
       status(result.error || (result.security ? 'Request restricted. See the assistant response.' : result.proposal ? 'Draft only. Review it in the editor before running.' : 'Response ready.'));
     } catch (error) {
       if (disposed || expected !== epoch) return;
@@ -151,5 +208,5 @@ function mountPipelineAssistant(root, options) {
     } catch (error) {if (!disposed && expected === epoch) status(error.message);}
   });
   $('ai-undo').addEventListener('click', () => {options.undoDraft?.(); render();});
-  return {reset, destroy() {disposed = true; epoch++; clearTimeout(timer);}};
+  return {reset, destroy() {disposed = true; epoch++; clearTimeout(timer); clearTimeout(actionTimer);}};
 }

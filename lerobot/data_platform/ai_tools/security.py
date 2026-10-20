@@ -125,7 +125,11 @@ class DisclosureGuard:
                     for line in instructions.splitlines()
                 )
             ):
-                value.update(message=REFUSAL, proposal=None, security={"code": "sensitive_output"})
+                value.update(
+                    message=REFUSAL, proposal=None, action=None, security={"code": "sensitive_output"}
+                )
         if value.get("proposal") and not self.safe_draft(value["proposal"]):
-            value.update(message=REFUSAL, proposal=None, security={"code": "unsafe_draft"})
+            value.update(message=REFUSAL, proposal=None, action=None, security={"code": "unsafe_draft"})
+        if value.get("action") and not self.safe_draft(value["action"]):
+            value.update(message=REFUSAL, proposal=None, action=None, security={"code": "unsafe_action"})
         return self.tree(value)

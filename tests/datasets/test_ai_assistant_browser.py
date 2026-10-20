@@ -261,3 +261,69 @@ def test_assistant_browser_restricts_disclosure_and_preserves_plain_text(assista
     finally:
         server.shutdown()
         thread.join(timeout=10)
+
+
+def test_assistant_enter_composition_confirmation_and_role(assistant, tmp_path):  # noqa: F811
+    executable = os.environ.get("DATA_PLATFORM_BROWSER_EXECUTABLE")
+    if not executable:
+        pytest.skip("Set DATA_PLATFORM_BROWSER_EXECUTABLE for real-browser acceptance")
+    playwright = pytest.importorskip("playwright.sync_api")
+    from lerobot.data_platform.control_plane import ControlPlaneUser
+    from tests.datasets.test_ai_assistant import call
+    from tests.datasets.test_ai_assistant_context import bind_lifecycle
+
+    service, fake, owner, value = assistant
+    bind_lifecycle(service, tmp_path)
+    fake.responses = [
+        call("describe_operator", {"operator_id": "viewer.prepare"}),
+        call("prepare_action", {"operator_id": "viewer.prepare", "parameters": {}}),
+    ]
+    app = _app(tmp_path, service.store)
+    ctx = SimpleNamespace(control_plane_store=service.store, lifecycle_store=None)
+    register_processing_routes(app, ctx)
+    register_ai_assistant_routes(app, ctx)
+    app.extensions["data_platform_assistant"] = service
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as runtime:
+            browser = runtime.chromium.launch(executable_path=executable, args=["--no-sandbox"])
+            page = browser.new_page()
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            assert page.request.post(
+                base + "/api/auth/login", data={"username": "admin", "password": "strong-admin-password"}
+            ).ok
+            page.goto(base + "/assistant?type=dataset&location_id=" + value["location_id"])
+            message = page.locator("#ai-message")
+            expect = playwright.expect
+            expect(message).to_be_enabled()
+            assert "requests per hour" not in page.locator("#ai-status").inner_text()
+            message.fill("准备 Viewer")
+            message.dispatch_event("keydown", {"key": "Enter", "isComposing": True})
+            message.press("Shift+Enter")
+            assert message.input_value().endswith("\n") and not fake.requests
+            message.press("Enter")
+            expect(page.locator("#ai-action")).to_be_visible()
+            expect(page.get_by_role("button", name="Confirm and run", exact=True)).to_be_enabled()
+            expect(message).to_be_focused()
+            assert not service.store.list_jobs() and not service.manager.list(owner)
+            page.get_by_role("button", name="Confirm and run", exact=True).click()
+            expect(page.locator("#ai-action")).to_contain_text("Task queued")
+            assert len(service.manager.runs(owner)) == 1
+            page.reload()
+            expect(page.locator("#ai-action")).to_contain_text("Open Jobs")
+            with service.store.sessions.begin() as session:
+                session.get(ControlPlaneUser, owner).role = "viewer"
+            page.reload()
+            expect(page.locator("#ai-action")).to_be_hidden()
+            expect(page.locator("#ai-status")).to_contain_text("Read-only")
+            page.set_viewport_size({"width": 390, "height": 844})
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            assert not errors
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=10)

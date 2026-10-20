@@ -58,14 +58,24 @@ Strict save/run validation is unchanged; parser diagnostics are structured in pr
 
 Dataset, published Quality-report and Jobs entries open `/assistant` with a typed target. These share the
 same conversation service, bounded context readers and evidence links. Viewer accounts may ask read-only
-questions; only operation roles receive editable drafts and preparation cards. Actual retry/review/run
-operations remain in their existing interfaces. Job context retains the normal owner/admin visibility rule.
+questions; only operation roles receive editable drafts and preparation cards. Viewer preparation and Quality checks can be submitted from an explicit confirmation card.
+Other operations, retries and review remain in their existing interfaces. Job context retains the normal owner/admin visibility rule.
 
 The first version uses the platform's server-configured Qwen account; users do not supply API keys.
 It supports one selected dataset and up to 12 steps, without additional source-location or lifecycle
 options. Existing manual forms remain available for those operations. The model has only
-`read_context`, `describe_operator` and `preview_pipeline` tools; it cannot submit Jobs, save pipelines, approve review,
-delete data or publish outputs. Existing Pipeline authorization applies when the user later saves/runs.
+`read_context`, `describe_operator`, `preview_pipeline` and `prepare_action` tools; it cannot submit Jobs, save pipelines, approve review,
+delete data or publish outputs. Existing Pipeline authorization applies when the user later saves/runs or confirms an action.
+
+`prepare_action` supports only `viewer.prepare` and `curation.quality`. It previews an immutable
+operation, including internal source binding, and displays the dataset, node and parameters. It creates
+no saved version or Job. **Confirm and run** is a separate authenticated request that rechecks role,
+scope, conversation revision, input identity and current preview. It saves/runs through the normal
+Pipeline service, using a stable delivery identity; repeated confirmation or a lost response reuses the
+same run. The card shows status and links to the run and Jobs. Pending cards become stale after another
+exchange. Confirmed runs remain visible after follow-up messages and page reloads.
+Assistant actions cannot clear human review flags, change task configuration, override data versions,
+set paths or submit source mutations. Those advanced options remain in the manual forms.
 
 Requests include the user's text, recent conversation, the last validated draft, operator descriptions,
 selected dataset counts plus at most 40 field schemas, and sanitized Quality/task summaries. Context
@@ -78,7 +88,7 @@ call. Known configured sensitive values and common credential/path patterns are 
 and history storage; sensitive model replies are replaced with a fixed refusal and their draft is discarded.
 Legacy history/receipts are filtered on read. AI drafts cannot set file, directory, endpoint or credential
 parameters; use existing authorized manual forms for these. API responses are not browser-cacheable, and
-errors do not expose stack traces or SQL. Refusals count toward the existing quota and audit only a category.
+errors do not expose stack traces or SQL. Refusals audit only a category and follow the same admission controls as other requests.
 These filters supplement object authorization and the fixed tool allowlist; they are not a guarantee against
 all prompt injection or secret encodings. Existing backups are not rewritten. Avoid entering secrets or sensitive data in prompts. The chosen Qwen endpoint receives
 this context, so configure a suitable region/provider policy for the installation.
@@ -89,10 +99,10 @@ and last validated draft. **New chat** starts a separate conversation. Reloading
 by ID; a disconnected browser does not automatically cause a second billable call. If the registered input
 identity changes, start a new chat. Dataset/account switches discard stale UI responses.
 
-The assistant permits one active request per user, four across Server A, and 20 requests per user per hour.
+The default hourly request limit is disabled. The assistant still permits one active request per user and four across Server A.
 Each request has at most eight model calls, four tool calls per response, and 2,500 output tokens per model
 call. The generation budget is 75 seconds; HTTP timeouts are at most 15 seconds and capped by remaining time. Abandoned requests expire after 120 seconds and late
-results cannot overwrite newer state. Failed accepted requests also count toward the hourly quota.
+results cannot overwrite newer state.
 Conversations inactive for 30 days and completed request receipts older than 30 days are incrementally
 removed on new admissions (up to 100 of each per admission); backups follow the database's retention policy.
 Audit events contain request identity, model, status and token usage, without conversation text.
@@ -104,10 +114,17 @@ Authenticated API:
   new conversation), `location_id`, optional `context: {type, target_id}` (`pipeline`, `dataset`, `quality`, `job`), optional current editor `draft` (up to 12 single-input steps), and a `message` of up to 3,000 characters. Send JSON with a positive
   `Content-Length`, at most 16 KiB; streaming/chunked bodies are not accepted.
 - `GET /api/ai-assistant/turns/{request_id}`: idempotent request recovery.
-- `GET /api/ai-assistant/conversations/{conversation_id}`: authorized bounded history, revision and draft.
+- `GET /api/ai-assistant/conversations/{conversation_id}`: authorized bounded history, revision, draft and current action.
+- `POST /api/ai-assistant/actions/{request_id}/confirm`: exact body `{"revision": n}`; confirms the stored
+  action without accepting client-supplied parameters or dataset overrides. Existing CSRF checks apply.
+- `GET /api/ai-assistant/actions/{request_id}`: authorized run status and bounded step/Job references.
 
 Repeated identical request IDs reuse the result; changed content with the same ID returns 409.
 Model/endpoint/key overrides from the browser are rejected. Omitted context remains a Pipeline conversation for backward compatibility. Evidence links and typed navigation/preparation cards are generated by the server, never arbitrary model URLs. Viewer tool calls are restricted on the server as well as in the UI.
+
+The web composer uses Enter to send and Shift+Enter for a new line, excluding IME composition events.
+The [standalone CLI](../clients/data-platform-cli/README.md) uses the same authenticated API and central
+Qwen account, with password login, in-memory history, explicit `/confirm` and `/status`.
 
 ## Operator contract
 

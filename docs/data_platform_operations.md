@@ -23,6 +23,12 @@ Without a key, or when disabled, the assistant explains its unavailable state an
 editor continues to work. The additive `dp_ai_conversations` and `dp_ai_turns` tables hold private
 conversation state and request receipts; no Agent capability or compute-slot change is required.
 Verify an authenticated operator's draft generation, restore, explicit save/run and Viewer restrictions.
+Also verify Enter/IME behavior and action preparation without side effects, explicit confirmation,
+repeat-confirmation recovery, then acknowledged Viewer output. CLI acceptance must verify normal TLS,
+password login, CSRF, conversation restoration and confirmation using a non-production fixture.
+The default hourly AI quota is disabled; per-user/global concurrency and request budgets remain active.
+The standalone client is packaged separately under `clients/data-platform-cli`; installing it does not
+install LeRobot or GPU dependencies. See its README for installation and internal-CA configuration.
 Automated browser acceptance uses a deterministic fake provider; a separate live Qwen check should use
 synthetic schema and no production rows. See [the assistant contract](data_platform_operators.md#qwen-draft-assistant)
 for data sent to Qwen, quotas, request recovery and retention.

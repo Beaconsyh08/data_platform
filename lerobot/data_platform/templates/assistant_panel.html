@@ -1,8 +1,21 @@
+<style>
+#ai-panel{border:1px solid #334155;border-radius:12px;padding:16px;min-width:0}
+#ai-action{border:1px solid #475569;padding:12px;border-radius:10px;margin-top:12px}#ai-action pre{white-space:pre-wrap;overflow-wrap:anywhere}
+#ai-panel summary{font-weight:600;cursor:pointer}#ai-panel label{display:block;margin:12px 0 6px}
+#ai-message{width:100%;box-sizing:border-box;min-height:64px;max-height:200px;resize:vertical}
+.assistant-history{max-height:52vh;min-height:100px;overflow:auto;overflow-wrap:anywhere;padding:8px 0}
+.assistant-message{white-space:pre-wrap;margin:10px 0;padding:12px 14px;border-radius:10px;background:#0f172a;color:#e2e8f0;line-height:1.65}
+.assistant-message.user{margin-left:10%;background:#172554}.assistant-message.assistant{margin-right:4%}
+.assistant-message small{display:block;color:#94a3b8;font-size:11px;line-height:1.3;margin-bottom:4px}
+#ai-panel .row{align-items:center;gap:8px;display:flex;flex-wrap:wrap}#ai-panel small{color:#94a3b8}
+@media(max-width:600px){ #ai-panel{padding:10px}.assistant-history{max-height:45vh}}
+</style>
     <details id="ai-panel" open><summary>AI assistant · Qwen</summary>
       <p id="ai-status" class="muted" role="status">Loading assistant…</p>
-      <p class="muted">Uses limited metadata and sanitized summaries. Review drafts before running.</p>
-      <div id="ai-history" aria-live="polite" style="max-height:150px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></div>
-      <label>Describe your workflow<textarea id="ai-message" maxlength="3000" placeholder="Check motion quality, then prepare the Viewer." disabled></textarea></label>
-      <div class="row"><button id="ai-send" disabled>Ask Qwen</button><button id="ai-new">New chat</button></div>
+      <p class="muted">Ask about your data, plan a workflow, or prepare an operation.</p>
+      <div id="ai-history" aria-live="polite" class="assistant-history"></div>
+      <label>Message<textarea id="ai-message" maxlength="3000" placeholder="Check motion quality, then prepare the Viewer." rows="2" disabled></textarea></label>
+      <div class="row"><button id="ai-send" disabled>Ask Qwen</button><button id="ai-new">New chat</button><small>Enter to send · Shift+Enter for a new line</small></div>
+      <div id="ai-action" hidden></div>
       <div id="ai-proposal" hidden><p id="ai-validation" role="status"></p><div id="ai-proposal-summary" class="proposal-flow"></div><div id="ai-diff"></div><button id="ai-load" disabled>Load draft into editor</button><button id="ai-undo" disabled>Undo AI changes</button></div>
     <div id="ai-references" class="row"></div></details>

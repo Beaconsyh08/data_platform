@@ -151,7 +151,7 @@ def test_injected_model_tools_cannot_read_files_query_sql_or_execute(assistant):
     assert all("Unknown tool" in r["messages"][-1]["content"] for r in fake.requests[1:])
     assert not service.store.list_jobs() and not service.manager.list(owner)
     tools = {item["function"]["name"] for item in fake.requests[0]["tools"]}
-    assert tools == {"read_context", "describe_operator", "preview_pipeline"}
+    assert tools == {"read_context", "describe_operator", "preview_pipeline", "prepare_action"}
 
 
 def test_guard_handles_known_encoded_secrets_and_public_schema(monkeypatch):

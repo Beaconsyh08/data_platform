@@ -233,11 +233,28 @@ class PipelineManager:
             "steps": resolved,
         }
 
-    def save(self, owner: str, definition: dict, *, pipeline_id=None, expected_revision=None) -> dict:
+    def save(
+        self, owner: str, definition: dict, *, pipeline_id=None, expected_revision=None, delivery=None
+    ) -> dict:
         spec = PipelineSpec.from_dict(definition)
         with self.store.sessions.begin() as session:
             scheduler_lock(session)
             self._actor(session, owner)
+            delivered_id = None
+            if delivery is not None:
+                if pipeline_id or not isinstance(delivery, str) or not 1 <= len(delivery) <= 128:
+                    raise ValueError("Invalid pipeline save delivery identity")
+                delivered_id = str(uuid.uuid5(uuid.NAMESPACE_URL, content_digest([owner, delivery])))
+                existing = session.get(PipelineVersion, f"{delivered_id}:1")
+                if existing:
+                    if existing.digest != spec.digest:
+                        raise JobConflictError("Pipeline delivery already used for different content")
+                    return {
+                        "pipeline_id": delivered_id,
+                        "revision": 1,
+                        "definition": existing.spec,
+                        "digest": existing.digest,
+                    }
             if pipeline_id:
                 row = session.get(Pipeline, pipeline_id)
                 if row is None or row.owner != owner:
@@ -249,7 +266,7 @@ class PipelineManager:
                 row.updated_at = time.time()
             else:
                 row = Pipeline(
-                    pipeline_id=str(uuid.uuid4()),
+                    pipeline_id=delivered_id or str(uuid.uuid4()),
                     owner=owner,
                     name=spec.name,
                     revision=1,
@@ -310,7 +327,16 @@ class PipelineManager:
                 "digest": version.digest,
             }
 
-    def start(self, owner: str, pipeline_id: str, revision: int, location_id: str, delivery: str) -> dict:
+    def start(
+        self,
+        owner: str,
+        pipeline_id: str,
+        revision: int,
+        location_id: str,
+        delivery: str,
+        *,
+        expected_identity=None,
+    ) -> dict:
         if not delivery or len(delivery) > 128:
             raise ValueError("An Idempotency-Key of 1–128 characters is required")
         saved = self.get(owner, pipeline_id, revision)
@@ -322,12 +348,16 @@ class PipelineManager:
         if previous_id:
             return self.run(owner, previous_id)
         preview = self.preview(owner, location_id, saved["definition"])
+        if expected_identity is not None and preview["input_identity"] != expected_identity:
+            raise JobConflictError("Dataset identity changed. Prepare the action again.")
         if not preview["can_execute"]:
             raise ValueError("; ".join(item["reason"] for item in preview["blocked"]))
         key = content_digest([owner, pipeline_id, revision, location_id, delivery])
         with self.store.sessions.begin() as session:
             scheduler_lock(session)
-            self._location(session, location_id, owner)
+            location, _ = self._location(session, location_id, owner)
+            if expected_identity is not None and location_identity(location) != expected_identity:
+                raise JobConflictError("Dataset identity changed. Prepare the action again.")
             existing = session.scalar(select(PipelineRun).where(PipelineRun.idempotency_key == key))
             if existing:
                 run_id = existing.run_id

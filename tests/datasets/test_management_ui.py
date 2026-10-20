@@ -32,7 +32,8 @@ def test_management_navigation_and_filters(role):
     html = render_page(role)
     assert ('id="admin-usage-panel"' in html) == (role == "admin")
     assert ('id="admin-database-panel"' in html) == (role == "admin")
-    script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    # The composed page registers its shared assistant entry point on the browser global.
+    script = "global.window = {};\n" + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
     checks = """
 const assert = require('node:assert/strict');
 const app = controlPlane();
@@ -81,7 +82,8 @@ def test_pipeline_run_controls_use_owner_endpoint_and_preserve_capabilities():
             initial_selected_dataset="",
             initial_tab="",
         )
-    script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    # The composed page registers its shared assistant entry point on the browser global.
+    script = "global.window = {};\n" + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
     checks = """
 const assert = require('node:assert/strict');
 (async () => {
@@ -133,7 +135,8 @@ def test_admin_data_scope_editor_saves_selected_locations():
     html = render_page("admin")
     assert 'value="data_manager"' in html
     assert 'x-model="scopeLocationIds"' in html
-    script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    # The composed page registers its shared assistant entry point on the browser global.
+    script = "global.window = {};\n" + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
     checks = """
 const assert = require('node:assert/strict');
 (async () => {
@@ -204,7 +207,8 @@ def test_data_manager_source_navigation_and_scoped_buttons():
             initial_selected_dataset="",
             initial_tab="",
         )
-    script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    # The composed page registers its shared assistant entry point on the browser global.
+    script = "global.window = {};\n" + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
     checks = """
 const assert = require('node:assert/strict');
 const app = precomputeConsole();
