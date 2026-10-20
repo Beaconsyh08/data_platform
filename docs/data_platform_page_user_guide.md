@@ -49,7 +49,7 @@ flowchart LR
 如需执行，输入“帮我准备 Viewer”或“运行质量检测”，核对卡片的数据集、节点和参数后点击 **Confirm and run**。
 卡片会显示任务状态，并提供 **Open run / Open Jobs**；重复确认不会创建重复任务。更复杂的操作仍生成流程草稿。
 新一轮对话会使未确认卡片过期，需要重新准备；已提交任务可刷新恢复。
-也可使用[命令行助手](../clients/data-platform-cli/README.md)，通过平台用户名、密码登录，使用 `/confirm` 确认和 `/status` 查看状态。
+也可使用[命令行助手](../clients/data-platform-cli/README.md)：复制其中的完整安装命令即可自动下载客户端和证书，并打开生产登录，无需手动下载文件或填写模型 API Key。需要 Python 3.10+、venv、curl 和公司网络/VPN。之后运行 `~/.local/bin/data-platform`，通过平台用户名、密码登录，使用 `/confirm` 确认和 `/status` 查看状态。
 对话按账号、环境及目标隔离，可刷新恢复；输入版本、任务 Attempt 或报告变化后需 New chat。
 请求发送用户文字、受限元数据及脱敏摘要，不自动上传原始行、图像视频、完整日志或文件路径。
 请勿在提示词中输入凭据。未配置 Qwen 或服务暂不可用时，手动编辑仍可使用。

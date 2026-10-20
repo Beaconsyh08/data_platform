@@ -28,7 +28,18 @@ repeat-confirmation recovery, then acknowledged Viewer output. CLI acceptance mu
 password login, CSRF, conversation restoration and confirmation using a non-production fixture.
 The default hourly AI quota is disabled; per-user/global concurrency and request budgets remain active.
 The standalone client is packaged separately under `clients/data-platform-cli`; installing it does not
-install LeRobot or GPU dependencies. See its README for installation and internal-CA configuration.
+install LeRobot or GPU dependencies. Its [README](../clients/data-platform-cli/README.md) contains a
+complete HTTPS download/install/login command; users do not need to download the wheel or CA manually.
+The dedicated `algorithm-vla-cli-downloads` OSS bucket in `cn-beijing` contains only public client
+distribution objects under immutable `cli/<client-version>/` paths. The bucket ACL remains private
+(no anonymous listing); only the wheel, installer and public CA objects have `public-read` ACLs.
+Public Access Block is disabled only for this dedicated download bucket; the data archive bucket
+retains its existing protection. Do not upload server bundles, credentials, data or acceptance reports.
+The installer pins wheel/CA hashes and uses normal HTTPS verification. Before publishing a client,
+verify anonymous downloads and hashes, denied anonymous bucket listing, installation under a normal
+account, password login, and archive protection. Never replace an existing versioned object with
+different bytes. Client distribution changes do not allocate a new server release: production promotion
+continues to use the exact accepted development package.
 Automated browser acceptance uses a deterministic fake provider; a separate live Qwen check should use
 synthetic schema and no production rows. See [the assistant contract](data_platform_operators.md#qwen-draft-assistant)
 for data sent to Qwen, quotas, request recovery and retention.

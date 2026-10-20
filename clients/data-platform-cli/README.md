@@ -3,14 +3,52 @@
 A conversational terminal for your Data Platform account. The platform uses its configured Qwen model;
 you do not need a model API key. This client does not install LeRobot, PyTorch or GPU libraries.
 
-Requires Python 3.10+ and a platform server with the assistant action APIs.
+Requires Python 3.10+ with `venv`, curl, and access to the platform network (company LAN/VPN).
+Run this complete command in a Linux/macOS terminal, without sudo. It downloads the installer,
+installs the client and trusted CA, then opens the production username/password login:
+
+```bash
+(
+  set -e
+  installer=$(mktemp)
+  trap 'rm -f "$installer"' EXIT
+  curl --proto '=https' --tlsv1.2 -fsSL https://algorithm-vla-cli-downloads.oss-cn-beijing.aliyuncs.com/cli/0.1.0/install.py -o "$installer"
+  python3 "$installer" --login
+)
+```
+
+The installer verifies the pinned SHA-256 of the wheel and public CA, then installs into
+`~/.local/share/data-platform-cli/0.1.0`. It uses your configured Python package index for dependencies
+and does not change your shell profile or system trust store. On Debian/Ubuntu, Python's `venv`
+support may require the distribution's `python3-venv` package. Repeat installation reuses the
+recognized installation; unrelated existing files are rejected. `--prefix` and `--bin-dir` select
+other installation directories. If installation fails, the previous launcher is preserved.
+
+For subsequent logins:
+
+```bash
+~/.local/bin/data-platform
+```
+
+This launcher defaults to production at `https://10.8.8.40`. To use development:
+
+```bash
+~/.local/bin/data-platform --server https://10.8.8.40:8443
+```
+
+The download URLs are public and do not expire; platform access still requires your account and
+network access. Only the lightweight client, installer and public CA are published.
+
+## Install from source or use another server
+
+The source package requires a platform server with the assistant action APIs:
 
 ```bash
 pipx install ./clients/data-platform-cli
 data-platform --server https://platform.example.com --username your-account
 ```
 
-For a private CA, obtain the trusted certificate from your administrator:
+For another private CA, obtain the trusted certificate from that platform's administrator:
 
 ```bash
 data-platform --server https://platform.example.com \
