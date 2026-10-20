@@ -163,3 +163,27 @@ def test_personalization_routes_require_login_and_reject_cross_owner_and_stale_w
     )
     assert client.delete("/api/ai-assistant/preferences", json={"expected_revision": 0}).status_code == 409
     assert client.delete("/api/ai-assistant/preferences", json={"expected_revision": 1}).status_code == 200
+
+
+def test_viewer_can_manage_own_preferences_but_cannot_submit_data_operations(assistant, tmp_path):  # noqa: F811
+    service, _, owner, value = assistant
+    app = _app(tmp_path, service.store)
+    ctx = SimpleNamespace(control_plane_store=service.store, lifecycle_store=None)
+    register_processing_routes(app, ctx)
+    register_ai_assistant_routes(app, ctx)
+    app.extensions["data_platform_assistant"] = service
+    with service.store.sessions.begin() as session:
+        session.get(ControlPlaneUser, owner).role = "viewer"
+    client = app.test_client()
+    client.post("/api/auth/login", json={"username": "admin", "password": "strong-admin-password"})
+    path = "/api/ai-assistant/preferences"
+    assert client.put(path, json={"expected_revision": 0, "settings": DEFAULTS}).status_code == 200
+    assert client.delete(path, json={"expected_revision": 1}).status_code == 200
+    assert (
+        client.put(path, json={"expected_revision": 2, "settings": DEFAULTS, "owner": "another"}).status_code
+        == 400
+    )
+    assert client.post("/api/pipelines", json={}).status_code == 403
+    assert (
+        client.post(f"/api/control/locations/{value['location_id']}/viewer-jobs", json={}).status_code == 403
+    )

@@ -168,6 +168,15 @@ def test_console_browse_forms_pipeline_switching_and_viewer_role(tmp_path, monke
             assert page.get_by_role("button", name="Add step", exact=True).is_disabled()
             assert page.get_by_role("button", name="Save version", exact=True).is_disabled()
             assert page.request.post(base + "/api/pipelines", data={"definition": {}}).status == 403
+            page.goto(base + "/assistant?type=dataset&location_id=" + locations[0]["location_id"])
+            page.locator("#ai-prefs-toggle").click()
+            playwright.expect(page.locator("#ai-prefs-save")).to_be_enabled()
+            page.locator("#ai-pref-language").select_option("en")
+            page.locator("#ai-prefs-save").click()
+            playwright.expect(page.locator("#ai-prefs-status")).to_have_text("Preferences saved.")
+            page.locator("#ai-prefs-clear").click()
+            playwright.expect(page.locator("#ai-prefs-status")).to_have_text("Preferences cleared.")
+            assert not store.list_jobs()
             assert not errors
             browser.close()
     finally:

@@ -90,6 +90,8 @@ require unrestricted access until that mapping exists, rather than exposing out-
 ### AI 上下文助手
 
 Viewer 可在其数据权限范围内使用只读 AI 解读；操作角色可生成流程草稿和准备操作。
+包括 Viewer 在内的已登录用户均可保存、停用或清空自己的 AI 偏好；该接口不接受其他账号身份，
+不授予数据写入或任务执行权限。会话列表仅返回本人当前仍有权限访问的会话。
 模型工具只准备操作卡片，不提交任务。用户可在卡片中确认 Viewer 准备或 Quality 检测；独立确认接口复用原流程服务的权限、版本校验和幂等提交。其他操作、重试、审批、删除和发布继续使用专用入口。
 任务解释遵守原有 owner/admin 可见性，Quality 报告沿用 Curation 的范围限制。
 服务端在读取上下文、返回结果和恢复对话时重查权限及对象身份；确认操作时也重新检查；降为 Viewer 后不返回可应用草稿或操作卡片。
