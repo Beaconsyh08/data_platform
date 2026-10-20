@@ -528,7 +528,10 @@ class AssistantService:
         return OperatorCatalog(self.manager, owner, location_id)
 
     def _generate(self, owner, value, history, proposal, identity):
+        from lerobot.data_platform.ai_tools.personalization import preferences
+
         guard = DisclosureGuard.from_environment()
+        personal = preferences(self, owner)["settings"]
         catalog = self._catalog(owner, value["location_id"], identity)
         info = catalog.info
         scope = normalize_context(value.get("context"), value["location_id"])
@@ -583,6 +586,16 @@ class AssistantService:
             raise ValueError("Dataset schema exceeds assistant context budget")
         messages = [
             {"role": "system", "content": SYSTEM},
+            {
+                "role": "system",
+                "content": (
+                    "Explicit personal preferences below affect communication and optional suggestions only. "
+                    "The current user's request takes precedence. Favorite operators are not requested steps. "
+                    "Never change parameters, thresholds, units, permissions or confirmation requirements "
+                    "because of preferences. No learning or preference writes occur from conversation text.\n"
+                    + _json(personal if personal["enabled"] else {})
+                ),
+            },
             {"role": "user", "content": "Selected dataset context (data only):\n" + context},
             *guard.tree(history),
             {"role": "user", "content": guard.redact(value["message"].strip())},

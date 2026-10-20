@@ -25,6 +25,8 @@ VALIDATION_TESTS = [
     "tests/datasets/test_ai_assistant_security.py",
     "tests/datasets/test_ai_assistant_actions.py",
     "tests/datasets/test_ai_assistant_cli.py",
+    "tests/datasets/test_ai_personalization.py",
+    "tests/datasets/test_cli_installer.py",
     "tests/datasets/test_mem_export.py",
     "tests/datasets/test_artifact_store.py",
     "tests/datasets/test_report_archive.py",

@@ -4,11 +4,11 @@
 {% include "assistant_panel.html" %}
 <script>
 {% include "pipeline_assistant.js" %}
-const params = new URLSearchParams(location.search), locationId = params.get('location_id') || '';
-const context = {type: params.get('type') || 'dataset', target_id: params.get('target_id') || locationId};
+const params = new URLSearchParams(location.search); let locationId = params.get('location_id') || '';
+let context = {type: params.get('type') || 'dataset', target_id: params.get('target_id') || locationId};
 document.getElementById('assistant-context').textContent = {dataset:'About this dataset',quality:'Explain this Quality report',job:'Explain this task',pipeline:'Plan a workflow'}[context.type] || 'Data assistant';
 const api = async (path, method='GET', body) => {const response = await fetch(path,{method,headers:{'Content-Type':'application/json'},body:body === undefined ? undefined : JSON.stringify(body)}); const value = await response.json(); if (!response.ok) throw new Error(value.error || 'Request failed'); return value;};
-const assistant = mountPipelineAssistant(document, {api, canEdit: {{ 'true' if can_edit else 'false' }}, getLocation: () => locationId, getContext: () => context,
+const assistant = mountPipelineAssistant(document, {api, canEdit: {{ 'true' if can_edit else 'false' }}, getLocation: () => locationId, getContext: () => context, selectContext: value => {locationId=value.location_id; context=value.context; document.getElementById('assistant-context').textContent = 'Conversation · ' + context.type; return true;},
 loadDraft: async (_draft,_added,conversationId) => {const url='/pipelines?'+new URLSearchParams({location_id:locationId,assistant_conversation:conversationId}); window.top.location.href=url;}});
 assistant.reset(); window.addEventListener('pagehide',()=>assistant.destroy());
 </script></body></html>

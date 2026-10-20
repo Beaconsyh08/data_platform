@@ -8,6 +8,7 @@ from xml.etree import ElementTree
 
 BROWSER_TESTS = (
     "tests/datasets/test_ai_assistant_browser.py",
+    "tests/datasets/test_ai_workspace_browser.py",
     "tests/datasets/test_console_browser.py",
     "tests/datasets/test_processing_browser.py",
 )

@@ -5,6 +5,7 @@ from functools import wraps
 from flask import jsonify, render_template, request
 from sqlalchemy.exc import SQLAlchemyError
 
+from lerobot.data_platform.ai_tools.personalization import conversations, preferences
 from lerobot.data_platform.ai_tools.security import DisclosureGuard
 from lerobot.data_platform.ai_tools.service import (
     AssistantBusyError,
@@ -75,6 +76,25 @@ def register_ai_assistant_routes(app, ctx):
     @checked
     def assistant_capabilities(owner, service):
         return jsonify(service.capabilities(owner))
+
+    @app.get("/api/ai-assistant/conversations")
+    @checked
+    def assistant_history(owner, service):
+        return jsonify(
+            conversations(
+                service, owner, cursor=request.args.get("cursor"), limit=int(request.args.get("limit", "20"))
+            )
+        )
+
+    @app.route("/api/ai-assistant/preferences", methods=["GET", "PUT", "DELETE"])
+    @checked
+    def assistant_preferences(owner, service):
+        if request.method == "GET":
+            return jsonify(preferences(service, owner))
+        value = request.get_json(silent=True)
+        if not isinstance(value, dict):
+            raise ValueError("Preference object is required")
+        return jsonify(preferences(service, owner, change=value, reset=request.method == "DELETE"))
 
     @app.get("/api/ai-assistant/conversations/<conversation_id>")
     @checked

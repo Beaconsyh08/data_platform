@@ -38,13 +38,29 @@ function mountPipelineEditor(root, options) {
   const guard = fn => async (...args) => {
     try {await fn(...args);} catch (error) {if (!disposed) feedback(error.message, true);}
   };
-  const assistant = mountPipelineAssistant(root, {api, canEdit, getLocation: () => $('location').value, getDraft: definition,
+  const assistantOptions = {api, canEdit, getLocation: () => $('location').value, getDraft: definition,
     undoDraft: () => {if (state.undo) {state.steps = state.undo.steps; $('name').value = state.undo.name; state.undo = null; state.added = []; invalidate(); render();}},
     loadDraft: async (draft, added = []) => {
       state.undo = structuredClone(definition()); state.added = added; state.selected = draft.steps[0]?.step_id;
       state.pipeline = null; $('saved').value = ''; state.steps = draft.steps; $('name').value = draft.name;
       state.invalid.clear(); invalidate(); render(); await preview();
-    }});
+    }, selectContext: async value => {
+      if (value.location_id !== $('location').value) {
+        if (state.dirty && !window.confirm('Replace the current unsaved draft by opening this conversation?')) return false;
+        location.assign('/pipelines?' + new URLSearchParams({location_id:value.location_id, assistant_conversation:value.conversation_id})); return false;
+      }
+      return true;
+    }};
+  let assistant;
+  if (options.embedded && window.registerPlatformAssistantEditor) {
+    $('pipeline-assistant-host').remove();
+    assistant = window.registerPlatformAssistantEditor(assistantOptions);
+    $('pipeline-ask-ai').onclick = () => window.openPlatformAssistant({locationId:$('location').value, type:'pipeline'});
+  } else {
+    assistant = mountPipelineAssistant(root, assistantOptions);
+    $('pipeline-ask-ai').onclick = () => {$('pipeline-assistant-host').hidden = false; document.body.classList.add('standalone-pipeline');};
+    $('pipeline-ai-collapse').onclick = () => {$('pipeline-assistant-host').hidden = true; document.body.classList.remove('standalone-pipeline');};
+  }
   $('location').addEventListener('change', () => assistant.reset());
   const button = (text, action, disabled = false) => {
     const value = el('button', text, {type: 'button', disabled: !canEdit || disabled});

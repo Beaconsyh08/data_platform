@@ -363,7 +363,10 @@ def test_delete_by_flag_type_frontend_uses_remote_location(cached_viewer):
     client, _, _ = cached_viewer
     html = client.get("/").get_data(as_text=True)
     # The composed page registers its shared assistant entry point on the browser global.
-    script = "global.window = {};\n" + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    script = (
+        "global.window = {addEventListener:()=>{}}; global.document={body:{dataset:{}}};\n"
+        + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    )
     checks = r"""
 const assert = require('node:assert/strict');
 (async () => {

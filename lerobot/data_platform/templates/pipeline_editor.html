@@ -18,6 +18,8 @@
     .proposal-flow>div+div::before{content:'↓ ';color:#94a3b8}#ai-diff{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
     #steps button{padding:4px 8px}#run-steps>.row{border-left:2px solid #38bdf8;padding:8px;margin:8px}
     @media(max-width:800px){.flow-layout{grid-template-columns:1fr}#step-editor{position:static}.dependency-svg{display:none}}
+  body.standalone-pipeline{padding-right:400px}#pipeline-assistant-host{position:fixed;right:0;top:0;width:400px;height:100dvh;overflow:auto;padding:12px;box-sizing:border-box;background:#020617;border-left:1px solid #334155;z-index:45}
+    @media(max-width:999px){body.standalone-pipeline{padding-right:0;padding-bottom:62dvh}#pipeline-assistant-host{top:auto;bottom:0;width:100%;height:62dvh}}
   </style>
 <main data-can-edit="{{ 'true' if can_edit else 'false' }}">
   <header><h1>Pipelines</h1><nav><a href="/">Datasets</a> · <a href="/?page=runs">Jobs</a> · <a id="review-link" href="/curation">Review</a></nav></header>
@@ -32,9 +34,10 @@
   </details>
   <label class="grow">Name<input id="name" aria-label="Name" maxlength="128" value="New pipeline"></label>
   <div id="feedback" role="status" aria-live="polite"></div>
-  <section>
+  <button id="pipeline-ask-ai">AI assistant</button>
+  <aside id="pipeline-assistant-host" aria-label="AI assistant workspace"><button id="pipeline-ai-collapse">Collapse</button>
     {% include "assistant_panel.html" %}
-  </section>
+  </aside>
   <details><summary>Start from a template</summary><div class="row"><label>Template<select id="template"><option value="quality">Quality</option><option value="subset">Split → Quality</option><option value="viewer">Viewer</option></select></label><button id="use-template">Use template</button></div></details>
   <details><summary>Technical details</summary><label><input type="checkbox" id="show-system">Show internal steps</label></details>
   <p class="muted">↓ Execution order · Blue: dataset input · Dashed: evidence. Select a step to edit.</p>

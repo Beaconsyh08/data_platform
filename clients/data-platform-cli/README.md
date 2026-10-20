@@ -12,13 +12,13 @@ installs the client and trusted CA, then opens the production username/password 
   set -e
   installer=$(mktemp)
   trap 'rm -f "$installer"' EXIT
-  curl --proto '=https' --tlsv1.2 -fsSL https://algorithm-vla-cli-downloads.oss-cn-beijing.aliyuncs.com/cli/0.1.0/install.py -o "$installer"
+  curl --proto '=https' --tlsv1.2 -fsSL https://algorithm-vla-cli-downloads.oss-cn-beijing.aliyuncs.com/cli/0.2.0/install.py -o "$installer"
   python3 "$installer" --login
 )
 ```
 
 The installer verifies the pinned SHA-256 of the wheel and public CA, then installs into
-`~/.local/share/data-platform-cli/0.1.0`. It uses your configured Python package index for dependencies
+`~/.local/share/data-platform-cli/0.2.0`. It uses your configured Python package index for dependencies
 and does not change your shell profile or system trust store. On Debian/Ubuntu, Python's `venv`
 support may require the distribution's `python3-venv` package. Repeat installation reuses the
 recognized installation; unrelated existing files are rejected. `--prefix` and `--bin-dir` select
@@ -72,7 +72,9 @@ their dedicated web interfaces.
 | `/datasets` | Choose another authorized dataset and start a new conversation |
 | `/new` | Start another conversation on the selected dataset |
 | `/history` | Show the restored server conversation history |
-| `/restore <conversation-id>` | Restore your own conversation, pending response and action |
+| `/chats` / `/chats next` | List accessible saved conversations, with bounded pagination |
+| `/preferences` | Show personal preferences and editing commands; shared with the web in this environment |
+| `/restore <number or conversation-id>` | Restore your own conversation, pending response and action |
 | `/resume` | Recover an interrupted response using its original request ID |
 | `/confirm` | Confirm the displayed Viewer/Quality operation; retries reuse the same run |
 | `/status` | Read the confirmed operation's run and step status |
@@ -87,6 +89,32 @@ Already submitted work can also be followed in the website's Jobs page.
 This is an API client for data operations. It cannot read your local files or run shell commands. HTTPS
 certificate validation, platform roles, object scopes, input identity checks and CSRF remain enabled.
 Response text is rendered as plain text with terminal control sequences removed.
+
+## Personal preferences and history
+
+`/chats` lists your own currently authorized conversations; `/restore 1` opens the first result.
+`/history` retains its original meaning: the messages of the current conversation. Context changes
+can make an old conversation unavailable; start a new chat instead. History is bounded to six exchanges
+per conversation and follows the existing 30-day inactivity/request retention policy.
+
+Preferences are explicit settings shared by web and CLI for the same account and environment:
+
+```text
+/preferences language zh
+/preferences detail concise
+/preferences favorites viewer.prepare,curation.quality
+/preferences off
+/preferences on
+/preferences reset
+```
+
+Use `auto` to match message language, `balanced` or `detailed` for other response lengths, and
+`/preferences favorites none` to clear favorite operators. At most five business operators can be
+selected. Settings affect replies and suggestions on the next message; favorites do not add operations
+to a plan. Viewer accounts may manage their own communication preferences but remain read-only for data.
+The assistant does not silently infer preferences, train a model, or change operation parameters,
+permissions or confirmation requirements. The web Preferences panel can edit or clear the same settings.
+Concurrent updates use revisions; reload settings if another client changed them.
 
 ## Implementation choice
 

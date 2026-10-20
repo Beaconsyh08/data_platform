@@ -99,6 +99,30 @@ and last validated draft. **New chat** starts a separate conversation. Reloading
 by ID; a disconnected browser does not automatically cause a second billable call. If the registered input
 identity changes, start a new chat. Dataset/account switches discard stale UI responses.
 
+The console assistant is a nonmodal, collapsible side workspace with adjustable desktop width and a
+bottom panel on narrow screens. Browsing and forms remain usable while it is open. The active conversation
+keeps its dataset/report/task target; navigating elsewhere does not retarget a prepared action. A visible
+context notice offers a new conversation for the current dataset. History restoration is explicit and
+rechecks authorization and input identity. The same panel serves dataset, Quality, Jobs and the embedded
+Pipeline editor; standalone Pipeline and Viewer pages retain assistant access.
+
+`GET /api/ai-assistant/conversations?limit=20&cursor=...` returns only the current account's authorized
+conversation summaries, with at most 50 returned and 100 scanned rows per request. Changed input identities
+are marked unavailable. Missing/revoked targets are omitted before reading message titles. No full report,
+model initialization or other account's conversation is loaded by this endpoint.
+
+`GET`, `PUT` and `DELETE /api/ai-assistant/preferences` manage the current account's settings in the
+additive `dp_ai_preferences` table. PUT requires `{expected_revision, settings}`; DELETE requires
+`{expected_revision}` and restores defaults while advancing the revision. The only settings are `enabled`
+(boolean), `language` (`auto`, `zh`, `en`), `detail` (`concise`, `balanced`, `detailed`) and
+`favorite_operators` (up to five registered business pipeline operators). No free-form instructions,
+credentials, model settings or account override are accepted. Viewer users can manage personal preferences;
+this never grants data write permission. Web and CLI share this store within one environment. Changes are
+audited by revision without preference contents. Settings persist until cleared; they are separate from
+conversation retention. No model tool can write them, and disabled settings are excluded from model context.
+Preferences influence communication and optional suggestions only; explicit requests take precedence.
+They cannot change thresholds, units, parameters, permissions or confirmation, and do not train the model.
+
 The default hourly request limit is disabled. The assistant still permits one active request per user and four across Server A.
 Each request has at most eight model calls, four tool calls per response, and 2,500 output tokens per model
 call. The generation budget is 75 seconds; HTTP timeouts are at most 15 seconds and capped by remaining time. Abandoned requests expire after 120 seconds and late

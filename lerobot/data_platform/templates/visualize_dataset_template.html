@@ -4449,6 +4449,13 @@
             <p class="text-[10px] text-slate-500 mt-1" x-text="'Step ' + trimProgressStep + ' / ' + trimProgressTotal"></p>
         </div>
     </div>
+{% if g is defined and g.control_plane_user %}
+{% include "assistant_workspace.html" %}
+<script>document.body.dataset.assistantStandalone = 'true';
+{% include "pipeline_assistant.js" %}
+{% include "assistant_launcher.js" %}
+</script>
+{% endif %}
 </body>
 
 </html>

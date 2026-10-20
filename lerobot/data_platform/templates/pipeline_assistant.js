@@ -12,6 +12,85 @@ function mountPipelineAssistant(root, options) {
     try {if (value !== undefined) sessionStorage.setItem(key, value); else return sessionStorage.getItem(key);} catch (_) {}
   };
   const status = message => {$('ai-status').textContent = message;};
+  let historyCursor = null, historyEpoch = 0, preferencesEpoch = 0, personal = null;
+  const navigate = event => {
+    const link = event.target.closest('a');
+    if (link && options.navigate && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      event.preventDefault(); options.navigate(link.href);
+    }
+  };
+  $('ai-references').addEventListener('click', navigate);
+  $('ai-action').addEventListener('click', navigate);
+  async function restore(identity, datasetLabel) {
+    const expected = ++epoch; clearTimeout(timer); clearTimeout(actionTimer); busy = false;
+    conversation = null; pendingMessage = ''; $('ai-message').value = ''; render();
+    try {
+      const value = await api('/api/ai-assistant/conversations/' + encodeURIComponent(identity));
+      if (disposed || expected !== epoch) return;
+      if (options.selectContext && await options.selectContext({...value, dataset:datasetLabel}) === false) return;
+      if (value.location_id !== getLocation()) throw new Error('Choose the conversation dataset first.');
+      if (disposed || expected !== epoch) return;
+      conversation = value; storage(storageKey(), value.conversation_id); render();
+      status('Conversation restored. Target remains bound to this conversation.');
+      if (value.pending_request) {busy = true; render(); poll(value.pending_request, expected);}
+    } catch (error) {if (!disposed && expected === epoch) {render(); status(error.message);}}
+  }
+  async function listChats(more = false) {
+    const expected = epoch, request = ++historyEpoch;
+    if (!more) {$('ai-chats').replaceChildren(); historyCursor = null;}
+    $('ai-chats-status').textContent = 'Loading…';
+    try {
+      const result = await api('/api/ai-assistant/conversations?limit=20' + (more && historyCursor ? '&cursor=' + encodeURIComponent(historyCursor) : ''));
+      if (disposed || expected !== epoch || request !== historyEpoch) return;
+      for (const item of result.conversations) {
+        const button = document.createElement('button'); button.type = 'button'; button.style.cssText = 'display:block;width:100%;text-align:left;margin:6px 0;overflow-wrap:anywhere';
+        button.textContent = `${item.title} · ${item.dataset || item.context.type} · ${new Date(item.updated_at * 1000).toLocaleString()}`;
+        button.dataset.conversationId = item.conversation_id; button.disabled = !item.available; button.title = item.reason || 'Restore conversation';
+        button.onclick = () => restore(item.conversation_id, item.dataset); $('ai-chats').append(button);
+      }
+      historyCursor = result.next_cursor; $('ai-chats-more').hidden = !historyCursor;
+      $('ai-chats-status').textContent = $('ai-chats').children.length ? 'Only conversations you can currently access.' : 'No accessible conversations on this page.';
+    } catch (error) {if (!disposed && expected === epoch && request === historyEpoch) $('ai-chats-status').textContent = error.message;}
+  }
+  function renderPreferences() {
+    const settings = personal.settings;
+    $('ai-pref-enabled').checked = settings.enabled; $('ai-pref-language').value = settings.language;
+    $('ai-pref-detail').value = settings.detail;
+    for (const option of $('ai-pref-favorites').options) option.selected = settings.favorite_operators.includes(option.value);
+  }
+  async function loadPreferences() {
+    const expected = epoch, request = ++preferencesEpoch;
+    $('ai-prefs-save').disabled = $('ai-prefs-clear').disabled = true;
+    try {
+      const result = await api('/api/ai-assistant/preferences');
+      const catalog = await api('/api/operators');
+      if (disposed || expected !== epoch || request !== preferencesEpoch) return;
+      personal = result; $('ai-pref-favorites').replaceChildren();
+      for (const op of catalog.operators.filter(op => op.pipeline_allowed && !pipelineSystemStep(op))) {
+        const option = document.createElement('option'); option.value = op.operator_id; option.textContent = op.presentation?.title || op.operator_id; $('ai-pref-favorites').append(option);
+      }
+      renderPreferences(); $('ai-prefs-save').disabled = $('ai-prefs-clear').disabled = false;
+      $('ai-prefs-status').textContent = 'Shared by web and CLI in this environment.';
+    } catch (error) {if (!disposed && expected === epoch && request === preferencesEpoch) $('ai-prefs-status').textContent = error.message;}
+  }
+  async function savePreferences(clear = false) {
+    if (!personal || $('ai-prefs-save').disabled) return;
+    const expected = epoch, request = ++preferencesEpoch;
+    $('ai-prefs-save').disabled = $('ai-prefs-clear').disabled = true;
+    const body = {expected_revision: personal.revision};
+    if (!clear) body.settings = {enabled:$('ai-pref-enabled').checked, language:$('ai-pref-language').value,
+      detail:$('ai-pref-detail').value, favorite_operators:[...$('ai-pref-favorites').selectedOptions].map(o => o.value)};
+    try {
+      const result = await api('/api/ai-assistant/preferences', clear ? 'DELETE' : 'PUT', body);
+      if (disposed || expected !== epoch || request !== preferencesEpoch) return;
+      personal = result; renderPreferences(); $('ai-prefs-status').textContent = clear ? 'Preferences cleared.' : 'Preferences saved.';
+    } catch (error) {if (!disposed && expected === epoch && request === preferencesEpoch) $('ai-prefs-status').textContent = error.message + ' Close and reopen Preferences to reload.';}
+    finally {if (!disposed && expected === epoch && request === preferencesEpoch) $('ai-prefs-save').disabled = $('ai-prefs-clear').disabled = false;}
+  }
+  $('ai-chats-toggle').onclick = () => {const open = $('ai-chats-panel').hidden; $('ai-chats-panel').hidden = !open; $('ai-chats-toggle').setAttribute('aria-expanded', String(open)); if (open) listChats();};
+  $('ai-chats-more').onclick = () => listChats(true);
+  $('ai-prefs-toggle').onclick = () => {const open = $('ai-prefs-panel').hidden; $('ai-prefs-panel').hidden = !open; $('ai-prefs-toggle').setAttribute('aria-expanded', String(open)); if (open) loadPreferences();};
+  $('ai-prefs-save').onclick = () => savePreferences(); $('ai-prefs-clear').onclick = () => savePreferences(true);
   function render() {
     $('ai-message').disabled = $('ai-send').disabled = !capabilities?.available || !getLocation() || busy;
     $('ai-new').disabled = busy;
@@ -136,8 +215,8 @@ function mountPipelineAssistant(root, options) {
     }
   }
   async function reset() {
-    const expected = ++epoch; clearTimeout(timer); clearTimeout(actionTimer); busy = false; conversation = null;
-    pendingMessage = ''; $('ai-message').value = ''; render();
+    const expected = ++epoch; clearTimeout(timer); clearTimeout(actionTimer); busy = false; conversation = null; capabilities = null;
+    pendingMessage = ''; $('ai-message').value = ''; $('ai-chats-panel').hidden = $('ai-prefs-panel').hidden = true; $('ai-chats-toggle').setAttribute('aria-expanded', 'false'); $('ai-prefs-toggle').setAttribute('aria-expanded', 'false'); render();
     status('Loading assistant…');
     try {
       const result = await api('/api/ai-assistant/capabilities');
@@ -145,12 +224,12 @@ function mountPipelineAssistant(root, options) {
       capabilities = result;
       status(result.reason || (getLocation() ? `${result.model}${result.hourly_limit == null ? '' : ` · ${result.hourly_limit} requests per hour`}${result.can_edit ? '' : ' · Read-only explanations'}` : 'Choose a dataset first.'));
       render();
-      if (!result.available || !getLocation()) return;
-      const saved = new URLSearchParams(location.search).get('assistant_conversation') || storage(storageKey());
+      if (!getLocation()) return;
+      const saved = options.conversationId?.() || new URLSearchParams(location.search).get('assistant_conversation') || storage(storageKey());
       if (saved) {
         const restored = await api('/api/ai-assistant/conversations/' + encodeURIComponent(saved));
         if (disposed || expected !== epoch) return;
-        if (restored.location_id !== getLocation()) throw new Error('Conversation dataset changed.');
+        if (restored.location_id !== getLocation() || ((restored.context || scope()).type !== scope().type || (restored.context || scope()).target_id !== scope().target_id)) throw new Error('Conversation context changed.');
         conversation = restored;
         if (restored.pending_request) {busy = true; status('Qwen is working…'); poll(restored.pending_request, expected);}
       } else fresh();
@@ -208,5 +287,5 @@ function mountPipelineAssistant(root, options) {
     } catch (error) {if (!disposed && expected === epoch) status(error.message);}
   });
   $('ai-undo').addEventListener('click', () => {options.undoDraft?.(); render();});
-  return {reset, destroy() {disposed = true; epoch++; clearTimeout(timer); clearTimeout(actionTimer);}};
+  return {reset, restore, destroy() {disposed = true; epoch++; clearTimeout(timer); clearTimeout(actionTimer);}};
 }

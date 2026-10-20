@@ -291,7 +291,7 @@
                 </template>
             </nav>
         <button class="dp-btn" :disabled="!(selectedRemoteLocation?.location_id || selectedDataset?.remote_location_id)" @click="openPlatformAssistant({locationId:selectedRemoteLocation?.location_id || selectedDataset?.remote_location_id})">Ask AI</button>
-<div x-effect="[controlPlaneUser?.user_id, selectedDatasetKey, selectedRemoteLocation?.location_id]; window.closePlatformAssistant?.()"></div>
+<div x-effect="window.syncPlatformAssistant?.({owner:controlPlaneUser?.user_id, role:controlPlaneUser?.role, locationId:selectedRemoteLocation?.location_id || selectedDataset?.remote_location_id, label:selectedRemoteLocation?.dataset_key || selectedDataset?.name})"></div>
 </header>
 
         <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm"
@@ -1266,6 +1266,7 @@
 
     {% if control_plane_enabled %}
     {% set can_edit = control_plane_user and control_plane_user.role != 'viewer' %}
+    {% include "assistant_workspace.html" %}
     <template id="pipeline-workspace-template">{% include "pipeline_editor.html" %}</template>
     {% endif %}
     <template id="curation-workspace-template">{% include "visualize_dataset_curation.html" %}</template>

@@ -21,7 +21,8 @@ Apply environment changes through the existing environment/service deployment pr
 
 Without a key, or when disabled, the assistant explains its unavailable state and the manual Pipeline
 editor continues to work. The additive `dp_ai_conversations` and `dp_ai_turns` tables hold private
-conversation state and request receipts; no Agent capability or compute-slot change is required.
+conversation state and request receipts; the additive `dp_ai_preferences` table stores explicit personal
+settings with optimistic revisions, shared by web and CLI within the environment; no Agent capability or compute-slot change is required.
 Verify an authenticated operator's draft generation, restore, explicit save/run and Viewer restrictions.
 Also verify Enter/IME behavior and action preparation without side effects, explicit confirmation,
 repeat-confirmation recovery, then acknowledged Viewer output. CLI acceptance must verify normal TLS,

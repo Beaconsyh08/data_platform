@@ -29,3 +29,13 @@ class AssistantTurn(ManagementBase):
     created_at: Mapped[int] = mapped_column(BigInteger, index=True)
     lease_until: Mapped[int] = mapped_column(BigInteger)
     result: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AssistantPreferences(ManagementBase):
+    """Explicit, account-private settings; never model-written instructions."""
+
+    __tablename__ = "dp_ai_preferences"
+    owner: Mapped[str] = mapped_column(String(36), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[int] = mapped_column(BigInteger)

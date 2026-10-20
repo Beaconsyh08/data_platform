@@ -95,7 +95,10 @@ def test_composed_console_rejects_old_dataset_account_and_environment_responses(
         pytest.skip("Node is required for composed UI behavior checks")
     html = console_app(tmp_path).test_client().get("/").get_data(as_text=True)
     # The composed page registers its shared assistant entry point on the browser global.
-    script = "global.window = {};\n" + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    script = (
+        "global.window = {addEventListener:()=>{}}; global.document={body:{dataset:{}}};\n"
+        + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    )
     checks = r"""
 const assert = require('node:assert/strict');
 (async () => {

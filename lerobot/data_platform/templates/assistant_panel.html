@@ -12,7 +12,17 @@
 </style>
     <details id="ai-panel" open><summary>AI assistant · Qwen</summary>
       <p id="ai-status" class="muted" role="status">Loading assistant…</p>
-      <p class="muted">Ask about your data, plan a workflow, or prepare an operation.</p>
+      <div class="row"><button id="ai-chats-toggle" aria-expanded="false">History</button><button id="ai-prefs-toggle" aria-expanded="false">Preferences</button></div>
+      <div id="ai-chats-panel" hidden><p id="ai-chats-status" role="status"></p><div id="ai-chats"></div><button id="ai-chats-more" hidden>More conversations</button></div>
+      <div id="ai-prefs-panel" hidden>
+        <p>Private to your account in this environment. Applied on your next message.</p>
+        <label><input id="ai-pref-enabled" type="checkbox">Use my preferences</label>
+        <label>Reply language<select id="ai-pref-language"><option value="auto">Match my message</option><option value="zh">Chinese</option><option value="en">English</option></select></label>
+        <label>Response detail<select id="ai-pref-detail"><option value="concise">Concise</option><option value="balanced">Balanced</option><option value="detailed">Detailed</option></select></label>
+        <label>Favorite operators (up to 5)<select id="ai-pref-favorites" multiple size="4"></select></label>
+        <small>Suggestions only. This does not change parameters, permissions or execution confirmation.</small>
+        <div class="row"><button id="ai-prefs-save">Save preferences</button><button id="ai-prefs-clear">Clear preferences</button></div><p id="ai-prefs-status" role="status"></p>
+      </div>
       <div id="ai-history" aria-live="polite" class="assistant-history"></div>
       <label>Message<textarea id="ai-message" maxlength="3000" placeholder="Check motion quality, then prepare the Viewer." rows="2" disabled></textarea></label>
       <div class="row"><button id="ai-send" disabled>Ask Qwen</button><button id="ai-new">New chat</button><small>Enter to send · Shift+Enter for a new line</small></div>

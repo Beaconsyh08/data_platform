@@ -10,7 +10,19 @@ import unicodedata
 
 from data_platform_cli.client import ClientError, PlatformClient
 
-COMMANDS = ["/help", "/datasets", "/new", "/history", "/restore", "/resume", "/confirm", "/status", "/exit"]
+COMMANDS = [
+    "/help",
+    "/datasets",
+    "/new",
+    "/history",
+    "/chats",
+    "/restore",
+    "/preferences",
+    "/resume",
+    "/confirm",
+    "/status",
+    "/exit",
+]
 
 
 def safe_terminal(value):
@@ -47,6 +59,7 @@ def main(argv=None):
         event.current_buffer.insert_text("\n")
 
     prompt = PromptSession(completer=WordCompleter(COMMANDS), key_bindings=keys)
+    chats, chat_cursor = [], None
 
     def display(result):
         say(result.get("message") or result.get("error") or "Response received.")
@@ -110,8 +123,63 @@ def main(argv=None):
                 elif message == "/history":
                     for item in client.conversation["history"]:
                         say(item["role"] + ": " + item["content"])
+                elif message in {"/chats", "/chats next"}:
+                    if message == "/chats next" and not chat_cursor:
+                        say("No more conversations. Use /chats to refresh.")
+                        continue
+                    page = client.conversations(chat_cursor if message == "/chats next" else None)
+                    chats, chat_cursor = page["conversations"], page["next_cursor"]
+                    for number, item in enumerate(chats, 1):
+                        say(
+                            f"{number}. {item['title']} · {item['context']['type']} · {item['conversation_id']}"
+                            + ("" if item["available"] else " · Context changed")
+                        )
+                    say(
+                        "/restore <number or conversation-id> opens a conversation."
+                        + (" /chats next loads more." if chat_cursor else "")
+                    )
+                elif message == "/preferences" or message.startswith("/preferences "):
+                    current = client.preferences()
+                    parts = message.split(maxsplit=2)
+                    if len(parts) == 1:
+                        say(json.dumps(current["settings"], ensure_ascii=False, indent=2))
+                        say(
+                            "/preferences language auto|zh|en · detail concise|balanced|detailed\n"
+                            "/preferences favorites viewer.prepare,curation.quality · on|off|reset\n"
+                            "Use /preferences favorites none to clear favorites. "
+                            "Preferences affect replies and suggestions, never execution or permissions."
+                        )
+                    elif parts[1:] == ["reset"]:
+                        client.clear_preferences(current["revision"])
+                        say("Preferences cleared.")
+                    else:
+                        settings = current["settings"]
+                        if parts[1:] in (["on"], ["off"]):
+                            settings["enabled"] = parts[1] == "on"
+                        elif len(parts) == 3 and parts[1] == "language" and parts[2] in ("auto", "zh", "en"):
+                            settings["language"] = parts[2]
+                        elif (
+                            len(parts) == 3
+                            and parts[1] == "detail"
+                            and parts[2] in ("concise", "balanced", "detailed")
+                        ):
+                            settings["detail"] = parts[2]
+                        elif len(parts) == 3 and parts[1] == "favorites":
+                            settings["favorite_operators"] = [] if parts[2] == "none" else parts[2].split(",")
+                        else:
+                            raise ClientError("Unsupported preference. Use /preferences for options.")
+                        client.save_preferences(current["revision"], settings)
+                        say("Preferences saved. Shared with the website in this environment.")
                 elif message.startswith("/restore "):
-                    value = client.restore(message.split(maxsplit=1)[1])
+                    identity = message.split(maxsplit=1)[1]
+                    if identity.isdigit():
+                        if not 1 <= int(identity) <= len(chats):
+                            raise ClientError("Choose a conversation number from /chats.")
+                        selected = chats[int(identity) - 1]
+                        if not selected["available"]:
+                            raise ClientError("Conversation context changed. Start a new chat.")
+                        identity = selected["conversation_id"]
+                    value = client.restore(identity)
                     say("Conversation restored.")
                     for item in value["history"]:
                         say(item["role"] + ": " + item["content"])

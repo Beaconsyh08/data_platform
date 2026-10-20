@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import requests
 
@@ -86,6 +86,28 @@ class PlatformClient:
 
     def datasets(self):
         return self.request("GET", "/api/control/locations?summary=1")["locations"]
+
+    def conversations(self, cursor=None):
+        query = {"limit": 20}
+        if cursor:
+            query["cursor"] = cursor
+        return self.request("GET", "/api/ai-assistant/conversations?" + urlencode(query))
+
+    def preferences(self):
+        return self.request("GET", "/api/ai-assistant/preferences")
+
+    def save_preferences(self, revision, settings):
+        return self.request(
+            "PUT",
+            "/api/ai-assistant/preferences",
+            {
+                "expected_revision": revision,
+                "settings": settings,
+            },
+        )
+
+    def clear_preferences(self, revision):
+        return self.request("DELETE", "/api/ai-assistant/preferences", {"expected_revision": revision})
 
     def select(self, location):
         self.location = location

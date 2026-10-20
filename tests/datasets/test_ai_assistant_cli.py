@@ -159,6 +159,19 @@ def test_real_https_login_chat_restore_confirm_and_logout(assistant, tmp_path, m
         assert client.chat("帮我准备 Viewer")["action"]["can_execute"]
         assert not service.manager.runs(owner) and not service.store.list_jobs()
         conversation_id = client.conversation["conversation_id"]
+        page = client.conversations()
+        assert page["conversations"][0]["conversation_id"] == conversation_id
+        settings = client.preferences()
+        settings["settings"]["language"] = "en"
+        saved = client.save_preferences(settings["revision"], settings["settings"])
+        from lerobot.data_platform.ai_tools.personalization import preferences
+
+        assert preferences(service, owner) == saved
+        token, client.csrf = client.csrf, "invalid"
+        with pytest.raises(ClientError):
+            client.clear_preferences(saved["revision"])
+        client.csrf = token
+        assert client.clear_preferences(saved["revision"])["settings"]["language"] == "auto"
         client.new_chat()
         client.restore(conversation_id)
         # The confirmation route accepts no client override, and CSRF still protects it.
