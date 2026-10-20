@@ -1191,9 +1191,13 @@ def run_server(
     def _start_operation_audit():
         if request.method in {"GET", "HEAD", "OPTIONS"}:
             return None
-        body = request.get_json(silent=True)
-        if not isinstance(body, dict):
-            body = request.form.to_dict(flat=True) if request.form else {}
+        if request.path.startswith("/api/ai-assistant/"):
+            # Leave assistant body parsing to its authenticated, size-limited route.
+            body = {"request_bytes": request.content_length}
+        else:
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                body = request.form.to_dict(flat=True) if request.form else {}
         dataset_keys = _audit_dataset_keys(body)
         static_dirs, roots = _audit_targets(dataset_keys)
         actor, client = _audit_identity()
@@ -1255,7 +1259,11 @@ def run_server(
                 status = "success"
             response_summary = {}
             if isinstance(response_payload, dict):
-                for field in ("status", "error", "message", "dataset_key"):
+                for field in (
+                    ("status", "error")
+                    if request.path.startswith("/api/ai-assistant/")
+                    else ("status", "error", "message", "dataset_key")
+                ):
                     if field in response_payload:
                         response_summary[field] = response_payload[field]
             _append_operation_log(
@@ -1269,7 +1277,9 @@ def run_server(
                 details={
                     "method": request.method,
                     "path": request.path,
-                    "query": request.args.to_dict(flat=False),
+                    "query": {}
+                    if request.path.startswith("/api/ai-assistant/")
+                    else request.args.to_dict(flat=False),
                     "parameters": audit["body"],
                     "status_code": response.status_code,
                     "job_id": job_id,
@@ -2102,6 +2112,9 @@ def run_server(
         from lerobot.data_platform.routes.processing import register_processing_routes
 
         register_processing_routes(app, route_context)
+        from lerobot.data_platform.routes.ai_assistant import register_ai_assistant_routes
+
+        register_ai_assistant_routes(app, route_context)
 
     _complete_local_execution = catalog_service.complete_local_execution
 

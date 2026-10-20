@@ -132,6 +132,7 @@ def migrate_management(engine) -> None:
         maintenance,  # noqa: F401 -- register the maintenance table
         source_cleanup,  # noqa: F401
     )
+    from lerobot.data_platform.ai_tools import models as ai_models  # noqa: F401
     from lerobot.data_platform.processing import models  # noqa: F401
 
     lock_key = "dp-management-" + hashlib.sha256(str(engine.url.database).encode()).hexdigest()[:32]

@@ -1,3 +1,4 @@
+{% include "pipeline_assistant.js" %}
 function mountPipelineEditor(root, options) {
   'use strict';
   options = options || {};
@@ -34,6 +35,12 @@ function mountPipelineEditor(root, options) {
   const guard = fn => async (...args) => {
     try {await fn(...args);} catch (error) {if (!disposed) feedback(error.message, true);}
   };
+  const assistant = mountPipelineAssistant(root, {api, canEdit, getLocation: () => $('location').value,
+    loadDraft: async draft => {
+      state.pipeline = null; $('saved').value = ''; state.steps = draft.steps; $('name').value = draft.name;
+      state.invalid.clear(); invalidate(); render(); await preview();
+    }});
+  $('location').addEventListener('change', () => assistant.reset());
   const button = (text, action, disabled = false) => {
     const value = el('button', text, {type: 'button', disabled: !canEdit || disabled});
     value.addEventListener('click', guard(action));
@@ -343,7 +350,7 @@ function mountPipelineEditor(root, options) {
     state.pipeline = null; $('saved').value = ''; state.invalid.clear(); invalidate(); render();
   }));
   $('runs').addEventListener('change', guard(async () => {if ($('runs').value) await openRun($('runs').value);}));
-  const destroy = () => {disposed = true; state.epoch++; clearTimeout(timer); for (const controller of controllers) controller.abort(); window.removeEventListener('pagehide', destroy);};
+  const destroy = () => {disposed = true; assistant.destroy(); state.epoch++; clearTimeout(timer); for (const controller of controllers) controller.abort(); window.removeEventListener('pagehide', destroy);};
   window.addEventListener('pagehide', destroy);
   for (const id of ['add', 'preview', 'save', 'name', 'use-template']) $(id).disabled = !canEdit || id === 'add';
   guard(async () => {
@@ -351,6 +358,7 @@ function mountPipelineEditor(root, options) {
     state.locations = locations.locations;
     locations.locations.forEach(value => $('location').append(el('option', `${value.node_name || ''} · ${value.dataset_key}`, {value: value.location_id})));
     const requested = options.locationId || new URLSearchParams(location.search).get('location_id'); if (requested) $('location').value = requested;
+    assistant.reset();
     await Promise.all([loadOperators(), loadSaved(), loadRuns()]);
     const runId = options.embedded ? null : new URLSearchParams(location.search).get('run_id'); if (runId) await openRun(runId);
   })();

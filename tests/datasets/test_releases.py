@@ -728,5 +728,5 @@ def test_browser_gate_preserves_explicit_fixture_assets(tmp_path, monkeypatch):
         )
 
     result = run_browser_validation("python", tmp_path, executable, tmp_path, {}, runner)
-    assert result["passed"] == 2
+    assert result["passed"] == len(REQUIRED_CASES)
     assert set(result["assets_sha256"]) == {"ui-tailwind.js", "ui-alpine.js"}

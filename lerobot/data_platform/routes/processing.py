@@ -7,7 +7,7 @@ from flask import g, jsonify, render_template, request, send_file
 
 from lerobot.data_platform.job_management import JobConflictError
 from lerobot.data_platform.operators import get_operator, list_operators
-from lerobot.data_platform.processing.planner import availability
+from lerobot.data_platform.processing.capabilities import OperatorCatalog
 from lerobot.data_platform.processing.service import PipelineManager
 from lerobot.data_platform.routes.control_plane import _current_user
 
@@ -57,33 +57,9 @@ def register_processing_routes(app, ctx):
         return _current_user()["user_id"]
 
     def describe(spec):
-        value = spec.to_dict()
-        reason = "Choose a registered dataset location"
-        if request.args.get("location_id"):
-            if not hasattr(g, "processing_target"):
-                with manager.store.sessions() as session:
-                    g.processing_target = manager._location(
-                        session, request.args["location_id"], owner(), write=False
-                    )
-            location, node = g.processing_target
-            if not hasattr(g, "processing_info"):
-                g.processing_info = manager._info(location)
-            info = g.processing_info
-            reason = availability(spec, node, info, validate_dataset=bool(info.get("features")))
-        if spec.review_required and manager.store.restricted_dataset_keys(owner()) is not None:
-            reason = "Curation review requires unrestricted dataset access"
-        if not spec.pipeline_allowed:
-            reason = "Use the dedicated authorized operation form"
-        if _current_user()["role"] == "viewer":
-            reason = "Viewer accounts are read-only"
-        from lerobot.data_platform.operators.presentation import presentation
-
-        return {
-            **value,
-            "available": reason is None,
-            "reason": reason,
-            "presentation": presentation(spec.operator_id),
-        }
+        if not hasattr(g, "processing_catalog"):
+            g.processing_catalog = OperatorCatalog(manager, owner(), request.args.get("location_id"))
+        return g.processing_catalog.describe(spec)
 
     @app.get("/api/operators")
     @checked

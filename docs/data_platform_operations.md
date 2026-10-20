@@ -8,6 +8,27 @@
 
 ## Pipeline coordinator
 
+### Qwen web assistant configuration
+
+The Pipeline AI assistant runs on Server A and reuses the server-side Qwen transport. Set
+`DASHSCOPE_API_KEY` in the selected environment's protected `/etc/data-platform/<env>/server.env`.
+An existing key used by Task setup/Temporal Caption can be reused; no key is exposed to browsers or
+required from individual users. Billing belongs to that platform Qwen account.
+`DASHSCOPE_BASE_URL` selects the compatible endpoint and must match the key's region.
+`DATA_PLATFORM_AI_MODEL` optionally selects a tool-calling Qwen model (default `qwen3.6-plus`);
+`DATA_PLATFORM_AI_ENABLED=0` disables the assistant without affecting the other Qwen features.
+Apply environment changes through the existing environment/service deployment procedure.
+
+Without a key, or when disabled, the assistant explains its unavailable state and the manual Pipeline
+editor continues to work. The additive `dp_ai_conversations` and `dp_ai_turns` tables hold private
+conversation state and request receipts; no Agent capability or compute-slot change is required.
+Verify an authenticated operator's draft generation, restore, explicit save/run and Viewer restrictions.
+Automated browser acceptance uses a deterministic fake provider; a separate live Qwen check should use
+synthetic schema and no production rows. See [the assistant contract](data_platform_operators.md#qwen-draft-assistant)
+for data sent to Qwen, quotas, request recovery and retention.
+
+### Coordinator service
+
 含统一算子功能的发行包增加 `data-platform-pipeline-coordinator@dev.service` / `@prod.service`。
 安装器随 Web 安装此轻量协调进程，使用相同环境配置与管理数据库；每个计算步骤仍由原有 Agent 执行。
 管理库仅新增流程表，旧执行器可继续收尾旧任务。维护期间协调器暂停推进。

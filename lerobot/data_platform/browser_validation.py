@@ -7,10 +7,12 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 BROWSER_TESTS = (
+    "tests/datasets/test_ai_assistant_browser.py",
     "tests/datasets/test_console_browser.py",
     "tests/datasets/test_processing_browser.py",
 )
 REQUIRED_CASES = {
+    "test_qwen_browser_draft_restore_scope_and_explicit_run",
     "test_console_browse_forms_pipeline_switching_and_viewer_role",
     "test_pipeline_browser_edit_run_restore_review_and_role",
 }

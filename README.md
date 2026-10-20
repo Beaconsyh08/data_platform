@@ -44,6 +44,10 @@
 首次初始化、角色切换、升级和回退请按 [双环境部署指南](docs/data_platform_environments.md) 操作。
 账号统一使用 username；改密和管理员重置流程见 [账号与密码恢复](docs/data_platform_accounts.md)。
 
+**Qwen 流程助手：** 在 Preprocessing → Pipeline 中描述处理需求，生成并预览算子链草稿，
+载入编辑器后由用户保存和运行。使用服务器统一配置的 Qwen API Key；
+配置、权限和使用边界见 [Qwen draft assistant](docs/data_platform_operators.md#qwen-draft-assistant)。
+
 **远程列表访问：** 数据集、任务列表及任务进度使用摘要响应，避免重复下载逐 episode 元数据和
 完整转换报告；进度、权限和输出链接保留。Datasets 页始终显示 Server 和扫描目录选项。
 排障见 [运维手册](docs/data_platform_operations.md)。

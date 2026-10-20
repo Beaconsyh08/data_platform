@@ -1,0 +1,77 @@
+"""Authenticated endpoints for server-funded Qwen draft assistance."""
+
+from functools import wraps
+
+from flask import jsonify, request
+from sqlalchemy.exc import SQLAlchemyError
+
+from lerobot.data_platform.ai_tools.service import (
+    AssistantBusyError,
+    AssistantService,
+    AssistantUnavailableError,
+)
+from lerobot.data_platform.job_management import JobConflictError
+from lerobot.data_platform.routes.control_plane import _current_user
+
+
+def register_ai_assistant_routes(app, ctx):
+    manager = app.extensions.get("data_platform_processing")
+    if manager is None:
+        return
+    app.extensions["data_platform_assistant"] = AssistantService(manager)
+
+    def checked(function):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            actor = _current_user()
+            if not actor:
+                return jsonify(error="Authentication required"), 401
+            if request.method != "GET" and actor["role"] not in {"admin", "data_manager", "operator"}:
+                return jsonify(error="Viewer accounts are read-only"), 403
+            if request.method == "POST" and not request.content_length:
+                return jsonify(error="Assistant requests require a positive Content-Length"), 411
+            if request.content_length and request.content_length > 16384:
+                return jsonify(error="Assistant request is too large"), 413
+            try:
+                return function(actor["user_id"], app.extensions["data_platform_assistant"], *args, **kwargs)
+            except PermissionError as exc:
+                return jsonify(error=str(exc)), 403
+            except KeyError:
+                return jsonify(error="Conversation, request or dataset was not found"), 404
+            except JobConflictError as exc:
+                return jsonify(error=str(exc)), 409
+            except AssistantBusyError as exc:
+                return jsonify(error=str(exc)), 429
+            except AssistantUnavailableError as exc:
+                return jsonify(error=str(exc)), 503
+            except SQLAlchemyError:
+                # Driver exceptions may contain bound conversation text; never log their SQL payloads.
+                return jsonify(error="Assistant storage is unavailable. Please retry later."), 503
+            except (ValueError, TypeError) as exc:
+                return jsonify(error=str(exc)), 400
+
+        return wrapped
+
+    @app.get("/api/ai-assistant/capabilities")
+    @checked
+    def assistant_capabilities(owner, service):
+        return jsonify(service.capabilities(owner))
+
+    @app.get("/api/ai-assistant/conversations/<conversation_id>")
+    @checked
+    def assistant_conversation(owner, service, conversation_id):
+        return jsonify(service.conversation(owner, conversation_id))
+
+    @app.route("/api/ai-assistant/turns", methods=["POST"])
+    @checked
+    def assistant_submit(owner, service):
+        value = request.get_json(silent=True)
+        if not isinstance(value, dict):
+            raise ValueError("A JSON object is required")
+        result = service.submit(owner, value)
+        return jsonify(result), 202 if result["status"] == "running" else 200
+
+    @app.get("/api/ai-assistant/turns/<request_id>")
+    @checked
+    def assistant_turn(owner, service, request_id):
+        return jsonify(service.turn(owner, request_id))

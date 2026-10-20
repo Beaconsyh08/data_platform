@@ -9,6 +9,7 @@ import pytest
 from werkzeug.serving import make_server
 
 from lerobot.data_platform.operators.registry import operation_ids, worker_manifest
+from tests.datasets.test_ai_assistant import FakeQwen
 from tests.datasets.test_console_services import console_app
 from tests.datasets.test_control_plane import _bootstrap, _store
 from tests.datasets.test_quality_eef import make_eef
@@ -20,8 +21,11 @@ def test_console_browse_forms_pipeline_switching_and_viewer_role(tmp_path, monke
         pytest.skip("Set DATA_PLATFORM_BROWSER_EXECUTABLE for real-browser acceptance")
     playwright = pytest.importorskip("playwright.sync_api")
     monkeypatch.setenv("DATA_PLATFORM_BOOTSTRAP_TOKEN", "bootstrap-secret")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-only-key")
     store = _store(tmp_path)
     app = console_app(tmp_path, database_url=str(store.engine.url))
+    fake_qwen = FakeQwen()
+    app.extensions["data_platform_assistant"].client_factory = lambda **kwargs: fake_qwen
     client = app.test_client()
     assert _bootstrap(client).status_code == 200
     source = make_eef(tmp_path / "source")
@@ -98,6 +102,13 @@ def test_console_browse_forms_pipeline_switching_and_viewer_role(tmp_path, monke
             page.wait_for_function(
                 "document.querySelector('[x-effect=\"syncPipelineWorkspace($el)\"]').shadowRoot.querySelector('#saved').value !== ''"
             )
+            page.locator("#ai-panel > summary").click()
+            page.locator("#ai-message").fill("提取第一个 episode")
+            page.get_by_role("button", name="Ask Qwen", exact=True).click()
+            page.get_by_role("button", name="Load draft into editor", exact=True).click()
+            playwright.expect(page.get_by_label("Name", exact=True)).to_have_value("First episode")
+            assert page.get_by_role("button", name="Run saved version", exact=True).is_disabled()
+            assert not store.list_jobs()
             # Changing the active dataset rebuilds the embedded editor, never reuses the old preview.
             page.evaluate(
                 "async id => {const app=Alpine.$data(document.querySelector('[x-data]')); await app.useRemoteDataset(app.remoteLocations.find(x=>x.location_id===id));}",

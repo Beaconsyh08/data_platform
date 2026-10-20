@@ -33,6 +33,13 @@ flowchart LR
 
 **Data Platform > Preprocessing > Pipeline** 子视图可组合顺序步骤；顶部 **Pipelines** 快捷入口进入同一子视图，原 `/pipelines` 地址继续可用。
 
+展开 **AI assistant · Qwen**，描述希望完成的处理；助手会查询算子参数并生成经过预览校验的草稿，
+也可能先询问必要信息。点击 **Load draft into editor** 会替换当前编辑器的未保存步骤，
+检查参数后再 **Save version → Run saved version**。AI 本身不会创建计算任务、批准复核或修改源数据。
+对话按账号和数据集隔离，可刷新恢复；**New chat** 新建对话。未配置服务器 Qwen Key 时入口会显示原因，
+手动编辑仍可用。请求会向 Qwen 发送对话和字段结构，请勿在提示词中输入密钥或敏感原始数据。
+详见 [助手的数据范围与额度](data_platform_operators.md#qwen-draft-assistant)。
+
 操作时：选择已登记的数据集，添加 Snapshot、数据转换或检测，
 编辑参数后点击 Preview，再 Save version、Run saved version。Dataset input 可引用前一步的数据输出；
 Evidence 传递报告。每次保存生成不可变 revision，运行固定该版本。多数据源必须来自同一节点。

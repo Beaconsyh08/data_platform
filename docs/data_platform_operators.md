@@ -18,7 +18,7 @@ inside the node's configured read roots; preview rejects an incompatible output 
 
 ```mermaid
 flowchart LR
-    UI[Processing forms / Pipelines / future AI tools] --> API[Application services]
+    UI[Processing forms / Pipelines / Qwen draft assistant] --> API[Application services]
     API --> DB[Immutable plan revisions and durable runs]
     DB --> C[Pipeline coordinator]
     C --> J[Existing Job / Attempt scheduler]
@@ -33,6 +33,53 @@ Queued dependent work is cancelled; running/interrupted work retains cache prote
 submission and scheduler claims reject retired inputs. See [storage](data_platform_storage_locations.md)
 for cleanup ownership and retry rules. Curation-backed repair review retains the existing unrestricted
 Curation access requirement even when submitted through a pipeline.
+
+## Qwen draft assistant
+
+Open **Preprocessing → Pipeline → AI assistant · Qwen** (also available at `/pipelines`),
+select a registered dataset and describe the workflow. The assistant reads the authorized operator
+catalog, consults parameter schemas and validates a draft through the same preview service as the editor.
+Click **Load draft into editor**, check or edit its parameters, then **Save version** and **Run saved
+version**. Loading a draft replaces the editor's unsaved steps; it does not save or execute them.
+Blocked drafts show the platform's validation reasons. Review-required steps retain human review.
+The assistant may ask a question instead of producing a draft.
+
+The first version uses the platform's server-configured Qwen account; users do not supply API keys.
+It supports one selected dataset and up to 12 steps, without additional source-location or lifecycle
+options. Existing manual forms remain available for those operations. The model has only
+`describe_operator` and `preview_pipeline` tools; it cannot submit Jobs, save pipelines, approve review,
+delete data or publish outputs. Existing Pipeline authorization applies when the user later saves/runs.
+
+Requests include the user's text, recent conversation, the last validated draft, operator descriptions,
+and selected dataset counts plus at most 40 field schemas. Raw rows, videos and filesystem roots are not
+automatically sent. Avoid entering secrets or sensitive data in prompts. The chosen Qwen endpoint receives
+this context, so configure a suitable region/provider policy for the installation.
+
+Conversations are private to the account and dataset identity. The browser remembers the current
+conversation per account/location for the tab session; the control database retains the last six exchanges
+and last validated draft. **New chat** starts a separate conversation. Reloading restores a pending request
+by ID; a disconnected browser does not automatically cause a second billable call. If the registered input
+identity changes, start a new chat. Dataset/account switches discard stale UI responses.
+
+The assistant permits one active request per user, four across Server A, and 20 requests per user per hour.
+Each request has at most four model calls, four tool calls per response, and 2,500 output tokens per model
+call. HTTP model calls use a 15-second socket timeout; abandoned requests expire after 90 seconds and late
+results cannot overwrite newer state. Failed accepted requests also count toward the hourly quota.
+Conversations inactive for 30 days and completed request receipts older than 30 days are incrementally
+removed on new admissions (up to 100 of each per admission); backups follow the database's retention policy.
+Audit events contain request identity, model, status and token usage, without conversation text.
+
+Authenticated API:
+
+- `GET /api/ai-assistant/capabilities`: availability and server model; never the API key.
+- `POST /api/ai-assistant/turns`: `request_id` and `conversation_id` UUIDs, `expected_revision` (0 for a
+  new conversation), `location_id` and a `message` of up to 3,000 characters. Send JSON with a positive
+  `Content-Length`, at most 16 KiB; streaming/chunked bodies are not accepted.
+- `GET /api/ai-assistant/turns/{request_id}`: idempotent request recovery.
+- `GET /api/ai-assistant/conversations/{conversation_id}`: authorized bounded history, revision and draft.
+
+Repeated identical request IDs reuse the result; changed content with the same ID returns 409.
+Model/endpoint/key overrides from the browser are rejected. Viewer accounts cannot use the assistant.
 
 ## Operator contract
 
