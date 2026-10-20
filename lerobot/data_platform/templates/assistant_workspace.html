@@ -1,6 +1,15 @@
 <style>
 @media(min-width:1000px){body.platform-assistant-open{padding-right:var(--assistant-width,420px)!important;box-sizing:border-box}}
 @media(max-width:999px){body.platform-assistant-open{padding-bottom:62dvh!important}}
+.dp-console-shell{container-type:inline-size}
+@container(max-width:1100px){
+  .dp-header-grid,.dp-header-grid.dp-header-grid-import{grid-template-areas:"brand jobs" "workspace workspace" "dataset dataset";grid-template-columns:minmax(0,1fr) auto}
+  .dp-header-grid .dp-header-dataset{justify-self:stretch;max-width:none}
+}
+@container(max-width:850px){
+  .dp-header-grid,.dp-header-grid.dp-header-grid-import{grid-template-areas:"brand" "workspace" "dataset" "jobs";grid-template-columns:minmax(0,1fr)}
+  .dp-header-grid .dp-header-utilities{flex-wrap:wrap;justify-content:flex-start}
+}
 </style>
 <template id="assistant-workspace-template">
 <style>
