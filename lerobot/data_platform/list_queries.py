@@ -27,7 +27,7 @@ def job_projection(model):
             model.options,
             without_json(
                 model.options,
-                ["$.snapshot", "$.task_config", "$.operator_snapshot", "$.registry", "$._source_locations"],
+                ["$.snapshot", "$.task_config", "$.operator_snapshot", "$.registry"],
             ),
         ),
         with_expression(

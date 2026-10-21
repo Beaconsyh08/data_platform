@@ -71,6 +71,15 @@ def test_permission_filter_precedes_pages_and_checks_hidden_sources(setup):  # n
     hidden = create()
     with store.sessions.begin() as session:
         session.get(RemoteJob, hidden["job_id"]).options = {"_source_locations": [other]}
+    # Internal summaries also feed queue/conflict decoration, including legacy jobs
+    # whose additional inputs exist only in _source_locations.
+    internal = next(
+        row for row in store.list_jobs(actor=admin, summary=True) if row["job_id"] == hidden["job_id"]
+    )
+    assert internal["options"]["_source_locations"][0]["location_id"] == other["location_id"]
+    from lerobot.data_platform.control_plane_summaries import summarize_job
+
+    assert "_source_locations" not in summarize_job(internal)["options"]
     store.set_mutation_locations(owner["user_id"], [location["location_id"]], actor=admin)
     rows, page = store.list_jobs(actor=owner, summary=True, page=ListPage.parse({"page_size": 1}, scope={}))
     assert [row["job_id"] for row in rows] == [visible["job_id"]]
