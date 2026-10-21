@@ -149,6 +149,6 @@ the platform already owns tool authorization, conversation state and confirmatio
 the server gives web and CLI users the same behavior.
 
 From this directory, `uv build --wheel` produces an installable client wheel. The server and CLI are
-versioned independently and reviewed together at each web release. When client code changes, publish
-the matching client and advance `latest/install.py` after verification. Browser-only changes do not
-require a new client version. An older server without action APIs cannot confirm operations from this client.
+versioned independently and released together: every platform upgrade also publishes a new compatible
+CLI version and advances `latest/install.py` after verification, including browser-only platform changes.
+The upgrade is incomplete until both platform and CLI acceptance finish. An older server without action APIs cannot confirm operations from this client.

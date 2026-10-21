@@ -44,13 +44,14 @@ verify anonymous downloads and hashes, denied anonymous bucket listing, installa
 account, password login, and archive protection. Never replace an existing versioned object with
 different bytes. Client distribution changes do not allocate a new server release: production promotion
 continues to use the exact accepted development package.
-At every web release, compare `clients/data-platform-cli/` with the last published client. If runtime
-client code changed, increment its independent version, build/test the wheel, update the installer's
+Every platform release must also publish a new compatible CLI release, even for browser-only platform
+changes. Increment the independent CLI version, build/test the wheel, update the installer's
 pinned SHA-256, publish all immutable versioned objects and verify anonymous readback before updating
 `cli/latest/install.py` to the exact verified installer bytes. Set the latest entry's cache control to
 `no-cache`; keep versioned objects immutable. Verify `latest` installation, `--version`, `--web`, normal
 TLS login and `/open` against the accepted server. Record both client and server identities in release
-acceptance. Pure web changes keep the client version and still check compatibility. Users upgrade by
+acceptance. The platform upgrade is incomplete until CLI publication and acceptance both finish;
+report platform and CLI versions plus the latest installation command together. Users upgrade by
 rerunning the latest installation command and restarting the CLI; old versioned install URLs stay pinned.
 CLI 0.3.1 prints the console URL before login and supports `/web` for saved conversation handoff with
 encoded dataset/report context. Browser login remains separate. No Server/Agent deployment or protocol
@@ -205,7 +206,7 @@ git status --short
 - 架构、调度或存储能力变化时，同步 [当前情况说明](distributed_data_platform_current_status.md)，
   删除已经失效的限制，不将历史快照继续标为当前能力。
 - 若改动节点执行、任务协议、能力上报或恢复逻辑，同步 Agent 部署说明、兼容契约与验收案例；
-  纯浏览器改动也要明确注明 Agent 协议无变化。CLI 使用独立版本，不因网页升级而重复发布客户端。
+  纯浏览器改动也要明确注明 Agent 协议无变化。CLI 版本独立递增；每次平台升级必须同步发布兼容的 CLI 新版本、更新 `latest` 并完成两端验收，不能只更新网页。
 页面上下文助手升级需验收 Episode 切换、Instruction 与 Viewer 显示一致、固定/恢复历史及迟到响应隔离，检查 Viewer 账号只读与范围撤销；操作卡片必须归属原消息，收起不会取消任务。Server 的 episode/page 上下文及 history 消息扩展兼容 CLI 0.3.0，无数据库迁移或 Agent 协议变更。
 - 源码文档记录能力和变更；实际部署状态、源码 commit、测试与已登录验收证据保存在对应发行包。
   不提前把“已实现”写成“已部署”，不在源码加入运行日志、账号凭据或私有数据。
