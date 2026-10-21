@@ -260,7 +260,8 @@ def test_web_and_version_flags_do_not_login(monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == f"Data Platform CLI {__version__}"
 
 
-def test_shell_prints_web_links_without_an_action(monkeypatch, capsys):
+@pytest.mark.parametrize("exit_command", ["/exit", "/quit", "exit", "quit"])
+def test_shell_prints_web_links_and_exits_with_pending_response(monkeypatch, capsys, exit_command):
     import prompt_toolkit
     from data_platform_cli import shell
 
@@ -272,10 +273,17 @@ def test_shell_prints_web_links_without_an_action(monkeypatch, capsys):
         def datasets(self):
             return [{"location_id": "location"}]
 
+        def select(self, location):
+            super().select(location)
+            self.pending = {"request_id": "pending"}
+
+        def chat(self, message):
+            pytest.fail("Exit command must not be sent as a chat message")
+
         def logout(self):
             self.user = None
 
-    inputs = iter(["1", "/web", "/open", "/exit"])
+    inputs = iter(["1", "/web", "/open", exit_command])
     monkeypatch.setattr(shell, "PlatformClient", FakeClient)
     monkeypatch.setattr(shell.getpass, "getpass", lambda *_: "test-password")
     monkeypatch.setattr(

@@ -18,16 +18,25 @@ installs the client and trusted CA, then opens the production username/password 
 ```
 
 The installer verifies the pinned SHA-256 of the wheel and public CA, then installs into
-`~/.local/share/data-platform-cli/0.3.1`. It uses your configured Python package index for dependencies
+`~/.local/share/data-platform-cli/0.3.2`. It uses your configured Python package index for dependencies
 and does not change your shell profile or system trust store. On Debian/Ubuntu, Python's `venv`
 support may require the distribution's `python3-venv` package. Repeat installation reuses the
 recognized installation; unrelated existing files are rejected. `--prefix` and `--bin-dir` select
 other installation directories. If installation fails, the previous launcher is preserved.
 
-`latest/install.py` selects the latest published compatible client (currently 0.3.1). Repeat the
-same command to upgrade an older installation; existing terminals keep their old version until restarted.
+`latest/install.py` selects the latest published compatible client (currently 0.3.2). Repeat the
+same command once to upgrade a client older than 0.3.2. After that, updates only need:
+
+```bash
+~/.local/bin/data-platform update
+```
+
+If `~/.local/bin` is on your PATH, use `data-platform update`. No login or sudo is needed.
+The command checks the official latest installer and retains your custom installation and launcher
+directories. It reports when already up to date, refuses downgrades, and preserves the old launcher
+if installation fails. Exit the CLI first; existing terminals keep their old version until restarted.
 Versioned URLs such as `cli/0.1.0/install.py` intentionally remain pinned and never upgrade themselves.
-Use `cli/0.3.1/install.py` when you need the exact 0.3.1 release. The installer still pins the wheel and CA
+Use `cli/0.3.2/install.py` when you need the exact 0.3.2 release. The installer still pins the wheel and CA
 hashes to immutable versioned objects. The client does not silently update itself.
 
 Check your installed version or print the current environment's website without logging in:
@@ -101,9 +110,10 @@ their dedicated web interfaces.
 | `/open` | Print fresh authorized result/task links, or website links when no action/result is available |
 | `/web` | Print this environment's console and saved conversation links |
 | `/confirm again` | Explicitly start a new run after reviewing an existing result or failed attempt |
-| `/exit` or Ctrl+D | Log out and exit |
+| `/exit`, `/quit`, `exit`, `quit`, or Ctrl+D on an empty input line | Log out and exit, even with a pending response |
 
-Ctrl+C clears input or interrupts waiting; it does not cancel work already accepted by the server.
+Ctrl+C clears input or interrupts waiting; it does not exit or cancel work already accepted by the server.
+To leave after interrupting a response, type `/exit`, `exit`, or `quit`.
 If the connection drops, use `/resume`. After restarting the CLI, use the displayed conversation ID with
 `/restore`. If a request never reached the server there is nothing to restore. Starting a new conversation
 does not cancel the old server request. A new exchange invalidates any older, unconfirmed action card.

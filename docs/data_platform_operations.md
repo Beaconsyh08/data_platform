@@ -52,7 +52,11 @@ pinned SHA-256, publish all immutable versioned objects and verify anonymous rea
 TLS login and `/open` against the accepted server. Record both client and server identities in release
 acceptance. The platform upgrade is incomplete until CLI publication and acceptance both finish;
 report platform and CLI versions plus the latest installation command together. Users upgrade by
-rerunning the latest installation command and restarting the CLI; old versioned install URLs stay pinned.
+running `data-platform update` (CLI 0.3.2+) and restarting the CLI; older clients need the latest
+installation command once. Old versioned install URLs stay pinned. The managed launcher exports its
+installation bin directory so updates retain custom paths, and the installer atomically replaces the
+launcher only after validating the new environment. Accept current-version no-op, failed update
+preservation and pending-response exit as part of CLI checks.
 CLI 0.3.1 prints the console URL before login and supports `/web` for saved conversation handoff with
 encoded dataset/report context. Browser login remains separate. No Server/Agent deployment or protocol
 change is required for this client-only release.

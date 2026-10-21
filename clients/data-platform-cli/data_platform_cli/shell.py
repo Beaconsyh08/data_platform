@@ -39,11 +39,18 @@ def safe_terminal(value):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Chat with your Data Platform using your platform account.")
     parser.add_argument("--version", action="version", version=f"Data Platform CLI {__version__}")
-    parser.add_argument("--server", required=True, help="HTTPS platform origin")
+    parser.add_argument("command", nargs="?", choices=["update"], help="Update the installed CLI")
+    parser.add_argument("--server", help="HTTPS platform origin")
     parser.add_argument("--username")
     parser.add_argument("--ca-bundle", help="CA certificate file for an internal deployment")
     parser.add_argument("--web", action="store_true", help="Print the web console URL without logging in")
     args = parser.parse_args(argv)
+    if args.command == "update":
+        from data_platform_cli.update import update
+
+        return update()
+    if not args.server:
+        parser.error("--server is required for login or --web")
     try:
         client = PlatformClient(args.server, ca_bundle=args.ca_bundle)
     except ClientError as error:
@@ -63,6 +70,7 @@ def main(argv=None):
 
     say(f"Data Platform CLI {__version__} · Web console: {client.origin}/")
     say("/web shows browser links. Sign in separately in your browser with the same account.")
+    say("Exit: /exit, exit, quit, or Ctrl+D on an empty input line.")
     keys = KeyBindings()
 
     @keys.add("escape", "enter")
@@ -133,7 +141,7 @@ def main(argv=None):
                 message = prompt.prompt("You › ").strip()
                 if not message:
                     continue
-                if message == "/exit":
+                if message in {"/exit", "/quit", "exit", "quit"}:
                     break
                 if message == "/help":
                     say(
@@ -240,7 +248,9 @@ def main(argv=None):
                         result = client.chat(message)
                     display(result)
             except KeyboardInterrupt:
-                say("Input interrupted. Already submitted server work continues; use /resume or /status.")
+                say(
+                    "Input interrupted. /exit to quit; /resume or /status to continue. Server work continues."
+                )
             except (ClientError, ValueError) as error:
                 say(str(error))
     except (EOFError, KeyboardInterrupt):

@@ -3,6 +3,8 @@
 import hashlib
 import importlib.util
 import io
+import json
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -63,3 +65,16 @@ def test_failed_install_does_not_replace_launcher(installer, monkeypatch, tmp_pa
     assert launcher.read_text() == previous
     assert not (prefix / installer.VERSION).exists()
     assert not (prefix / ".install.lock").exists()
+
+
+def test_managed_launcher_preserves_custom_update_directory(installer, tmp_path):
+    prefix, bin_dir = tmp_path / "custom install", tmp_path / "custom bin"
+    target = prefix / installer.VERSION
+    target.mkdir(parents=True)
+    ca = target / "data-platform-ca.crt"
+    ca.write_bytes(b"test CA")
+    installer.FILES = {ca.name: hashlib.sha256(ca.read_bytes()).hexdigest()}
+    (target / "data-platform-install.json").write_text(json.dumps(installer.FILES))
+    launcher = installer.install(prefix, bin_dir)
+    assert f"export DATA_PLATFORM_CLI_BIN_DIR={shlex.quote(str(bin_dir))}\n" in launcher.read_text()
+    assert ' "$@"' in launcher.read_text()

@@ -13,10 +13,10 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.3.1"
-BASE_URL = "https://algorithm-vla-cli-downloads.oss-cn-beijing.aliyuncs.com/cli/0.3.1"
+VERSION = "0.3.2"
+BASE_URL = "https://algorithm-vla-cli-downloads.oss-cn-beijing.aliyuncs.com/cli/0.3.2"
 FILES = {
-    "data_platform_cli-0.3.1-py3-none-any.whl": "6c63cb09cf0d480183f93311f3790c40b1f763cb2ff87ebc67865eba690ac5c1",
+    "data_platform_cli-0.3.2-py3-none-any.whl": "b1b827be0d357338f1d2aeac12f04d74aecf5bb243c98061cd7eb371134cb12e",
     "data-platform-ca.crt": "03bb065cae8c77a02af2f3d2bfec97ecb4be0c8a913d8b5934261be43343b776",
 }
 LAUNCHER_MARKER = "# Data Platform CLI managed launcher"
@@ -87,6 +87,7 @@ def install(prefix: Path, bin_dir: Path) -> Path:
         content = (
             "#!/bin/sh\n"
             f"{LAUNCHER_MARKER}\n"
+            f"export DATA_PLATFORM_CLI_BIN_DIR={shlex.quote(str(bin_dir))}\n"
             f"exec {shlex.quote(str(target / 'bin/data-platform'))}"
             " --server https://10.8.8.40"
             f" --ca-bundle {shlex.quote(str(target / 'data-platform-ca.crt'))}"

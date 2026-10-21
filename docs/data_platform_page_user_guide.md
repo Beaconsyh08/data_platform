@@ -67,7 +67,7 @@ Quality 的 **Explain report with AI**、Jobs 的 **Explain task with AI** 和 P
 
 **Preferences** 可设置回复语言、详细程度和最多五个常用算子，支持停用、修改和清空。设置与同账号、同环境的 CLI 共用，下次发送时生效。常用算子只影响建议，不会自动添加步骤或修改参数；助手不会根据聊天内容偷偷修改偏好。
 
-也可使用[命令行助手](../clients/data-platform-cli/README.md)：复制其中的完整安装命令即可自动下载客户端和证书，并打开生产登录，无需手动下载文件或填写模型 API Key。需要 Python 3.10+、venv、curl 和公司网络/VPN。之后运行 `~/.local/bin/data-platform`，通过平台用户名、密码登录，使用 `/confirm` 确认新操作、`/status` 刷新状态、`/open` 查看授权结果链接；已有结果或失败记录需 `/confirm again` 明确重新运行。 CLI 0.3.1 启动时显示网页地址；`/web` 输出当前环境首页及已保存会话链接，`~/.local/bin/data-platform --web` 可免登录查看网址，`--version` 查看客户端版本。浏览器需独立登录同一账号。安装命令使用 `cli/latest/install.py`，重复执行即可升级；旧的固定版本地址仍安装原版本。
+也可使用[命令行助手](../clients/data-platform-cli/README.md)：复制其中的完整安装命令即可自动下载客户端和证书，并打开生产登录，无需手动下载文件或填写模型 API Key。需要 Python 3.10+、venv、curl 和公司网络/VPN。之后运行 `~/.local/bin/data-platform`，通过平台用户名、密码登录，使用 `/confirm` 确认新操作、`/status` 刷新状态、`/open` 查看授权结果链接；已有结果或失败记录需 `/confirm again` 明确重新运行。 CLI 0.3.1 启动时显示网页地址；`/web` 输出当前环境首页及已保存会话链接，`~/.local/bin/data-platform --web` 可免登录查看网址，`--version` 查看客户端版本。浏览器需独立登录同一账号。安装命令使用 `cli/latest/install.py`，重复执行即可升级；旧的固定版本地址仍安装原版本。CLI 0.3.2 起可退出后运行 `~/.local/bin/data-platform update` 升级；旧客户端只需再执行一次完整安装命令。输入 `/exit`、`exit`、`quit` 或在空输入行按 Ctrl+D 退出，Ctrl+C 只中断等待。
 对话按账号、环境及目标隔离，可刷新恢复；输入版本、任务 Attempt 或报告变化后需 New chat。
 请求发送用户文字、受限元数据及脱敏摘要，不自动上传原始行、图像视频、完整日志或文件路径。
 请勿在提示词中输入凭据。未配置 Qwen 或服务暂不可用时，手动编辑仍可使用。
