@@ -153,6 +153,10 @@ def _curation_schema(parameters):
                 "type": ["array", "null"] if name in {"episodes", "selected_tags"} else "array",
                 "items": item,
             }
+            if name == "episodes":
+                # Curation execution treats omitted and null episode selection as all episodes.
+                # Publish that default so previews, historical comparisons and admission agree.
+                props[name]["default"] = None
         elif name in {"qc_config", "per_scenario_counts"}:
             props[name] = {"type": "object"}
         else:

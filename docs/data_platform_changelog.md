@@ -4,6 +4,11 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## V0.3.2 · OperationParameterDefaults · 2026-10-21
+
+- Curation 显式描述既有的全部 episode 默认值，统一省略 `episodes` 与 `episodes: null` 的参数解析；结果匹配与并发去重使用同一份解析值。
+- **影响范围**：算子参数描述与 Server 预览；计算行为、数据选择范围、算子版本与 Agent 协议保持一致，CLI 仍为 0.3.0。
+
 ## V0.3.1 · OperationResultNavigation · 2026-10-21
 
 - 修复 Curation 书签重定向和工作台初始化丢失报告 ID 的问题；助手结果卡片直接打开指定报告／标注子视图，不回落到最新结果或首页。

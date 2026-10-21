@@ -343,3 +343,21 @@ def test_status_rechecks_role_and_result_links_never_cross_accounts(assistant, t
         session.get(ControlPlaneUser, owner).role = "viewer"
     with pytest.raises(PermissionError):
         action_status(service, owner, result["request_id"])
+
+
+def test_omitted_and_null_all_episode_selection_share_results_and_active_run(assistant, tmp_path):  # noqa: F811
+    from lerobot.data_platform.ai_tools.actions import prepare
+    from lerobot.data_platform.ai_tools.operation_state import inspect_operation
+    from lerobot.data_platform.processing.service import single_operation
+
+    prepared(assistant, tmp_path, "curation.quality")
+    service, _, owner, body = assistant
+    quality_artifact(assistant, tmp_path)
+    omitted = prepare(service, owner, body["location_id"], "curation.quality", {"checks": ["s3"]})
+    explicit = prepare(
+        service, owner, body["location_id"], "curation.quality", {"checks": ["s3"], "episodes": None}
+    )
+    assert omitted["parameters"] == explicit["parameters"]
+    assert single_operation(omitted["definition"]) == single_operation(explicit["definition"])
+    assert inspect_operation(service, owner, omitted)["state"] == "ready"
+    assert inspect_operation(service, owner, explicit)["state"] == "ready"
