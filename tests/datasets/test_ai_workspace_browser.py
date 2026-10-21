@@ -150,3 +150,111 @@ def test_workspace_remains_interactive_and_restores_shared_history_preferences(a
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_episode_follow_pin_late_answer_and_message_cards(assistant, tmp_path):  # noqa: F811
+    import json
+
+    from tests.datasets.test_ai_assistant import call
+    from tests.datasets.test_ai_assistant_context import episode_fixture, text_response
+
+    executable = os.environ.get("DATA_PLATFORM_BROWSER_EXECUTABLE")
+    if not executable:
+        pytest.skip("Set DATA_PLATFORM_BROWSER_EXECUTABLE for real browser acceptance")
+    playwright = pytest.importorskip("playwright.sync_api")
+    service, fake, owner, value = assistant
+    episode_fixture(service, value["location_id"], tmp_path)
+    app = _app(tmp_path, service.store)
+    ctx = SimpleNamespace(control_plane_store=service.store, lifecycle_store=None)
+    register_processing_routes(app, ctx)
+    register_ai_assistant_routes(app, ctx)
+    app.extensions["data_platform_assistant"] = service
+
+    @app.get("/episode/<int:index>")
+    def episode(index):
+        return render_template_string(
+            """<body><a id="episode-next" href="/episode/{{ 1-index }}">Switch episode</a>
+        {% include 'assistant_workspace.html' %}<script>
+        document.body.dataset.assistantStandalone='true';
+        window.platformAssistantPage={datasetKey:'node/source',episodeIndex:{{ index }}};
+        {% include 'pipeline_assistant.js' %}{% include 'assistant_launcher.js' %}
+        </script></body>""",
+            index=index,
+        )
+
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    entered, release = threading.Event(), threading.Event()
+    try:
+        with playwright.sync_playwright() as runtime:
+            browser = runtime.chromium.launch(executable_path=executable, args=["--no-sandbox"])
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.request.post(
+                base + "/api/auth/login", data={"username": "admin", "password": "strong-admin-password"}
+            )
+            page.goto(base + "/episode/0")
+            page.get_by_role("button", name="Open AI assistant", exact=True).click()
+            playwright.expect(page.locator("#assistant-target")).to_contain_text("Episode 0")
+            playwright.expect(page.locator("#assistant-follow")).to_be_checked()
+            fake.responses = [
+                call("describe_operator", {"operator_id": "viewer.prepare"}),
+                call("prepare_action", {"operator_id": "viewer.prepare", "parameters": {}}),
+            ]
+            page.locator("#ai-message").fill("Prepare Viewer")
+            page.locator("#ai-message").press("Enter")
+            playwright.expect(page.locator(".assistant-message #ai-action")).to_be_visible()
+            playwright.expect(
+                page.get_by_role("link", name="Open prepared Viewer", exact=True).first
+            ).to_be_visible()
+            assert not service.store.list_jobs()
+            fake.responses = [text_response("Instruction: fold and store clothes")]
+            page.locator("#ai-message").fill("Instruction?")
+            page.locator("#ai-message").press("Enter")
+            playwright.expect(page.locator("#ai-history")).to_contain_text(
+                "Instruction: fold and store clothes"
+            )
+            assert page.locator("#ai-action button", has_text="Confirm and run").count() == 0
+            assert page.locator(".assistant-message.assistant").last.locator(".assistant-action").count() == 0
+            assert page.locator("#ai-action").evaluate("e => !!e.closest('#ai-history')")
+            page.locator("#episode-next").click()
+            playwright.expect(page.locator("#assistant-target")).to_contain_text("Episode 1")
+            playwright.expect(page.locator("#ai-history")).not_to_contain_text("fold and store")
+            fake.responses = [text_response("Instruction: open the drawer")]
+            page.locator("#ai-message").fill("Instruction?")
+            page.locator("#ai-message").press("Enter")
+            playwright.expect(page.locator("#ai-history")).to_contain_text("open the drawer")
+            context = json.loads(fake.requests[-1]["messages"][2]["content"].split("\n", 1)[1])["context"]
+            assert context["episode_index"] == 1 and context["instructions"] == ["open the drawer"]
+            page.locator("#assistant-follow").uncheck()
+            page.locator("#episode-next").click()
+            playwright.expect(page.locator("#assistant-target")).to_contain_text("Episode 1")
+            page.locator("#assistant-follow").check()
+            playwright.expect(page.locator("#assistant-target")).to_contain_text("Episode 0")
+            playwright.expect(page.locator("#ai-history")).to_contain_text("fold and store clothes")
+
+            def slow(payload):
+                entered.set()
+                assert release.wait(15)
+                return text_response("LATE EPISODE ZERO ANSWER")
+
+            fake.post_chat_completion = slow
+            page.locator("#ai-message").fill("Explain more")
+            page.locator("#ai-message").press("Enter")
+            assert entered.wait(10)
+            page.locator("#episode-next").click()
+            release.set()
+            playwright.expect(page.locator("#assistant-target")).to_contain_text("Episode 1")
+            playwright.expect(page.locator("#ai-message")).to_be_enabled()
+            assert "LATE EPISODE" not in page.locator("#ai-history").inner_text()
+            page.set_viewport_size({"width": 390, "height": 844})
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            assert not errors
+            browser.close()
+    finally:
+        release.set()
+        server.shutdown()
+        thread.join(timeout=5)

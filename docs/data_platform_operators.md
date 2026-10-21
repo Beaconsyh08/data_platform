@@ -56,7 +56,7 @@ internal steps for diagnosis without changing the stored plan or execution order
 Blocked drafts remain visible with step ID, position, operator, code, reason and suggested remedy.
 Strict save/run validation is unchanged; parser diagnostics are structured in preview only.
 
-Dataset, published Quality-report and Jobs entries open `/assistant` with a typed target. These share the
+Dataset, Viewer episode, published Quality-report and Jobs entries open `/assistant` with a typed target. These share the
 same conversation service, bounded context readers and evidence links. Viewer accounts may ask read-only
 questions; only operation roles receive editable drafts and preparation cards. Supported single-input operations can be submitted from an explicit confirmation card.
 Evidence-dependent operations, source mutations, retries and review retain their existing interfaces. Job context retains the normal owner/admin visibility rule.
@@ -75,13 +75,13 @@ Pipeline service, using a stable delivery identity; repeated confirmation or a l
 same run. The server-owned observation in `conversation.operation` and the action status endpoint is shared by web and CLI. It distinguishes `new`, `running`, `ready`, `history` and `failed`, with generated result/Jobs links. Own active attempts and authorized published results are checked; other accounts' private task details are not exposed. Equivalent concurrent single-operation Pipeline confirmations coalesce under the existing admission transaction. This does not change manual Pipeline submission semantics.
 Result reuse requires the registered input identity, operator version, parameters and published files to match; Curation also checks the bound dataset version. Viewer caches lack a cache-to-Job provenance binding and remain explicitly historical, with an authorized opening link. Caption results that need the remote reader are historical with an Inspect caption results link. This check does not rescan raw source contents.
 History is bounded to 20 recent operation Jobs and 20 active pipelines, with truncation disclosed. Incomplete unmatched history blocks confirmation until narrowed. JSON projections and local manifests are bounded; full reports, labels, embeddings and media are not loaded. Quality always includes a coverage caveat. Missing artifacts or changed settings do not count as reusable success. Failed attempts link to existing recovery controls rather than rerunning automatically.
-The card stays beside the reply, changes from confirmation to progress to result navigation, and retains parameters. Change settings in chat prepares a new immutable card. No automatic-run mode is enabled. Pending cards become stale after another
+Each retained action is attached to its original assistant message, with parameters in expandable details. Ready/historical results and running work use compact cards; stale unconfirmed cards hide execution controls. The composer contains no persistent operation panel. Change settings in chat prepares a new immutable card. No automatic-run mode is enabled. Pending cards become stale after another
 exchange. Confirmed runs remain visible after follow-up messages and page reloads.
 Assistant actions cannot clear human review flags, change task configuration, override data versions,
 set paths or submit source mutations. Those advanced options remain in the manual forms.
 
 Requests include the user's text, recent conversation, the last validated draft, operator descriptions,
-selected dataset counts plus at most 40 field schemas, and sanitized Quality/task summaries. Context
+selected dataset counts plus at most 40 field schemas, sanitized Quality/task summaries, and the selected Viewer episode metadata. Episode Instruction comes from the published manifest tasks, not a required feature column. Only a registered, authorized manifest is read (at most 1 MiB); at most ten instruction strings of 1,000 characters are forwarded with truncation indicated. Missing or unverifiable metadata returns an unavailable reason, not a claim that source instructions do not exist. This context does not imply visual observation. Context
 results are capped at 20 KiB each and 60 KiB cumulatively, with at most 20 anomaly examples or task events.
 Legacy report reads stop at 256 KiB and report unavailability rather than reading an entire large artifact.
 Raw rows, images, videos, full logs and filesystem paths are not automatically sent.
@@ -96,7 +96,7 @@ These filters supplement object authorization and the fixed tool allowlist; they
 all prompt injection or secret encodings. Existing backups are not rewritten. Avoid entering secrets or sensitive data in prompts. The chosen Qwen endpoint receives
 this context, so configure a suitable region/provider policy for the installation.
 
-Conversations are private to the account, environment, dataset and typed target. Jobs bind Attempt identity; Quality binds version and report fingerprints. The browser remembers the current
+Conversations are private to the account, environment, dataset and typed target. Jobs bind Attempt identity; Quality binds version and report fingerprints; Viewer episode contexts bind the selected episode metadata digest. The browser remembers the current
 conversation per account/location for the tab session; the control database retains the last six exchanges
 and last validated draft. **New chat** starts a separate conversation. Reloading restores a pending request
 by ID; a disconnected browser does not automatically cause a second billable call. If the registered input
@@ -104,9 +104,7 @@ identity changes, start a new chat. Dataset/account switches discard stale UI re
 
 The console assistant is a nonmodal, collapsible side workspace with adjustable desktop width and a
 bottom panel on narrow screens. Browsing and forms remain usable while it is open. The active conversation
-keeps its dataset/report/task target; navigating elsewhere does not retarget a prepared action. A visible
-context notice offers a new conversation for the current dataset. History restoration is explicit and
-rechecks authorization and input identity. The same panel serves dataset, Quality, Jobs and the embedded
+follows the current page, dataset and Viewer episode by default, restoring a separate conversation for each context. Disable **Follow current page** to pin it; explicit history restoration pins that conversation. A prepared action always retains its original target. Context changes discard late responses; they never cancel submitted work. History restoration rechecks authorization and input identity. The same panel serves dataset, Quality, Jobs and the embedded
 Pipeline editor; standalone Pipeline and Viewer pages retain assistant access.
 
 The highlighted bottom-right **AI assistant** launcher replaces the generic header **Ask AI** button.
@@ -145,12 +143,13 @@ Audit events contain request identity, model, status and token usage, without co
 
 Authenticated API:
 
+- `GET /api/ai-assistant/page-context?dataset_key=...&episode_index=...`: resolve a Viewer reference after dataset authorization; accepts no instruction text or filesystem path.
 - `GET /api/ai-assistant/capabilities`: availability and server model; never the API key.
 - `POST /api/ai-assistant/turns`: `request_id` and `conversation_id` UUIDs, `expected_revision` (0 for a
-  new conversation), `location_id`, optional `context: {type, target_id}` (`pipeline`, `dataset`, `quality`, `job`), optional current editor `draft` (up to 12 single-input steps), and a `message` of up to 3,000 characters. Send JSON with a positive
+  new conversation), `location_id`, optional `context: {type, target_id, page?}` (`pipeline`, `dataset`, `quality`, `job`, `episode`; episode target is a decimal episode index), optional current editor `draft` (up to 12 single-input steps), and a `message` of up to 3,000 characters. Send JSON with a positive
   `Content-Length`, at most 16 KiB; streaming/chunked bodies are not accepted.
 - `GET /api/ai-assistant/turns/{request_id}`: idempotent request recovery.
-- `GET /api/ai-assistant/conversations/{conversation_id}`: authorized bounded history, revision, draft and current action.
+- `GET /api/ai-assistant/conversations/{conversation_id}`: authorized bounded history, revision, draft and current action. Assistant history messages add request IDs and their action/observation; legacy top-level action/operation remain compatible with CLI 0.3.0.
 - `POST /api/ai-assistant/actions/{request_id}/confirm`: body `{"revision": n}`, with optional boolean `rerun: true` for an explicit new run after viewing existing results/attempts; confirms the stored
   action without accepting client-supplied parameters or dataset overrides. Existing CSRF checks apply.
 - `GET /api/ai-assistant/actions/{request_id}`: authorized availability even before confirmation, or run status and bounded step/Job references. Existing receipt fields remain additive-compatible.

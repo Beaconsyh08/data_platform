@@ -435,6 +435,7 @@ window.createCurationWorkspace = (root, initialTarget) => {
     if (result?.operation === 'curation.quality' && target.location_id) {
       const link = text('a','Explain report with AI');
       link.href = '/assistant?' + new URLSearchParams({type:'quality',target_id:result.run,location_id:target.location_id});
+      window.syncPlatformAssistantContext?.({type:'quality',targetId:result.run,locationId:target.location_id,page:'quality'});
       link.onclick = event => {if (window.openPlatformAssistant) {event.preventDefault(); window.openPlatformAssistant({type:'quality',targetId:result.run,locationId:target.location_id});}};
       $('result-body').append(link);
     }

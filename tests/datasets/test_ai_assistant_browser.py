@@ -316,6 +316,7 @@ def test_assistant_enter_composition_confirmation_and_role(assistant, tmp_path, 
             if already_ready:
                 expect(page.locator("#ai-action a")).to_have_text("Open prepared Viewer")
                 expect(page.get_by_role("button", name="Confirm and run", exact=True)).to_be_hidden()
+                page.get_by_text("Operation details", exact=True).click()
                 page.get_by_text("Rebuild Viewer", exact=True).click()
             page.set_viewport_size({"width": 390, "height": 844})
             page.locator("#ai-action").scroll_into_view_if_needed()
@@ -388,11 +389,13 @@ def test_quality_operation_card_states_and_navigation(assistant, tmp_path, state
                 playwright.expect(card.get_by_role("link", name="Open Quality report")).to_be_visible()
                 assert "run=" in card.get_by_role("link", name="Open Quality report").get_attribute("href")
                 playwright.expect(card).to_contain_text("coverage")
+                card.get_by_text("Operation details", exact=True).click()
                 card.get_by_text("Run again", exact=True).click()
             elif state == "running":
                 playwright.expect(card).to_contain_text("Task running")
                 assert card.get_by_role("button", name="Confirm and run").count() == 0
                 playwright.expect(card.get_by_role("link", name="Open Jobs", exact=True)).to_be_visible()
+                card.get_by_text("Operation details", exact=True).click()
             else:
                 playwright.expect(card.get_by_role("button", name="Confirm and run")).to_be_enabled()
             assert not service.manager.runs(owner)

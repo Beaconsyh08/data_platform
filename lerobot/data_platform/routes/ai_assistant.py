@@ -77,6 +77,15 @@ def register_ai_assistant_routes(app, ctx):
     def assistant_capabilities(owner, service):
         return jsonify(service.capabilities(owner))
 
+    @app.get("/api/ai-assistant/page-context")
+    @checked
+    def assistant_page_context(owner, service):
+        from lerobot.data_platform.ai_tools.context import page_context
+
+        return jsonify(
+            page_context(service, owner, request.args.get("dataset_key"), request.args.get("episode_index"))
+        )
+
     @app.get("/api/ai-assistant/conversations")
     @checked
     def assistant_history(owner, service):

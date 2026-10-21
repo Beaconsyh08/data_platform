@@ -235,3 +235,58 @@ def confirm(service, owner, action_id, revision, *, rerun=False):
             operator_id=action["operator_id"],
         )
     return receipt
+
+
+def attach_message_actions(service, session, owner, conversation, view):
+    """Attach at most six retained cards to their own assistant messages; keep legacy top-level fields."""
+    if service.manager._actor(session, owner, write=False).role == "viewer":
+        return
+    from lerobot.data_platform.ai_tools.operation_state import action_status
+
+    turns = session.scalars(
+        select(AssistantTurn)
+        .where(
+            AssistantTurn.conversation_id == conversation.conversation_id,
+            AssistantTurn.status == "done",
+        )
+        .order_by(AssistantTurn.created_at.desc(), AssistantTurn.result["revision"].as_integer().desc())
+        .limit(6)
+    ).all()
+    used = set()
+    for item in reversed(view["history"]):
+        if item["role"] != "assistant":
+            continue
+        turn = next(
+            (
+                t
+                for t in turns
+                if t.request_id not in used
+                and (
+                    item.get("request_id") == t.request_id
+                    if item.get("request_id")
+                    else item["content"]
+                    == DisclosureGuard.from_environment().response(t.result).get("message")
+                )
+            ),
+            None,
+        )
+        if turn is None:
+            continue
+        used.add(turn.request_id)
+        action = DisclosureGuard.from_environment().response(turn.result).get("action")
+        if not action:
+            continue
+        action = {
+            **action,
+            "action_id": turn.request_id,
+            "revision": turn.result["revision"],
+            "is_current": turn.result["revision"] == conversation.revision,
+        }
+        if turn.result.get("execution"):
+            action["execution"] = turn.result["execution"]
+        item["action"] = action
+        item["operation"] = (
+            view["operation"]
+            if (view.get("action") or {}).get("action_id") == turn.request_id
+            else action_status(service, owner, turn.request_id)
+        )

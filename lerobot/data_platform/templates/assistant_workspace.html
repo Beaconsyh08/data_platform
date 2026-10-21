@@ -22,7 +22,7 @@
 {% include "assistant_trigger.html" %}
 <aside id="assistant-dock" aria-label="AI assistant workspace" hidden>
   <div id="assistant-header"><strong>AI assistant</strong><button id="assistant-close" aria-label="Collapse AI assistant">Collapse</button></div>
-  <p id="assistant-target"></p><p id="assistant-pinned" hidden>Conversation target is pinned. Browsing does not change pending operations.</p>
+  <p id="assistant-target"></p><label><input id="assistant-follow" type="checkbox" checked> Follow current page</label><p id="assistant-pinned" hidden>Conversation context is pinned. Enable Follow current page to switch.</p>
   <button id="assistant-use-current" hidden>Use current dataset</button>
   <details id="assistant-size"><summary>Panel width</summary><label>Width<input id="assistant-width" type="range" min="320" max="640" step="20"></label></details>
   {% include "assistant_panel.html" %}

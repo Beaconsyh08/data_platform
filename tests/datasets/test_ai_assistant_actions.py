@@ -361,3 +361,26 @@ def test_omitted_and_null_all_episode_selection_share_results_and_active_run(ass
     assert single_operation(omitted["definition"]) == single_operation(explicit["definition"])
     assert inspect_operation(service, owner, omitted)["state"] == "ready"
     assert inspect_operation(service, owner, explicit)["state"] == "ready"
+
+
+def test_cards_stay_attached_to_their_own_messages_and_model_history_stays_standard(assistant, tmp_path):  # noqa: F811
+    result = prepared(assistant, tmp_path)
+    service, fake, owner, body = assistant
+    fake.responses = [text_response("Instruction explanation")]
+    service.submit(
+        owner,
+        {**body, "request_id": str(uuid.uuid4()), "expected_revision": 1, "message": "Explain this dataset"},
+    )
+    view = service.conversation(owner, body["conversation_id"])
+    assert view["history"][1]["action"]["action_id"] == result["request_id"]
+    assert not view["history"][1]["action"]["is_current"]
+    assert "action" not in view["history"][-1]
+    assert all(set(m) <= {"role", "content"} for m in fake.requests[-1]["messages"])
+    with service.store.sessions.begin() as session:
+        from lerobot.data_platform.ai_tools.models import AssistantConversation
+
+        row = session.get(AssistantConversation, body["conversation_id"])
+        row.history = [{k: v for k, v in item.items() if k != "request_id"} for item in row.history]
+    legacy = service.conversation(owner, body["conversation_id"])
+    assert legacy["history"][1]["action"]["action_id"] == result["request_id"]
+    assert "action" not in legacy["history"][-1]

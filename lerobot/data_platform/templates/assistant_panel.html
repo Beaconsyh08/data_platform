@@ -1,6 +1,6 @@
 <style>
 #ai-panel{border:1px solid #334155;border-radius:12px;padding:16px;min-width:0}
-#ai-action{border:1px solid #475569;padding:12px;border-radius:10px;margin-top:12px}#ai-action .assistant-primary-link{display:inline-block;padding:8px 12px;background:#0369a1;color:white;border-radius:6px;margin:6px 0}#ai-action pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.assistant-action{border:1px solid #475569;padding:12px;border-radius:10px;margin-top:12px}.assistant-action .assistant-primary-link{display:inline-block;padding:8px 12px;background:#0369a1;color:white;border-radius:6px;margin:6px 0}.assistant-action pre{white-space:pre-wrap;overflow-wrap:anywhere}
 #ai-panel summary{font-weight:600;cursor:pointer}#ai-panel label{display:block;margin:12px 0 6px}
 #ai-message{width:100%;box-sizing:border-box;min-height:64px;max-height:200px;resize:vertical}
 .assistant-history{max-height:52vh;min-height:100px;overflow:auto;overflow-wrap:anywhere;padding:8px 0}
@@ -27,7 +27,7 @@
         <div class="row"><button id="ai-prefs-save">Save preferences</button><button id="ai-prefs-clear">Clear preferences</button></div><p id="ai-prefs-status" role="status"></p>
       </div>
       <div id="ai-history" aria-live="polite" class="assistant-history"></div>
-      <div id="ai-action" tabindex="-1" role="region" aria-label="Prepared operation" hidden></div>
+      <div id="ai-action" class="assistant-action" tabindex="-1" role="region" aria-label="Prepared operation" hidden></div>
       <label>Message<textarea id="ai-message" maxlength="3000" placeholder="Check motion quality, then prepare the Viewer." rows="2" disabled></textarea></label>
       <div class="row"><button id="ai-send" disabled>Ask Qwen</button><button id="ai-new">New chat</button><small>Enter to send · Shift+Enter for a new line</small></div>
       <div id="ai-proposal" hidden><p id="ai-validation" role="status"></p><div id="ai-proposal-summary" class="proposal-flow"></div><div id="ai-diff"></div><button id="ai-load" disabled>Load draft into editor</button><button id="ai-undo" disabled>Undo AI changes</button></div>

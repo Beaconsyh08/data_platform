@@ -9,7 +9,8 @@ function mountPipelineAssistant(root, options) {
   const scope = () => options.getContext?.() || {type: 'pipeline', target_id: getLocation()};
   const $ = id => root.querySelector(`[id="${id}"]`);
   let epoch = 0, disposed = false, busy = false, capabilities = null, conversation = null, timer, actionTimer, pendingMessage = '';
-  const storageKey = () => `pipeline-assistant:${location.origin}:${capabilities?.owner}:${getLocation()}:${scope().type}:${scope().target_id}`;
+  const actionRoot = $('ai-action'), cards = new Map(), expandedCards = new Map();
+  const storageKey = () => `pipeline-assistant:${location.origin}:${capabilities?.owner}:${getLocation()}:${scope().type}:${scope().target_id}:${scope().page || ''}`;
   const storage = (key, value) => {
     try {if (value !== undefined) sessionStorage.setItem(key, value); else return sessionStorage.getItem(key);} catch (_) {}
   };
@@ -22,7 +23,7 @@ function mountPipelineAssistant(root, options) {
     }
   };
   $('ai-references').addEventListener('click', navigate);
-  $('ai-action').addEventListener('click', navigate);
+  $('ai-history').addEventListener('click', navigate);
   async function restore(identity, datasetLabel) {
     const expected = ++epoch; clearTimeout(timer); clearTimeout(actionTimer); busy = false;
     conversation = null; pendingMessage = ''; $('ai-message').value = ''; render();
@@ -96,7 +97,7 @@ function mountPipelineAssistant(root, options) {
   function render() {
     $('ai-message').disabled = $('ai-send').disabled = !capabilities?.available || !getLocation() || busy;
     $('ai-new').disabled = busy;
-    $('ai-history').replaceChildren();
+    actionRoot.remove(); cards.clear(); $('ai-history').replaceChildren();
     const history = [...(conversation?.history || [])];
     if (pendingMessage) history.push({role:'user', content:pendingMessage});
     if (busy) history.push({role:'assistant', content:'Working…'});
@@ -104,9 +105,17 @@ function mountPipelineAssistant(root, options) {
       const text = document.createElement('div'); text.className = 'assistant-message ' + (item.role === 'user' ? 'user' : 'assistant');
       const label = document.createElement('small'); label.textContent = item.role === 'user' ? 'You' : 'Assistant';
       text.append(label, item.role === 'user' ? document.createTextNode(item.content) : assistantFormattedText(item.content)); $('ai-history').append(text);
+      if (item.action) {
+        const latest = item.action.action_id === conversation?.action?.action_id;
+        const action = latest ? conversation.action : item.action;
+        const box = latest ? actionRoot : document.createElement('div');
+        box.className = 'assistant-action'; box.tabIndex = -1; box.setAttribute('role', 'region'); box.setAttribute('aria-label', 'Prepared operation');
+        box.dataset.actionId = action.action_id; text.append(box);
+        cards.set(action.action_id, {box, action, item, observation: latest ? conversation.operation : item.operation});
+      }
     }
-    $('ai-history').scrollTop = $('ai-history').scrollHeight;
     renderAction();
+    $('ai-history').scrollTop = $('ai-history').scrollHeight;
     const proposal = conversation?.proposal;
     $('ai-proposal').hidden = !proposal;
     $('ai-load').disabled = !canEdit || !capabilities?.can_edit || busy || !proposal;
@@ -150,54 +159,65 @@ function mountPipelineAssistant(root, options) {
 
   }
   function renderAction() {
-    const box = $('ai-action'), action = conversation?.action, observation = conversation?.operation;
-    box.replaceChildren(); box.hidden = !action; clearTimeout(actionTimer);
-    if (!action) return;
-    const title = document.createElement('strong'); title.textContent = action.title;
-    const target = document.createElement('p'); target.textContent = `Dataset: ${action.dataset} · Node: ${action.node}`;
-    const parameters = document.createElement('pre'); parameters.textContent = Object.keys(action.parameters).length ? JSON.stringify(action.parameters, null, 2) : 'Parameters: defaults';
-    box.append(title, target);
-    const state = observation?.state || (action.execution ? 'running' : 'new');
-    const note = document.createElement('p'); note.textContent = observation?.message || 'Review parameters before confirming.'; box.append(note);
-    if (observation?.updated_at) {const time = document.createElement('small'); time.textContent = `Updated: ${observation.updated_at}`; box.append(time);}
-    for (const ref of observation?.links || []) {
-      const link = document.createElement('a'); link.href = ref.url; link.textContent = ref.title; link.className = 'assistant-primary-link'; box.append(link);
-    }
-    if (observation?.coverage_notice) {const coverage = document.createElement('p'); coverage.textContent = observation.coverage_notice; box.append(coverage);}
-    const execution = action.execution;
-    if (execution || state === 'running') {
-      const progress = document.createElement('p'); progress.textContent = `Task ${observation?.status || execution?.status || 'queued'}`; box.append(progress);
-      if (execution?.url && !observation?.links?.some(ref => ref.url === execution.url)) {const link = document.createElement('a'); link.href = execution.url; link.textContent = 'Open run'; box.append(link);}
-      if (observation?.jobs_url && !observation?.links?.some(ref => ref.url === observation.jobs_url)) {const link = document.createElement('a'); link.href = observation.jobs_url; link.textContent = ' · Open Jobs'; box.append(link);}
-      box.append(parameters);
-      if (state === 'running' || execution && !['done','error','cancelled'].includes(observation?.status || execution.status)) actionTimer = setTimeout(() => pollAction(action.action_id, epoch), 2000);
-    } else {
-      let controls = box;
-      if (observation?.requires_rerun) {
-        const details = document.createElement('details'); details.open = !action.prefer_existing;
-        const summary = document.createElement('summary'); summary.textContent = action.operator_id === 'viewer.prepare' ? 'Rebuild Viewer' : 'Run again'; details.append(summary); box.append(details); controls = details;
+    clearTimeout(actionTimer);
+    const running = [];
+    for (const [id, card] of cards) {
+      const {box, action} = card, observation = card.observation;
+      box.replaceChildren(); box.hidden = false;
+      const state = observation?.state || (action.execution ? 'running' : 'new');
+      const active = state === 'running';
+      if (active) running.push(id);
+      const title = document.createElement('strong'); title.textContent = action.title;
+      const badge = document.createElement('small'); badge.textContent = active ? `Task ${observation?.status || 'running'}` : ({ready:'Result available',history:'Previous result',failed:'Previous attempt failed'}[state] || (action.is_current === false ? 'Earlier request' : 'Awaiting confirmation'));
+      box.append(title, badge);
+      for (const ref of observation?.links || []) {
+        const link = document.createElement('a'); link.href = ref.url; link.textContent = ref.title; link.className = 'assistant-primary-link'; box.append(link);
+      }
+      const compact = state !== 'new' || action.is_current === false || !!action.execution;
+      let body = box;
+      if (compact) {
+        body = document.createElement('details'); body.open = expandedCards.get(id) || false;
+        const summary = document.createElement('summary'); summary.textContent = 'Operation details'; body.append(summary);
+        body.ontoggle = () => {if (body.isConnected) expandedCards.set(id, body.open);}; box.append(body);
+      }
+      const target = document.createElement('p'); target.textContent = `Dataset: ${action.dataset} · Node: ${action.node}`;
+      const note = document.createElement('p'); note.textContent = observation?.message || 'Review parameters before confirming.'; body.append(target, note);
+      if (observation?.updated_at) {const time = document.createElement('small'); time.textContent = `Updated: ${observation.updated_at}`; body.append(time);}
+      if (observation?.coverage_notice) {const coverage = document.createElement('p'); coverage.textContent = observation.coverage_notice; body.append(coverage);}
+      const parameters = document.createElement('pre'); parameters.textContent = Object.keys(action.parameters).length ? JSON.stringify(action.parameters, null, 2) : 'Parameters: defaults';
+      let controls = body;
+      if (!active && !action.execution && action.is_current !== false && observation?.requires_rerun) {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary'); summary.textContent = action.operator_id === 'viewer.prepare' ? 'Rebuild Viewer' : 'Run again'; details.append(summary); body.append(details); controls = details;
       }
       controls.append(parameters);
-      const issue = document.createElement('p'); issue.textContent = action.is_current === false ? 'Conversation changed. Ask to prepare this operation again.' : (action.blocked || []).map(pipelineIssueText).join(' · ');
-      const button = document.createElement('button'); button.textContent = 'Confirm and run';
-      button.disabled = busy || !capabilities?.can_edit || !action.can_execute || observation?.can_confirm === false || action.is_current === false;
-      button.onclick = () => confirmAction(action, !!observation?.requires_rerun); controls.append(issue, button);
+      if (!active && !action.execution && action.is_current !== false) {
+        const issue = document.createElement('p'); issue.textContent = (action.blocked || []).map(pipelineIssueText).join(' · ');
+        const button = document.createElement('button'); button.textContent = 'Confirm and run';
+        button.disabled = busy || !capabilities?.can_edit || !action.can_execute || observation?.can_confirm === false;
+        button.onclick = () => confirmAction(action, !!observation?.requires_rerun); controls.append(issue, button);
+      }
+      if (action.execution?.url && !observation?.links?.some(ref => ref.url === action.execution.url)) {const link = document.createElement('a'); link.href = action.execution.url; link.textContent = 'Open run'; body.append(link);}
+      if (observation?.jobs_url && !observation?.links?.some(ref => ref.url === observation.jobs_url)) {const link = document.createElement('a'); link.href = observation.jobs_url; link.textContent = 'Open Jobs'; body.append(link);}
+      const adjust = document.createElement('button'); adjust.textContent = action.is_current === false || action.execution ? 'Prepare another run' : 'Change settings in chat'; adjust.disabled = busy || !capabilities?.can_edit;
+      adjust.onclick = () => {$('ai-message').value = `Prepare ${action.operator_id} with these changes: `; $('ai-message').focus();}; body.append(adjust);
+      const refresh = document.createElement('button'); refresh.textContent = 'Refresh status'; refresh.disabled = busy; refresh.onclick = () => pollAction(id, epoch); body.append(refresh);
     }
-    const adjust = document.createElement('button'); adjust.textContent = execution ? 'Prepare another run' : 'Change settings in chat'; adjust.disabled = busy || !capabilities?.can_edit;
-    adjust.onclick = () => {$('ai-message').value = `Prepare ${action.operator_id} with these changes: `; $('ai-message').focus();}; box.append(adjust);
-    const refresh = document.createElement('button'); refresh.textContent = 'Refresh status'; refresh.disabled = busy; refresh.onclick = () => pollAction(action.action_id, epoch); box.append(refresh);
+    if (!actionRoot.isConnected) {actionRoot.hidden = true; $('ai-history').append(actionRoot);}
+    if (running.length) actionTimer = setTimeout(async () => {const expected = epoch; for (const id of running) await pollAction(id, expected);}, 2000);
   }
   async function pollAction(actionId, expected) {
-    if (disposed || epoch !== expected || conversation?.action?.action_id !== actionId) return;
+    if (disposed || epoch !== expected || !cards.has(actionId)) return;
     try {
       const receipt = await api('/api/ai-assistant/actions/' + encodeURIComponent(actionId));
-      if (disposed || epoch !== expected || conversation?.action?.action_id !== actionId) return;
-      conversation.operation = receipt;
-      if (conversation.action.execution && receipt.run_id) conversation.action.execution = receipt;
+      if (disposed || epoch !== expected || !cards.has(actionId)) return;
+      const card = cards.get(actionId); card.observation = card.item.operation = receipt;
+      if (conversation.action?.action_id === actionId) conversation.operation = receipt;
+      if (card.action.execution && receipt.run_id) card.action.execution = receipt;
       renderAction();
     } catch (_) {
-      if (!disposed && epoch === expected && conversation?.action?.action_id === actionId) {
-        const notice = document.createElement('small'); notice.textContent = 'Status unavailable. Refresh status or check Jobs.'; $('ai-action').append(notice);
+      if (!disposed && epoch === expected && cards.has(actionId)) {
+        const notice = document.createElement('small'); notice.textContent = 'Status unavailable. Refresh status or check Jobs.'; cards.get(actionId).box.append(notice);
       }
     }
   }
@@ -209,6 +229,7 @@ function mountPipelineAssistant(root, options) {
       if (disposed || expected !== epoch) return;
       if (receipt.run_id) action.execution = receipt;
       conversation.operation = receipt.state ? receipt : {...receipt, state:'running'};
+      const item = conversation.history.find(item => item.action?.action_id === action.action_id); if (item) {item.action = action; item.operation = conversation.operation;}
       busy = false; render(); status(receipt.reused ? 'Existing task found. Follow progress here or in Jobs.' : 'Task submitted. Follow progress here or in Jobs.');
       pollAction(action.action_id, expected);
     } catch (error) {
@@ -259,7 +280,7 @@ function mountPipelineAssistant(root, options) {
       if (saved) {
         const restored = await api('/api/ai-assistant/conversations/' + encodeURIComponent(saved));
         if (disposed || expected !== epoch) return;
-        if (restored.location_id !== getLocation() || ((restored.context || scope()).type !== scope().type || (restored.context || scope()).target_id !== scope().target_id)) throw new Error('Conversation context changed.');
+        if (restored.location_id !== getLocation() || ((restored.context || scope()).type !== scope().type || (restored.context || scope()).target_id !== scope().target_id || ((restored.context || scope()).page || '') !== (scope().page || ''))) throw new Error('Conversation context changed.');
         conversation = restored;
         if (restored.pending_request) {busy = true; status('Qwen is working…'); poll(restored.pending_request, expected);}
       } else fresh();

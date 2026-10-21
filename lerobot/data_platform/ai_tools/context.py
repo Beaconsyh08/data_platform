@@ -10,13 +10,13 @@ from urllib.parse import urlencode
 
 from sqlalchemy import select
 
-from lerobot.data_platform.control_plane import RemoteJob, RemoteJobEvent
+from lerobot.data_platform.control_plane import DatasetLocation, RemoteJob, RemoteJobEvent
 from lerobot.data_platform.dataset_references import dataset_references
 from lerobot.data_platform.job_management import JobConflictError
 from lerobot.data_platform.management_storage import JobControl
 from lerobot.data_platform.task_catalog import content_digest
 
-KINDS = {"pipeline", "dataset", "quality", "job"}
+KINDS = {"pipeline", "dataset", "quality", "job", "episode"}
 TOOL_BYTES = 20 * 1024
 
 
@@ -111,7 +111,12 @@ def bounded(value):
 def normalize_context(value, location_id):
     if value is None:
         return {"type": "pipeline", "target_id": location_id}
-    if not isinstance(value, dict) or set(value) != {"type", "target_id"} or value["type"] not in KINDS:
+    if (
+        not isinstance(value, dict)
+        or set(value) - {"type", "target_id", "page"}
+        or not {"type", "target_id"}.issubset(value)
+        or value["type"] not in KINDS
+    ):
         raise ValueError("Use a supported assistant context and target ID")
     if not isinstance(value["target_id"], str) or not re.fullmatch(
         r"[a-zA-Z0-9_-]{1,128}", value["target_id"]
@@ -119,7 +124,100 @@ def normalize_context(value, location_id):
         raise ValueError("Invalid context target")
     if value["type"] in {"pipeline", "dataset"} and value["target_id"] != location_id:
         raise ValueError("Context must match the selected dataset")
+    if value["type"] == "episode" and not re.fullmatch(r"0|[1-9][0-9]{0,8}", value["target_id"]):
+        raise ValueError("Invalid episode index")
+    if "page" in value and (
+        not isinstance(value["page"], str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,47}", value["page"])
+    ):
+        raise ValueError("Invalid page")
     return dict(value)
+
+
+def page_context(service, owner, dataset_key, episode_index):
+    """Resolve a Viewer page reference through the same dataset authorization as a conversation."""
+    if not isinstance(dataset_key, str) or len(dataset_key) > 512:
+        raise ValueError("Invalid dataset reference")
+    context = normalize_context({"type": "episode", "target_id": episode_index, "page": "viewer"}, "")
+    with service.store.sessions() as session:
+        service.manager._actor(session, owner, write=False)
+        ids = session.scalars(
+            select(DatasetLocation.location_id).where(DatasetLocation.dataset_key == dataset_key).limit(2)
+        ).all()
+        if len(ids) != 1:
+            raise KeyError("Dataset not found")
+        location, _ = service.manager._location(session, ids[0], owner, write=False)
+        return {
+            "location_id": ids[0],
+            "dataset": safe_text(location["dataset_key"].rsplit("/", 1)[-1], 200),
+            "context": context,
+        }
+
+
+def episode_context(location, episode_index):
+    """Use published Viewer metadata only; never read Parquet, video, or client-supplied instruction text."""
+    metadata = location.get("metadata") or {}
+    result = {
+        "episode_index": episode_index,
+        "instruction_available": False,
+        "source": "published_viewer_metadata",
+        "media_observed": False,
+    }
+    cache = Path(metadata.get("cache_root") or "")
+    manifest = cache / "static" / "viewer_manifest.json"
+    try:
+        if (
+            not metadata.get("viewer_ready")
+            or not cache.is_absolute()
+            or manifest.is_symlink()
+            or not manifest.resolve().is_relative_to(cache.resolve())
+        ):
+            raise ValueError("Unavailable Viewer metadata")
+        with manifest.open("rb") as stream:
+            raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("Viewer metadata exceeds the bounded read limit")
+        data = json.loads(raw)
+        if data.get("version") != 1 or data.get("root") != location.get("root"):
+            raise ValueError("Viewer metadata does not match this dataset")
+        episode = next(
+            (item for item in data.get("episodes", []) if item.get("episode_index") == episode_index), None
+        )
+        if episode is None:
+            raise KeyError("Episode not found in the published Viewer")
+        tasks = episode.get("tasks") or []
+        if isinstance(tasks, str):
+            tasks = [tasks]
+        if not isinstance(tasks, list):
+            raise ValueError("Invalid instruction metadata")
+        texts = [safe_text(item, 1000) for item in tasks[:10] if isinstance(item, str) and item.strip()]
+        result.update(
+            instructions=texts,
+            instruction_available=bool(texts),
+            instructions_truncated=len(tasks) > 10 or any(len(str(t)) > 1000 for t in tasks[:10]),
+            length=episode.get("length") if type(episode.get("length")) is int else None,
+            fps=data.get("fps") if type(data.get("fps")) in {int, float} else None,
+        )
+        if not texts:
+            result["unavailable_reason"] = (
+                "This published episode metadata contains no instruction text; this does not prove the source dataset has none."
+            )
+        # Bind only the selected episode and metadata identity, not unrelated result sidecars.
+        identity = content_digest(
+            {
+                "episode": episode,
+                "root": data.get("root"),
+                "fps": data.get("fps"),
+                "version": data.get("version"),
+            }
+        )
+        return result, {"episode_index": episode_index, "viewer_episode_digest": identity}
+    except KeyError:
+        raise
+    except (OSError, ValueError, TypeError, AttributeError):
+        result["unavailable_reason"] = (
+            "Published episode metadata is unavailable or cannot be safely verified. Instruction text may still exist; open or refresh the Viewer."
+        )
+        return result, {"episode_index": episode_index, "viewer_episode_digest": None}
 
 
 def _quality_files(manager, target):
@@ -264,6 +362,19 @@ def resolve_context(manager, session, owner, location_id, context):
         summary["snapshot_available"] = bool(
             manager.lifecycle and manager.lifecycle._get_record("curation_locations", location_id)
         )
+    if kind == "episode":
+        details, identity = episode_context(location, int(target))
+        summary.update(details)
+        reference = viewer_reference(location)
+        if reference:
+            links.append(
+                {
+                    "id": "episode",
+                    "title": "Open current episode",
+                    "url": reference["url"].rsplit("_", 1)[0] + "_" + target,
+                }
+            )
+    summary["page"] = context.get("page", "viewer" if kind == "episode" else kind)
     viewer = viewer_reference(location)
     if kind in {"pipeline", "dataset"}:
         summary["viewer_available"] = bool(viewer)

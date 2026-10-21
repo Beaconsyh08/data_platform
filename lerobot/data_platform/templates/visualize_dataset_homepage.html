@@ -290,7 +290,16 @@
                     </button>
                 </template>
             </nav>
-<div x-effect="window.syncPlatformAssistant?.({owner:controlPlaneUser?.user_id, role:controlPlaneUser?.role, locationId:selectedRemoteLocation?.location_id || selectedDataset?.remote_location_id, label:selectedRemoteLocation?.dataset_key || selectedDataset?.name})"></div>
+<div x-effect="window.syncPlatformAssistant?.({
+    owner:controlPlaneUser?.user_id, role:controlPlaneUser?.role,
+    locationId:selectedRemoteLocation?.location_id || selectedDataset?.remote_location_id,
+    label:selectedRemoteLocation?.dataset_key || selectedDataset?.name, page:activePage,
+    ...(activePage === 'runs' && selectedJob()?.remote ? {
+        type:'job', targetId:selectedJob().id,
+        locationId:selectedJob().dataset_key?.replace(/^remote:/,''),
+        label:selectedJob().dataset_name || selectedJob().dataset_key
+    } : {})
+})"></div>
 </header>
 
         <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm"

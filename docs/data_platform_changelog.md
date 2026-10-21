@@ -4,6 +4,13 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## V0.3.3 · PageAwareAssistant · 2026-10-21
+
+- 修复助手与当前页面脱节：默认跟随页面、数据集和 Viewer Episode；可关闭 Follow current page 固定上下文，恢复历史会话时明确固定，迟到回答不覆盖新上下文。
+- Episode 问答经权限校验后读取已发布 Viewer 元数据中的 Instruction、帧数和帧率，并绑定选中 Episode 摘要身份；不读取视频或原始行，缺失上下文不能推断源数据没有指令。
+- 操作卡片归属到对应助手消息；已有结果、运行中任务与旧请求默认收起详情，过期确认控件隐藏，结果/进度入口仍可用，不占用输入区。
+- **影响范围**：Server 助手 API、网页与文档；无数据库迁移、Agent 执行/协议或算子版本变化。CLI 0.3.0 保持兼容，无需重新安装；Server/Agent 使用同一不可变发行包。
+
 ## V0.3.2 · OperationParameterDefaults · 2026-10-21
 
 - Curation 显式描述既有的全部 episode 默认值，统一省略 `episodes` 与 `episodes: null` 的参数解析；结果匹配与并发去重使用同一份解析值。
