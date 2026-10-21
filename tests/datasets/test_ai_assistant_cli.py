@@ -226,19 +226,12 @@ def test_explicit_repeat_is_distinct_from_default_confirmation():
     assert transport.calls[0][2]["json"] == {"revision": 2, "rerun": True}
 
 
-@pytest.mark.parametrize(
-    "context",
-    [
-        {"type": "quality", "target_id": "report/one?x=2"},
-        {"type": "episode", "target_id": "0", "page": "viewer"},
-    ],
-)
-def test_web_handoff_preserves_environment_context_and_has_no_credentials(context):
+def test_web_handoff_preserves_environment_context_and_has_no_credentials():
     transport = Transport([])
     client = PlatformClient("https://platform.example.com:8443", session=transport)
     client.select({"location_id": "location&other=value"})
     assert client.links() == [{"title": "Web console", "url": client.origin + "/"}]
-    client.conversation.update(revision=1, context=context)
+    client.conversation.update(revision=1, context={"type": "quality", "target_id": "report/one?x=2"})
     client.csrf = "private-csrf"
     transport.cookies.set("session", "private-session")
     link = client.web_links()[1]["url"]
@@ -246,8 +239,8 @@ def test_web_handoff_preserves_environment_context_and_has_no_credentials(contex
     assert parse_qs(urlsplit(link).query) == {
         "location_id": ["location&other=value"],
         "assistant_conversation": [client.conversation["conversation_id"]],
-        "type": [context["type"]],
-        "target_id": [context["target_id"]],
+        "type": ["quality"],
+        "target_id": ["report/one?x=2"],
     }
     assert "private" not in link and not transport.calls
     client.new_chat()
@@ -300,3 +293,39 @@ def test_shell_prints_web_links_and_exits_with_pending_response(monkeypatch, cap
     output = capsys.readouterr().out
     assert output.count("Web console: https://platform.example.com/") == 3
     assert "Ask the assistant to prepare" not in output
+
+
+def test_episode_handoff_uses_authorized_viewer_to_preserve_page_identity():
+    client = PlatformClient("https://platform.example.com:8443", session=Transport([]))
+    client.select({"location_id": "location"})
+    client.conversation.update(
+        revision=1,
+        context={"type": "episode", "target_id": "2", "page": "viewer"},
+        references=[{"id": "episode", "url": "/registered/dataset/episode_2"}],
+    )
+    link = urlsplit(client.web_links()[1]["url"])
+    assert link.netloc == "platform.example.com:8443"
+    assert link.path == "/registered/dataset/episode_2"
+    assert parse_qs(link.query) == {"assistant_conversation": [client.conversation["conversation_id"]]}
+    assert client.links() == client.web_links()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "//other/dataset/episode_2",
+        "/../dataset/episode_2",
+        "/node/dataset/episode_3",
+        "https://elsewhere/episode_2",
+        "",
+    ],
+)
+def test_episode_handoff_never_guesses_an_unavailable_or_unsafe_reference(path):
+    client = PlatformClient("https://platform.example.com", session=Transport([]))
+    client.select({"location_id": "location"})
+    client.conversation.update(
+        revision=1,
+        context={"type": "episode", "target_id": "2", "page": "viewer"},
+        references=[{"id": "episode", "url": path}],
+    )
+    assert client.web_links() == [{"title": "Web console", "url": "https://platform.example.com/"}]

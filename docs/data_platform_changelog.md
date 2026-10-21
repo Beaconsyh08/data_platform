@@ -7,6 +7,7 @@
 ## CLI 0.3.3 · Platform035Compatibility · 2026-10-21
 
 - 按平台与 CLI 同步发行规则，提供面向 Server V0.3.5 的独立兼容客户端；保留登录、确认执行、消息内卡片、Episode 会话恢复及授权结果链接。
+- 修复 V0.3.5 Episode 会话的网页恢复：跳到授权 Viewer Episode，保留页面身份；缺少有效引用时仅提供首页，不生成无效或跨站链接。其他绑定页面的历史从网页 History 恢复。
 - 稳定安装/升级入口仍为 `cli/latest/install.py`；0.3.2 及以上可用 `data-platform update`。先验收版本化包的登录、`--web`、`/open` 和浏览器会话恢复，再推进 latest。
 - **影响范围**：CLI、下载分发和文档；Server/Agent 保持 V0.3.5，无协议或数据库变化。实际发布及验收身份记录在独立 CLI 发行记录中。
 

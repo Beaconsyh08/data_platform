@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from urllib.parse import urlencode, urlsplit
@@ -225,6 +226,26 @@ class PlatformClient:
                 "type": "dataset",
                 "target_id": self.location["location_id"],
             }
+            if context.get("page"):
+                # V0.3.5's standalone assistant cannot restore a page-bound conversation.
+                # The Viewer restores the complete Episode identity from its authorized URL.
+                if context["type"] == "episode" and context["page"] == "viewer":
+                    for reference in self.conversation.get("references", []):
+                        path = reference.get("url", "")
+                        if (
+                            reference.get("id") == "episode"
+                            and re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/episode_[0-9]+", path)
+                            and not any(part in {".", ".."} for part in path.split("/"))
+                            and path.rsplit("_", 1)[-1] == context["target_id"]
+                        ):
+                            query = urlencode(
+                                {"assistant_conversation": self.conversation["conversation_id"]}
+                            )
+                            result.append(
+                                {"title": "Continue conversation", "url": self.origin + path + "?" + query}
+                            )
+                            break
+                return result
             query = urlencode(
                 {
                     "location_id": self.location["location_id"],

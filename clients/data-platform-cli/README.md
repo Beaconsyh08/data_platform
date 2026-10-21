@@ -51,7 +51,9 @@ The web address also appears before login. During chat, `/web` prints the consol
 has saved it, the current conversation with its dataset/report context. Open the URL in your browser
 and sign in with the same platform account. Browser and CLI sessions are separate; links contain no
 password, cookie or CSRF token. `/open` retrieves current result/task links when an action exists,
-and otherwise shows the website links.
+and otherwise shows the website links. Episode conversations open their authorized Viewer page;
+open the assistant sidebar there to continue. For other page-bound conversations on V0.3.5,
+open the console and restore the conversation from History.
 
 For subsequent logins:
 
