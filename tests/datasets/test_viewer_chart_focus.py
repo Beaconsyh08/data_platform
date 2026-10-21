@@ -81,3 +81,46 @@ def test_wheel_zoom_bounds_and_anchor_lifetime():
     """
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+def test_chart_resize_follows_container_and_page_lifecycle():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for Viewer behavior checks")
+    template = (
+        Path(__file__).resolve().parents[2]
+        / "lerobot/data_platform/templates/visualize_dataset_template.html"
+    ).read_text()
+    match = re.search(r"^                initChartResize\(\) \{", template, re.MULTILINE)
+    end = re.search(r"^                \},", template[match.end() :], re.MULTILINE)
+    method = template[match.start() : match.end() + end.end()]
+    script = "const assert = require('node:assert/strict');const app = {" + method + "};\n"
+    script += r"""
+    const elements = [{clientWidth:600,clientHeight:300},{clientWidth:600,clientHeight:300}];
+    const calls = [0,0], observed = [], handlers = {}, frames = new Map();
+    let callback, nextFrame = 0, disconnected = 0;
+    global.document = {getElementById:id=>elements[id==='graph-arm-joints'?0:1]};
+    global.window = {addEventListener:(name,fn)=>handlers[name]=fn};
+    global.ResizeObserver = class {
+        constructor(fn) {callback=fn;}
+        observe(el) {observed.push(el);}
+        disconnect() {disconnected++;}
+    };
+    global.requestAnimationFrame = fn => {frames.set(++nextFrame,fn);return nextFrame;};
+    global.cancelAnimationFrame = id => frames.delete(id);
+    const flush = () => {for(const [id,fn] of frames){frames.delete(id);fn();}};
+    app.dygraphArmJoints={resize(){calls[0]++;}};
+    app.dygraphGripperFlag={resize(){calls[1]++;}};
+    app.initChartResize();assert.equal(observed.length,2);
+    callback();callback();assert.equal(frames.size,1);flush();assert.deepEqual(calls,[1,1]);
+    callback();flush();assert.deepEqual(calls,[1,1],'Unchanged dimensions must not redraw');
+    elements[0].clientWidth=320;elements[1].clientWidth=320;
+    callback();flush();assert.deepEqual(calls,[2,2],'Sidebar narrowing must resize both charts');
+    elements[0].clientWidth=0;callback();flush();assert.deepEqual(calls,[2,2]);
+    elements[0].clientWidth=700;callback();handlers.pagehide();flush();
+    assert.equal(disconnected,1);assert.deepEqual(calls,[2,2]);
+    handlers.pageshow({persisted:true});assert.equal(observed.length,4);
+    callback();flush();assert.deepEqual(calls,[3,2],'Restored pages resume observing layout');
+    """
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr

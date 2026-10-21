@@ -1637,6 +1637,7 @@
                         this.initStageDrag();
                         this.initTrimDrag();
                         this.initChartSeek();
+                        this.initChartResize();
                         this._updateStageInChart();
                         this._redrawTrimCharts();
                     };
@@ -3052,6 +3053,36 @@
                     const center = Math.max(full[0], Math.min(full[1], this.chartAnchorTime));
                     const start = Math.max(full[0], Math.min(full[1] - width, center - width / 2));
                     this.setChartWindow(start, start + width, width < fullWidth);
+                },
+
+                initChartResize() {
+                    const charts = new Map([
+                        [document.getElementById('graph-arm-joints'), this.dygraphArmJoints],
+                        [document.getElementById('graph-gripper-flag'), this.dygraphGripperFlag],
+                    ].filter(([element, graph]) => element && graph));
+                    let frame = null;
+                    const sizes = new Map();
+                    const observer = new ResizeObserver(() => {
+                        if (frame !== null) return;
+                        frame = requestAnimationFrame(() => {
+                            frame = null;
+                            for (const [element, graph] of charts) {
+                                const size = `${element.clientWidth}:${element.clientHeight}`;
+                                if (element.clientWidth > 0 && element.clientHeight > 0 && sizes.get(element) !== size) {
+                                    sizes.set(element, size);
+                                    graph.resize();
+                                }
+                            }
+                        });
+                    });
+                    const observe = () => charts.forEach((graph, element) => observer.observe(element));
+                    observe();
+                    window.addEventListener('pagehide', () => {
+                        observer.disconnect();
+                        if (frame !== null) cancelAnimationFrame(frame);
+                        frame = null;
+                    });
+                    window.addEventListener('pageshow', event => {if (event.persisted) observe();});
                 },
 
                 initChartSeek() {
