@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import delete, func, select
 
+from lerobot.data_platform.ai_tools.actions import ALLOWED_ACTIONS
 from lerobot.data_platform.ai_tools.context import bounded, normalize_context, resolve_context, safe_summary
 from lerobot.data_platform.ai_tools.models import AssistantConversation, AssistantTurn
 from lerobot.data_platform.ai_tools.security import REFUSAL, DisclosureGuard, restricted_request
@@ -153,22 +154,26 @@ Read-only users may receive explanations and evidence links only; never propose 
 TOOLS.append(
     _tool(
         "prepare_action",
-        "Prepare Viewer or Quality for the user to confirm. This does not execute anything.",
+        "Check existing results and running tasks, then prepare a supported operation card for explicit user confirmation. Does not execute anything.",
         {
-            "operator_id": {"type": "string", "enum": ["viewer.prepare", "curation.quality"]},
+            "operator_id": {"type": "string", "enum": sorted(ALLOWED_ACTIONS)},
             "parameters": {"type": "object"},
         },
         ["operator_id", "parameters"],
     )
 )
 SYSTEM += """
-When the user asks to perform an operation, describe its operator and call prepare_action for viewer.prepare
-or curation.quality. The user confirms a separate action card; you never execute anything yourself.
+When the user asks to perform a supported operation, describe its operator and call prepare_action.
+Use prepare_action also when asked whether that operation already has results or is running. The user confirms a separate action card; you never execute anything yourself.
 Do not route an execution request to a draft when prepare_action supports it. Never claim submission or
 completion from a prepared action. Other operations remain editable pipeline drafts.
 Viewer action parameters: prepare_videos, prepare_csv, prepare_workers, downsample, max_frames.
 Quality action parameters: episodes, workers, checks, qc_config, video_mode, video_workers.
 Never prepare actions that clear manual review flags or change task configuration/data-version overrides.
+Do not choose business parameters, physical units, episode selection or caption signal use without user intent.
+Single-input derived dataset operations, stages, labeling, tagging and captions are supported as listed in prepare_action.
+Evidence-dependent operations, multiple sources and advanced model/path settings remain pipeline drafts or dedicated forms.
+The server checks result availability. Never claim an operation has run or is complete without its observation.
 """
 SYSTEM += """
 You have no access to repository source, server files, environment variables, database queries, credentials,
@@ -258,6 +263,11 @@ class AssistantService:
 
             view = self._view(row)
             view["action"] = current_action(self, session, row)
+            view["operation"] = None
+            if view["action"] and self.manager._actor(session, owner, write=False).role != "viewer":
+                from lerobot.data_platform.ai_tools.operation_state import action_status
+
+                view["operation"] = action_status(self, owner, view["action"]["action_id"])
             if self.manager._actor(session, owner, write=False).role == "viewer":
                 view["proposal"] = None
                 view["action"] = None
@@ -698,13 +708,18 @@ class AssistantService:
                         action = prepare(
                             self, owner, value["location_id"], args["operator_id"], args["parameters"]
                         )
+                        from lerobot.data_platform.ai_tools.operation_state import inspect_operation
+
+                        observation = inspect_operation(self, owner, action)
+                        messages = {
+                            "ready": "已有与当前数据和参数匹配的已发布结果。可在操作卡片打开结果，或选择重新运行。",
+                            "running": "已有相同操作正在排队或执行，可在操作卡片查看进度，无需重复提交。",
+                            "history": "已有历史结果，但尚不能确认当前数据和参数完全匹配。请查看结果，或核对参数后重新运行。",
+                            "failed": "已有未完成的执行记录，请先查看任务及恢复入口，再决定是否重新运行。",
+                            "new": "请在操作卡片核对数据集和参数，点击“确认并运行”后才会提交任务。",
+                        }
                         return {
-                            "message": (
-                                "这个数据集已有已发布的 Viewer，可点击下方卡片直接打开。"
-                                "如需更新缓存，请展开“重新准备”并核对参数后确认。尚未提交任务。"
-                                if action.get("viewer_available") and action.get("prefer_existing")
-                                else "请在下方操作卡片核对数据集和参数，点击“确认并运行”后才会提交任务。"
-                            ),
+                            "message": messages[observation["state"]],
                             "proposal": None,
                             "action": action,
                             "references": context_data["references"],

@@ -58,8 +58,8 @@ Strict save/run validation is unchanged; parser diagnostics are structured in pr
 
 Dataset, published Quality-report and Jobs entries open `/assistant` with a typed target. These share the
 same conversation service, bounded context readers and evidence links. Viewer accounts may ask read-only
-questions; only operation roles receive editable drafts and preparation cards. Viewer preparation and Quality checks can be submitted from an explicit confirmation card.
-Other operations, retries and review remain in their existing interfaces. Job context retains the normal owner/admin visibility rule.
+questions; only operation roles receive editable drafts and preparation cards. Supported single-input operations can be submitted from an explicit confirmation card.
+Evidence-dependent operations, source mutations, retries and review retain their existing interfaces. Job context retains the normal owner/admin visibility rule.
 
 The first version uses the platform's server-configured Qwen account; users do not supply API keys.
 It supports one selected dataset and up to 12 steps, without additional source-location or lifecycle
@@ -67,12 +67,15 @@ options. Existing manual forms remain available for those operations. The model 
 `read_context`, `describe_operator`, `preview_pipeline` and `prepare_action` tools; it cannot submit Jobs, save pipelines, approve review,
 delete data or publish outputs. Existing Pipeline authorization applies when the user later saves/runs or confirms an action.
 
-`prepare_action` supports only `viewer.prepare` and `curation.quality`. It previews an immutable
+`prepare_action` supports Viewer, Quality, stages, labeling, tagging, temporal captions, and the explicit single-input derived-operation allowlist in `ai_tools/actions.py`. It previews an immutable
 operation, including internal source binding, and displays the dataset, node and parameters. It creates
 no saved version or Job. **Confirm and run** is a separate authenticated request that rechecks role,
 scope, conversation revision, input identity and current preview. It saves/runs through the normal
 Pipeline service, using a stable delivery identity; repeated confirmation or a lost response reuses the
-same run. The card shows status and links to the run and Jobs. Pending cards become stale after another
+same run. The server-owned observation in `conversation.operation` and the action status endpoint is shared by web and CLI. It distinguishes `new`, `running`, `ready`, `history` and `failed`, with generated result/Jobs links. Own active attempts and authorized published results are checked; other accounts' private task details are not exposed. Equivalent concurrent single-operation Pipeline confirmations coalesce under the existing admission transaction. This does not change manual Pipeline submission semantics.
+Result reuse requires the registered input identity, operator version, parameters and published files to match; Curation also checks the bound dataset version. Viewer caches lack a cache-to-Job provenance binding and remain explicitly historical, with an authorized opening link. Caption results that need the remote reader are historical with an Inspect caption results link. This check does not rescan raw source contents.
+History is bounded to 20 recent operation Jobs and 20 active pipelines, with truncation disclosed. Incomplete unmatched history blocks confirmation until narrowed. JSON projections and local manifests are bounded; full reports, labels, embeddings and media are not loaded. Quality always includes a coverage caveat. Missing artifacts or changed settings do not count as reusable success. Failed attempts link to existing recovery controls rather than rerunning automatically.
+The card stays beside the reply, changes from confirmation to progress to result navigation, and retains parameters. Change settings in chat prepares a new immutable card. No automatic-run mode is enabled. Pending cards become stale after another
 exchange. Confirmed runs remain visible after follow-up messages and page reloads.
 Assistant actions cannot clear human review flags, change task configuration, override data versions,
 set paths or submit source mutations. Those advanced options remain in the manual forms.
@@ -148,16 +151,16 @@ Authenticated API:
   `Content-Length`, at most 16 KiB; streaming/chunked bodies are not accepted.
 - `GET /api/ai-assistant/turns/{request_id}`: idempotent request recovery.
 - `GET /api/ai-assistant/conversations/{conversation_id}`: authorized bounded history, revision, draft and current action.
-- `POST /api/ai-assistant/actions/{request_id}/confirm`: exact body `{"revision": n}`; confirms the stored
+- `POST /api/ai-assistant/actions/{request_id}/confirm`: body `{"revision": n}`, with optional boolean `rerun: true` for an explicit new run after viewing existing results/attempts; confirms the stored
   action without accepting client-supplied parameters or dataset overrides. Existing CSRF checks apply.
-- `GET /api/ai-assistant/actions/{request_id}`: authorized run status and bounded step/Job references.
+- `GET /api/ai-assistant/actions/{request_id}`: authorized availability even before confirmation, or run status and bounded step/Job references. Existing receipt fields remain additive-compatible.
 
 Repeated identical request IDs reuse the result; changed content with the same ID returns 409.
 Model/endpoint/key overrides from the browser are rejected. Omitted context remains a Pipeline conversation for backward compatibility. Evidence links and typed navigation/preparation cards are generated by the server, never arbitrary model URLs. Viewer tool calls are restricted on the server as well as in the UI.
 
 The web composer uses Enter to send and Shift+Enter for a new line, excluding IME composition events.
 The [standalone CLI](../clients/data-platform-cli/README.md) uses the same authenticated API and central
-Qwen account, with password login, in-memory history, explicit `/confirm` and `/status`.
+Qwen account, with password login, in-memory history, explicit `/confirm`, `/confirm again`, `/status` and `/open` in client 0.3.0. Older clients retain login/chat/new-operation confirmation; update the client for explicit reruns and result navigation.
 
 ## Operator contract
 

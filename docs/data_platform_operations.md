@@ -27,7 +27,8 @@ Verify an authenticated operator's draft generation, restore, explicit save/run 
 Also verify Enter/IME behavior and action preparation without side effects, explicit confirmation,
 repeat-confirmation recovery, then acknowledged Viewer output. For an already published Viewer, verify the
 authorized Open prepared Viewer link creates no job, then explicitly expand Rebuild Viewer to test confirmation. CLI acceptance must verify normal TLS,
-password login, CSRF, conversation restoration and confirmation using a non-production fixture.
+password login, CSRF, conversation restoration and confirmation using an isolated fixture.
+For unified operation cards, accept the same Quality new/running/published states in web and CLI, including concurrent confirmations, stale configuration, missing artifacts, revoked roles and result navigation. Verify exact run/Job/Attempt acknowledgement. Failed/uploading attempts must retain existing recovery links. CLI 0.3.0 adds `/open` and `/confirm again`; update the immutable public installer/wheel with verified hashes. No database or Agent protocol migration is required; the Server submission service coalesces equivalent assistant operations, while normal Pipeline execution and Agent recovery remain unchanged.
 The default hourly AI quota is disabled; per-user/global concurrency and request budgets remain active.
 The standalone client is packaged separately under `clients/data-platform-cli`; installing it does not
 install LeRobot or GPU dependencies. Its [README](../clients/data-platform-cli/README.md) contains a

@@ -10,6 +10,7 @@ from lerobot.data_platform.ai_tools.repairs import bind_source_snapshot
 from lerobot.data_platform.ai_tools.security import DisclosureGuard
 from lerobot.data_platform.job_management import JobConflictError, scheduler_lock
 from lerobot.data_platform.operators import get_operator
+from lerobot.data_platform.operators.schema import parameter_schema
 from lerobot.data_platform.processing.models import PipelineRun
 from lerobot.data_platform.processing.service import location_identity
 from lerobot.data_platform.task_catalog import content_digest
@@ -20,11 +21,53 @@ ACTION_PARAMETERS = {
     "curation.quality": {"episodes", "workers", "checks", "qc_config", "video_mode", "video_workers"},
 }
 
+# Single-input operations only. Evidence/review-driven operations stay in the pipeline editor.
+ALLOWED_ACTIONS.update(
+    {
+        "curation.stage": "Compute stages",
+        "curation.labeling": "Run object labeling",
+        "curation.tagging": "Run auto-tagging",
+        "caption.annotate": "Annotate temporal captions",
+        **{
+            "preprocess." + name: title
+            for name, title in {
+                "split": "Create dataset subset",
+                "convert_action": "Convert signal dimensions",
+                "convert_v3": "Convert dataset format",
+                "drop_field": "Remove a field from a derived dataset",
+                "smooth_action": "Smooth signals",
+                "standardize": "Standardize dataset",
+                "value_edit": "Edit derived signal values",
+                "trajectory_cleanup": "Clean trajectories",
+                "stage_return_alignment": "Align return stages",
+                "stage_return_height_alignment": "Align return heights",
+            }.items()
+        },
+    }
+)
+
+
+def allowed_parameters(operator_id):
+    if operator_id in ACTION_PARAMETERS:
+        return ACTION_PARAMETERS[operator_id]
+    # Paths, endpoints, source/review mutation and version overrides never enter action cards.
+    return set(parameter_schema(get_operator(operator_id))["properties"]) - {
+        "endpoint",
+        "vlm_endpoint",
+        "model_id",
+        "data_version",
+        "overwrite",
+        "clear_manual_flags",
+        "task_config",
+        "ckpt_path",
+        "output_variant",
+    }
+
 
 def prepare(service, owner, location_id, operator_id, parameters):
     if operator_id not in ALLOWED_ACTIONS or not isinstance(parameters, dict):
         raise ValueError("Choose an available assistant action")
-    if set(parameters) - ACTION_PARAMETERS[operator_id]:
+    if set(parameters) - allowed_parameters(operator_id):
         raise ValueError("Use the manual form for advanced or review-changing options")
     if not DisclosureGuard.from_environment().safe_draft(parameters):
         raise ValueError("Unsupported action parameters")
@@ -52,7 +95,7 @@ def prepare(service, owner, location_id, operator_id, parameters):
         "parameters": {
             name: value
             for name, value in resolved["parameters"].items()
-            if name in ACTION_PARAMETERS[operator_id]
+            if name in allowed_parameters(operator_id)
         },
         "definition": preview["definition"],
         "can_execute": preview["can_execute"],
@@ -61,7 +104,7 @@ def prepare(service, owner, location_id, operator_id, parameters):
         "dataset": safe_text(location["dataset_key"].rsplit("/", 1)[-1]),
         "node": safe_text(node["name"]),
         "viewer_available": operator_id == "viewer.prepare" and bool(viewer_reference(location)),
-        "prefer_existing": operator_id == "viewer.prepare" and not parameters,
+        "prefer_existing": not parameters,
     }
 
 
@@ -92,7 +135,7 @@ def current_action(service, session, conversation):
     return DisclosureGuard.from_environment().tree(action)
 
 
-def confirm(service, owner, action_id, revision):
+def confirm(service, owner, action_id, revision, *, rerun=False):
     # No client-supplied operator, parameters, dataset or model text is executable here.
     with service.store.sessions.begin() as session:
         scheduler_lock(session)
@@ -112,7 +155,9 @@ def confirm(service, owner, action_id, revision):
         pipeline_id = str(uuid.uuid5(uuid.NAMESPACE_URL, content_digest([owner, delivery])))
         key = content_digest([owner, pipeline_id, 1, location_id, delivery])
         previous = session.scalar(select(PipelineRun).where(PipelineRun.idempotency_key == key))
-        previous_id = previous.run_id if previous else None
+        previous_id = (turn.result.get("execution") or {}).get("run_id") or (
+            previous.run_id if previous else None
+        )
         if not previous_id and (
             type(revision) is not int
             or revision != conversation.revision
@@ -122,6 +167,38 @@ def confirm(service, owner, action_id, revision):
         definition = action["definition"]
         if not DisclosureGuard.from_environment().safe_draft(definition):
             raise ValueError("Action is no longer safe to execute")
+    if not previous_id:
+        from lerobot.data_platform.ai_tools.operation_state import inspect_operation
+
+        state = inspect_operation(service, owner, action)
+        if state["state"] == "running":
+            receipt = {**state, "reused": True}
+            with service.store.sessions.begin() as session:
+                scheduler_lock(session)
+                if state.get("run_id"):
+                    turn = session.get(AssistantTurn, action_id)
+                    turn.result = {
+                        **turn.result,
+                        "execution": {k: receipt[k] for k in ("run_id", "status", "url")},
+                    }
+                service.manager._audit(
+                    session,
+                    owner,
+                    "assistant.action.reused",
+                    request_id=action_id,
+                    run_id=state.get("run_id"),
+                    job_id=state.get("job_id"),
+                    operator_id=action["operator_id"],
+                )
+            return receipt
+        if not state["can_confirm"]:
+            raise JobConflictError(
+                "Recent history is incomplete. Inspect Jobs before preparing this operation again."
+            )
+        if state["state"] in {"ready", "history", "failed"} and not rerun:
+            raise JobConflictError(
+                "An existing result or attempt is available. Review it, then explicitly run again."
+            )
     if previous_id:
         run = service.manager.run(owner, previous_id)
     else:
@@ -131,11 +208,18 @@ def confirm(service, owner, action_id, revision):
             raise JobConflictError("Action is currently blocked. Prepare it again to see the requirements.")
         saved = service.manager.save(owner, definition, delivery=delivery)
         run = service.manager.start(
-            owner, saved["pipeline_id"], saved["revision"], location_id, delivery, expected_identity=identity
+            owner,
+            saved["pipeline_id"],
+            saved["revision"],
+            location_id,
+            delivery,
+            expected_identity=identity,
+            reuse_equivalent=True,
         )
     receipt = {
         "run_id": run["run_id"],
         "status": run["status"],
+        "reused": run.get("reused", False),
         "url": "/pipelines?location_id=" + location_id + "&run_id=" + run["run_id"],
     }
     with service.store.sessions.begin() as session:

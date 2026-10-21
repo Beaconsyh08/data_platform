@@ -133,7 +133,7 @@ def test_no_default_hourly_limit_and_model_cannot_confirm(assistant):  # noqa: F
     [
         ("curation.quality", {"clear_manual_flags": True}),
         ("viewer.prepare", {"task_config": {"new": "task"}}),
-        ("preprocess.split", {}),
+        ("preprocess.pose_interpolate", {}),
     ],
 )
 def test_destructive_or_advanced_operations_stay_outside_action_allowlist(
@@ -173,7 +173,7 @@ def test_prepared_viewer_offers_authorized_reference_without_submitting(assistan
     published_viewer(service, body["location_id"], tmp_path)
     result = prepared(assistant, tmp_path)
     assert result["action"]["viewer_available"] and result["action"]["prefer_existing"]
-    assert "已有已发布" in result["message"]
+    assert "已有历史结果" in result["message"]
     restored = service.conversation(owner, body["conversation_id"])
     assert any(ref["id"] == "viewer" for ref in restored["references"])
     assert not service.store.list_jobs() and not service.manager.list(owner)
@@ -209,3 +209,137 @@ def test_viewer_reference_rejects_unavailable_or_untrusted_cache(assistant, tmp_
             location = session.get(DatasetLocation, body["location_id"])
             location.details = {**location.details, "viewer_url": "//example.test/fixture/episode_0"}
     assert viewer_reference(service.store.get_location(body["location_id"])) is None
+
+
+def quality_artifact(fixture, tmp_path, *, status="done", parameters=None):
+    from lerobot.data_platform.control_plane import RemoteJob
+    from lerobot.data_platform.curation import bundle_manifest
+    from lerobot.data_platform.processing.service import location_identity
+
+    service, _, owner, body = fixture
+    ledger = service.manager.lifecycle
+    target = {"location_id": body["location_id"], "dataset_version_id": "fixture-version"}
+    ledger._put_record("curation_locations", body["location_id"], target)
+    location = service.store.get_location(body["location_id"])
+    job = service.store.create_job(
+        location_id=body["location_id"],
+        requested_by=owner,
+        operation="curation.quality",
+        options={
+            "parameters": parameters or {"checks": ["s3"]},
+            "target": target,
+            "operator_snapshot": {"version": "1.0.0", "input_identity": location_identity(location)},
+        },
+    )
+    with service.store.sessions.begin() as session:
+        session.get(RemoteJob, job["job_id"]).status = status
+    directory = ledger.root / "curation" / "runs" / job["job_id"]
+    (directory / "static").mkdir(parents=True)
+    (directory / "static" / "quality_flagged_episodes.json").write_text('{"summary":{"flagged":0}}')
+    bundle_manifest(directory, operation="curation.quality", target=target)
+    return job, directory
+
+
+def test_quality_card_new_running_published_and_missing_artifact(assistant, tmp_path):  # noqa: F811
+    from lerobot.data_platform.ai_tools.operation_state import action_status
+    from lerobot.data_platform.control_plane import RemoteJob
+
+    result = prepared(assistant, tmp_path, "curation.quality")
+    service, _, owner, body = assistant
+    assert action_status(service, owner, result["request_id"])["state"] == "new"
+    job, directory = quality_artifact(assistant, tmp_path, status="running")
+    state = action_status(service, owner, result["request_id"])
+    assert state["state"] == "running" and not state["can_confirm"]
+    receipt = confirm(service, owner, result["request_id"], result["revision"])
+    assert receipt["reused"] and not service.manager.runs(owner)
+    with service.store.sessions.begin() as session:
+        session.get(RemoteJob, job["job_id"]).status = "done"
+    state = action_status(service, owner, result["request_id"])
+    assert state["state"] == "ready" and state["requires_rerun"]
+    assert state["links"][0]["title"] == "Open Quality report"
+    assert "coverage" in state["coverage_notice"]
+    with pytest.raises(JobConflictError, match="explicitly run again"):
+        confirm(service, owner, result["request_id"], result["revision"])
+    (directory / "static" / "quality_flagged_episodes.json").unlink()
+    assert action_status(service, owner, result["request_id"])["state"] == "history"
+    assert len(service.store.list_jobs()) == 1
+
+
+def test_quality_configuration_version_and_oversized_history_are_not_reused(assistant, tmp_path):  # noqa: F811
+    from lerobot.data_platform.ai_tools.operation_state import action_status
+    from lerobot.data_platform.control_plane import RemoteJob
+
+    result = prepared(assistant, tmp_path, "curation.quality")
+    service, _, owner, body = assistant
+    job, _ = quality_artifact(assistant, tmp_path, parameters={"checks": ["s3"], "episodes": [0]})
+    assert action_status(service, owner, result["request_id"])["state"] == "history"
+    with service.store.sessions.begin() as session:
+        row = session.get(RemoteJob, job["job_id"])
+        row.options = {**row.options, "parameters": {"checks": ["s3"], "qc_config": {"note": "x" * 1000000}}}
+    state = action_status(service, owner, result["request_id"])
+    assert state["state"] == "history" and len(json.dumps(state)) < 5000
+    service.manager.lifecycle._put_record(
+        "curation_locations", body["location_id"], {"dataset_version_id": "other"}
+    )
+    assert action_status(service, owner, result["request_id"])["state"] == "history"
+
+
+def test_cross_conversation_concurrent_confirmations_share_one_active_run(assistant, tmp_path):  # noqa: F811
+    from lerobot.data_platform.ai_tools.operation_state import action_status
+
+    first = prepared(assistant, tmp_path, "curation.quality")
+    service, fake, owner, body = assistant
+    fake.responses = [
+        call("describe_operator", {"operator_id": "curation.quality"}),
+        call("prepare_action", {"operator_id": "curation.quality", "parameters": {"checks": ["s3"]}}),
+    ]
+    second = service.submit(
+        owner, {**body, "conversation_id": str(uuid.uuid4()), "request_id": str(uuid.uuid4())}
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        receipts = list(
+            pool.map(
+                lambda item: confirm(service, owner, item["request_id"], item["revision"]), [first, second]
+            )
+        )
+    assert receipts[0]["run_id"] == receipts[1]["run_id"]
+    assert len(service.manager.runs(owner)) == 1
+    assert action_status(service, owner, second["request_id"])["state"] == "running"
+    assert (
+        confirm(service, owner, second["request_id"], second["revision"])["run_id"] == receipts[0]["run_id"]
+    )
+
+
+@pytest.mark.parametrize(
+    "operator,parameters",
+    [
+        ("preprocess.split", {"episode_range": "0:1"}),
+        ("curation.stage", {"episodes": [0]}),
+        ("curation.labeling", {"backend": "qwen_dashscope", "trial": True}),
+        ("curation.tagging", {"vlm_backend": "qwen_dashscope", "selected_tags": ["pick"]}),
+    ],
+)
+def test_additional_operations_prepare_without_running(assistant, tmp_path, operator, parameters):  # noqa: F811
+    from lerobot.data_platform.ai_tools.actions import prepare
+
+    service, _, owner, body = assistant
+    bind_lifecycle(service, tmp_path)
+    action = prepare(service, owner, body["location_id"], operator, parameters)
+    assert action["operator_id"] == operator
+    assert action["parameters"].items() >= parameters.items()
+    assert not service.store.list_jobs() and not service.manager.list(owner)
+
+
+def test_status_rechecks_role_and_result_links_never_cross_accounts(assistant, tmp_path):  # noqa: F811
+    from lerobot.data_platform.ai_tools.operation_state import action_status
+
+    result = prepared(assistant, tmp_path, "curation.quality")
+    service, _, owner, _ = assistant
+    quality_artifact(assistant, tmp_path)
+    other = service.store.register_user(username="status-other", password="strong-other-password")
+    with pytest.raises(KeyError):
+        action_status(service, other["user_id"], result["request_id"])
+    with service.store.sessions.begin() as session:
+        session.get(ControlPlaneUser, owner).role = "viewer"
+    with pytest.raises(PermissionError):
+        action_status(service, owner, result["request_id"])

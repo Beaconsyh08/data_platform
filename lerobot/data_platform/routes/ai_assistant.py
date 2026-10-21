@@ -122,26 +122,21 @@ def register_ai_assistant_routes(app, ctx):
         from lerobot.data_platform.ai_tools.service import _uuid
 
         value = request.get_json(silent=True)
-        if not isinstance(value, dict) or set(value) != {"revision"}:
+        if (
+            not isinstance(value, dict)
+            or "revision" not in value
+            or set(value) - {"revision", "rerun"}
+            or type(value.get("rerun", False)) is not bool
+        ):
             raise ValueError("An action revision is required")
-        return jsonify(confirm(service, owner, _uuid(action_id), value["revision"]))
+        return jsonify(
+            confirm(service, owner, _uuid(action_id), value["revision"], rerun=value.get("rerun", False))
+        )
 
     @app.get("/api/ai-assistant/actions/<action_id>")
     @checked
     def assistant_action_status(owner, service, action_id):
-        result = service.turn(owner, action_id)
-        if not result.get("execution"):
-            raise KeyError("Action has not been confirmed")
-        run = service.manager.run(owner, result["execution"]["run_id"])
-        job_id = next((step["job_id"] for step in reversed(run["steps"]) if step.get("job_id")), None)
-        return jsonify(
-            {
-                **result["execution"],
-                "status": run["status"],
-                "jobs_url": "/?page=runs" + ("&job_id=" + job_id if job_id else ""),
-                "steps": [
-                    {"step_id": item["step_id"], "status": item["status"], "job_id": item.get("job_id")}
-                    for item in run["steps"]
-                ],
-            }
-        )
+        from lerobot.data_platform.ai_tools.operation_state import action_status
+        from lerobot.data_platform.ai_tools.service import _uuid
+
+        return jsonify(action_status(service, owner, _uuid(action_id)))

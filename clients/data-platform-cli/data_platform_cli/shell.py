@@ -21,6 +21,8 @@ COMMANDS = [
     "/resume",
     "/confirm",
     "/status",
+    "/open",
+    "/confirm again",
     "/exit",
 ]
 
@@ -67,12 +69,26 @@ def main(argv=None):
         if action:
             say(f"{action['title']} · Dataset: {action['dataset']} · Node: {action['node']}")
             say(json.dumps(action["parameters"], ensure_ascii=False, indent=2) or "Default parameters")
-            if action.get("execution"):
+            observation = client.conversation.get("operation") or {}
+            if observation.get("message"):
+                say(observation["message"])
+            if observation.get("coverage_notice"):
+                say(observation["coverage_notice"])
+            if observation.get("links"):
+                say("/open shows result and task links. /status refreshes this card.")
+            if observation.get("state") == "running":
+                say("Already queued or running. Use /status; no duplicate submission is needed.")
+            elif action.get("execution"):
                 say(f"Task: {action['execution']['status']} · /status for progress")
             elif action.get("is_current") is False:
                 say("Action is stale. Ask to prepare it again.")
             elif action["can_execute"]:
-                say("/confirm to submit this operation. Nothing has run yet.")
+                say(
+                    "/confirm again explicitly starts a new run after reviewing the existing result or attempt."
+                    if observation.get("requires_rerun")
+                    else "/confirm to submit this operation. Nothing has run yet."
+                )
+                say("Describe parameter changes in chat to prepare a revised card before confirming.")
             else:
                 say("Blocked: " + "; ".join(item["reason"] for item in action["blocked"]))
         if result.get("proposal"):
@@ -188,11 +204,23 @@ def main(argv=None):
                     with console.status("Waiting for assistant…"):
                         result = client.resume()
                     display(result)
-                elif message == "/confirm":
-                    receipt = client.confirm()
-                    say(f"Task submitted: {receipt['run_id']} · {receipt['status']}\n/status for progress")
+                elif message in {"/confirm", "/confirm again"}:
+                    receipt = client.confirm(rerun=message == "/confirm again")
+                    say(
+                        f"{'Existing task' if receipt.get('reused') else 'Task submitted'}: {receipt.get('run_id') or receipt.get('job_id')} · {receipt['status']}\n/status for progress"
+                    )
+                elif message == "/open":
+                    for link in client.links():
+                        say(link["title"] + ": " + link["url"])
                 elif message == "/status":
-                    say(json.dumps(client.status(), ensure_ascii=False, indent=2))
+                    observation = client.status()
+                    say(f"{observation.get('state', 'task')} · {observation['status']}")
+                    say(observation.get("message", ""))
+                    if observation.get("coverage_notice"):
+                        say(observation["coverage_notice"])
+                    for step in observation.get("steps", []):
+                        say(f"{step['step_id']}: {step['status']}")
+                    say("/open shows result and task links. Describe parameter changes in chat.")
                 elif message.startswith("/"):
                     say("Unknown command. Use /help.")
                 else:

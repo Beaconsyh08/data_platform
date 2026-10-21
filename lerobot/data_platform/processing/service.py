@@ -48,6 +48,19 @@ def location_identity(location: dict) -> dict:
     }
 
 
+def single_operation(definition):
+    """Comparable single-source business step; evidence chains are deliberately not coalesced."""
+    spec = PipelineSpec.from_dict(definition)
+    snapshots = {s.step_id for s in spec.steps if s.operator_id == "curation.snapshot"}
+    steps = [s for s in spec.steps if s.step_id not in snapshots]
+    if len(steps) != 1:
+        return None
+    step = steps[0]
+    if step.input != "source" or step.options or set(step.artifacts) - snapshots:
+        return None
+    return (step.operator_id, step.version, step.parameters)
+
+
 class PipelineManager:
     def __init__(self, store, lifecycle=None):
         self.store = store
@@ -336,6 +349,7 @@ class PipelineManager:
         delivery: str,
         *,
         expected_identity=None,
+        reuse_equivalent=False,
     ) -> dict:
         if not delivery or len(delivery) > 128:
             raise ValueError("An Idempotency-Key of 1–128 characters is required")
@@ -372,6 +386,23 @@ class PipelineManager:
                     )
                     .limit(self.store.job_manager.queue_limit)
                 ).all()
+                if reuse_equivalent:
+                    signature = single_operation(saved["definition"])
+                    if signature:
+                        for candidate in active:
+                            if (
+                                candidate.location_id != location_id
+                                or candidate.input_identity != location_identity(location)
+                            ):
+                                continue
+                            version = session.get(PipelineVersion, candidate.version_id)
+                            if single_operation(version.spec) == signature:
+                                # No nested session read while this transaction holds the admission lock.
+                                return {
+                                    "run_id": candidate.run_id,
+                                    "status": candidate.status,
+                                    "reused": True,
+                                }
                 if len(active) >= self.store.job_manager.queue_limit:
                     raise JobConflictError("User pipeline queue limit reached")
                 run_id = str(uuid.uuid4())

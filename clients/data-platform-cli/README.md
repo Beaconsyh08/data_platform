@@ -12,13 +12,13 @@ installs the client and trusted CA, then opens the production username/password 
   set -e
   installer=$(mktemp)
   trap 'rm -f "$installer"' EXIT
-  curl --proto '=https' --tlsv1.2 -fsSL https://algorithm-vla-cli-downloads.oss-cn-beijing.aliyuncs.com/cli/0.2.0/install.py -o "$installer"
+  curl --proto '=https' --tlsv1.2 -fsSL https://algorithm-vla-cli-downloads.oss-cn-beijing.aliyuncs.com/cli/0.3.0/install.py -o "$installer"
   python3 "$installer" --login
 )
 ```
 
 The installer verifies the pinned SHA-256 of the wheel and public CA, then installs into
-`~/.local/share/data-platform-cli/0.2.0`. It uses your configured Python package index for dependencies
+`~/.local/share/data-platform-cli/0.3.0`. It uses your configured Python package index for dependencies
 and does not change your shell profile or system trust store. On Debian/Ubuntu, Python's `venv`
 support may require the distribution's `python3-venv` package. Repeat installation reuses the
 recognized installation; unrelated existing files are rejected. `--prefix` and `--bin-dir` select
@@ -61,7 +61,7 @@ Exit logs out the session. Conversations are retained by the server under the sa
 Do not paste credentials into conversation messages.
 
 Type a request such as `帮我准备 Viewer`. The assistant displays the target and parameters before doing
-anything. Type `/confirm` to submit the prepared operation, then `/status` to check the run. Viewer
+anything. Existing results and equivalent running work appear before submission. Use `/open` for authorized result/task links, `/status` to refresh, and `/confirm` for a new operation. Existing results or failed attempts require the explicit `/confirm again` choice; first inspect recovery in Jobs. Describe parameter changes in chat to prepare a revised card. Viewer
 accounts can only ask for explanations. Source mutations, deletion, approval and publication remain in
 their dedicated web interfaces.
 
@@ -76,8 +76,10 @@ their dedicated web interfaces.
 | `/preferences` | Show personal preferences and editing commands; shared with the web in this environment |
 | `/restore <number or conversation-id>` | Restore your own conversation, pending response and action |
 | `/resume` | Recover an interrupted response using its original request ID |
-| `/confirm` | Confirm the displayed Viewer/Quality operation; retries reuse the same run |
-| `/status` | Read the confirmed operation's run and step status |
+| `/confirm` | Confirm the displayed new operation; retries reuse the same run |
+| `/status` | Refresh availability or run status, including before confirmation |
+| `/open` | Print fresh authorized result and task links on this server |
+| `/confirm again` | Explicitly start a new run after reviewing an existing result or failed attempt |
 | `/exit` or Ctrl+D | Log out and exit |
 
 Ctrl+C clears input or interrupts waiting; it does not cancel work already accepted by the server.

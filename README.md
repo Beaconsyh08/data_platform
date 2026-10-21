@@ -45,10 +45,11 @@
 账号统一使用 username；改密和管理员重置流程见 [账号与密码恢复](docs/data_platform_accounts.md)。
 
 **AI 助手：** 点击右下角 **AI assistant**，或按 **Ctrl/Cmd + Shift + Space** 唤出、收起侧栏；
-聊天时仍可操作平台。支持上下文解读、流程草稿，以及确认后准备 Viewer、运行 Quality。
+聊天时仍可操作平台。支持上下文解读、流程草稿，以及 Viewer、Quality、标注和单数据集派生处理的确认卡片。
 网页与 [CLI](clients/data-platform-cli/README.md) 共用历史会话和个人偏好；使用服务端配置的 Qwen，
 用户无需模型密钥。操作权限和确认规则不变，详见 [助手说明](docs/data_platform_operators.md#qwen-draft-assistant)。
-已有 Viewer 可从助手卡片直接打开；需要重新准备时展开 **Rebuild Viewer**，核对参数并确认。
+卡片先检查已有结果与正在运行的任务，再提供结果入口或一键确认；历史结果会注明配置或产物是否可核实。
+网页与 CLI 共用状态判断；CLI 0.3.0 的 `/open` 查看结果链接，`/confirm again` 明确重新运行。
 
 **版本更新：** 功能与兼容性变化记录在 [发行变更](docs/data_platform_changelog.md)，
 当前架构见 [平台情况说明](docs/distributed_data_platform_current_status.md)。

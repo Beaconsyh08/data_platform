@@ -192,3 +192,34 @@ def test_real_https_login_chat_restore_confirm_and_logout(assistant, tmp_path, m
         client.session.close()
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_status_before_confirmation_and_safe_result_links():
+    transport = Transport(
+        [
+            (
+                200,
+                {
+                    "state": "ready",
+                    "links": [
+                        {"title": "Report", "url": "/curation?run=example"},
+                        {"title": "Unsafe", "url": "//other.example"},
+                    ],
+                },
+            )
+        ]
+    )
+    client = PlatformClient("https://platform.example.com", session=transport)
+    client.select({"location_id": "location"})
+    client.last_action = {"action_id": "action"}
+    assert client.links() == [{"title": "Report", "url": "https://platform.example.com/curation?run=example"}]
+    assert client.conversation["operation"]["state"] == "ready"
+    assert transport.calls[0][0] == "GET"
+
+
+def test_explicit_repeat_is_distinct_from_default_confirmation():
+    transport = Transport([(200, {"run_id": "run", "status": "queued"})])
+    client = PlatformClient("https://platform.example.com", session=transport)
+    client.last_action = {"action_id": "action", "revision": 2}
+    client.confirm(rerun=True)
+    assert transport.calls[0][2]["json"] == {"revision": 2, "rerun": True}

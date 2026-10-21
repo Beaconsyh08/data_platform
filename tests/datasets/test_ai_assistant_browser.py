@@ -339,3 +339,69 @@ def test_assistant_enter_composition_confirmation_and_role(assistant, tmp_path, 
     finally:
         server.shutdown()
         thread.join(timeout=10)
+
+
+@pytest.mark.parametrize("state", ["new", "running", "ready"])
+def test_quality_operation_card_states_and_navigation(assistant, tmp_path, state):  # noqa: F811
+    executable = os.environ.get("DATA_PLATFORM_BROWSER_EXECUTABLE")
+    if not executable:
+        pytest.skip("Set DATA_PLATFORM_BROWSER_EXECUTABLE for real-browser acceptance")
+    playwright = pytest.importorskip("playwright.sync_api")
+    from tests.datasets.test_ai_assistant import call
+    from tests.datasets.test_ai_assistant_actions import quality_artifact
+    from tests.datasets.test_ai_assistant_context import bind_lifecycle
+
+    service, fake, owner, body = assistant
+    bind_lifecycle(service, tmp_path)
+    if state != "new":
+        quality_artifact(assistant, tmp_path, status="done" if state == "ready" else "running")
+    fake.responses = [
+        call("describe_operator", {"operator_id": "curation.quality"}),
+        call("prepare_action", {"operator_id": "curation.quality", "parameters": {"checks": ["s3"]}}),
+    ]
+    app = _app(tmp_path, service.store)
+    ctx = SimpleNamespace(control_plane_store=service.store, lifecycle_store=None)
+    register_processing_routes(app, ctx)
+    register_ai_assistant_routes(app, ctx)
+    app.extensions["data_platform_assistant"] = service
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as runtime:
+            browser = runtime.chromium.launch(
+                executable_path=executable, args=["--no-sandbox", "--disable-gpu"]
+            )
+            page = browser.new_page(viewport={"width": 390, "height": 844})
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            assert page.request.post(
+                base + "/api/auth/login", data={"username": "admin", "password": "strong-admin-password"}
+            ).ok
+            page.goto(base + "/assistant?type=dataset&location_id=" + body["location_id"])
+            page.locator("#ai-message").fill("运行 s3 质量检查")
+            page.locator("#ai-message").press("Enter")
+            card = page.locator("#ai-action")
+            playwright.expect(card).to_be_visible()
+            if state == "ready":
+                playwright.expect(card.get_by_role("link", name="Open Quality report")).to_be_visible()
+                assert "run=" in card.get_by_role("link", name="Open Quality report").get_attribute("href")
+                playwright.expect(card).to_contain_text("coverage")
+                card.get_by_text("Run again", exact=True).click()
+            elif state == "running":
+                playwright.expect(card).to_contain_text("Task running")
+                assert card.get_by_role("button", name="Confirm and run").count() == 0
+                playwright.expect(card.get_by_role("link", name="Open Jobs", exact=True)).to_be_visible()
+            else:
+                playwright.expect(card.get_by_role("button", name="Confirm and run")).to_be_enabled()
+            assert not service.manager.runs(owner)
+            card.get_by_role("button", name="Change settings in chat", exact=True).click()
+            playwright.expect(page.locator("#ai-message")).to_be_focused()
+            assert "curation.quality" in page.locator("#ai-message").input_value()
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            assert not errors
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=10)

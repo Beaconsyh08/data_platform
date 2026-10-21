@@ -178,22 +178,42 @@ class PlatformClient:
             self.pending = {"request_id": value["pending_request"]}
         return value
 
-    def confirm(self):
+    def confirm(self, *, rerun=False):
         if not self.last_action:
             raise ClientError("Ask the assistant to prepare an operation first.")
         action = self.last_action
         self.last_run = self.request(
             "POST",
             "/api/ai-assistant/actions/" + action["action_id"] + "/confirm",
-            {"revision": action["revision"]},
+            {"revision": action["revision"], **({"rerun": True} if rerun else {})},
         )
         self.last_action["execution"] = self.last_run
         return self.last_run
 
     def status(self):
-        if not self.last_action or not self.last_action.get("execution"):
-            raise ClientError("No confirmed operation in this conversation.")
-        return self.request("GET", "/api/ai-assistant/actions/" + self.last_action["action_id"])
+        if not self.last_action:
+            raise ClientError("Ask the assistant to prepare an operation first.")
+        value = self.request("GET", "/api/ai-assistant/actions/" + self.last_action["action_id"])
+        self.conversation["operation"] = value
+        return value
+
+    def links(self):
+        """Return fresh server-generated, same-origin links; never launch arbitrary model URLs."""
+        value = self.status()
+        result = []
+        for link in value.get("links", []):
+            path = link.get("url", "")
+            parts = urlsplit(path)
+            if (
+                parts.scheme
+                or parts.netloc
+                or not path.startswith("/")
+                or path.startswith("//")
+                or "\\" in path
+            ):
+                continue
+            result.append({"title": link["title"], "url": self.origin + path})
+        return result
 
     def logout(self):
         try:
