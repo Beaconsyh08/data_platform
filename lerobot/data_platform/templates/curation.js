@@ -273,7 +273,8 @@ window.createCurationWorkspace = (root, initialTarget) => {
   }
   async function openLatestReport() {
     if (activeTab !== 'quality_report' || !context) return;
-    if (!$('result').value) $('result').value = $('result').options[1]?.value || '';
+    const requested = new URLSearchParams(location.search).get('run');
+    if (!$('result').value) $('result').value = requested && [...$('result').options].some(option => option.value === requested) ? requested : $('result').options[1]?.value || '';
     if ($('result').value && result?.run !== $('result').value) await loadResult();
   }
   function drawForms() {

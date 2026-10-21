@@ -780,3 +780,26 @@ def test_annotation_submission_and_claim_require_split_check_capability(remote):
     assert response.status_code == 202, response.get_json()
     remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
     assert remote.control.claim_job(remote.node["node_id"], worker_instance_id="old-agent") is None
+
+
+def test_result_bookmark_retains_report_and_subview(remote):
+    import uuid
+    from urllib.parse import parse_qs, urlsplit
+
+    run = str(uuid.uuid4())
+    response = remote.client.get(
+        "/curation",
+        query_string={
+            "location_id": remote.location["location_id"],
+            "page": "quality",
+            "tab": "quality_report",
+            "run": run,
+        },
+    )
+    assert response.status_code == 302
+    assert parse_qs(urlsplit(response.headers["Location"]).query) == {
+        "select": [f"remote:{remote.location['location_id']}"],
+        "page": ["quality"],
+        "tab": ["quality_report"],
+        "run": [run],
+    }

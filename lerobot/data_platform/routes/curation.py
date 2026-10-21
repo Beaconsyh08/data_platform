@@ -470,7 +470,21 @@ def register_curation_routes(app, ctx):
         if page not in {"explore", "quality", "annotation", "dataset_build"}:
             page = "annotation"
         selection = f"remote:{target.location_id}" if target.location_id else target.dataset_key
-        return redirect("/?" + urlencode({"select": selection, "page": page}))
+        query = {"select": selection, "page": page}
+        if request.args.get("run"):
+            query["run"] = str(uuid.UUID(request.args["run"]))
+        tab = request.args.get("tab")
+        if tab in {
+            "quality_report",
+            "quality_flags",
+            "stage_subtask",
+            "labeling",
+            "tagging",
+            "embedding",
+            "construction",
+        }:
+            query["tab"] = tab
+        return redirect("/?" + urlencode(query))
 
     @app.post("/api/curation/drafts")
     @checked

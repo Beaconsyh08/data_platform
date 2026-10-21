@@ -425,6 +425,8 @@ function consoleShellState() {
                     if (this.selectedDatasetKey) params.set('select', this.selectedDatasetKey);
                     if (this.activePage) params.set('page', this.activePage);
                     if (this.activeTab) params.set('tab', this.activeTab);
+                    const previous = new URLSearchParams(window.location.search);
+                    if (previous.get('select') === this.selectedDatasetKey && previous.get('page') === this.activePage && ['quality','annotation','explore','dataset_build'].includes(this.activePage) && previous.get('run')) params.set('run', previous.get('run'));
                     const url = params.toString() ? `/?${params.toString()}` : '/';
                     window.history.replaceState(null, '', url);
                 },

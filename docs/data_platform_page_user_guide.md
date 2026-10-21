@@ -57,7 +57,7 @@ Quality 的 **Explain report with AI**、Jobs 的 **Explain task with AI** 和 P
 输入框 **Enter** 发送、**Shift+Enter** 换行，中文输入法选字不会误发送。默认不再限制每小时对话次数；同一账号仍需等待当前请求完成。
 如需执行，输入“帮我准备 Viewer”或“运行质量检测”，核对卡片的数据集、节点和参数后点击 **Confirm and run**。
 操作卡片显示在回复下方、输入框上方，回复完成后自动定位。已有结果提供 **Open prepared Viewer / Open Quality report / Open Review / Open derived dataset** 等入口；相同操作正在排队或执行时显示进度，不再提示重复提交。尚未执行时核对参数后点击 **Confirm and run**。
-历史配置或产物无法核实时会明确提示；需要重新计算可展开 **Run again**（Viewer 为 **Rebuild Viewer**）并确认。Quality 必须同时查看实际检查项、episode 选择和媒体覆盖。缓存或报告可打开不代表已对当前源文件重新检测。
+历史配置或产物无法核实时会明确提示；需要重新计算可展开 **Run again**（Viewer 为 **Rebuild Viewer**）并确认。Quality 必须同时查看实际检查项、episode 选择和媒体覆盖。缓存或报告可打开不代表已对当前源文件重新检测。报告入口直接定位卡片对应的结果，刷新保留定位；切换数据集或页面后清除旧定位。
 **Change settings in chat** 将修改请求放入输入框，补充参数后重新生成卡片；**Refresh status** 刷新结果或任务状态。不默认自动执行。
 卡片会显示任务状态，并提供 **Open run / Open Jobs**；重复确认不会创建重复任务。直接确认支持阶段计算、标注、打标、时序标注，以及拆分、格式/维度转换、删字段、平滑、标准化、数值编辑和轨迹/阶段对齐等单输入派生操作。需要额外证据、多数据源、模型路径或人工复核的复杂操作仍生成流程草稿或使用原专用表单。
 新一轮对话会使未确认卡片过期，需要重新准备；已提交任务可刷新恢复。

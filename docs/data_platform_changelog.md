@@ -4,6 +4,12 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## V0.3.1 · OperationResultNavigation · 2026-10-21
+
+- 修复 Curation 书签重定向和工作台初始化丢失报告 ID 的问题；助手结果卡片直接打开指定报告／标注子视图，不回落到最新结果或首页。
+- 数据集或页面切换后清除旧报告定位，保留后端报告范围校验。
+- **影响范围**：Server 路由与网页；无数据库、Agent 协议或算子版本变化，CLI 保持 0.3.0。
+
 ## V0.3.0 · UnifiedOperationCards · 2026-10-21
 
 - 网页与 CLI 共用操作状态：已有匹配结果、正在执行、尚未执行、历史待核实和失败记录；提供结果、Review、派生数据集或 Jobs 入口。

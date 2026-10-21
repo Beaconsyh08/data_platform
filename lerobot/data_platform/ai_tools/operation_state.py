@@ -91,6 +91,9 @@ def _artifact_links(manager, session, owner, location, operator, job_id, output)
                 location_id=location["location_id"],
                 run=job_id,
                 page=page,
+                tab={"curation.quality": "quality_report", "curation.stage": "stage_subtask"}.get(
+                    operator, operator.split(".")[-1]
+                ),
             )
         ]
     except (OSError, ValueError, TypeError, KeyError):

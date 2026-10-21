@@ -422,3 +422,41 @@ async function saveReview(event) {
 """
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+def test_console_preserves_report_bookmark_only_for_same_dataset_and_page():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required for navigation behavior checks")
+    source = (TEMPLATES / "console/shell.js").read_text()
+    function = re.search(
+        r"^                updateHomeUrl\(\) \{.*?^                \},", source, re.M | re.S
+    ).group()
+    script = (
+        "const assert=require('node:assert/strict');const app={"
+        + function
+        + "};\n"
+        + r"""
+let written;
+global.window={location:{search:'?select=remote%3Aa&page=quality&run=report'},history:{replaceState:(_a,_b,url)=>written=url}};
+Object.assign(app,{selectedDatasetKey:'remote:a',activePage:'quality',activeTab:'quality_report'});
+app.updateHomeUrl();assert.equal(new URL(written,'https://test').searchParams.get('run'),'report');
+app.selectedDatasetKey='remote:b';app.updateHomeUrl();assert.equal(new URL(written,'https://test').searchParams.has('run'),false);
+app.selectedDatasetKey='remote:a';app.activePage='annotation';app.updateHomeUrl();assert.equal(new URL(written,'https://test').searchParams.has('run'),false);
+"""
+    )
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+def test_quality_bookmark_opens_requested_report_before_latest():
+    _run_curation_functions(
+        ["openLatestReport"],
+        r"""
+global.activeTab='quality_report';global.context={};global.location={search:'?run=older'};global.result=null;
+const select={value:'',options:[{value:''},{value:'latest'},{value:'older'}]};global.$=()=>select;
+let opened;global.loadResult=async()=>{opened=select.value;};
+await openLatestReport();assert.equal(opened,'older');
+select.value='latest';await openLatestReport();assert.equal(opened,'latest');
+""",
+    )
