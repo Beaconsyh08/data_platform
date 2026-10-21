@@ -4,6 +4,12 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## CLI 0.3.3 · Platform035Compatibility · 2026-10-21
+
+- 按平台与 CLI 同步发行规则，提供面向 Server V0.3.5 的独立兼容客户端；保留登录、确认执行、消息内卡片、Episode 会话恢复及授权结果链接。
+- 稳定安装/升级入口仍为 `cli/latest/install.py`；0.3.2 及以上可用 `data-platform update`。先验收版本化包的登录、`--web`、`/open` 和浏览器会话恢复，再推进 latest。
+- **影响范围**：CLI、下载分发和文档；Server/Agent 保持 V0.3.5，无协议或数据库变化。实际发布及验收身份记录在独立 CLI 发行记录中。
+
 ## CLI 0.3.2 · UpdateCommand · 2026-10-21
 
 - 新增 `data-platform update`：免登录下载官方 latest 安装器，保留自定义安装及启动器目录；当前已是最新版则提示并退出，拒绝降级，安装失败保留旧启动器。

@@ -50,7 +50,7 @@
 用户无需模型密钥。操作权限和确认规则不变，详见 [助手说明](docs/data_platform_operators.md#qwen-draft-assistant)。
 卡片先检查已有结果与正在运行的任务，再提供结果入口或一键确认；历史结果会注明配置或产物是否可核实。
 网页与 CLI 共用状态判断；CLI 的 `/open` 查看结果链接，`/confirm again` 明确重新运行。
-CLI 0.3.1 启动时显示网页地址，`/web` 随时查看，`--web` 免登录输出；CLI 0.3.2 起用 `data-platform update` 升级，旧版本先运行一次 `latest` 安装命令。
+CLI 0.3.3 面向 Server V0.3.5；启动时显示网页地址，`/web` 随时查看，`--web` 免登录输出；CLI 0.3.2 起用 `data-platform update` 升级，旧版本先运行一次 `latest` 安装命令。
 
 **版本更新：** 功能与兼容性变化记录在 [发行变更](docs/data_platform_changelog.md)，
 当前架构见 [平台情况说明](docs/distributed_data_platform_current_status.md)。

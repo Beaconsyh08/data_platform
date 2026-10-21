@@ -226,12 +226,19 @@ def test_explicit_repeat_is_distinct_from_default_confirmation():
     assert transport.calls[0][2]["json"] == {"revision": 2, "rerun": True}
 
 
-def test_web_handoff_preserves_environment_context_and_has_no_credentials():
+@pytest.mark.parametrize(
+    "context",
+    [
+        {"type": "quality", "target_id": "report/one?x=2"},
+        {"type": "episode", "target_id": "0", "page": "viewer"},
+    ],
+)
+def test_web_handoff_preserves_environment_context_and_has_no_credentials(context):
     transport = Transport([])
     client = PlatformClient("https://platform.example.com:8443", session=transport)
     client.select({"location_id": "location&other=value"})
     assert client.links() == [{"title": "Web console", "url": client.origin + "/"}]
-    client.conversation.update(revision=1, context={"type": "quality", "target_id": "report/one?x=2"})
+    client.conversation.update(revision=1, context=context)
     client.csrf = "private-csrf"
     transport.cookies.set("session", "private-session")
     link = client.web_links()[1]["url"]
@@ -239,8 +246,8 @@ def test_web_handoff_preserves_environment_context_and_has_no_credentials():
     assert parse_qs(urlsplit(link).query) == {
         "location_id": ["location&other=value"],
         "assistant_conversation": [client.conversation["conversation_id"]],
-        "type": ["quality"],
-        "target_id": ["report/one?x=2"],
+        "type": [context["type"]],
+        "target_id": [context["target_id"]],
     }
     assert "private" not in link and not transport.calls
     client.new_chat()

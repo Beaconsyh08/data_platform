@@ -18,14 +18,14 @@ installs the client and trusted CA, then opens the production username/password 
 ```
 
 The installer verifies the pinned SHA-256 of the wheel and public CA, then installs into
-`~/.local/share/data-platform-cli/0.3.2`. It uses your configured Python package index for dependencies
+`~/.local/share/data-platform-cli/0.3.3`. It uses your configured Python package index for dependencies
 and does not change your shell profile or system trust store. On Debian/Ubuntu, Python's `venv`
 support may require the distribution's `python3-venv` package. Repeat installation reuses the
 recognized installation; unrelated existing files are rejected. `--prefix` and `--bin-dir` select
 other installation directories. If installation fails, the previous launcher is preserved.
 
-`latest/install.py` selects the latest published compatible client (currently 0.3.2). Repeat the
-same command once to upgrade a client older than 0.3.2. After that, updates only need:
+`latest/install.py` selects the latest published compatible client (currently 0.3.3). Repeat the
+same command to install or upgrade any version. Clients 0.3.2 and later can also update with:
 
 ```bash
 ~/.local/bin/data-platform update
@@ -36,7 +36,7 @@ The command checks the official latest installer and retains your custom install
 directories. It reports when already up to date, refuses downgrades, and preserves the old launcher
 if installation fails. Exit the CLI first; existing terminals keep their old version until restarted.
 Versioned URLs such as `cli/0.1.0/install.py` intentionally remain pinned and never upgrade themselves.
-Use `cli/0.3.2/install.py` when you need the exact 0.3.2 release. The installer still pins the wheel and CA
+Use `cli/0.3.3/install.py` when you need the exact 0.3.3 release. The installer still pins the wheel and CA
 hashes to immutable versioned objects. The client does not silently update itself.
 
 Check your installed version or print the current environment's website without logging in:
@@ -69,6 +69,10 @@ The download URLs are public and do not expire; platform access still requires y
 network access. Only the lightweight client, installer and public CA are published.
 
 ## Install from source or use another server
+
+CLI 0.3.3 targets Server V0.3.5, including its saved Episode conversations and message-level
+operation cards. Existing result links are refreshed through the authorized action API; browser
+and CLI sessions remain separate. Server and Agent protocols are unchanged.
 
 The source package requires a platform server with the assistant action APIs:
 

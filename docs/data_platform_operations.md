@@ -49,7 +49,8 @@ changes. Increment the independent CLI version, build/test the wheel, update the
 pinned SHA-256, publish all immutable versioned objects and verify anonymous readback before updating
 `cli/latest/install.py` to the exact verified installer bytes. Set the latest entry's cache control to
 `no-cache`; keep versioned objects immutable. Verify `latest` installation, `--version`, `--web`, normal
-TLS login and `/open` against the accepted server. Record both client and server identities in release
+TLS login and `/open` against the accepted server. For CLI 0.3.3, verify Server V0.3.5
+on both environments, including saved Episode handoff, existing result links and read-only roles. Record both client and server identities in release
 acceptance. The platform upgrade is incomplete until CLI publication and acceptance both finish;
 report platform and CLI versions plus the latest installation command together. Users upgrade by
 running `data-platform update` (CLI 0.3.2+) and restarting the CLI; older clients need the latest
