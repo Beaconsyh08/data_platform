@@ -202,9 +202,17 @@ class PlatformClient:
         """Return fresh server-generated, same-origin links; never launch arbitrary model URLs."""
         if not self.last_action:
             return self.web_links()
-        value = self.status()
+        return self.result_links(self.status()) or self.web_links()
+
+    def result_links(self, observation=None):
+        """Expand only server-provided result references against the authenticated origin."""
+        links = (
+            observation.get("links", [])
+            if observation is not None
+            else (self.conversation or {}).get("references", [])
+        )
         result = []
-        for link in value.get("links", []):
+        for link in links:
             path = link.get("url", "")
             parts = urlsplit(path)
             if (
@@ -213,10 +221,11 @@ class PlatformClient:
                 or not path.startswith("/")
                 or path.startswith("//")
                 or "\\" in path
+                or any(ord(character) < 32 or ord(character) == 127 for character in path)
             ):
                 continue
             result.append({"title": link["title"], "url": self.origin + path})
-        return result or self.web_links()
+        return result
 
     def web_links(self):
         """Browser handoff uses this environment and carries no session credentials."""

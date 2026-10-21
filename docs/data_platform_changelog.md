@@ -4,6 +4,13 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## CLI 0.3.4 · DirectResultLinks · 2026-10-21
+
+- 操作卡片直接输出带当前服务器地址的完整 HTTPS 结果/任务链接，默认参数不再显示空 JSON；历史结果可打开与参数匹配未知分别说明。
+- 普通后续回答不重复旧卡片；历史会话保留卡片所属消息。常见的明确网址询问直接刷新授权链接，不调用模型、不重建任务、不使待确认卡片过期。
+- CLI 渲染 Markdown，链接采用服务端授权引用和完整地址，忽略未验证的模型 Markdown 链接；保留跨账号授权、TLS 和确认规则。
+- **影响范围**：独立 CLI；兼容 Server/Agent V0.3.5，无服务器、数据库或 Agent 协议变更。
+
 ## CLI 0.3.3 · Platform035Compatibility · 2026-10-21
 
 - 按平台与 CLI 同步发行规则，提供面向 Server V0.3.5 的独立兼容客户端；保留登录、确认执行、消息内卡片、Episode 会话恢复及授权结果链接。

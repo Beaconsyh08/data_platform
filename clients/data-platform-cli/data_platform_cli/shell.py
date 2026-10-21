@@ -10,6 +10,7 @@ import unicodedata
 
 from data_platform_cli import __version__
 from data_platform_cli.client import ClientError, PlatformClient
+from data_platform_cli.presentation import navigation_request, response_markdown
 
 COMMANDS = [
     "/help",
@@ -80,19 +81,56 @@ def main(argv=None):
     prompt = PromptSession(completer=WordCompleter(COMMANDS), key_bindings=keys)
     chats, chat_cursor = [], None
 
+    def show_links(links):
+        for link in links:
+            console.print(
+                safe_terminal(link["title"] + ": " + link["url"]),
+                markup=False,
+                highlight=False,
+                soft_wrap=True,
+            )
+
+    def render_message(text):
+        links = client.result_links() + client.result_links(
+            (client.conversation or {}).get("operation") or {}
+        )
+        console.print(response_markdown(safe_terminal(text), links, client.origin))
+
     def display(result):
-        say(result.get("message") or result.get("error") or "Response received.")
-        action = client.last_action
+        render_message(result.get("message") or result.get("error") or "Response received.")
+        action = result.get("action")
+        if action and client.last_action and action["action_id"] == client.last_action["action_id"]:
+            action = client.last_action
         if action:
             say(f"{action['title']} · Dataset: {action['dataset']} · Node: {action['node']}")
-            say(json.dumps(action["parameters"], ensure_ascii=False, indent=2) or "Default parameters")
-            observation = client.conversation.get("operation") or {}
-            if observation.get("message"):
+            say(
+                json.dumps(action["parameters"], ensure_ascii=False, indent=2)
+                if action["parameters"]
+                else "Default parameters"
+            )
+            observation = (
+                result.get("operation")
+                or (
+                    client.conversation.get("operation")
+                    if client.last_action and action["action_id"] == client.last_action["action_id"]
+                    else None
+                )
+                or {}
+            )
+            links = client.result_links(observation)
+            if observation.get("state") == "history" and any(link["title"] != "Open Jobs" for link in links):
+                say(
+                    "Existing result available to open. Its original input/settings are unverified; this does not mean the page is unavailable."
+                )
+            elif observation.get("message"):
                 say(observation["message"])
             if observation.get("coverage_notice"):
                 say(observation["coverage_notice"])
-            if observation.get("links"):
-                say("/open shows result and task links. /status refreshes this card.")
+            if links:
+                show_links(links)
+                say(
+                    "Open in your browser and sign in separately. /open refreshes links; /status refreshes status."
+                )
             if observation.get("state") == "running":
                 say("Already queued or running. Use /status; no duplicate submission is needed.")
             elif action.get("execution"):
@@ -155,7 +193,10 @@ def main(argv=None):
                     say("New conversation.")
                 elif message == "/history":
                     for item in client.conversation["history"]:
-                        say(item["role"] + ": " + item["content"])
+                        if item["role"] == "assistant":
+                            display({**item, "message": item["content"]})
+                        else:
+                            say("You: " + item["content"])
                 elif message in {"/chats", "/chats next"}:
                     if message == "/chats next" and not chat_cursor:
                         say("No more conversations. Use /chats to refresh.")
@@ -215,8 +256,11 @@ def main(argv=None):
                     value = client.restore(identity)
                     say("Conversation restored.")
                     for item in value["history"]:
-                        say(item["role"] + ": " + item["content"])
-                    display({"message": "Use /resume if a response is pending."})
+                        if item["role"] == "assistant":
+                            display({**item, "message": item["content"]})
+                        else:
+                            say("You: " + item["content"])
+                    say("Use /resume if a response is pending.")
                 elif message == "/resume":
                     with console.status("Waiting for assistant…"):
                         result = client.resume()
@@ -226,9 +270,11 @@ def main(argv=None):
                     say(
                         f"{'Existing task' if receipt.get('reused') else 'Task submitted'}: {receipt.get('run_id') or receipt.get('job_id')} · {receipt['status']}\n/status for progress"
                     )
-                elif message == "/open":
-                    for link in client.links():
-                        say(link["title"] + ": " + link["url"])
+                elif message == "/open" or navigation_request(message):
+                    show_links(client.links())
+                    say(
+                        "Use the full HTTPS address in your browser and sign in to this platform. Opening a result does not require a rebuild. If access still fails, check the company network/VPN and report the browser error."
+                    )
                 elif message == "/web":
                     for link in client.web_links():
                         say(link["title"] + ": " + link["url"])
