@@ -408,6 +408,7 @@ def test_episode_page_reference_and_scope_revocation(assistant, tmp_path, monkey
     location = service.store.get_location(value["location_id"])
     reference = page_context(service, owner, location["dataset_key"], "1")
     assert reference["context"] == {"type": "episode", "target_id": "1", "page": "viewer"}
+    assert page_context(service, owner, "fixture/dataset", "1") == reference
     with service.store.sessions.begin() as session:
         session.get(ControlPlaneUser, owner).role = "viewer"
     fake.responses = [text_response("open the drawer")]
@@ -421,4 +422,45 @@ def test_episode_page_reference_and_scope_revocation(assistant, tmp_path, monkey
     with pytest.raises(PermissionError):
         page_context(service, owner, location["dataset_key"], "1")
     with pytest.raises(PermissionError):
+        page_context(service, owner, "fixture/dataset", "1")
+    with pytest.raises(PermissionError):
         service.conversation(owner, value["conversation_id"])
+
+
+def test_episode_alias_lookup_is_literal_and_rejects_ambiguity(assistant, tmp_path):  # noqa: F811
+    from lerobot.data_platform.ai_tools.context import page_context
+    from lerobot.data_platform.control_plane import DatasetLocation
+
+    service, _, owner, value = assistant
+    episode_fixture(service, value["location_id"], tmp_path)
+    with service.store.sessions.begin() as session:
+        location = session.get(DatasetLocation, value["location_id"])
+        location.details = {**location.details, "viewer_url": "/fixture/data_set/episode_0"}
+    assert page_context(service, owner, "fixture/data_set", "0")["location_id"] == value["location_id"]
+    for invalid in ("fixture/data%set", "fixture/../data_set", "fixture/dataXset", "./data_set"):
+        with pytest.raises(KeyError):
+            page_context(service, owner, invalid, "0")
+    with service.store.sessions.begin() as session:
+        location = session.get(DatasetLocation, value["location_id"])
+        location.details = {**location.details, "viewer_url": "/fixture/dataXset/episode_0"}
+    with pytest.raises(KeyError):
+        page_context(service, owner, "fixture/data_set", "0")
+    with service.store.sessions.begin() as session:
+        location = session.get(DatasetLocation, value["location_id"])
+        session.add(
+            DatasetLocation(
+                location_id=str(uuid.uuid4()),
+                node_id=location.node_id,
+                dataset_key="second/source",
+                root="/other/source",
+                root_digest="a" * 64,
+                output_dir="/other/output",
+                created_at=location.created_at,
+                updated_at=location.updated_at,
+                last_seen_at=location.last_seen_at,
+                state="available",
+                details={"viewer_url": "/fixture/dataXset/episode_1"},
+            )
+        )
+    with pytest.raises(KeyError):
+        page_context(service, owner, "fixture/dataXset", "0")

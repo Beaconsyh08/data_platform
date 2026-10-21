@@ -4,6 +4,12 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## V0.3.4 · PageContextAliases · 2026-10-21
+
+- 补齐本地 Viewer 页面别名到注册数据集的映射，保证默认跟随页面时正确读取选中 Episode 的 Instruction；重复映射拒绝解析，保留实际数据集的权限检查。
+- 增加别名、范围撤销、模糊匹配防护与真实浏览器回归；包含 V0.3.3 的页面跟随和消息内操作卡片。
+- **影响范围**：Server 上下文解析；无数据库迁移、Agent 协议、算子版本或 CLI 0.3.0 变更。
+
 ## V0.3.3 · PageAwareAssistant · 2026-10-21
 
 - 修复助手与当前页面脱节：默认跟随页面、数据集和 Viewer Episode；可关闭 Follow current page 固定上下文，恢复历史会话时明确固定，迟到回答不覆盖新上下文。

@@ -176,7 +176,7 @@ def test_episode_follow_pin_late_answer_and_message_cards(assistant, tmp_path): 
             """<body><a id="episode-next" href="/episode/{{ 1-index }}">Switch episode</a>
         {% include 'assistant_workspace.html' %}<script>
         document.body.dataset.assistantStandalone='true';
-        window.platformAssistantPage={datasetKey:'node/source',episodeIndex:{{ index }}};
+        window.platformAssistantPage={datasetKey:'fixture/dataset',episodeIndex:{{ index }}};
         {% include 'pipeline_assistant.js' %}{% include 'assistant_launcher.js' %}
         </script></body>""",
             index=index,

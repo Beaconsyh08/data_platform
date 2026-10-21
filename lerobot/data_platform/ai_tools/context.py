@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlencode
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from lerobot.data_platform.control_plane import DatasetLocation, RemoteJob, RemoteJobEvent
 from lerobot.data_platform.dataset_references import dataset_references
@@ -138,14 +138,25 @@ def page_context(service, owner, dataset_key, episode_index):
     if not isinstance(dataset_key, str) or len(dataset_key) > 512:
         raise ValueError("Invalid dataset reference")
     context = normalize_context({"type": "episode", "target_id": episode_index, "page": "viewer"}, "")
+    match = DatasetLocation.dataset_key == dataset_key
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", dataset_key) and all(
+        part not in {".", ".."} for part in dataset_key.split("/")
+    ):
+        # Local Viewer URLs may use a collision-safe alias instead of the registered key.
+        # Escape literal underscores; a page reference must never broaden the lookup.
+        prefix = "/" + dataset_key.replace("_", "!_") + "/episode!_"
+        match = or_(match, DatasetLocation.details["viewer_url"].as_string().like(prefix + "%", escape="!"))
     with service.store.sessions() as session:
         service.manager._actor(session, owner, write=False)
-        ids = session.scalars(
-            select(DatasetLocation.location_id).where(DatasetLocation.dataset_key == dataset_key).limit(2)
-        ).all()
+        ids = session.scalars(select(DatasetLocation.location_id).where(match).limit(2)).all()
         if len(ids) != 1:
             raise KeyError("Dataset not found")
         location, _ = service.manager._location(session, ids[0], owner, write=False)
+        if location["dataset_key"] != dataset_key and not re.fullmatch(
+            re.escape("/" + dataset_key + "/episode_") + r"[0-9]+",
+            str((location.get("metadata") or {}).get("viewer_url", "")),
+        ):
+            raise KeyError("Dataset not found")
         return {
             "location_id": ids[0],
             "dataset": safe_text(location["dataset_key"].rsplit("/", 1)[-1], 200),
