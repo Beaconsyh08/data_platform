@@ -86,11 +86,12 @@ def test_permission_filter_precedes_pages_and_checks_hidden_sources(setup):  # n
     assert not page["has_more"]
 
 
-def test_local_job_filter_precedes_limit_and_preserves_ownership(setup):  # noqa: F811
+@pytest.mark.parametrize("local_compute", [True, {"operator_id": "viewer.prepare", "parameters": {}}])
+def test_local_job_filter_precedes_limit_and_preserves_ownership(setup, local_compute):  # noqa: F811
     store, admin, owner, _, _, create = setup
     local = create()
     with store.sessions.begin() as session:
-        session.get(RemoteJob, local["job_id"]).options = {"local_compute": True}
+        session.get(RemoteJob, local["job_id"]).options = {"local_compute": local_compute}
     create()  # A newer remote job must not hide the older local one.
     assert [r["job_id"] for r in store.list_jobs(actor=owner, local_only=True, limit=1)] == [local["job_id"]]
     assert store.list_jobs(actor={"user_id": admin["user_id"], "role": "operator"}, local_only=True) == []

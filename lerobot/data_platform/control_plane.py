@@ -1211,6 +1211,7 @@ class ControlPlaneStore:
                     or_(
                         RemoteJob.operation.startswith("local.request."),
                         RemoteJob.options["local_compute"].as_boolean().is_(True),
+                        RemoteJob.options["local_compute"]["operator_id"].as_string().is_not(None),
                     )
                 )
             if actor is not None and actor.get("role") != "admin":
