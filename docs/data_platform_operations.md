@@ -34,7 +34,8 @@ The standalone client is packaged separately under `clients/data-platform-cli`; 
 install LeRobot or GPU dependencies. Its [README](../clients/data-platform-cli/README.md) contains a
 complete HTTPS download/install/login command; users do not need to download the wheel or CA manually.
 The dedicated `algorithm-vla-cli-downloads` OSS bucket in `cn-beijing` contains only public client
-distribution objects under immutable `cli/<client-version>/` paths. The bucket ACL remains private
+distribution objects under immutable `cli/<client-version>/` paths, plus the mutable
+`cli/latest/install.py` installer entry point. The bucket ACL remains private
 (no anonymous listing); only the wheel, installer and public CA objects have `public-read` ACLs.
 Public Access Block is disabled only for this dedicated download bucket; the data archive bucket
 retains its existing protection. Do not upload server bundles, credentials, data or acceptance reports.
@@ -43,6 +44,17 @@ verify anonymous downloads and hashes, denied anonymous bucket listing, installa
 account, password login, and archive protection. Never replace an existing versioned object with
 different bytes. Client distribution changes do not allocate a new server release: production promotion
 continues to use the exact accepted development package.
+At every web release, compare `clients/data-platform-cli/` with the last published client. If runtime
+client code changed, increment its independent version, build/test the wheel, update the installer's
+pinned SHA-256, publish all immutable versioned objects and verify anonymous readback before updating
+`cli/latest/install.py` to the exact verified installer bytes. Set the latest entry's cache control to
+`no-cache`; keep versioned objects immutable. Verify `latest` installation, `--version`, `--web`, normal
+TLS login and `/open` against the accepted server. Record both client and server identities in release
+acceptance. Pure web changes keep the client version and still check compatibility. Users upgrade by
+rerunning the latest installation command and restarting the CLI; old versioned install URLs stay pinned.
+CLI 0.3.1 prints the console URL before login and supports `/web` for saved conversation handoff with
+encoded dataset/report context. Browser login remains separate. No Server/Agent deployment or protocol
+change is required for this client-only release.
 Automated browser acceptance uses a deterministic fake provider; a separate live Qwen check should use
 synthetic schema and no production rows. See [the assistant contract](data_platform_operators.md#qwen-draft-assistant)
 for data sent to Qwen, quotas, request recovery and retention.

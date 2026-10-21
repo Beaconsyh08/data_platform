@@ -4,6 +4,13 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## CLI 0.3.1 · WebLinks · 2026-10-21
+
+- CLI 启动时显示当前环境网页地址；新增 `/web`、免登录 `--web` 与 `--version`。已保存会话链接保留数据集和报告上下文，浏览器独立登录，不传递会话凭据。
+- `/open` 在没有操作卡片或结果链接时提供网页入口，已有操作仍查询最新授权结果。
+- 安装文档改用 `cli/latest/install.py` 稳定入口；版本化安装器和 wheel 保持不可变，重复执行 latest 命令升级。每次网页发行同步检查客户端差异与兼容性。
+- **影响范围**：独立 CLI 与下载分发；兼容 Server V0.3.2，无 Server/Agent、数据库或协议变更，无需重启服务。本文不代表下载站已发布。
+
 ## V0.3.5 · PageContextChartFocus · 2026-10-21
 
 - Viewer 点击或拖动 Charts 选帧后，两张图保留蓝色竖直定位线；悬停和播放不改变定位线，切换 Episode 清除。

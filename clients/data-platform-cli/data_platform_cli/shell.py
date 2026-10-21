@@ -8,6 +8,7 @@ import json
 import re
 import unicodedata
 
+from data_platform_cli import __version__
 from data_platform_cli.client import ClientError, PlatformClient
 
 COMMANDS = [
@@ -22,6 +23,7 @@ COMMANDS = [
     "/confirm",
     "/status",
     "/open",
+    "/web",
     "/confirm again",
     "/exit",
 ]
@@ -36,10 +38,19 @@ def safe_terminal(value):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Chat with your Data Platform using your platform account.")
+    parser.add_argument("--version", action="version", version=f"Data Platform CLI {__version__}")
     parser.add_argument("--server", required=True, help="HTTPS platform origin")
     parser.add_argument("--username")
     parser.add_argument("--ca-bundle", help="CA certificate file for an internal deployment")
+    parser.add_argument("--web", action="store_true", help="Print the web console URL without logging in")
     args = parser.parse_args(argv)
+    try:
+        client = PlatformClient(args.server, ca_bundle=args.ca_bundle)
+    except ClientError as error:
+        parser.error(str(error))
+    if args.web:
+        print(safe_terminal(client.web_links()[0]["url"]))
+        return 0
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter
     from prompt_toolkit.key_binding import KeyBindings
@@ -50,10 +61,8 @@ def main(argv=None):
     def say(text):
         console.print(safe_terminal(text), markup=False, highlight=False)
 
-    try:
-        client = PlatformClient(args.server, ca_bundle=args.ca_bundle)
-    except ClientError as error:
-        parser.error(str(error))
+    say(f"Data Platform CLI {__version__} · Web console: {client.origin}/")
+    say("/web shows browser links. Sign in separately in your browser with the same account.")
     keys = KeyBindings()
 
     @keys.add("escape", "enter")
@@ -211,6 +220,9 @@ def main(argv=None):
                     )
                 elif message == "/open":
                     for link in client.links():
+                        say(link["title"] + ": " + link["url"])
+                elif message == "/web":
+                    for link in client.web_links():
                         say(link["title"] + ": " + link["url"])
                 elif message == "/status":
                     observation = client.status()

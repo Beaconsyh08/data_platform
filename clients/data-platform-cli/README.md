@@ -12,17 +12,37 @@ installs the client and trusted CA, then opens the production username/password 
   set -e
   installer=$(mktemp)
   trap 'rm -f "$installer"' EXIT
-  curl --proto '=https' --tlsv1.2 -fsSL https://algorithm-vla-cli-downloads.oss-cn-beijing.aliyuncs.com/cli/0.3.0/install.py -o "$installer"
+  curl --proto '=https' --tlsv1.2 -fsSL https://algorithm-vla-cli-downloads.oss-cn-beijing.aliyuncs.com/cli/latest/install.py -o "$installer"
   python3 "$installer" --login
 )
 ```
 
 The installer verifies the pinned SHA-256 of the wheel and public CA, then installs into
-`~/.local/share/data-platform-cli/0.3.0`. It uses your configured Python package index for dependencies
+`~/.local/share/data-platform-cli/0.3.1`. It uses your configured Python package index for dependencies
 and does not change your shell profile or system trust store. On Debian/Ubuntu, Python's `venv`
 support may require the distribution's `python3-venv` package. Repeat installation reuses the
 recognized installation; unrelated existing files are rejected. `--prefix` and `--bin-dir` select
 other installation directories. If installation fails, the previous launcher is preserved.
+
+`latest/install.py` selects the latest published compatible client (currently 0.3.1). Repeat the
+same command to upgrade an older installation; existing terminals keep their old version until restarted.
+Versioned URLs such as `cli/0.1.0/install.py` intentionally remain pinned and never upgrade themselves.
+Use `cli/0.3.1/install.py` when you need the exact 0.3.1 release. The installer still pins the wheel and CA
+hashes to immutable versioned objects. The client does not silently update itself.
+
+Check your installed version or print the current environment's website without logging in:
+
+```bash
+~/.local/bin/data-platform --version
+~/.local/bin/data-platform --web
+~/.local/bin/data-platform --server https://10.8.8.40:8443 --web
+```
+
+The web address also appears before login. During chat, `/web` prints the console and, once the server
+has saved it, the current conversation with its dataset/report context. Open the URL in your browser
+and sign in with the same platform account. Browser and CLI sessions are separate; links contain no
+password, cookie or CSRF token. `/open` retrieves current result/task links when an action exists,
+and otherwise shows the website links.
 
 For subsequent logins:
 
@@ -78,7 +98,8 @@ their dedicated web interfaces.
 | `/resume` | Recover an interrupted response using its original request ID |
 | `/confirm` | Confirm the displayed new operation; retries reuse the same run |
 | `/status` | Refresh availability or run status, including before confirmation |
-| `/open` | Print fresh authorized result and task links on this server |
+| `/open` | Print fresh authorized result/task links, or website links when no action/result is available |
+| `/web` | Print this environment's console and saved conversation links |
 | `/confirm again` | Explicitly start a new run after reviewing an existing result or failed attempt |
 | `/exit` or Ctrl+D | Log out and exit |
 
@@ -128,4 +149,6 @@ the platform already owns tool authorization, conversation state and confirmatio
 the server gives web and CLI users the same behavior.
 
 From this directory, `uv build --wheel` produces an installable client wheel. The server and CLI are
-released separately; an older server without action APIs cannot confirm operations from this client.
+versioned independently and reviewed together at each web release. When client code changes, publish
+the matching client and advance `latest/install.py` after verification. Browser-only changes do not
+require a new client version. An older server without action APIs cannot confirm operations from this client.

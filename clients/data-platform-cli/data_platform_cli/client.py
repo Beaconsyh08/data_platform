@@ -199,6 +199,8 @@ class PlatformClient:
 
     def links(self):
         """Return fresh server-generated, same-origin links; never launch arbitrary model URLs."""
+        if not self.last_action:
+            return self.web_links()
         value = self.status()
         result = []
         for link in value.get("links", []):
@@ -213,6 +215,25 @@ class PlatformClient:
             ):
                 continue
             result.append({"title": link["title"], "url": self.origin + path})
+        return result or self.web_links()
+
+    def web_links(self):
+        """Browser handoff uses this environment and carries no session credentials."""
+        result = [{"title": "Web console", "url": self.origin + "/"}]
+        if self.location and self.conversation and self.conversation.get("revision", 0) > 0:
+            context = self.conversation.get("context") or {
+                "type": "dataset",
+                "target_id": self.location["location_id"],
+            }
+            query = urlencode(
+                {
+                    "location_id": self.location["location_id"],
+                    "assistant_conversation": self.conversation["conversation_id"],
+                    "type": context["type"],
+                    "target_id": context["target_id"],
+                }
+            )
+            result.append({"title": "Continue conversation", "url": self.origin + "/assistant?" + query})
         return result
 
     def logout(self):

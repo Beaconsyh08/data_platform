@@ -6,6 +6,7 @@ import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import requests
@@ -223,3 +224,64 @@ def test_explicit_repeat_is_distinct_from_default_confirmation():
     client.last_action = {"action_id": "action", "revision": 2}
     client.confirm(rerun=True)
     assert transport.calls[0][2]["json"] == {"revision": 2, "rerun": True}
+
+
+def test_web_handoff_preserves_environment_context_and_has_no_credentials():
+    transport = Transport([])
+    client = PlatformClient("https://platform.example.com:8443", session=transport)
+    client.select({"location_id": "location&other=value"})
+    assert client.links() == [{"title": "Web console", "url": client.origin + "/"}]
+    client.conversation.update(revision=1, context={"type": "quality", "target_id": "report/one?x=2"})
+    client.csrf = "private-csrf"
+    transport.cookies.set("session", "private-session")
+    link = client.web_links()[1]["url"]
+    assert urlsplit(link).netloc == "platform.example.com:8443"
+    assert parse_qs(urlsplit(link).query) == {
+        "location_id": ["location&other=value"],
+        "assistant_conversation": [client.conversation["conversation_id"]],
+        "type": ["quality"],
+        "target_id": ["report/one?x=2"],
+    }
+    assert "private" not in link and not transport.calls
+    client.new_chat()
+    assert len(client.web_links()) == 1
+
+
+def test_web_and_version_flags_do_not_login(monkeypatch, capsys):
+    from data_platform_cli import __version__, shell
+
+    monkeypatch.setattr(shell.getpass, "getpass", lambda *_: pytest.fail("Unexpected login"))
+    monkeypatch.setattr(requests.Session, "request", lambda *_, **__: pytest.fail("Unexpected request"))
+    assert shell.main(["--server", "https://platform.example.com:8443", "--web"]) == 0
+    assert capsys.readouterr().out == "https://platform.example.com:8443/\n"
+    with pytest.raises(SystemExit) as result:
+        shell.main(["--version"])
+    assert result.value.code == 0
+    assert capsys.readouterr().out.strip() == f"Data Platform CLI {__version__}"
+
+
+def test_shell_prints_web_links_without_an_action(monkeypatch, capsys):
+    import prompt_toolkit
+    from data_platform_cli import shell
+
+    class FakeClient(PlatformClient):
+        def login(self, username, password):
+            self.user = {"username": username, "role": "viewer"}
+            return self.user
+
+        def datasets(self):
+            return [{"location_id": "location"}]
+
+        def logout(self):
+            self.user = None
+
+    inputs = iter(["1", "/web", "/open", "/exit"])
+    monkeypatch.setattr(shell, "PlatformClient", FakeClient)
+    monkeypatch.setattr(shell.getpass, "getpass", lambda *_: "test-password")
+    monkeypatch.setattr(
+        prompt_toolkit, "PromptSession", lambda **_: SimpleNamespace(prompt=lambda *_: next(inputs))
+    )
+    assert shell.main(["--server", "https://platform.example.com", "--username", "test"]) == 0
+    output = capsys.readouterr().out
+    assert output.count("Web console: https://platform.example.com/") == 3
+    assert "Ask the assistant to prepare" not in output
