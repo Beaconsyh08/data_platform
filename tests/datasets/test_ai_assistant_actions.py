@@ -384,3 +384,43 @@ def test_cards_stay_attached_to_their_own_messages_and_model_history_stays_stand
     legacy = service.conversation(owner, body["conversation_id"])
     assert legacy["history"][1]["action"]["action_id"] == result["request_id"]
     assert "action" not in legacy["history"][-1]
+
+
+@pytest.mark.parametrize("video_mode,video_workers", [("sampled", 1), ("full", 16)])
+def test_quality_action_video_options_match_executor(assistant, tmp_path, video_mode, video_workers):  # noqa: F811
+    from lerobot.data_platform.ai_tools.actions import prepare
+
+    service, _, owner, body = assistant
+    bind_lifecycle(service, tmp_path)
+    action = prepare(
+        service,
+        owner,
+        body["location_id"],
+        "curation.quality",
+        {
+            "checks": ["s3"],
+            "video_mode": video_mode,
+            "video_workers": video_workers,
+        },
+    )
+    assert action["can_execute"], action["blocked"]
+    assert action["parameters"]["video_workers"] == video_workers
+    assert not service.store.list_jobs() and not service.manager.list(owner)
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"video_mode": "off"},
+        {"video_workers": "1"},
+        {"video_workers": 0},
+        {"video_workers": 17},
+        {"video_workers": True},
+    ],
+)
+def test_quality_schema_rejects_invalid_video_parameters(parameters):
+    from lerobot.data_platform.operators import get_operator
+    from lerobot.data_platform.operators.schema import validate_parameters
+
+    with pytest.raises(ValueError):
+        validate_parameters(get_operator("curation.quality"), parameters)

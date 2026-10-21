@@ -136,7 +136,11 @@ def _curation_schema(parameters):
     numbers = {"box_threshold", "text_threshold", "min_dist", "uncertainty_threshold", "oversample_factor"}
     props = {}
     for name in parameters:
-        if name in bools:
+        if name == "video_workers":
+            props[name] = {"type": "integer", "minimum": 1, "maximum": 16}
+        elif name == "video_mode":
+            props[name] = {"type": "string", "enum": ["sampled", "full"]}
+        elif name in bools:
             props[name] = {"type": "boolean"}
         elif name in ints:
             props[name] = {"type": "integer", "minimum": 0 if name in {"trial_seed", "seed"} else 1}
