@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from pathlib import Path
 from urllib.parse import urlencode
 
 from sqlalchemy import select
@@ -17,6 +18,40 @@ from lerobot.data_platform.task_catalog import content_digest
 
 KINDS = {"pipeline", "dataset", "quality", "job"}
 TOOL_BYTES = 20 * 1024
+
+
+def viewer_reference(location):
+    """Offer only a registered, locally published Viewer; never inspect source rows or media."""
+    metadata = location.get("metadata") or {}
+    url = metadata.get("viewer_url")
+    if not metadata.get("viewer_ready") or not isinstance(url, str):
+        return None
+    if not re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/episode_[0-9]+", url):
+        return None
+    if any(part in {".", ".."} for part in url.split("/")):
+        return None
+    try:
+        cache = Path(metadata.get("cache_root") or "")
+        manifest = cache / "static" / "viewer_manifest.json"
+        if (
+            not cache.is_absolute()
+            or manifest.is_symlink()
+            or not manifest.resolve().is_relative_to(cache.resolve())
+        ):
+            return None
+        with manifest.open("rb") as stream:
+            raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            return None
+        data = json.loads(raw)
+        if data.get("version") != 1 or data.get("root") != location.get("root"):
+            return None
+        episode = int(url.rsplit("_", 1)[-1])
+        if not any(item.get("episode_index") == episode for item in data.get("episodes", [])):
+            return None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    return {"id": "viewer", "title": "Open prepared Viewer", "url": url}
 
 
 def safe_text(value, limit=500):
@@ -229,7 +264,11 @@ def resolve_context(manager, session, owner, location_id, context):
         summary["snapshot_available"] = bool(
             manager.lifecycle and manager.lifecycle._get_record("curation_locations", location_id)
         )
-        summary["viewer_available"] = bool(location.get("viewer_url"))
+    viewer = viewer_reference(location)
+    if kind in {"pipeline", "dataset"}:
+        summary["viewer_available"] = bool(viewer)
+    if viewer:
+        links.append(viewer)
     actor = manager._actor(session, owner, write=False)
     suggestions = [{"type": "navigate", **link} for link in links]
     if actor.role != "viewer" and kind in {"dataset", "quality"}:

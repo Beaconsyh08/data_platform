@@ -699,7 +699,12 @@ class AssistantService:
                             self, owner, value["location_id"], args["operator_id"], args["parameters"]
                         )
                         return {
-                            "message": "操作已准备，请核对数据集和参数后确认执行。尚未提交任务。",
+                            "message": (
+                                "这个数据集已有已发布的 Viewer，可点击下方卡片直接打开。"
+                                "如需更新缓存，请展开“重新准备”并核对参数后确认。尚未提交任务。"
+                                if action.get("viewer_available") and action.get("prefer_existing")
+                                else "请在下方操作卡片核对数据集和参数，点击“确认并运行”后才会提交任务。"
+                            ),
                             "proposal": None,
                             "action": action,
                             "references": context_data["references"],

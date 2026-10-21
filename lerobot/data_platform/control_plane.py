@@ -1189,9 +1189,16 @@ class ControlPlaneStore:
         )
 
     def list_jobs(
-        self, *, limit: int = 200, actor: dict | None = None, summary: bool = False, page=None, filters=None
+        self,
+        *,
+        limit: int = 200,
+        actor: dict | None = None,
+        summary: bool = False,
+        page=None,
+        filters=None,
+        local_only: bool = False,
     ):
-        from sqlalchemy import exists, literal_column
+        from sqlalchemy import exists, literal_column, or_
 
         from lerobot.data_platform.list_queries import job_projection, parse_time
 
@@ -1199,6 +1206,13 @@ class ControlPlaneStore:
         filters = filters or {}
         with self.sessions() as session:
             query = select(RemoteJob.job_id, RemoteJob.created_at)
+            if local_only:
+                query = query.where(
+                    or_(
+                        RemoteJob.operation.startswith("local.request."),
+                        RemoteJob.options["local_compute"].as_boolean().is_(True),
+                    )
+                )
             if actor is not None and actor.get("role") != "admin":
                 query = query.where(RemoteJob.requested_by == actor.get("user_id", ""))
             allowed = (

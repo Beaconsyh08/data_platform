@@ -156,16 +156,26 @@ function mountPipelineAssistant(root, options) {
     const title = document.createElement('strong'); title.textContent = action.title;
     const target = document.createElement('p'); target.textContent = `Dataset: ${action.dataset} · Node: ${action.node}`;
     const parameters = document.createElement('pre'); parameters.textContent = Object.keys(action.parameters).length ? JSON.stringify(action.parameters, null, 2) : 'Parameters: defaults';
-    box.append(title, target, parameters);
+    box.append(title, target);
     if (action.execution) {
+      box.append(parameters);
       const link = document.createElement('a'); link.href = action.execution.url; link.textContent = `Task ${action.execution.status} · Open run`; box.append(link);
       const jobs = document.createElement('a'); jobs.href = action.execution.jobs_url || '/?page=runs'; jobs.textContent = ' · Open Jobs'; box.append(jobs);
       if (!['done','error','cancelled'].includes(action.execution.status)) actionTimer = setTimeout(() => pollAction(action.action_id, epoch), 2000);
     } else {
+      let controls = box;
+      const viewer = conversation.references?.find(ref => ref.id === 'viewer');
+      if (action.operator_id === 'viewer.prepare' && viewer) {
+        const link = document.createElement('a'); link.href = viewer.url; link.textContent = 'Open prepared Viewer'; link.className = 'assistant-primary-link'; box.append(link);
+        const note = document.createElement('p'); note.textContent = 'A published Viewer is available. Rebuild if the source or preparation settings have changed.'; box.append(note);
+        const details = document.createElement('details'); details.open = !action.prefer_existing;
+        const summary = document.createElement('summary'); summary.textContent = 'Rebuild Viewer'; details.append(summary); box.append(details); controls = details;
+      }
+      controls.append(parameters);
       const issue = document.createElement('p'); issue.textContent = action.is_current === false ? 'Conversation changed. Ask to prepare this operation again.' : (action.blocked || []).map(pipelineIssueText).join(' · ');
       const button = document.createElement('button'); button.textContent = 'Confirm and run';
       button.disabled = busy || !capabilities?.can_edit || !action.can_execute || action.is_current === false;
-      button.onclick = () => confirmAction(action); box.append(issue, button);
+      button.onclick = () => confirmAction(action); controls.append(issue, button);
     }
   }
   async function pollAction(actionId, expected) {
@@ -210,8 +220,11 @@ function mountPipelineAssistant(root, options) {
       if (result.status === 'running') {timer = setTimeout(() => poll(requestId, expected), 1500); return;}
       await refresh(expected);
       if (disposed || expected !== epoch) return;
-      busy = false; pendingMessage = ''; if (!result.error) $('ai-message').value = ''; render(); $('ai-message').focus();
-      status(result.error || (result.security ? 'Request restricted. See the assistant response.' : result.proposal ? 'Draft only. Review it in the editor before running.' : 'Response ready.'));
+      busy = false; pendingMessage = ''; if (!result.error) $('ai-message').value = ''; render();
+      if (result.action && !result.error) {
+        $('ai-action').scrollIntoView({block:'nearest'}); $('ai-action').focus({preventScroll:true});
+      } else $('ai-message').focus();
+      status(result.error || (result.security ? 'Request restricted. See the assistant response.' : result.proposal ? 'Draft only. Review it in the editor before running.' : result.action ? (conversation.references?.some(ref => ref.id === 'viewer') && conversation.action.operator_id === 'viewer.prepare' ? 'Viewer available. Open it below, or review rebuild settings.' : 'Review the operation card below, then confirm to run.') : 'Response ready.'));
     } catch (error) {
       if (!disposed && expected === epoch) {busy = false; pendingMessage = ''; conversation = null; render(); status(error.message);}
     }
@@ -269,8 +282,11 @@ function mountPipelineAssistant(root, options) {
       if (result.status === 'running') {poll(requestId, expected); return;}
       await refresh(expected);
       if (disposed || expected !== epoch) return;
-      busy = false; pendingMessage = ''; if (!result.error) $('ai-message').value = ''; render(); $('ai-message').focus();
-      status(result.error || (result.security ? 'Request restricted. See the assistant response.' : result.proposal ? 'Draft only. Review it in the editor before running.' : 'Response ready.'));
+      busy = false; pendingMessage = ''; if (!result.error) $('ai-message').value = ''; render();
+      if (result.action && !result.error) {
+        $('ai-action').scrollIntoView({block:'nearest'}); $('ai-action').focus({preventScroll:true});
+      } else $('ai-message').focus();
+      status(result.error || (result.security ? 'Request restricted. See the assistant response.' : result.proposal ? 'Draft only. Review it in the editor before running.' : result.action ? (conversation.references?.some(ref => ref.id === 'viewer') && conversation.action.operator_id === 'viewer.prepare' ? 'Viewer available. Open it below, or review rebuild settings.' : 'Review the operation card below, then confirm to run.') : 'Response ready.'));
     } catch (error) {
       if (disposed || expected !== epoch) return;
       status(error.message);

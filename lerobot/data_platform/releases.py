@@ -72,6 +72,7 @@ VALIDATION_TESTS = [
     "tests/datasets/test_control_plane.py",
     "tests/datasets/test_operation_log.py",
     "tests/datasets/test_job_management.py",
+    "tests/datasets/test_usage_list_bounds.py",
     "tests/datasets/test_list_refresh.py",
     "tests/datasets/test_job_extra_quota.py",
     "tests/datasets/test_mcap_import.py",

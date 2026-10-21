@@ -25,7 +25,8 @@ conversation state and request receipts; the additive `dp_ai_preferences` table 
 settings with optimistic revisions, shared by web and CLI within the environment; no Agent capability or compute-slot change is required.
 Verify an authenticated operator's draft generation, restore, explicit save/run and Viewer restrictions.
 Also verify Enter/IME behavior and action preparation without side effects, explicit confirmation,
-repeat-confirmation recovery, then acknowledged Viewer output. CLI acceptance must verify normal TLS,
+repeat-confirmation recovery, then acknowledged Viewer output. For an already published Viewer, verify the
+authorized Open prepared Viewer link creates no job, then explicitly expand Rebuild Viewer to test confirmation. CLI acceptance must verify normal TLS,
 password login, CSRF, conversation restoration and confirmation using a non-production fixture.
 The default hourly AI quota is disabled; per-user/global concurrency and request budgets remain active.
 The standalone client is packaged separately under `clients/data-platform-cli`; installing it does not
@@ -400,6 +401,12 @@ Server A 的 MySQL binlog 保留策略为 3 天，使用 `MINIMAL` 行记录、`
 网页使用 `/api/operation_log?limit=200&summary=1`，展开详情使用同一路径的 `event_id` 查询；
 不带 `summary` 的旧请求仍返回完整记录。
 读取按新到旧满足数量即停止，解析/解压在释放轮转锁后进行；历史筛选仍在保留文件范围内工作。
+Usage log 使用 `/api/admin/usage-events?summary=1`，展开时读取 `/api/admin/usage-events/<event_id>`；
+两个入口均仅管理员可用。列表按时间和事件 ID 同向倒序使用已有索引；旧完整列表接口保持兼容。
+页面统计调用 `/api/admin/usage-summary?sample_limit=1000`，明确显示最近匹配结果的数量、时间范围；
+这是有限样本，不能作为全部历史总量。省略该参数保留原全量统计语义，大库上应使用有界模式。
+列表与统计独立请求，失败保留上次成功结果。任务列表摘要去除执行快照，版本列表通过 `summary=1`
+只传 episode 数量；详情和执行记录不变。本地任务在 SQL 筛选后限量，避免读取远端任务报告。
 数据集周期同步的审计保留登记身份和脱敏元信息摘要，不重复保存完整目录。
 元信息没有变化时不逐轮更新数据集登记表，存在时间最多每五分钟刷新一次；真正的元信息变化仍立即保存。
 Agent 心跳请求与两分钟离线判定保持原有频率；数据库心跳快照最多每 30 秒刷新一次，

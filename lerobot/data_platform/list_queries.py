@@ -23,7 +23,13 @@ def location_projection(model):
 
 def job_projection(model):
     return (
-        with_expression(model.options, without_json(model.options, ["$.snapshot", "$.task_config"])),
+        with_expression(
+            model.options,
+            without_json(
+                model.options,
+                ["$.snapshot", "$.task_config", "$.operator_snapshot", "$.registry", "$._source_locations"],
+            ),
+        ),
         with_expression(
             model.result,
             without_json(

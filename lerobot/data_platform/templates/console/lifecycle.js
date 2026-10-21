@@ -68,7 +68,7 @@ function consoleLifecycleState() {
                     this.lifecycleLoading = true;
                     try {
                         const [versionsData, profilesData, quarantineData, sourceBatchesData, reconciliationsData, datasetProfilesData, requirementsData, recipesData, workspacesData, manifestsData] = await Promise.all([
-                            this.requestJson(`/api/lifecycle/versions?dataset_key=${encodeURIComponent(datasetKey)}`),
+                            this.requestJson(`/api/lifecycle/versions?summary=1&dataset_key=${encodeURIComponent(datasetKey)}`),
                             this.requestJson('/api/lifecycle/profiles'),
                             this.requestJson(`/api/lifecycle/quarantine?dataset_key=${encodeURIComponent(datasetKey)}`),
                             this.requestJson('/api/lifecycle/source-batches'),

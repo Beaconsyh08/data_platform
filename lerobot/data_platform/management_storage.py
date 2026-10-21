@@ -269,9 +269,25 @@ class UsageLogStore:
                 if session.get(UsageEvent, payload["event_id"]) is None:
                     raise
 
-    def query(self, filters: dict, *, limit=50, offset=0):
+    def get(self, event_id: str):
+        self.ensure_schema()
+        with self.sessions() as session:
+            row = session.get(UsageEvent, event_id)
+            return row.payload if row else None
+
+    def query(self, filters: dict, *, limit=50, offset=0, summary=False):
         self.ensure_schema()
         statement = select(UsageEvent)
+        if summary:
+            statement = select(
+                UsageEvent.event_id,
+                UsageEvent.timestamp,
+                UsageEvent.user_id,
+                UsageEvent.operation,
+                UsageEvent.status,
+                UsageEvent.job_id,
+                func.substr(UsageEvent.payload["actor"]["username"].as_string(), 1, 128),
+            )
         for key in ("user_id", "operation", "status", "job_id", "dataset_key"):
             if filters.get(key):
                 statement = statement.where(getattr(UsageEvent, key) == str(filters[key]))
@@ -280,12 +296,28 @@ class UsageLogStore:
         if filters.get("until"):
             statement = statement.where(UsageEvent.timestamp <= _normalized_timestamp(filters["until"]))
         with self.sessions() as session:
-            rows = session.scalars(
-                statement.order_by(UsageEvent.timestamp.desc(), UsageEvent.event_id)
+            result = session.execute(
+                statement.order_by(UsageEvent.timestamp.desc(), UsageEvent.event_id.desc())
                 .offset(offset)
                 .limit(limit + 1)
-            ).all()
-            return {"events": [row.payload for row in rows[:limit]], "has_more": len(rows) > limit}
+            )
+            rows = result.all() if summary else result.scalars().all()
+            events = (
+                [
+                    {
+                        "event_id": row[0],
+                        "timestamp": row[1],
+                        "actor": {"user_id": row[2], "username": row[6]},
+                        "operation": row[3],
+                        "status": row[4],
+                        "details": {"job_id": row[5]},
+                    }
+                    for row in rows[:limit]
+                ]
+                if summary
+                else [row.payload for row in rows[:limit]]
+            )
+            return {"events": events, "has_more": len(rows) > limit}
 
     def summary(self, filters: dict):
         self.ensure_schema()
@@ -297,6 +329,41 @@ class UsageLogStore:
             predicates.append(UsageEvent.timestamp >= _normalized_timestamp(filters["since"]))
         if filters.get("until"):
             predicates.append(UsageEvent.timestamp <= _normalized_timestamp(filters["until"]))
+        if filters.get("sample_limit"):
+            from collections import Counter
+
+            limit = int(filters["sample_limit"])
+            if not 1 <= limit <= 5000:
+                raise ValueError("sample_limit must be between 1 and 5000")
+            statement = (
+                select(
+                    UsageEvent.user_id,
+                    UsageEvent.operation,
+                    UsageEvent.status,
+                    UsageEvent.timestamp,
+                    UsageEvent.payload["details"]["duration_ms"].as_float(),
+                )
+                .where(*predicates)
+                .order_by(UsageEvent.timestamp.desc(), UsageEvent.event_id.desc())
+                .limit(limit + 1)
+            )
+            with self.sessions() as session:
+                rows = session.execute(statement).all()
+            more, rows = len(rows) > limit, rows[:limit]
+            durations = [row[4] for row in rows if isinstance(row[4], (int, float))]
+            return {
+                "event_count": len(rows),
+                "active_users": len({row[0] for row in rows if row[0]}),
+                "average_request_ms": sum(durations) / len(durations) if durations else None,
+                "counts": [
+                    {"operation": op, "status": status, "count": count}
+                    for (op, status), count in Counter((row[1], row[2]) for row in rows).items()
+                ],
+                "sample_limit": limit,
+                "truncated": more,
+                "since": rows[-1][3] if rows else None,
+                "until": rows[0][3] if rows else None,
+            }
         grouped = (
             select(UsageEvent.operation, UsageEvent.status, func.count())
             .where(*predicates)

@@ -214,7 +214,7 @@
                     this.appliedSnapshot = data.applied_snapshot; this.mappings = {...data.snapshot.mappings};
                     this.mappingVersion = data.mapping?.mapping_version_id || null;
                     this.inventoryDigest = data.task_inventory_digest; this.previewResult = null;
-                    this.versions = (await this.api('/api/lifecycle/versions?dataset_key=' + encodeURIComponent(this.datasetKey))).versions || [];
+                    this.versions = (await this.api('/api/lifecycle/versions?summary=1&dataset_key=' + encodeURIComponent(this.datasetKey))).versions || [];
                     this.baseVersion = this.versions[0]?.version_id || ''; this.cohortMessage = '';
                 }); },
                 async saveDefinition() { await this.run(async () => {

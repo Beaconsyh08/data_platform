@@ -107,7 +107,7 @@
                                 </div>
                                 <p class="mt-2 truncate text-slate-500" x-text="version.root"></p>
                                 <div class="mt-2 grid gap-1 text-slate-400 md:grid-cols-2">
-                                    <span x-text="`${version.episode_refs.length} stable episode UIDs`"></span>
+                                    <span x-text="`${(version.episode_count ?? version.episode_refs?.length ?? 0)} stable episode UIDs`"></span>
                                     <span x-text="`operation ${version.operation}`"></span>
                                     <span x-text="`identity ${version.identity_confidence || 'legacy'}`"></span>
                                     <span class="truncate" x-text="`profile ${version.profile_id || 'none'}`"></span>

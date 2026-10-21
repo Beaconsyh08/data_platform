@@ -4,7 +4,7 @@ import uuid
 
 from sqlalchemy import select
 
-from lerobot.data_platform.ai_tools.context import safe_text
+from lerobot.data_platform.ai_tools.context import safe_text, viewer_reference
 from lerobot.data_platform.ai_tools.models import AssistantTurn
 from lerobot.data_platform.ai_tools.repairs import bind_source_snapshot
 from lerobot.data_platform.ai_tools.security import DisclosureGuard
@@ -60,6 +60,8 @@ def prepare(service, owner, location_id, operator_id, parameters):
         "location_id": location_id,
         "dataset": safe_text(location["dataset_key"].rsplit("/", 1)[-1]),
         "node": safe_text(node["name"]),
+        "viewer_available": operator_id == "viewer.prepare" and bool(viewer_reference(location)),
+        "prefer_existing": operator_id == "viewer.prepare" and not parameters,
     }
 
 

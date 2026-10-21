@@ -209,7 +209,11 @@ def register_lifecycle_routes(app, ctx) -> None:
     def api_lifecycle_versions():
         dataset_key = request.args.get("dataset_key") or None
         versions = _store().list_versions(dataset_key=dataset_key)
-        return jsonify({"versions": [item.to_dict() for item in versions]})
+        rows = [item.to_dict() for item in versions]
+        if request.args.get("summary") == "1":
+            for row in rows:
+                row["episode_count"] = len(row.pop("episode_refs", []))
+        return jsonify({"versions": rows})
 
     @app.route("/api/lifecycle/versions/<string:version_id>/identity")
     def api_lifecycle_version_identity(version_id: str):

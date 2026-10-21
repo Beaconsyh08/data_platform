@@ -577,6 +577,15 @@ def test_console_exposes_two_workspaces_and_guards_legacy_mutations(
     )
     assert ingested.status_code == 200
     version_id = ingested.get_json()["dataset_version"]["version_id"]
+    full_versions = client.get("/api/lifecycle/versions").get_json()["versions"]
+    summary_versions = client.get("/api/lifecycle/versions?summary=1").get_json()["versions"]
+    full = next(row for row in full_versions if row["version_id"] == version_id)
+    summary = next(row for row in summary_versions if row["version_id"] == version_id)
+    assert summary["episode_count"] == len(full["episode_refs"]) == 2
+    assert "episode_refs" not in summary
+    assert {k: v for k, v in full.items() if k != "episode_refs"} == {
+        k: v for k, v in summary.items() if k != "episode_count"
+    }
     reconciliation = client.get(f"/api/lifecycle/reconciliations?dataset_version_id={version_id}").get_json()[
         "reconciliations"
     ]

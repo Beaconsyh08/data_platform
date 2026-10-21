@@ -4,6 +4,15 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## V0.2.5 · ListPerformanceViewerActions · 2026-10-21
+
+- Usage log 改用索引顺序读取；页面只加载轻量列表，展开单条后获取完整内容。统计明确限定为最近 1,000 条匹配结果，列表和统计独立加载，失败保留已有数据。
+- 本地任务在数据库内筛选后再限量读取；远端任务摘要不携带算子快照和注册清单。版本列表使用 episode 数量摘要，旧完整接口保留。
+- AI 正确识别已发布且可读取的 Viewer 缓存，优先提供 Open prepared Viewer；重新准备仍须展开参数并确认，不自动提交任务。
+- 操作卡片移到回复与输入框之间，生成后自动定位；保留源身份、权限、过期会话和幂等确认检查。
+- **影响范围**：Server 查询、助手与网页；无数据库迁移、Agent 协议或算子版本变化。
+  Server/Agent 使用同一不可变包，旧任务继续收尾；CLI 保持 0.2.0，登录与 `/confirm` 兼容，无需重装。
+
 ## V0.2.4 · AuditAssistantReadability · 2026-10-20
 
 - Operation history 默认读取轻量摘要；展开单条记录后按事件 ID 获取完整审计内容，失败可重试并保留上次列表。

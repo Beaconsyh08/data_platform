@@ -240,3 +240,42 @@ assert(!app.availableGroups().some(group => group.key === 'legacy_admin'));
 assert(app.canRequestEpisodeDeletion());
 """
     subprocess.run(["node"], input=script + checks, check=True, capture_output=True, text=True, timeout=10)
+
+
+def test_usage_independent_requests_and_stale_responses():
+    if not shutil.which("node"):
+        pytest.skip("Node.js required")
+    script = (
+        "global.window = {addEventListener:()=>{}}; global.document={body:{dataset:{}}};\n"
+        + re.findall(r"<script>(.*?)</script>", render_page("admin"), re.S)[-1]
+    )
+    checks = """
+const assert = require('node:assert/strict');
+(async () => {
+ const app = controlPlane();
+ let calls = [], pending = [];
+ app.request = url => { calls.push(url); return new Promise((resolve, reject) => pending.push({resolve, reject})); };
+ app.usageEvents = [{event_id:'old'}]; app.usageSummary = {event_count:2};
+ const first = app.loadUsage();
+ assert(calls[0].includes('summary=1')); assert(calls[1].includes('sample_limit=1000'));
+ const second = app.loadUsage();
+ pending[2].resolve({events:[{event_id:'new'}], has_more:true}); pending[3].reject(new Error('summary offline'));
+ await second; assert.equal(app.usageEvents[0].event_id,'new'); assert.equal(app.usageSummary.event_count,2);
+ assert(app.adminError.includes('summary offline'));
+ pending[0].resolve({events:[{event_id:'stale'}]}); pending[1].resolve({event_count:0}); await first;
+ assert.equal(app.usageEvents[0].event_id,'new');
+ let tries = 0;
+ app.request = async url => { tries++; if(tries===1) throw new Error('detail offline'); return {event:{event_id:'new', details:{full:true}}}; };
+ const entry = app.usageEvents[0]; await app.loadUsageDetail(entry); assert(entry.detailError);
+ await app.loadUsageDetail(entry); assert(entry.fullDetail.details.full); assert(!entry.loading);
+ delete entry.fullDetail;
+ let resolveDetail;
+ app.request = url => url.includes('/usage-events/new') ? new Promise(resolve => resolveDetail=resolve)
+   : Promise.resolve(url.includes('/usage-summary?') ? {event_count:1} : {events:[{event_id:'new'}]});
+ const reading=app.loadUsageDetail(entry); await app.loadUsage();
+ resolveDetail({event:{details:{full:true}}}); await reading;
+ assert(app.usageEvents[0].fullDetail.details.full);
+
+})().catch(error => {console.error(error);process.exit(1);});
+"""
+    subprocess.run(["node"], input=script + checks, check=True, capture_output=True, text=True, timeout=10)

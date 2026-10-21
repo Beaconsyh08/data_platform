@@ -32,7 +32,7 @@ def summarize_job(job: dict) -> dict:
         "options": {
             key: value
             for key, value in (job.get("options") or {}).items()
-            if key not in {"snapshot", "task_config", "_source_locations"}
+            if key not in {"snapshot", "task_config", "_source_locations", "operator_snapshot", "registry"}
         },
         "result": result,
     }

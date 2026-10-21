@@ -263,7 +263,8 @@ def test_assistant_browser_restricts_disclosure_and_preserves_plain_text(assista
         thread.join(timeout=10)
 
 
-def test_assistant_enter_composition_confirmation_and_role(assistant, tmp_path):  # noqa: F811
+@pytest.mark.parametrize("already_ready", [False, True])
+def test_assistant_enter_composition_confirmation_and_role(assistant, tmp_path, already_ready):  # noqa: F811
     executable = os.environ.get("DATA_PLATFORM_BROWSER_EXECUTABLE")
     if not executable:
         pytest.skip("Set DATA_PLATFORM_BROWSER_EXECUTABLE for real-browser acceptance")
@@ -274,6 +275,10 @@ def test_assistant_enter_composition_confirmation_and_role(assistant, tmp_path):
 
     service, fake, owner, value = assistant
     bind_lifecycle(service, tmp_path)
+    if already_ready:
+        from tests.datasets.test_ai_assistant_actions import published_viewer
+
+        published_viewer(service, value["location_id"], tmp_path)
     fake.responses = [
         call("describe_operator", {"operator_id": "viewer.prepare"}),
         call("prepare_action", {"operator_id": "viewer.prepare", "parameters": {}}),
@@ -307,8 +312,15 @@ def test_assistant_enter_composition_confirmation_and_role(assistant, tmp_path):
             assert message.input_value().endswith("\n") and not fake.requests
             message.press("Enter")
             expect(page.locator("#ai-action")).to_be_visible()
+            expect(page.locator("#ai-action")).to_be_focused()
+            if already_ready:
+                expect(page.locator("#ai-action a")).to_have_text("Open prepared Viewer")
+                expect(page.get_by_role("button", name="Confirm and run", exact=True)).to_be_hidden()
+                page.get_by_text("Rebuild Viewer", exact=True).click()
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.locator("#ai-action").scroll_into_view_if_needed()
+            expect(page.locator("#ai-action")).to_be_in_viewport()
             expect(page.get_by_role("button", name="Confirm and run", exact=True)).to_be_enabled()
-            expect(message).to_be_focused()
             assert not service.store.list_jobs() and not service.manager.list(owner)
             page.get_by_role("button", name="Confirm and run", exact=True).click()
             expect(page.locator("#ai-action")).to_contain_text("Task queued")

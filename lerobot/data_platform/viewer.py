@@ -1530,14 +1530,9 @@ def run_server(
         if control_plane_store is not None:
             from lerobot.data_platform.local_execution import local_job_payload
 
-            rows = [
-                row
-                for row in control_plane_store.list_jobs(
-                    limit=200, actor=getattr(g, "control_plane_user", None) or {}
-                )
-                if row["operation"].startswith("local.request.")
-                or row.get("options", {}).get("local_compute")
-            ]
+            rows = control_plane_store.list_jobs(
+                limit=20, actor=getattr(g, "control_plane_user", None) or {}, local_only=True, summary=True
+            )
             rows = control_plane_store.job_manager.decorate_many(
                 rows[:20], getattr(g, "control_plane_user", None)
             )

@@ -1,5 +1,6 @@
 """Preparation is inert; confirmation remains authorized, version-bound and retry-safe."""
 
+import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -148,3 +149,63 @@ def test_destructive_or_advanced_operations_stay_outside_action_allowlist(
     with pytest.raises(ValueError):
         prepare(service, owner, body["location_id"], operator, parameters)
     assert not service.manager.list(owner) and not service.store.list_jobs()
+
+
+def published_viewer(service, location_id, tmp_path):
+    cache = tmp_path / "published"
+    (cache / "static").mkdir(parents=True)
+    with service.store.sessions.begin() as session:
+        location = session.get(DatasetLocation, location_id)
+        (cache / "static" / "viewer_manifest.json").write_text(
+            json.dumps({"version": 1, "root": location.root, "episodes": [{"episode_index": 0}]})
+        )
+        location.details = {
+            **location.details,
+            "viewer_ready": True,
+            "viewer_url": "/fixture/dataset/episode_0",
+            "cache_root": str(cache),
+        }
+    return cache
+
+
+def test_prepared_viewer_offers_authorized_reference_without_submitting(assistant, tmp_path):  # noqa: F811
+    service, _, owner, body = assistant
+    published_viewer(service, body["location_id"], tmp_path)
+    result = prepared(assistant, tmp_path)
+    assert result["action"]["viewer_available"] and result["action"]["prefer_existing"]
+    assert "已有已发布" in result["message"]
+    restored = service.conversation(owner, body["conversation_id"])
+    assert any(ref["id"] == "viewer" for ref in restored["references"])
+    assert not service.store.list_jobs() and not service.manager.list(owner)
+    with service.store.sessions.begin() as session:
+        location = session.get(DatasetLocation, body["location_id"])
+        location.details = {**location.details, "viewer_ready": False}
+    assert not any(
+        ref["id"] == "viewer" for ref in service.conversation(owner, body["conversation_id"])["references"]
+    )
+
+
+@pytest.mark.parametrize("invalid", ["missing", "oversized", "wrong_source", "unsafe_url", "symlink"])
+def test_viewer_reference_rejects_unavailable_or_untrusted_cache(assistant, tmp_path, invalid):  # noqa: F811
+    from lerobot.data_platform.ai_tools.context import viewer_reference
+
+    service, _, _, body = assistant
+    cache = published_viewer(service, body["location_id"], tmp_path)
+    manifest = cache / "static" / "viewer_manifest.json"
+    if invalid == "missing":
+        manifest.unlink()
+    elif invalid == "oversized":
+        manifest.write_text("x" * (1024 * 1024 + 1))
+    elif invalid == "wrong_source":
+        data = json.loads(manifest.read_text())
+        data["root"] = "/unrelated"
+        manifest.write_text(json.dumps(data))
+    elif invalid == "symlink":
+        other = tmp_path / "outside.json"
+        manifest.rename(other)
+        manifest.symlink_to(other)
+    else:
+        with service.store.sessions.begin() as session:
+            location = session.get(DatasetLocation, body["location_id"])
+            location.details = {**location.details, "viewer_url": "//example.test/fixture/episode_0"}
+    assert viewer_reference(service.store.get_location(body["location_id"])) is None

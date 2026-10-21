@@ -430,10 +430,17 @@ def test_admin_browser_existing_role_and_denied_login_audit(tmp_path, monkeypatc
     logs = client.get("/api/admin/usage-events?status=failed").get_json()["events"]
     assert any(row["operation"] == "control_plane_login" for row in logs)
     assert "do-not-store" not in json.dumps(logs)
+    summary = client.get("/api/admin/usage-events?summary=1&limit=1").get_json()
+    event_id = summary["events"][0]["event_id"]
+    assert client.get(f"/api/admin/usage-events/{event_id}").get_json()["event"]["event_id"] == event_id
+    assert client.get("/api/admin/usage-events/missing").status_code == 404
+    assert client.get("/api/admin/usage-summary?sample_limit=0").status_code == 400
+    assert client.get("/api/admin/usage-summary?sample_limit=10").get_json()["sample_limit"] == 10
     viewer = store.register_user(username="read-only", password="long-test-password", display_name="Viewer")
     client.post("/api/auth/logout", json={})
     client.post("/api/auth/login", json={"username": viewer["username"], "password": "long-test-password"})
     assert client.get("/api/admin/database/tables").status_code == 403
+    assert client.get(f"/api/admin/usage-events/{event_id}").status_code == 403
     assert 'id="admin-usage-panel"' not in client.get("/control-plane").get_data(as_text=True)
     app.extensions["data_platform_log_delivery"].flush()
     denied = app.extensions["data_platform_log_delivery"].logs.query({"status": "failed"})["events"]
