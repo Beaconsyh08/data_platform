@@ -639,7 +639,7 @@
                                 @click="focusChart()" :disabled="!dygraphArmJoints && !dygraphGripperFlag">Focus current time</button>
                         <button type="button" class="rounded border border-slate-500 px-2 py-1 text-xs"
                                 @click="resetChartZoom()" :disabled="!dygraphArmJoints && !dygraphGripperFlag">Reset zoom</button>
-                        <span class="text-xs text-slate-400">Click/drag to seek · Ctrl-drag to zoom · Shift-drag to pan</span>
+                        <span class="text-xs text-slate-400">Click/drag to pin · Scroll to zoom · Ctrl-drag to zoom · Shift-drag to pan</span>
                         <div x-show="usesUmiPlotGroups" class="flex flex-wrap items-center gap-1.5" role="group" aria-label="UMI pose groups">
                             <template x-for="group in jointGroups.filter(g => g.graph === 'arm')" :key="group.id">
                                 <button type="button"
@@ -825,6 +825,7 @@
                 currentFrameData: null,
                 checked: [],
                 dygraphTime: 0.0,
+                chartAnchorTime: null,
                 dygraphIndex: 0,
                 videos: null,
                 video: null,
@@ -1472,7 +1473,7 @@
                         zoomCallback: (min, max) => this.setChartWindow(min, max),
                         clickCallback: (event, x) => {
                             if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
-                                this.seekPlayback(x);
+                                this.selectChartTime(x);
                             }
                         },
                         highlightCallback: (event, x, points, row, seriesName) => {
@@ -1611,7 +1612,13 @@
                         this.dygraphArmJoints = new Dygraph(
                             document.getElementById("graph-arm-joints"),
                             graphCsvData,
-                            { ...commonOptions, colors, visibility: this.armJointMask, underlayCallback: trimUnderlayCallback },
+                            {
+                                ...commonOptions, colors, visibility: this.armJointMask,
+                                underlayCallback: (ctx, area, g) => {
+                                    trimUnderlayCallback(ctx, area, g);
+                                    this.drawChartAnchor(ctx, area, g);
+                                },
+                            },
                         );
                         this.dygraphGripperFlag = new Dygraph(
                             document.getElementById("graph-gripper-flag"),
@@ -1623,6 +1630,7 @@
                                 underlayCallback: (ctx, area, g) => {
                                     trimUnderlayCallback(ctx, area, g);
                                     stageUnderlayCallback(ctx, area, g);
+                                    this.drawChartAnchor(ctx, area, g);
                                 },
                             },
                         );
@@ -3002,16 +3010,61 @@
                     }
                 },
 
+                selectChartTime(time) {
+                    if (!Number.isFinite(time)) return;
+                    this.chartAnchorTime = this.frameToTime(this.timeToFrame(time));
+                    this.seekPlayback(this.chartAnchorTime);
+                    this._redrawTrimCharts();
+                },
+
+                drawChartAnchor(ctx, area, graph) {
+                    if (!Number.isFinite(this.chartAnchorTime)) return;
+                    const x = graph.toDomXCoord(this.chartAnchorTime);
+                    if (x < area.x || x > area.x + area.w) return;
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(area.x, area.y, area.w, area.h);
+                    ctx.clip();
+                    ctx.beginPath();
+                    ctx.setLineDash([]);
+                    ctx.strokeStyle = '#0284c7';
+                    ctx.lineWidth = 2;
+                    ctx.moveTo(x, area.y);
+                    ctx.lineTo(x, area.y + area.h);
+                    ctx.stroke();
+                    ctx.restore();
+                },
+
+                zoomChartAtAnchor(event, graph) {
+                    if (!Number.isFinite(this.chartAnchorTime) || !Number.isFinite(event.deltaY) || !event.deltaY
+                        || event.ctrlKey || event.metaKey || this._chartSeekState || this._trimDragState || this._dragState) return;
+                    if (!graph.numRows()) return;
+                    // xAxisExtremes includes visual padding; zoom only within actual episode time.
+                    const full = this.chartFullRange || [Number(graph.getValue(0, 0)),
+                        Math.max(Number(graph.getValue(graph.numRows() - 1, 0)), this.playbackDuration())];
+                    const range = graph.xAxisRange();
+                    const fullWidth = full[1] - full[0], currentWidth = range[1] - range[0];
+                    if (!(fullWidth > 0) || !(currentWidth > 0)) return;
+                    event.preventDefault();
+                    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? graph.getArea().h : 1);
+                    const factor = Math.exp(Math.max(-1, Math.min(1, delta * 0.002)));
+                    const width = Math.min(fullWidth, Math.max(2 / (this.fps || 30), currentWidth * factor));
+                    const center = Math.max(full[0], Math.min(full[1], this.chartAnchorTime));
+                    const start = Math.max(full[0], Math.min(full[1] - width, center - width / 2));
+                    this.setChartWindow(start, start + width, width < fullWidth);
+                },
+
                 initChartSeek() {
                     const seek = (event) => {
                         const {graph, element} = this._chartSeekState;
                         const area = graph.getArea();
                         const x = Math.max(area.x, Math.min(area.x + area.w, event.clientX - element.getBoundingClientRect().left));
-                        this.seekPlayback(graph.toDataXCoord(x));
+                        this.selectChartTime(graph.toDataXCoord(x));
                     };
                     for (const [id, graph] of [['graph-arm-joints', this.dygraphArmJoints], ['graph-gripper-flag', this.dygraphGripperFlag]]) {
                         const element = document.getElementById(id);
                         if (!element || !graph) continue;
+                        element.addEventListener('wheel', event => this.zoomChartAtAnchor(event, graph), {passive: false});
                         element.addEventListener('mousedown', event => {
                             if (event.defaultPrevented || event.button !== 0 || event.shiftKey || event.ctrlKey
                                 || event.metaKey || event.altKey || this._dragState || this._trimDragState) return;

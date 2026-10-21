@@ -4,6 +4,12 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## Unreleased · ViewerChartFocus · 2026-10-21
+
+- Viewer 点击或拖动 Charts 选帧后，两张图保留蓝色竖直定位线；悬停和播放不改变定位线，切换 Episode 清除。
+- 选帧后滚轮围绕该帧同步缩放两张图，限制在完整时间范围与最小两帧窗口内；保留 Reset zoom、Ctrl 拖动缩放、Shift 拖动平移及 Trim/Stage 编辑优先级。
+- **影响范围**：Server 的 Viewer 网页；无数据库、Agent 执行/协议或 CLI API 变化。尚未部署；实际平台升级时须按发布流程同步发布兼容 CLI 并完成验收。
+
 ## V0.3.4 · PageContextAliases · 2026-10-21
 
 - 补齐本地 Viewer 页面别名到注册数据集的映射，保证默认跟随页面时正确读取选中 Episode 的 Instruction；重复映射拒绝解析，保留实际数据集的权限检查。
