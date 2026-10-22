@@ -94,6 +94,19 @@ class PlatformClient:
             query["cursor"] = cursor
         return self.request("GET", "/api/ai-assistant/conversations?" + urlencode(query))
 
+    def memory(self):
+        return self.request("GET", "/api/ai-assistant/memory")
+
+    def change_memory(self, revision, operation, **fields):
+        return self.request(
+            "PUT",
+            "/api/ai-assistant/memory",
+            {"expected_revision": revision, "operation": operation, **fields},
+        )
+
+    def followups(self):
+        return self.request("GET", "/api/ai-assistant/followups")
+
     def preferences(self):
         return self.request("GET", "/api/ai-assistant/preferences")
 

@@ -470,3 +470,74 @@ def test_quality_operation_card_states_and_navigation(assistant, tmp_path, state
     finally:
         server.shutdown()
         thread.join(timeout=10)
+
+
+def test_browser_memory_edit_delete_and_durable_readonly_updates(assistant, processing_setup, tmp_path):  # noqa: F811
+    executable = os.environ.get("DATA_PLATFORM_BROWSER_EXECUTABLE")
+    if not executable:
+        pytest.skip("Set DATA_PLATFORM_BROWSER_EXECUTABLE for real-browser acceptance")
+    playwright = pytest.importorskip("playwright.sync_api")
+    from lerobot.data_platform.ai_tools import followups, memory
+    from tests.datasets.test_ai_memory_followups import completed
+
+    service, fake, owner, value = assistant
+    _, receipt, _ = completed(assistant, processing_setup, tmp_path)
+    # Finish while no browser is connected; the runner's observation survives reconnecting.
+    followups.tick(service)
+    calls_before = len(fake.requests)
+    app = _app(tmp_path, service.store)
+    ctx = SimpleNamespace(control_plane_store=service.store, lifecycle_store=None)
+    register_processing_routes(app, ctx)
+    register_ai_assistant_routes(app, ctx)
+    app.extensions["data_platform_assistant"] = service
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as runtime:
+            browser = runtime.chromium.launch(executable_path=executable, args=["--no-sandbox"])
+            page = browser.new_page(viewport={"width": 390, "height": 844})
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            assert (
+                page.request.post(
+                    base + "/api/auth/login", data={"username": "admin", "password": "strong-admin-password"}
+                ).status
+                == 200
+            )
+            page.goto(base + "/pipelines?location_id=" + value["location_id"])
+            page.locator("#ai-memory-toggle").click()
+            playwright.expect(page.locator("#ai-memory-save")).to_be_enabled()
+            page.locator("#ai-memory-text").fill("Explain domain terminology first")
+            page.locator("#ai-memory-scope").select_option("dataset")
+            page.locator("#ai-memory-save").click()
+            row = page.locator("#ai-memory-list .assistant-message")
+            playwright.expect(row).to_have_count(1)
+            playwright.expect(row.get_by_role("button", name="Edit", exact=True)).to_be_enabled()
+            row.get_by_role("button", name="Edit", exact=True).click()
+            page.locator("#ai-memory-text").fill("Use short examples")
+            page.locator("#ai-memory-save").click()
+            playwright.expect(row).to_contain_text("Use short examples")
+            page.reload()
+            page.locator("#ai-memory-toggle").click()
+            playwright.expect(row).to_contain_text("Use short examples")
+            page.locator("#ai-memory-enabled").uncheck()
+            page.locator("#ai-memory-settings").click()
+            playwright.expect(page.locator("#ai-memory-status")).to_contain_text("Saved.")
+            assert memory.context(service, owner, value["location_id"]) == []
+            row.get_by_role("button", name="Delete", exact=True).click()
+            playwright.expect(row).to_have_count(0)
+            page.locator("#ai-updates-toggle").click()
+            update = page.locator("#ai-followups [data-update-id]")
+            playwright.expect(update).to_have_count(1)
+            playwright.expect(update).to_contain_text("任务已完成")
+            assert update.locator("button").count() == 0
+            assert receipt["run_id"] in update.locator("a").first.get_attribute("href")
+            assert memory.read(service, owner)["notes"] == []
+            assert len(service.manager.runs(owner)) == len(service.store.list_jobs()) == 1
+            assert len(fake.requests) == calls_before and errors == []
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)

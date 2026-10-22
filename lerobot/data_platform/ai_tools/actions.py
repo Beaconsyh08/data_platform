@@ -5,6 +5,7 @@ import uuid
 from sqlalchemy import select
 
 from lerobot.data_platform.ai_tools.context import safe_text, viewer_reference
+from lerobot.data_platform.ai_tools.followups import register as register_followup
 from lerobot.data_platform.ai_tools.models import AssistantTurn
 from lerobot.data_platform.ai_tools.repairs import bind_source_snapshot
 from lerobot.data_platform.ai_tools.security import DisclosureGuard
@@ -181,6 +182,7 @@ def confirm(service, owner, action_id, revision, *, rerun=False):
                         **turn.result,
                         "execution": {k: receipt[k] for k in ("run_id", "status", "url")},
                     }
+                    register_followup(session, turn, state["run_id"])
                 service.manager._audit(
                     session,
                     owner,
@@ -226,6 +228,7 @@ def confirm(service, owner, action_id, revision, *, rerun=False):
         scheduler_lock(session)
         turn = session.get(AssistantTurn, action_id)
         turn.result = {**turn.result, "execution": receipt}
+        register_followup(session, turn, run["run_id"])
         service.manager._audit(
             session,
             owner,

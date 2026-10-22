@@ -72,7 +72,9 @@ network access. Only the lightweight client, installer and public CA are publish
 
 ## Install from source or use another server
 
-CLI 0.3.5 targets Server V0.3.6 and remains compatible with V0.3.5. It supports both
+Candidate CLI 0.3.7 adds `/memory` and `/updates` for servers with AssistantMemoryFollowup. These new
+commands require the new APIs; existing commands remain compatible with V0.3.5/V0.3.6. This source change
+does not mean the public latest installer has advanced. It supports both
 legacy and LangGraph asynchronous responses, saved Episode conversations and message-level operation cards.
 Pending requests retain their request ID through polling, `/resume` and conversation restoration;
 `/confirm` remains the explicit operation submission boundary. Existing result links are refreshed through
@@ -118,6 +120,8 @@ their dedicated web interfaces.
 | `/new` | Start another conversation on the selected dataset |
 | `/history` | Show the restored server conversation history |
 | `/chats` / `/chats next` | List accessible saved conversations, with bounded pagination |
+| `/memory` | Explicit account/dataset notes: add, edit, delete, clear, enable/disable and task-update settings |
+| `/updates` | Read authorized completion summaries for your confirmed assistant tasks |
 | `/preferences` | Show personal preferences and editing commands; shared with the web in this environment |
 | `/restore <number or conversation-id>` | Restore your own conversation, pending response and action |
 | `/resume` | Recover an interrupted response using its original request ID |
@@ -165,6 +169,36 @@ to a plan. Viewer accounts may manage their own communication preferences but re
 The assistant does not silently infer preferences, train a model, or change operation parameters,
 permissions or confirmation requirements. The web Preferences panel can edit or clear the same settings.
 Concurrent updates use revisions; reload settings if another client changed them.
+
+## Explicit long-term memory and task updates
+
+```text
+/memory
+/memory add account Explain terms with short examples
+/memory add dataset This project calls a demonstration a trial
+/memory edit <memory-id> Updated wording
+/memory delete <memory-id>
+/memory off
+/memory on
+/memory clear
+/memory followups off
+/memory followups on
+/updates
+```
+
+Use IDs printed by `/memory`. Notes persist on the server until deleted, independently of short chat
+history. At most 20 notes of 500 characters are stored; up to eight authorized notes are used per turn,
+prioritizing the current dataset. Disabling or deleting notes affects future requests, not existing chat
+messages or already sent model calls. Chat never silently saves notes. Notes do not grant permission,
+select operations or bypass `/confirm`; dataset notes stop being used after identity or access changes.
+
+New confirmed assistant tasks are followed by the server even after you exit. `/updates` retrieves factual
+terminal summaries and authorized HTTPS run/result links; the CLI does not need to stay open or run a
+background poller. Summaries wait for final Job/Attempt acknowledgement, require current scope, and remain
+for 30 days. Disabling updates mutes pending observations; enabling again follows new confirmations.
+Previously generated summaries remain available within retention after re-enabling. Manual retries hide
+old summaries; inspect Jobs for retried runs. No automatic follow-on execution, retries or external messages
+occur, and direct form/editor tasks and pre-upgrade work are not backfilled.
 
 ## Implementation choice
 

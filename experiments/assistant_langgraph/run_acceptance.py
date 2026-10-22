@@ -74,7 +74,10 @@ def main() -> int:
                 if not args.storage_only:
                     tests.append("tests/datasets/test_assistant_graph_s3.py")
                 if args.runtime:
-                    tests = ["tests/datasets/test_ai_assistant_runtime.py"]
+                    tests = [
+                        "tests/datasets/test_ai_assistant_runtime.py",
+                        "tests/datasets/test_ai_memory_followups.py",
+                    ]
                 return subprocess.run(
                     [sys.executable, "-m", "pytest", *tests, "--confcutdir=tests/datasets", "-q"],
                     cwd=source,

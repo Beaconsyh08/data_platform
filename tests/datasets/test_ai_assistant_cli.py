@@ -172,7 +172,18 @@ def test_real_https_login_chat_restore_confirm_and_logout(assistant, tmp_path, m
             PlatformClient(origin).request("GET", "/api/auth/status")
         assert client.login("admin", "strong-admin-password")["user_id"] == owner
         client.select(next(item for item in client.datasets() if item["location_id"] == body["location_id"]))
+        profile = client.memory()
+        saved_memory = client.change_memory(
+            profile["revision"], "save", scope="account", text="Use short examples"
+        )
+        assert saved_memory["notes"][0]["text"] == "Use short examples"
+        token, client.csrf = client.csrf, "invalid"
+        with pytest.raises(ClientError):
+            client.change_memory(saved_memory["revision"], "clear")
+        client.csrf = token
         assert client.chat("帮我准备 Viewer")["action"]["can_execute"]
+        assert "Use short examples" in json.dumps(fake.requests[0])
+        assert client.change_memory(saved_memory["revision"], "clear")["notes"] == []
         assert not service.manager.runs(owner) and not service.store.list_jobs()
         conversation_id = client.conversation["conversation_id"]
         page = client.conversations()
@@ -202,6 +213,7 @@ def test_real_https_login_chat_restore_confirm_and_logout(assistant, tmp_path, m
         assert client.confirm()["run_id"] == receipt["run_id"]
         assert len(service.manager.runs(owner)) == 1
         assert client.status()["status"] == "queued"
+        assert client.followups() == {"updates": [], "pending": True}
         client.logout()
         assert not client.request("GET", "/api/auth/status")["authenticated"]
     finally:
@@ -347,3 +359,40 @@ def test_episode_handoff_never_guesses_an_unavailable_or_unsafe_reference(path):
         references=[{"id": "episode", "url": path}],
     )
     assert client.web_links() == [{"title": "Web console", "url": "https://platform.example.com/"}]
+
+
+def test_cli_explicit_memory_revision_and_updates_use_existing_safe_links():
+    transport = Transport(
+        [
+            (200, {"revision": 7, "notes": []}),
+            (200, {"revision": 8, "notes": [{"text": "Use examples"}]}),
+            (
+                200,
+                {
+                    "updates": [
+                        {
+                            "message": "Task completed",
+                            "links": [
+                                {"title": "Open run", "url": "/pipelines?run_id=confirmed"},
+                                {"title": "Untrusted", "url": "https://other.example/"},
+                            ],
+                        }
+                    ],
+                    "pending": False,
+                },
+            ),
+        ]
+    )
+    client = PlatformClient("https://platform.example.com", session=transport)
+    current = client.memory()
+    client.change_memory(current["revision"], "save", scope="account", text="Use examples")
+    assert transport.calls[1][2]["json"] == {
+        "expected_revision": 7,
+        "operation": "save",
+        "scope": "account",
+        "text": "Use examples",
+    }
+    assert client.result_links(client.followups()["updates"][0]) == [
+        {"title": "Open run", "url": "https://platform.example.com/pipelines?run_id=confirmed"},
+    ]
+    assert [c[0] for c in transport.calls] == ["GET", "PUT", "GET"]

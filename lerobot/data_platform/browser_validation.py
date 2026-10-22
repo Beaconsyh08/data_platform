@@ -13,6 +13,7 @@ BROWSER_TESTS = (
     "tests/datasets/test_processing_browser.py",
 )
 REQUIRED_CASES = {
+    "test_browser_memory_edit_delete_and_durable_readonly_updates",
     "test_async_assistant_browser_restores_pending_and_requires_confirmation",
     "test_qwen_browser_draft_restore_scope_and_explicit_run",
     "test_console_browse_forms_pipeline_switching_and_viewer_role",

@@ -98,9 +98,19 @@ def main():
                 logging.warning("Assistant storage unavailable; execution will be retried after lease expiry")
             stop.wait(1)
 
+    def followups():
+        from lerobot.data_platform.ai_tools.followups import tick
+
+        while not stop.is_set():
+            try:
+                tick(service)
+            except Exception:
+                logging.warning("Assistant follow-up storage unavailable; observations will be retried")
+            stop.wait(5)
+
     # SIGTERM stops admission and drains bounded in-flight generations before exit.
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        for future in [pool.submit(worker) for _ in range(args.workers)]:
+    with ThreadPoolExecutor(max_workers=args.workers + 1) as pool:
+        for future in [pool.submit(followups), *[pool.submit(worker) for _ in range(args.workers)]]:
             future.result()
 
 

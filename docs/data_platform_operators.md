@@ -136,6 +136,23 @@ conversation retention. No model tool can write them, and disabled settings are 
 Preferences influence communication and optional suggestions only; explicit requests take precedence.
 They cannot change thresholds, units, parameters, permissions or confirmation, and do not train the model.
 
+`GET /api/ai-assistant/memory` reads the current account's settings and visible notes.
+`PUT` accepts `expected_revision` plus `operation`: `save` (`text`, `scope: account|dataset`, optional
+`memory_id`, and `location_id` for dataset scope), `delete` (`memory_id`), `clear`, or `settings`
+(`{enabled: bool, followups_enabled: bool}`). There is no owner override or model write tool. Explicit
+notes are untrusted background data, not execution instructions. Source identity and access are checked
+when saving and reading dataset notes; current requests take precedence. Notes persist until deleted,
+with a maximum of 20 notes and 500 characters each; prompts use at most eight currently authorized notes.
+
+`GET /api/ai-assistant/followups`, optionally filtered by `conversation_id`, returns `{updates, pending}`
+for the current account. It scans at most 50 recent pending/ready records and returns at most 20 summaries;
+links are rebuilt from current authorization. Assistant confirmation registers one observation per action
+with its receipt. A separate Runner loop publishes a factual summary after terminal Run/Job/Attempt
+acknowledgement, without a model call, new operation or conversation revision change. The next model turn
+can use up to three summaries for its conversation. Prior summaries are hidden after a run revision/status
+change. New tasks, retries and review decisions retain their existing explicit confirmation flows.
+Scope, retention, pause and rollout behavior are documented in the [operations guide](data_platform_operations.md).
+
 The default hourly request limit is disabled. The assistant still permits one active request per user and four across Server A.
 Each request has at most eight model calls, four tool calls per response, and 2,500 output tokens per model
 call. The generation budget is 75 seconds; HTTP timeouts are at most 15 seconds and capped by remaining time. Abandoned requests expire after 120 seconds and late

@@ -92,3 +92,30 @@ class AssistantCheckpointWrite(ManagementBase):
     channel: Mapped[str] = mapped_column(String(128))
     kind: Mapped[str] = mapped_column(String(32))
     data: Mapped[bytes] = mapped_column(LargeBinary().with_variant(LONGBLOB(), "mysql"))
+
+
+class AssistantMemory(ManagementBase):
+    """Explicit bounded notes, independent of the short conversation retention window."""
+
+    __tablename__ = "dp_ai_memory"
+    owner: Mapped[str] = mapped_column(String(36), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    settings: Mapped[dict] = mapped_column(JSON)
+    notes: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[int] = mapped_column(BigInteger)
+
+
+class AssistantFollowup(ManagementBase):
+    """One durable observation per explicitly confirmed action, never an execution request."""
+
+    __tablename__ = "dp_ai_followups"
+    action_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(36), index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), index=True)
+    location_id: Mapped[str] = mapped_column(String(36))
+    input_identity: Mapped[dict] = mapped_column(JSON)
+    run_id: Mapped[str] = mapped_column(String(36), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    next_check_at: Mapped[int] = mapped_column(BigInteger, index=True)
+    updated_at: Mapped[int] = mapped_column(BigInteger, index=True)

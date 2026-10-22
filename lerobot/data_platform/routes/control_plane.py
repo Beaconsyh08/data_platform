@@ -212,6 +212,7 @@ def register_control_plane_auth_routes(
                     "/api/auth/password",
                     "/api/ai-assistant/turns",
                     "/api/ai-assistant/preferences",
+                    "/api/ai-assistant/memory",
                 }
                 and user.get("role") == "viewer"
             ):

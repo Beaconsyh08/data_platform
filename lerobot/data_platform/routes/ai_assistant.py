@@ -105,6 +105,26 @@ def register_ai_assistant_routes(app, ctx):
             raise ValueError("Preference object is required")
         return jsonify(preferences(service, owner, change=value, reset=request.method == "DELETE"))
 
+    @app.route("/api/ai-assistant/memory", methods=["GET", "PUT"])
+    @checked
+    def assistant_memory(owner, service):
+        from lerobot.data_platform.ai_tools.memory import change, read
+
+        return jsonify(
+            read(service, owner)
+            if request.method == "GET"
+            else change(service, owner, request.get_json(silent=True))
+        )
+
+    @app.get("/api/ai-assistant/followups")
+    @checked
+    def assistant_followups(owner, service):
+        from lerobot.data_platform.ai_tools.followups import read
+        from lerobot.data_platform.ai_tools.service import _uuid
+
+        identity = request.args.get("conversation_id")
+        return jsonify(read(service, owner, conversation_id=_uuid(identity) if identity else None))
+
     @app.get("/api/ai-assistant/conversations/<conversation_id>")
     @checked
     def assistant_conversation(owner, service, conversation_id):

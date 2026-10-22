@@ -20,6 +20,8 @@ COMMANDS = [
     "/chats",
     "/restore",
     "/preferences",
+    "/memory",
+    "/updates",
     "/resume",
     "/confirm",
     "/status",
@@ -89,6 +91,14 @@ def main(argv=None):
                 highlight=False,
                 soft_wrap=True,
             )
+
+    def show_updates():
+        value = client.followups()
+        for item in value["updates"]:
+            say(item["message"])
+            show_links(client.result_links(item))
+        if not value["updates"]:
+            say("Following confirmed tasks…" if value["pending"] else "No task updates.")
 
     def render_message(text):
         links = client.result_links() + client.result_links(
@@ -244,6 +254,49 @@ def main(argv=None):
                             raise ClientError("Unsupported preference. Use /preferences for options.")
                         client.save_preferences(current["revision"], settings)
                         say("Preferences saved. Shared with the website in this environment.")
+                elif message == "/updates":
+                    show_updates()
+                elif message == "/memory" or message.startswith("/memory "):
+                    current = client.memory()
+                    parts = message.split(maxsplit=3)
+                    fields = {}
+                    if len(parts) == 1:
+                        say(json.dumps(current, ensure_ascii=False, indent=2))
+                        say(
+                            "/memory add account|dataset <text> · edit <id> <text> · delete <id>\n"
+                            "/memory clear · on|off · followups on|off\n"
+                            "Saved notes are private to your account in this environment. "
+                            "They never authorize task execution. /updates reads completion summaries."
+                        )
+                        continue
+                    if parts[1:] in (["on"], ["off"]):
+                        operation = "settings"
+                        fields = {"settings": {**current["settings"], "enabled": parts[1] == "on"}}
+                    elif len(parts) == 3 and parts[1] == "followups" and parts[2] in {"on", "off"}:
+                        operation = "settings"
+                        fields = {"settings": {**current["settings"], "followups_enabled": parts[2] == "on"}}
+                    elif len(parts) == 4 and parts[1] == "add" and parts[2] in {"account", "dataset"}:
+                        operation = "save"
+                        fields = {
+                            "text": parts[3],
+                            "scope": parts[2],
+                            "location_id": client.location["location_id"] if parts[2] == "dataset" else None,
+                        }
+                    elif len(parts) == 4 and parts[1] == "edit":
+                        previous = next((n for n in current["notes"] if n["memory_id"] == parts[2]), None)
+                        if previous is None:
+                            raise ClientError("Memory not found. Use /memory to refresh.")
+                        operation = "save"
+                        fields = {k: previous[k] for k in ("memory_id", "scope", "location_id")}
+                        fields["text"] = parts[3]
+                    elif len(parts) == 3 and parts[1] == "delete":
+                        operation, fields = "delete", {"memory_id": parts[2]}
+                    elif parts[1:] == ["clear"]:
+                        operation = "clear"
+                    else:
+                        raise ClientError("Unsupported memory command. Use /memory for options.")
+                    client.change_memory(current["revision"], operation, **fields)
+                    say("Memory saved. Applies to future messages.")
                 elif message.startswith("/restore "):
                     identity = message.split(maxsplit=1)[1]
                     if identity.isdigit():

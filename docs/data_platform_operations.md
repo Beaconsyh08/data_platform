@@ -36,7 +36,36 @@ Keep the Runner running when switching new admissions back to legacy so accepted
 Before rolling back to an older release without the Runner, drain accepted graph requests. The systemd
 unit stops claiming on SIGTERM and drains current generations with a 100-second stop timeout.
 See [the runtime contract and local acceptance](data_platform_assistant_langgraph.md) for tables, graph
-version compatibility, recovery limits and tests. Long-term personal memory and task summaries are not enabled.
+version compatibility, recovery limits and tests.
+
+Explicit memory and completion followups add `dp_ai_memory` and `dp_ai_followups` through the existing
+additive management migration. Back up both with the control database; memory notes remain until users
+delete them, independently of conversation expiry. Notes are account/environment private, capped at 20
+notes of 500 characters; prompts use at most eight currently authorized notes (current dataset first).
+The memory API uses optimistic revisions and the existing audit outbox without recording note text.
+Viewer accounts can edit their own memory, but gain no task submission permission.
+
+The Runner has a separate SQL-only observation loop (no model or compute slot). Explicit assistant
+confirmation atomically stores a followup with its receipt; retrying a lost confirmation response recovers
+that same registration. Each cycle checks at most 20 due records, deferring unfinished records 30 seconds.
+The loop runs every five seconds, also in legacy mode, and pauses when AI is disabled. It checks current
+account, source identity, input/output scopes, terminal Run and final Job/Attempt acknowledgement before
+publishing one deterministic summary. Reads recheck access and run revision; a manual retry hides the
+previous summary. Revoked contexts stop following; restoring access does not restart stopped observations.
+Completed/muted/unavailable records expire after 30 days; pending long jobs survive conversation expiry.
+Turning off task updates mutes pending observations, and turning it back on only follows new confirmations.
+Already ready summaries remain stored for their retention window and are hidden while updates are off.
+No automatic retry, follow-on operation, review approval, email or external notification is performed.
+Only new assistant action confirmations are tracked; direct forms, editor runs and pre-upgrade tasks are
+not backfilled. A reused single Job without a Pipeline receipt continues to use the existing status UI.
+
+Acceptance must exercise memory CAS conflicts, account/dataset isolation, revocation and current identity;
+web and CLI CRUD/disable; disconnect and reconnect after completion; concurrent observer/restart dedup;
+terminal acknowledgement and failed/cancelled outcomes; unchanged confirmation and conversation revisions.
+Run the private MySQL acceptance command and real Chrome gate before development installation. Rollback
+to the prior Runner pauses observations without deleting notes or affecting business tasks. Publish a new
+compatible immutable CLI installer/wheel/CA only after installation, normal TLS login, `/memory`, `/updates`,
+`--web` and authorized `/open` acceptance, then advance latest. Local source validation is not online acceptance.
 
 Without a key, or when disabled, the assistant explains its unavailable state and the manual Pipeline
 editor continues to work. The additive `dp_ai_conversations` and `dp_ai_turns` tables hold private

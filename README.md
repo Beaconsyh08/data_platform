@@ -46,11 +46,11 @@
 
 **AI 助手：** 点击右下角 **AI assistant**，或按 **Ctrl/Cmd + Shift + Space** 唤出、收起侧栏；
 聊天时仍可操作平台。默认跟随页面、数据集和 Viewer Episode，读取授权的 Instruction 等元数据；可固定上下文。操作卡片放在对应消息中，已有结果和运行进度紧凑显示。支持上下文解读、流程草稿，以及 Viewer、Quality、标注和单数据集派生处理的确认卡片。
-网页与 [CLI](clients/data-platform-cli/README.md) 共用历史会话和个人偏好；使用服务端配置的 Qwen，
+网页与 [CLI](clients/data-platform-cli/README.md) 共用历史会话、个人偏好和显式长期记忆；已确认助手任务由后台跟进，在 Updates 中显示终态总结；使用服务端配置的 Qwen，
 用户无需模型密钥。操作权限和确认规则不变，详见 [助手说明](docs/data_platform_operators.md#qwen-draft-assistant)。
 卡片先检查已有结果与正在运行的任务，再提供结果入口或一键确认；历史结果会注明配置或产物是否可核实。
 网页与 CLI 共用状态判断；CLI 的 `/open` 查看结果链接，`/confirm again` 明确重新运行。
-CLI 0.3.4 面向 Server V0.3.5；启动时显示网页地址，`/web` 随时查看，`--web` 免登录输出；CLI 0.3.2 起用 `data-platform update` 升级，旧版本先运行一次 `latest` 安装命令。
+当前已发布 CLI 版本以 latest 为准；候选 CLI 0.3.7 新增 `/memory`、`/updates`，尚未发布。CLI 启动时显示网页地址，`/web` 随时查看，`--web` 免登录输出；CLI 0.3.2 起用 `data-platform update` 升级，旧版本先运行一次 `latest` 安装命令。
 
 **版本更新：** 功能与兼容性变化记录在 [发行变更](docs/data_platform_changelog.md)，
 当前架构见 [平台情况说明](docs/distributed_data_platform_current_status.md)。

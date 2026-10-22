@@ -4,6 +4,13 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## V0.3.7 · AssistantMemoryFollowup · 2026-10-22（未发布）
+
+- 新增显式长期记忆：本人保存、编辑、删除、清空和停用，支持账号与当前数据集范围；最多 20 条、每条 500 字，模型每轮最多使用 8 条当前授权记忆，不从聊天自动学习。
+- 助手确认操作后持久登记任务跟进；独立 Runner 观察 Run/Job/Attempt 的最终确认，生成事实性完成、失败或取消总结。断开网页/CLI 后继续，重复确认与并发 Runner 不重复发布；新任务仍须明确确认。
+- 网页 Memory/Updates 与 CLI `/memory`、`/updates` 共用授权接口；停用、范围撤销、输入身份变化和手动重试均防止旧结果被当成当前成功。总结不调用模型、不修改会话 revision、不自动重试或提交任务。
+- **影响范围**：Server/Runner 与控制数据库新增 `dp_ai_memory`、`dp_ai_followups`；Agent 协议和计算行为不变。候选 CLI 0.3.7 提供新入口；尚未上传版本对象或推进 latest，实际升级须同步完成两端验收。
+
 ## V0.3.6 · AssistantAsyncRunner · 2026-10-22
 
 - 新增正式异步 Assistant Runner：Turn/执行记录原子入队，既有 POST 返回 202、GET 轮询；保留原权限、四工具、确认、配额和幂等契约。

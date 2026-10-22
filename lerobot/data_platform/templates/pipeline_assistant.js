@@ -1,5 +1,6 @@
 {% include "assistant_controls.js" %}
 {% include "assistant_markdown.js" %}
+{% include "assistant_personalization.js" %}
 const pipelineSystemStep = step => step.operator_id === 'curation.snapshot';
 const pipelineStepTitle = step => ({'curation.snapshot': 'Data preparation', 'curation.quality': 'Quality', 'viewer.prepare': 'Viewer'}[step.operator_id] || step.operator_id.split('.').pop().replaceAll('_', ' '));
 const pipelineIssueText = issue => issue.code === 'missing_snapshot' ? 'Data preparation is required before this step.' : issue.reason.replace(/curation\.snapshot|Snapshot|snapshot/g, 'data preparation');
@@ -15,6 +16,10 @@ function mountPipelineAssistant(root, options) {
     try {if (value !== undefined) sessionStorage.setItem(key, value); else return sessionStorage.getItem(key);} catch (_) {}
   };
   const status = message => {$('ai-status').textContent = message;};
+  const personalControls = mountAssistantPersonalization(root, {
+    api, getLocation, getConversation: () => conversation?.revision ? conversation.conversation_id : null,
+    navigate: options.navigate,
+  });
   let historyCursor = null, historyEpoch = 0, preferencesEpoch = 0, personal = null;
   const navigate = event => {
     const link = event.target.closest('a');
@@ -95,6 +100,7 @@ function mountPipelineAssistant(root, options) {
   $('ai-prefs-toggle').onclick = () => {const open = $('ai-prefs-panel').hidden; $('ai-prefs-panel').hidden = !open; $('ai-prefs-toggle').setAttribute('aria-expanded', String(open)); if (open) loadPreferences();};
   $('ai-prefs-save').onclick = () => savePreferences(); $('ai-prefs-clear').onclick = () => savePreferences(true);
   function render() {
+    personalControls.showConversation();
     $('ai-message').disabled = $('ai-send').disabled = !capabilities?.available || !getLocation() || busy;
     $('ai-new').disabled = busy;
     actionRoot.remove(); cards.clear(); $('ai-history').replaceChildren();
@@ -231,6 +237,7 @@ function mountPipelineAssistant(root, options) {
       conversation.operation = receipt.state ? receipt : {...receipt, state:'running'};
       const item = conversation.history.find(item => item.action?.action_id === action.action_id); if (item) {item.action = action; item.operation = conversation.operation;}
       busy = false; render(); status(receipt.reused ? 'Existing task found. Follow progress here or in Jobs.' : 'Task submitted. Follow progress here or in Jobs.');
+      personalControls.refreshUpdates();
       pollAction(action.action_id, expected);
     } catch (error) {
       if (disposed || expected !== epoch) return;
@@ -266,6 +273,7 @@ function mountPipelineAssistant(root, options) {
     }
   }
   async function reset() {
+    personalControls.reset();
     const expected = ++epoch; clearTimeout(timer); clearTimeout(actionTimer); busy = false; conversation = null; capabilities = null;
     pendingMessage = ''; $('ai-message').value = ''; $('ai-chats-panel').hidden = $('ai-prefs-panel').hidden = true; $('ai-chats-toggle').setAttribute('aria-expanded', 'false'); $('ai-prefs-toggle').setAttribute('aria-expanded', 'false'); render();
     status('Loading assistant…');
@@ -341,5 +349,5 @@ function mountPipelineAssistant(root, options) {
     } catch (error) {if (!disposed && expected === epoch) status(error.message);}
   });
   $('ai-undo').addEventListener('click', () => {options.undoDraft?.(); render();});
-  return {reset, restore, destroy() {disposed = true; epoch++; clearTimeout(timer); clearTimeout(actionTimer);}};
+  return {reset, restore, destroy() {personalControls.destroy(); disposed = true; epoch++; clearTimeout(timer); clearTimeout(actionTimer);}};
 }
