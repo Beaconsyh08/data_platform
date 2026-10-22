@@ -15,6 +15,7 @@ import pymysql
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--storage-only", action="store_true", help="Skip platform integration dependencies")
+    parser.add_argument("--runtime", action="store_true", help="Test the integrated API and Runner instead")
     args = parser.parse_args()
     mysqld = shutil.which("mysqld")
     if mysqld is None:
@@ -72,6 +73,8 @@ def main() -> int:
                 tests = ["tests/datasets/test_assistant_graph_mysql.py"]
                 if not args.storage_only:
                     tests.append("tests/datasets/test_assistant_graph_s3.py")
+                if args.runtime:
+                    tests = ["tests/datasets/test_ai_assistant_runtime.py"]
                 return subprocess.run(
                     [sys.executable, "-m", "pytest", *tests, "--confcutdir=tests/datasets", "-q"],
                     cwd=source,

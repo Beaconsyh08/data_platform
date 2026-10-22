@@ -19,6 +19,25 @@ required from individual users. Billing belongs to that platform Qwen account.
 `DATA_PLATFORM_AI_ENABLED=0` disables the assistant without affecting the other Qwen features.
 Apply environment changes through the existing environment/service deployment procedure.
 
+`DATA_PLATFORM_AI_BACKEND=legacy` remains the default. After installing the additive control schema and
+the new release's `data-platform-assistant@<env>.service`, `langgraph` enables asynchronous admission for
+new requests. POST `/api/ai-assistant/turns` returns 202 and the existing authenticated GET endpoint polls
+`running/done/error`; Web and CLI retain the same request ID through retries. Start/verify the Runner
+before enabling admission. It shares the protected environment file and Qwen key, but never submits a
+Pipeline: explicit confirmation still goes through the original API.
+
+The Runner supports four concurrent generations, 30-second leases and five-second heartbeats. Requests
+queue for at most 120 seconds; generation has a persistent 75-second wall deadline and eight model-call
+budget. A reserved model request without a durable response ends as outcome unknown instead of being
+automatically resent. Monitor error rates and queued requests; process `active` alone is not acceptance.
+For acceptance, submit an authenticated S3 request, reload during pending, verify exactly one completed
+answer and no task, then explicitly confirm and verify the single Pipeline plus its final acknowledged result.
+Keep the Runner running when switching new admissions back to legacy so accepted requests can finish.
+Before rolling back to an older release without the Runner, drain accepted graph requests. The systemd
+unit stops claiming on SIGTERM and drains current generations with a 100-second stop timeout.
+See [the runtime contract and local acceptance](data_platform_assistant_langgraph.md) for tables, graph
+version compatibility, recovery limits and tests. Long-term personal memory and task summaries are not enabled.
+
 Without a key, or when disabled, the assistant explains its unavailable state and the manual Pipeline
 editor continues to work. The additive `dp_ai_conversations` and `dp_ai_turns` tables hold private
 conversation state and request receipts; the additive `dp_ai_preferences` table stores explicit personal

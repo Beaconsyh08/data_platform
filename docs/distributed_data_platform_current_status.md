@@ -1,6 +1,6 @@
 # 多服务器统一数据平台当前情况说明
 
-> 源码能力核对：2026-10-20，覆盖 0.2 系列助手工作区和入口改进。
+> 源码能力核对：2026-10-22，含 0.3 系列助手功能及尚未部署的可选异步 Runner。
 > 本文描述架构与能力，不替代线上部署状态。实际版本以 dev/prod `current`、发行包、Agent 心跳和验收记录为准。
 > [发行变更](data_platform_changelog.md) · [用户指南](data_platform_page_user_guide.md) · [运维手册](data_platform_operations.md)
 
@@ -65,7 +65,7 @@ flowchart TD
 
 ## 当前限制
 
-- LangGraph 检查点和 S3 图已完成[隔离验收](data_platform_assistant_langgraph.md)，尚未接入 Server；当前助手仍使用原循环。
+- LangGraph 异步 API 与独立 Runner 已在源码实现并完成[本地验收](data_platform_assistant_langgraph.md)，尚未部署；默认仍为 legacy，新请求可通过服务端配置切换。
 - 流程目前为顺序步骤，不提供任意分支 DAG；AI 自主规划执行、MCP 等不在当前承诺范围内。
 - 模型、媒体、格式和算子的可用性依赖节点安装、数据字段与权限；发现能力不代表所有数据都适用。
 - OSS 归档已接入，但不能由此推断所有 Viewer 缓存已迁出 Server A；缓存和归档位置以配置及发布记录为准。

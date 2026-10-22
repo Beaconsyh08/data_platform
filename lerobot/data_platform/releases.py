@@ -20,6 +20,7 @@ from lerobot.data_platform.rolling_deployment import ROLLING_DEPLOY_PROTOCOL, re
 RELEASE_ROOT = Path("/var/lib/data-platform-releases")
 SCHEMA_VERSION = 6
 VALIDATION_TESTS = [
+    "tests/datasets/test_ai_assistant_runtime.py",
     "tests/datasets/test_ai_assistant.py",
     "tests/datasets/test_ai_assistant_context.py",
     "tests/datasets/test_ai_assistant_security.py",
@@ -532,6 +533,9 @@ def prepare_server(
                 sync,
                 env=dict(os.environ, UV_CACHE_DIR=f"/var/cache/data-platform-uv/{deployment.environment}"),
             )
+        runtime_probe = "import gunicorn, pymysql; from lerobot.data_platform.wsgi import create_app"
+        if (target / "lerobot/data_platform/ai_tools/runtime.py").is_file():
+            runtime_probe += "; from lerobot.data_platform.ai_tools.runtime import generate"
         run(
             [
                 "runuser",
@@ -540,7 +544,7 @@ def prepare_server(
                 "--",
                 target / ".venv/bin/python",
                 "-c",
-                "import gunicorn, pymysql; from lerobot.data_platform.wsgi import create_app",
+                runtime_probe,
             ],
             cwd=target,
         )
@@ -566,7 +570,7 @@ def prepare_server(
 def install_server_units(deployment: Deployment):
     release = (deployment.root / "current").resolve()
     directory = Path("/etc/systemd/system")
-    from lerobot.data_platform.deployment import coordinator_unit
+    from lerobot.data_platform.deployment import assistant_unit, coordinator_unit
 
     (directory / deployment.units[0]).write_text(server_unit(deployment, worker=False))
     has_coordinator = deployment.coordinator_unit_name in deployment.units
@@ -575,6 +579,12 @@ def install_server_units(deployment: Deployment):
     elif (directory / deployment.coordinator_unit_name).exists():
         run(["systemctl", "stop", deployment.coordinator_unit_name])
         run(["systemctl", "disable", deployment.coordinator_unit_name])
+    has_assistant = deployment.assistant_unit_name in deployment.units
+    if has_assistant:
+        (directory / deployment.assistant_unit_name).write_text(assistant_unit(deployment))
+    elif (directory / deployment.assistant_unit_name).exists():
+        run(["systemctl", "stop", deployment.assistant_unit_name])
+        run(["systemctl", "disable", deployment.assistant_unit_name])
     generation = f"data-platform-local-worker-{release.name}@{deployment.environment}.service"
     (directory / generation).write_text(server_unit(deployment, worker=True, release=release))
     alias = directory / deployment.units[1]
@@ -594,6 +604,9 @@ def install_server_units(deployment: Deployment):
     if has_coordinator:
         run(["systemctl", "enable", deployment.coordinator_unit_name])
         run(["systemctl", "restart", deployment.coordinator_unit_name])
+    if has_assistant:
+        run(["systemctl", "enable", deployment.assistant_unit_name])
+        run(["systemctl", "restart", deployment.assistant_unit_name])
 
 
 def wait_healthy(deployment: Deployment, version: str):

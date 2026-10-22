@@ -4,6 +4,13 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## 未发布 · AssistantAsyncRunner · 2026-10-22
+
+- 新增正式异步 Assistant Runner：Turn/执行记录原子入队，既有 POST 返回 202、GET 轮询；保留原权限、四工具、确认、配额和幂等契约。
+- 图检查点、调用预算与响应回执持久化；过期进程写入受租约保护，恢复不重复发送已保存响应或未知结果的模型请求；发布时重查授权、输入身份和 revision。
+- 默认 `DATA_PLATFORM_AI_BACKEND=legacy`，新请求可显式切换 `langgraph`；已有请求固定后端与图版本。正式运行表、systemd unit、依赖锁和发行测试已接入。
+- **影响范围**：Server 与控制数据库加表；Agent 计算协议、CLI JSON 契约不变。CLI 已增加异步 HTTPS 兼容测试，实际平台升级仍须发布新的兼容 CLI。本条不表示已部署或发布。
+
 ## 未发布实验 · AssistantLangGraphAcceptance · 2026-10-22
 
 - 新增隔离的 MySQL 检查点、租约 epoch 和模型回执验收；旧进程写入拦截、跨进程恢复、预算和重复调用保护已有测试。

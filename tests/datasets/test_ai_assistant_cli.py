@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
@@ -132,8 +133,22 @@ def test_terminal_control_sequences_and_error_bodies_are_not_rendered():
     assert "private" not in str(error.value) and "SELECT" not in str(error.value)
 
 
-def test_real_https_login_chat_restore_confirm_and_logout(assistant, tmp_path, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("backend", ["legacy", "langgraph"])
+def test_real_https_login_chat_restore_confirm_and_logout(assistant, tmp_path, monkeypatch, backend):  # noqa: F811
     service, fake, owner, body = assistant
+    service.config = replace(service.config, backend=backend)
+    stop_runner = threading.Event()
+    runner_thread = None
+    if backend == "langgraph":
+        from lerobot.data_platform.ai_tools.runner import AssistantRunner
+
+        def work():
+            runner = AssistantRunner(service)
+            while not stop_runner.wait(0.05):
+                runner.tick()
+
+        runner_thread = threading.Thread(target=work, daemon=True)
+        runner_thread.start()
     bind_lifecycle(service, tmp_path)
     fake.responses = [
         call("describe_operator", {"operator_id": "viewer.prepare"}),
@@ -190,6 +205,9 @@ def test_real_https_login_chat_restore_confirm_and_logout(assistant, tmp_path, m
         client.logout()
         assert not client.request("GET", "/api/auth/status")["authenticated"]
     finally:
+        stop_runner.set()
+        if runner_thread:
+            runner_thread.join(timeout=5)
         client.session.close()
         server.shutdown()
         thread.join(timeout=5)

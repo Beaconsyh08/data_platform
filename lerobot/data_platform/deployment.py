@@ -78,11 +78,17 @@ class Deployment:
         units = [f"data-platform-{kind}@{self.environment}.service" for kind in ("web", "local-worker")]
         if (self.root / "current/lerobot/data_platform/processing/coordinator.py").is_file():
             units.append(self.coordinator_unit_name)
+        if (self.root / "current/lerobot/data_platform/ai_tools/runner.py").is_file():
+            units.append(self.assistant_unit_name)
         return units
 
     @property
     def coordinator_unit_name(self) -> str:
         return f"data-platform-pipeline-coordinator@{self.environment}.service"
+
+    @property
+    def assistant_unit_name(self) -> str:
+        return f"data-platform-assistant@{self.environment}.service"
 
     @property
     def maintenance_file(self) -> Path:
@@ -215,5 +221,24 @@ def coordinator_unit(deployment: Deployment) -> str:
         .replace(
             f"Description=Data Platform {deployment.environment} web",
             f"Description=Data Platform {deployment.environment} pipeline coordinator",
+        )
+    )
+
+
+def assistant_unit(deployment: Deployment) -> str:
+    """Pin code/interpreter to this release; SIGTERM drains bounded generations."""
+    root = (deployment.root / "current").resolve()
+    unit = server_unit(deployment, worker=False, release=root)
+    original = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+    return (
+        unit.replace(original, f"ExecStart={root}/.venv/bin/python -m lerobot.data_platform.ai_tools.runner")
+        .replace("RestartSec=5", "RestartSec=5\nTimeoutStopSec=100\nKillMode=mixed")
+        .replace(
+            "Wants=network-online.target",
+            f"Wants=network-online.target\nConditionPathExists={root}/lerobot/data_platform/ai_tools/runner.py",
+        )
+        .replace(
+            f"Description=Data Platform {deployment.environment} web",
+            f"Description=Data Platform {deployment.environment} assistant runner",
         )
     )

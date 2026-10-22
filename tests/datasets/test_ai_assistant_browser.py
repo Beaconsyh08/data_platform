@@ -2,6 +2,7 @@
 
 import os
 import threading
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,67 @@ from tests.datasets.test_ai_assistant import (
     processing_setup,  # noqa: F401
 )
 from tests.datasets.test_control_plane import _app
+
+
+def test_async_assistant_browser_restores_pending_and_requires_confirmation(assistant, tmp_path):  # noqa: F811
+    executable = os.environ.get("DATA_PLATFORM_BROWSER_EXECUTABLE")
+    if not executable:
+        pytest.skip("Set DATA_PLATFORM_BROWSER_EXECUTABLE for real-browser acceptance")
+    playwright = pytest.importorskip("playwright.sync_api")
+    from lerobot.data_platform.ai_tools.runner import AssistantRunner
+    from tests.datasets.test_ai_assistant import call
+    from tests.datasets.test_ai_assistant_context import bind_lifecycle
+
+    service, fake, owner, value = assistant
+    service.config = replace(service.config, backend="langgraph")
+    bind_lifecycle(service, tmp_path)
+    fake.responses = [
+        call("describe_operator", {"operator_id": "curation.quality"}),
+        call("prepare_action", {"operator_id": "curation.quality", "parameters": {"checks": ["s3"]}}),
+    ]
+    app = _app(tmp_path, service.store)
+    ctx = SimpleNamespace(control_plane_store=service.store, lifecycle_store=None)
+    register_processing_routes(app, ctx)
+    register_ai_assistant_routes(app, ctx)
+    app.extensions["data_platform_assistant"] = service
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as runtime:
+            browser = runtime.chromium.launch(executable_path=executable, args=["--no-sandbox"])
+            page = browser.new_page()
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            assert (
+                page.request.post(
+                    base + "/api/auth/login", data={"username": "admin", "password": "strong-admin-password"}
+                ).status
+                == 200
+            )
+            page.goto(base + "/pipelines?location_id=" + value["location_id"])
+            page.locator("#ai-message").fill("只准备 S3 检查")
+            with page.expect_response(
+                lambda response: response.url.endswith("/api/ai-assistant/turns")
+            ) as accepted:
+                page.get_by_role("button", name="Ask Qwen", exact=True).click()
+            assert accepted.value.status == 202 and not fake.requests
+            page.reload()
+            playwright.expect(page.locator("#ai-message")).to_be_disabled()
+            assert AssistantRunner(service).tick()
+            button = page.get_by_role("button", name="Confirm and run", exact=True)
+            playwright.expect(button).to_be_enabled(timeout=15000)
+            assert not service.manager.runs(owner) and not service.store.list_jobs()
+            with page.expect_response(lambda response: response.url.endswith("/confirm")) as confirmed:
+                button.click()
+            assert confirmed.value.status == 200
+            assert len(service.manager.runs(owner)) == 1
+            assert errors == []
+            browser.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
 
 
 def test_qwen_browser_draft_restore_scope_and_explicit_run(assistant, tmp_path):  # noqa: F811

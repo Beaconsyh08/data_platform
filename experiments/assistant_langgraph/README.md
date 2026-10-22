@@ -1,6 +1,8 @@
 # LangGraph 第一阶段验收
 
 状态：2026-10-22，隔离实验已实现并通过下述验收；**未接入 Server 请求路由、未迁移平台数据库、未部署**。
+此目录保留第一阶段实验记录；后续正式异步实现已位于 `ai_tools/runtime*.py` 和 `runner.py`，见
+[当前实施记录](../../docs/data_platform_assistant_langgraph.md)。不要将下述实验局限当作正式实现的当前状态。
 源码基线为 `68d213ea`，包含 V0.3.5 助手代码及后续 CLI 修复。这里的实验模块不会被平台启动导入，
 依赖也未加入 Server/Agent 的安装 extra。
 

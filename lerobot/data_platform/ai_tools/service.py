@@ -9,10 +9,11 @@ import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.orm import object_session
 
 from lerobot.data_platform.ai_tools.actions import ALLOWED_ACTIONS
 from lerobot.data_platform.ai_tools.context import bounded, normalize_context, resolve_context, safe_summary
-from lerobot.data_platform.ai_tools.models import AssistantConversation, AssistantTurn
+from lerobot.data_platform.ai_tools.models import AssistantConversation, AssistantExecution, AssistantTurn
 from lerobot.data_platform.ai_tools.security import REFUSAL, DisclosureGuard, restricted_request
 from lerobot.data_platform.job_management import JobConflictError, scheduler_lock
 from lerobot.data_platform.operators import get_operator, list_operators
@@ -36,12 +37,18 @@ class AssistantConfig:
     model: str = DEFAULT_DASHSCOPE_MODEL
     hourly_limit: int | None = None
     global_limit: int = 4
+    backend: str = "legacy"
+
+    def __post_init__(self):
+        if self.backend not in {"legacy", "langgraph"}:
+            raise ValueError("Unsupported assistant backend")
 
     @classmethod
     def from_environment(cls):
         return cls(
             enabled=os.getenv("DATA_PLATFORM_AI_ENABLED", "1").strip().lower() not in {"0", "false", "no"},
             model=os.getenv("DATA_PLATFORM_AI_MODEL", "").strip() or DEFAULT_DASHSCOPE_MODEL,
+            backend=os.getenv("DATA_PLATFORM_AI_BACKEND", "legacy").strip(),
         )
 
 
@@ -304,8 +311,11 @@ class AssistantService:
                 result["action"] = None
             return result
 
-    @staticmethod
-    def _expire(row):
+    def _expire(self, row):
+        from lerobot.data_platform.ai_tools.runtime_repository import expire_execution
+
+        if expire_execution(object_session(row), row):
+            return
         if row.status == "running" and row.lease_until <= int(time.time()):
             row.status = "error"
             row.result = {"error": "The request expired. Start a new request; no pipeline was run."}
@@ -431,6 +441,35 @@ class AssistantService:
                 result={},
             )
             session.add(turn)
+            if self.config.backend == "langgraph":
+                from lerobot.data_platform.ai_tools.runtime_repository import (
+                    GRAPH_VERSION,
+                    STATE_VERSION,
+                    database_time,
+                )
+
+                guard = DisclosureGuard.from_environment()
+                session.add(
+                    AssistantExecution(
+                        request_id=request_id,
+                        owner=owner,
+                        conversation_id=conversation_id,
+                        conversation_revision=row.revision,
+                        backend="langgraph",
+                        graph_version=GRAPH_VERSION,
+                        schema_version=STATE_VERSION,
+                        model=self.config.model,
+                        status="queued",
+                        created_at=now,
+                        queue_until=database_time(session) + 120,
+                        payload={
+                            "value": guard.tree(value),
+                            "history": guard.tree(history),
+                            "proposal": guard.tree(proposal),
+                            "identity": identity,
+                        },
+                    )
+                )
             self.manager._audit(
                 session,
                 owner,
@@ -454,7 +493,15 @@ class AssistantService:
                     .limit(100)
                 )
             )
+            from lerobot.data_platform.ai_tools.runtime_repository import delete_executions
+
             if old_ids:
+                expired_requests = list(
+                    session.scalars(
+                        select(AssistantTurn.request_id).where(AssistantTurn.conversation_id.in_(old_ids))
+                    )
+                )
+                delete_executions(session, expired_requests)
                 session.execute(delete(AssistantTurn).where(AssistantTurn.conversation_id.in_(old_ids)))
                 session.execute(
                     delete(AssistantConversation).where(AssistantConversation.conversation_id.in_(old_ids))
@@ -467,7 +514,10 @@ class AssistantService:
                 )
             )
             if old_turns:
+                delete_executions(session, old_turns)
                 session.execute(delete(AssistantTurn).where(AssistantTurn.request_id.in_(old_turns)))
+            if self.config.backend == "langgraph":
+                return self._turn_view(turn), None
             return None, (history, proposal, identity)
 
     def submit(self, owner, value):
@@ -475,7 +525,6 @@ class AssistantService:
         if existing is not None:
             return existing
         history, proposal, identity = context
-        guard = DisclosureGuard.from_environment()
         try:
             if restricted_request(value["message"]):
                 result = {
@@ -495,23 +544,41 @@ class AssistantService:
             result = {
                 "error": "Qwen could not complete this request. Check server connectivity, key and model access, then retry."
             }
+        return self._complete(owner, value, history, result)
+
+    def _complete(self, owner, value, history, result, *, lease=None):
+        guard = DisclosureGuard.from_environment()
         result = guard.response(result, instructions=SYSTEM)
         with self.store.sessions.begin() as session:
             scheduler_lock(session)
+            execution = None
+            if lease is not None:
+                from lerobot.data_platform.ai_tools.runtime_repository import RuntimeRepository
+
+                execution = RuntimeRepository(self.store).require(session, lease)
+                if execution.owner != owner or execution.request_id != _uuid(value["request_id"]):
+                    raise PermissionError("Execution identity changed")
             turn = session.get(AssistantTurn, _uuid(value["request_id"]))
             self._expire(turn)
             if turn.status != "running":
                 return self._turn_view(turn)
             try:
                 row = self._conversation(session, owner, turn.conversation_id)
+                if execution is not None and row.revision != execution.conversation_revision:
+                    raise JobConflictError("Conversation changed during generation")
             except (PermissionError, JobConflictError, KeyError):
                 turn.status, turn.result = "error", {"error": "Dataset access or identity changed."}
+                if execution is not None:
+                    execution.status, execution.lease_until = "error", 0
                 # Commit the terminal state; a later read still checks authorization.
                 return self._turn_view(turn)
             if self.manager._actor(session, owner, write=False).role == "viewer":
                 result["proposal"] = None
                 result["action"] = None
             turn.status = "error" if "error" in result else "done"
+            if execution is not None:
+                execution.status = "error" if turn.status == "error" else "completed"
+                execution.lease_until = 0
             if turn.status == "done":
                 row.history = (
                     guard.tree(history)
@@ -528,7 +595,7 @@ class AssistantService:
                 owner,
                 "assistant.result",
                 request_id=turn.request_id,
-                model=self.config.model,
+                model=execution.model if execution is not None else self.config.model,
                 result_status=turn.status,
                 usage=result.get("usage", {}),
                 security_code=(result.get("security") or {}).get("code"),
@@ -547,7 +614,7 @@ class AssistantService:
             self._target(session, owner, location_id, identity)
         return OperatorCatalog(self.manager, owner, location_id)
 
-    def _generate(self, owner, value, history, proposal, identity):
+    def _generate(self, owner, value, history, proposal, identity, *, execution_guard=None):
         from lerobot.data_platform.ai_tools.personalization import preferences
 
         guard = DisclosureGuard.from_environment()
@@ -629,6 +696,8 @@ class AssistantService:
         stop = False
         context_bytes = len(context.encode())
         for _ in range(8):
+            if execution_guard:
+                execution_guard()
             if time.monotonic() >= deadline:
                 break
             if len(_json(messages).encode()) > 160000:
@@ -655,6 +724,8 @@ class AssistantService:
                     )
                 )
             except Exception:
+                if execution_guard:
+                    raise
                 if last_draft:
                     break
                 raise
@@ -683,6 +754,8 @@ class AssistantService:
                 raise ValueError("Too many tool calls")
             messages.append({"role": "assistant", "content": message.get("content"), "tool_calls": calls})
             for call in calls:
+                if execution_guard:
+                    execution_guard()
                 catalog = self._catalog(owner, value["location_id"], identity)
                 if not isinstance(call, dict) or not isinstance(call.get("id"), str):
                     raise ValueError("Invalid model tool call")

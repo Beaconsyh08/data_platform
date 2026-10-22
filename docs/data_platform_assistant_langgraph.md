@@ -1,26 +1,89 @@
 # AI 助手 LangGraph 接入进度
 
-2026-10-22：首批隔离验收完成，尚未接入运行中的平台。当前 Server 仍使用原有助手循环。
+2026-10-22：正式异步 Runner、原子入队和既有 API 接入已实现并在本地隔离环境验收，**尚未部署**。
+新请求默认后端仍为 `legacy`；管理员在部署并确认 Runner 可用后设置 `DATA_PLATFORM_AI_BACKEND=langgraph`。
+客户端不能选择后端、模型、执行身份或批准标记。
 
-选型采用直接定义 LangGraph 图，节点继续调用现有 QwenClient、权限/上下文、算子预览、操作确认和 Pipeline 服务。
-不引入另一套计算调度或 Pydantic AI runtime。个人偏好、会话历史、长期用户记忆和实时任务状态各自保留明确职责；
-检查点只用于流程恢复，不作为用户长期记忆。
+## 请求与执行
 
-| 阶段 | 本次状态 | 后续验收要求 |
-| --- | --- | --- |
-| A：检查点、租约和恢复 | 已有可运行隔离实现，真实 MySQL 验收通过 | 正式化平台事务与 schema 归属、保留策略 |
-| B：S3 最小接入 | 已验证 S3 图与原准备/确认服务，尚未接入异步 API | 原子接入、独立 Runner、预算、版本固定、配额、Web/CLI 轮询及开发环境验收 |
-| C：显式长期记忆 | 未实现 | 用户/数据版本作用域、来源、revision、删除失效；不自动学习聊天 |
-| D：任务结果观察与总结 | 未实现 | 只读已确认业务状态，最终确认后总结；不得重复提交计算 |
+```mermaid
+flowchart LR
+    A[原 POST turns] --> B[权限与幂等校验]
+    B --> C[(Turn 与 Execution 同事务)]
+    C --> D[202 与原 GET 轮询]
+    C --> R[独立 Assistant Runner]
+    R --> G[LangGraph bounded-v1]
+    G --> Q[原受限生成循环与 QwenClient]
+    Q --> T[原四工具与业务预览]
+    G --> P[(检查点与模型响应回执)]
+    G --> F[租约与当前授权校验后发布]
+    F --> D
+    D --> U[用户确认]
+    U --> X[原 actions.confirm 与 Pipeline]
+```
 
-源码与测试位于 [独立实验目录](../experiments/assistant_langgraph/README.md)。
-结果包括 10 项真实 MySQL 存储恢复测试、6 项 S3 集成测试及合计 85 项聚焦回归；
-Python 3.10 另通过相同的 10 项存储测试。详细版本、复现入口和未验证边界见实验报告。
+`AssistantService._reserve` 在原调度锁事务中创建 Turn、会话 revision、审计和 execution。
+原请求摘要继续用于重复请求识别；新记录保存 owner、request/conversation、模型与 backend/graph/schema 版本。
+重复 POST 只返回原状态，跨 backend 切换也不重新入队或同步执行。用户 1、全局 4 的并发限制仍按同一 Turn 集合统计，
+排队请求占额度；生成完成释放额度，操作卡片等确认和业务 Job 不占生成额度。
 
-下一阶段先实现正式执行记录与 Turn 的原子接入，再接入独立 Runner；不得直接把实验 `setup()` 用作平台迁移。
-必须保留已有 request 幂等、账号/数据权限、会话 revision、四工具边界及唯一的确认入口。
-生成结束即释放请求额度，等待用户确认和 Job 状态使用独立观察实例。
-后端只对新请求选择；已有 execution 继续由其固定版本恢复，禁止 fallback 时同一请求在两套后端各运行一次。
+`runner.py` 是独立入口，默认 4 个线程，读取共享数据库，不启动 Flask 注册表和缓存。
+它只领取支持的 `bounded-v1` / state 1 执行；每 5 秒续租，租约 30 秒。
+所有检查点、pending writes、模型回执与最终发布均在数据库锁内校验租约持有者和 epoch。
+最终结果、会话历史、execution 终态和审计在同一事务发布；旧进程无法覆盖新持有者。
+发布前还检查账号/对象权限、当前数据身份和会话 revision，Viewer 仍不能得到可执行操作卡片。
 
-本轮仅改变实验、测试和文档；没有 Server/Agent/CLI 运行行为或部署变更。
-阶段 B 完成后仍需开发验收和生产批准，以及同步发布新的兼容 CLI；本记录不构成部署验收。
+## 恢复策略与边界
+
+一期将原有四工具生成循环作为一个图节点，保留其参数校验、修复策略、脱敏和上下文限制，避免一次重写全部行为。
+不是每个工具都有独立 checkpoint。节点重放时重新加载授权上下文并重新验证只读/准备工具；
+每次 Qwen 请求有独立的持久回执，只有完整请求摘要相同才复用响应。
+上下文变化则结束请求并要求用户重试；没有持久响应的已预留请求标为 outcome unknown，不自动再次发送。
+不承诺 provider exactly-once，也不尝试用新的 call ID 绕过未知结果。
+
+沿用每次最多 8 个模型调用、每轮最多 4 个工具、单请求最多 2500 输出 tokens 和最长 15 秒 HTTP 超时。
+次数在发送前持久预留，恢复不会重置；120 秒排队截止与首次领取后 75 秒生成截止分别管理。
+75 秒采用保守墙钟时间，包含停机/恢复时间，不是扣除停机的有效运行计时。
+预算在模型和每个工具前检查，完整节点及结果发布时再次检查。等待用户或 Job 不放在生成图内。
+
+确认仍只有原 `actions.confirm`：模型工具集没有确认或执行工具，卡片按原 action ID、revision 和输入身份提交。
+已有 delivery 幂等、权限撤销、源身份变化、旧卡片失效以及重复确认恢复逻辑不变。
+
+## 存储与运行
+
+正式新增表使用 `dp_ai_runtime_` 前缀：`executions`、`calls`、`checkpoints`、`writes`。
+通过原 `migrate_management()` 进行加表，原表和 JSON API 字段不变；兼容现有 schema 6 读者。
+保留现有 30 天增量清理规则，清理 Turn/会话时一起清理其运行数据；不会删除活跃请求。
+不调用实验目录的 `setup()`，也不复用实验 `dp_ai_executions` 表。
+
+正式 saver 基于 LangGraph `BaseCheckpointSaver`，使用平台 SQLAlchemy 事务，支持 MySQL 和 SQLite。
+它保存有大小上限的完整检查点并启用严格反序列化，只支持当前 execution 的 root graph；不提供无范围查询或删除接口。
+这个选择保留已验证的租约事务约束，同时避免正式控制事务依赖社区 saver 的私有 `_cursor` 钩子。
+依赖锁定 LangGraph 1.2.16 / checkpoint 4.3.0，记录在 Server extra 和 `uv.lock`；节点 Agent 不需要这些依赖。
+图执行显式关闭 LangSmith tracing，不因进程环境变量开启而向第三方导出私有会话或检查点内容。
+
+发布脚本生成 `data-platform-assistant@<env>.service`，使用发行目录内固定的代码和解释器，读取同一受保护环境配置。
+SIGTERM 停止领取新工作，等待当前有预算的生成退出；systemd 最长等待 100 秒。
+切换回 legacy 默认值时保留 Runner，让已接收图请求结束。回滚到不含 Runner 的旧发行包前应先排空图请求；
+正常安装脚本会停止并禁用不再存在的 Runner unit，未完成的遗留 Turn 最终按旧超时语义结束。
+图语义或状态格式不兼容时必须更新版本并制定兼容/排空步骤，不能假定新 Runner 可恢复任意旧状态。
+
+## 验收与后续
+
+- 助手、权限、上下文、个人偏好、CLI 和发布流程综合回归 256 项通过；发布兼容测试单独复跑 88 项通过。
+- SQLite 异步接入 13 项通过；Python 3.10 + MySQL 8.0.46 使用真实业务表与检查点表同样 13 项通过。
+- 覆盖原子接入回滚、8 个并发领取者、旧 epoch 拒写、事务过期回滚、未知模型结果、响应回执恢复、
+  检查点完成后的跨进程发布、权限/身份/revision 变化、固定图版本、共享配额和显式幂等确认。
+- 浏览器实测 POST 202、刷新恢复 pending、轮询完成和明确确认后唯一提交；CLI 在真实本地 HTTPS/CSRF 下
+  对 legacy、langgraph 均验证聊天、恢复、偏好、确认和退出。Qwen 使用可控模拟响应，没有线上模型调用或数据任务。
+- Server、Agent、CLI 未部署；浏览器验收是私有本地 fixture，不是 dev/prod 在线验收。
+
+隔离 MySQL 一键复现：
+
+```bash
+.venv/bin/python -m experiments.assistant_langgraph.run_acceptance --runtime
+```
+
+新旧源码的行为回归与浏览器用例已进入发行检查；实际开发部署仍需当前环境验收，生产提升仍需批准。
+每次实际平台升级仍要同步发布新兼容 CLI；本轮只增加 CLI 异步兼容测试，没有发布安装器或推进 latest。
+显式长期记忆、任务完成后的后台观察和总结仍是后续阶段，本次没有自动学习聊天或增加执行工具。

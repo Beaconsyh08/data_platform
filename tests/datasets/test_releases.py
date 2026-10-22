@@ -172,8 +172,9 @@ def test_release_extraction_rejects_traversal_and_links(tmp_path, name, kind):
 
 
 @pytest.mark.parametrize("offline_hit,online_failure", [(True, False), (False, False), (False, True)])
+@pytest.mark.parametrize("assistant_runtime", [False, True])
 def test_dependency_failure_never_switches_current(
-    release, tmp_path, monkeypatch, offline_hit, online_failure
+    release, tmp_path, monkeypatch, offline_hit, online_failure, assistant_runtime
 ):
     monkeypatch.setattr(Deployment, "root", property(lambda self: tmp_path / "installed"))
     deployment = Deployment("dev")
@@ -183,7 +184,14 @@ def test_dependency_failure_never_switches_current(
     manifest = json.loads((release / "release.json").read_text())
     manifest["agent_manifest_sha256"] = "a" * 64
     releases.atomic_json(release / "release.json", manifest)
-    monkeypatch.setattr(releases, "extract_archive", lambda archive, target: None)
+
+    def extract(archive, target):
+        if assistant_runtime:
+            module = target / "lerobot/data_platform/ai_tools/runtime.py"
+            module.parent.mkdir(parents=True)
+            module.touch()
+
+    monkeypatch.setattr(releases, "extract_archive", extract)
     calls = []
 
     def command(argv, **kwargs):
@@ -205,6 +213,10 @@ def test_dependency_failure_never_switches_current(
     assert len(sync) == (1 if offline_hit else 2)
     assert all("--frozen" in argv and "https://mirror.test/simple" in argv for argv in sync)
     assert "--offline" in sync[0]
+    probes = [argv[-1] for argv in calls if argv[0] == "runuser"]
+    if not online_failure:
+        assert len(probes) == 1
+        assert ("ai_tools.runtime" in probes[0]) == assistant_runtime
 
 
 def test_corrupt_backup_is_rejected_before_database_restore(tmp_path, monkeypatch):
@@ -691,6 +703,29 @@ def test_pipeline_coordinator_unit_follows_release_and_legacy_rollback(tmp_path,
     current.unlink()
     current.symlink_to(old)
     assert deployment.coordinator_unit_name not in deployment.units
+
+
+def test_assistant_unit_pins_release_and_drains_before_legacy_rollback(tmp_path, monkeypatch):
+    from lerobot.data_platform.deployment import assistant_unit
+
+    monkeypatch.setattr(Deployment, "root", property(lambda self: tmp_path / self.environment))
+    deployment = Deployment("dev")
+    old = deployment.root / "releases/old"
+    new = deployment.root / "releases/new"
+    old.mkdir(parents=True)
+    module = new / "lerobot/data_platform/ai_tools/runner.py"
+    module.parent.mkdir(parents=True)
+    module.touch()
+    current = deployment.root / "current"
+    current.symlink_to(new)
+    assert deployment.assistant_unit_name in deployment.units
+    unit = assistant_unit(deployment)
+    assert f"ExecStart={new}/.venv/bin/python -m lerobot.data_platform.ai_tools.runner" in unit
+    assert "TimeoutStopSec=100" in unit and "KillMode=mixed" in unit
+    assert "ProtectSystem=strict" in unit and "InaccessiblePaths=" in unit
+    current.unlink()
+    current.symlink_to(old)
+    assert deployment.assistant_unit_name not in deployment.units
 
 
 def test_browser_gate_rejects_skips_and_empty_reports(tmp_path):
