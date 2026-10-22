@@ -4,6 +4,12 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## 未发布实验 · AssistantLangGraphAcceptance · 2026-10-22
+
+- 新增隔离的 MySQL 检查点、租约 epoch 和模型回执验收；旧进程写入拦截、跨进程恢复、预算和重复调用保护已有测试。
+- S3 小型图复用现有上下文、偏好、业务预览和确认服务；仅测试注入，尚未接入正式 API 或 Runner。
+- **影响范围**：实验、测试和文档；没有 Server/Agent/CLI 运行或数据库迁移变更，不构成平台发行。详见 [实施记录](data_platform_assistant_langgraph.md)。
+
 ## CLI 0.3.4 · DirectResultLinks · 2026-10-21
 
 - 操作卡片直接输出带当前服务器地址的完整 HTTPS 结果/任务链接，默认参数不再显示空 JSON；历史结果可打开与参数匹配未知分别说明。

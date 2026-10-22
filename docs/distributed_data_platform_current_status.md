@@ -65,6 +65,7 @@ flowchart TD
 
 ## 当前限制
 
+- LangGraph 检查点和 S3 图已完成[隔离验收](data_platform_assistant_langgraph.md)，尚未接入 Server；当前助手仍使用原循环。
 - 流程目前为顺序步骤，不提供任意分支 DAG；AI 自主规划执行、MCP 等不在当前承诺范围内。
 - 模型、媒体、格式和算子的可用性依赖节点安装、数据字段与权限；发现能力不代表所有数据都适用。
 - OSS 归档已接入，但不能由此推断所有 Viewer 缓存已迁出 Server A；缓存和归档位置以配置及发布记录为准。
