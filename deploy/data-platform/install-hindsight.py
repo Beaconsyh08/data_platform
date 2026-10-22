@@ -45,6 +45,18 @@ def environment(values):
     return "".join(f"{key}={json.dumps(value)}\n" for key, value in values.items())
 
 
+def readable_runtime(root):
+    """Service accounts must read public code even when root installs with umask 077.
+
+    This directory contains only binaries and packages, never environment files or data.
+    Do not follow symlinks when normalizing modes outside their own installation tree.
+    """
+    for path in [root, *root.rglob("*")]:
+        if path.is_symlink():
+            continue
+        path.chmod(0o755 if path.is_dir() or path.stat().st_mode & 0o111 else 0o644)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", required=True, choices=["dev", "prod"])
@@ -120,7 +132,11 @@ def install(args):
         )
         run(args.uv, "pip", "check", "--python", runtime / ".venv/bin/python", env=managed)
         marker.write_text(lock_hash + "\n")
-    state = Path("/var/lib/data-platform-hindsight") / args.env
+    readable_runtime(root)
+    state_root = Path("/var/lib/data-platform-hindsight")
+    state_root.mkdir(parents=True, exist_ok=True, mode=0o755)
+    state_root.chmod(0o755)
+    state = state_root / args.env
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chown(state, user.pw_uid, user.pw_gid)
     state.chmod(0o700)

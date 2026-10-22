@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import runpy
 import shlex
 import subprocess
 import tarfile
@@ -13,6 +14,28 @@ import pytest
 from lerobot.data_platform import releases
 from lerobot.data_platform.deployment import Deployment, read_environment_file, server_unit
 from lerobot.data_platform.deployment_network import nginx_config
+
+
+def test_hindsight_runtime_permissions_allow_services_without_exposing_private_state(tmp_path):
+    installer = Path(__file__).resolve().parents[2] / "deploy/data-platform/install-hindsight.py"
+    normalize = runpy.run_path(str(installer))["readable_runtime"]
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    package = runtime / "package.py"
+    package.write_text("# public package\n")
+    package.chmod(0o600)
+    binary = runtime / "python"
+    binary.write_bytes(b"executable")
+    binary.chmod(0o700)
+    private = tmp_path / "private.env"
+    private.write_text("PRIVATE=synthetic\n")
+    private.chmod(0o600)
+    (runtime / "external-link").symlink_to(private)
+    normalize(runtime)
+    assert runtime.stat().st_mode & 0o777 == 0o755
+    assert package.stat().st_mode & 0o777 == 0o644
+    assert binary.stat().st_mode & 0o777 == 0o755
+    assert private.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.parametrize("index_url", [None, "https://mirror.test/simple"])
