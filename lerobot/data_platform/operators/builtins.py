@@ -299,7 +299,7 @@ def builtins() -> list[OperatorSpec]:
             ),
             OperatorSpec(
                 "caption.annotate",
-                "1.0.0",
+                "1.1.0",
                 "Annotate temporal captions with explicit signal selection.",
                 "caption",
                 "cache",
@@ -312,7 +312,7 @@ def builtins() -> list[OperatorSpec]:
                         "episode_index": {"type": "integer", "minimum": 0},
                         "scheme": {
                             "type": "string",
-                            "enum": ["multiview_semantics", "video_events", "fusion_review"],
+                            "enum": ["multiview_semantics", "video_events", "fusion_review", "flora"],
                         },
                         "include_signals": {"type": "boolean", "default": True},
                     },

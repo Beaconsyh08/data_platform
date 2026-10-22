@@ -88,7 +88,7 @@ def validate_result(result: dict, frame_count: int) -> dict:
     return result
 
 
-def prepare(root: Path, episode: int, output: Path) -> None:
+def prepare(root: Path, episode: int, output: Path, *, export_camera_videos: bool = False) -> None:
     """Export exactly one image-backed v2.1/v3.0 episode using shared format readers."""
     import numpy as np
     from PIL import Image, ImageDraw
@@ -136,6 +136,9 @@ def prepare(root: Path, episode: int, output: Path) -> None:
     try:
         frames = output / "frames"
         frames.mkdir()
+        if export_camera_videos:
+            for j in range(len(cameras)):
+                (output / "camera-videos" / str(j)).mkdir(parents=True)
         signal_keys = [
             key
             for key in rows[0]
@@ -156,6 +159,8 @@ def prepare(root: Path, episode: int, output: Path) -> None:
                         raise ValueError("Image path escapes dataset root")
                 with Image.open(source) as image:
                     canvas.paste(image.convert("RGB").resize((224, 224)), (224 * j, 24))
+                    if export_camera_videos:
+                        image.convert("RGB").save(output / "camera-videos" / str(j) / f"{i:06d}.png")
                 draw.text((224 * j + 5, 5), f"{camera}  f={i}", fill="white")
             canvas.save(frames / f"{i:06d}.jpg", quality=90)
             source_digest.update((frames / f"{i:06d}.jpg").read_bytes())
@@ -180,6 +185,28 @@ def prepare(root: Path, episode: int, output: Path) -> None:
             ],
             check=True,
         )
+        if export_camera_videos:
+            for j in range(len(cameras)):
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-v",
+                        "error",
+                        "-framerate",
+                        str(fps),
+                        "-i",
+                        str(output / "camera-videos" / str(j) / "%06d.png"),
+                        "-c:v",
+                        "libx264",
+                        "-pix_fmt",
+                        "yuv444p",
+                        "-crf",
+                        "0",
+                        str(output / "camera-videos" / f"{j}.mp4"),
+                    ],
+                    check=True,
+                )
+                shutil.rmtree(output / "camera-videos" / str(j))
         write_json(
             output / "episode.json",
             {
@@ -342,6 +369,9 @@ def main() -> None:
     export.add_argument("--root", type=Path, required=True)
     export.add_argument("--episode", type=int, required=True)
     export.add_argument("--output", type=Path, required=True)
+    export.add_argument(
+        "--flora", action="store_true", help="Export individual camera videos and omit signals"
+    )
     run = commands.add_parser("infer")
     run.add_argument("--bundle", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
@@ -349,7 +379,7 @@ def main() -> None:
     run.add_argument("--model", default="qwen3.8-max")
     run.add_argument(
         "--scheme",
-        choices=["multiview_semantics", "video_events", "fusion_review"],
+        choices=["multiview_semantics", "video_events", "fusion_review", "flora"],
         default="multiview_semantics",
     )
     review = commands.add_parser("preview")
@@ -362,9 +392,17 @@ def main() -> None:
     demo.add_argument("--dataset-key", required=True)
     args = parser.parse_args()
     if args.command == "prepare":
-        prepare(args.root, args.episode, args.output)
+        prepare(args.root, args.episode, args.output, export_camera_videos=args.flora)
+        if args.flora:
+            meta = json.loads((args.output / "episode.json").read_text())
+            meta.update(include_signals=False, signals=[])
+            write_json(args.output / "episode.json", meta)
     elif args.command == "infer":
-        if args.scheme == "fusion_review":
+        if args.scheme == "flora":
+            from lerobot.data_platform.temporal_caption_flora import infer_flora
+
+            infer_flora(args.bundle, args.output, args.dataset_key)
+        elif args.scheme == "fusion_review":
             from lerobot.data_platform.temporal_caption_fusion import infer_fusion
 
             infer_fusion(args.bundle, args.output, args.dataset_key, args.model)

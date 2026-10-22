@@ -14,6 +14,7 @@ from pathlib import Path
 from flask import current_app, g, has_app_context, request
 
 from lerobot.data_platform.execution import atomic_json
+from lerobot.data_platform.temporal_caption_flora import runtime_capabilities as flora_runtime_capabilities
 
 
 def launch_background(
@@ -583,7 +584,8 @@ def agent_capabilities_for_local():
         "release": os.environ.get("DATA_PLATFORM_RELEASE", "legacy"),
         "caption_protocol": 1,
         "caption_dataset_versions": ["v2.1", "v3.0"],
-        "caption_schemes": ["multiview_semantics", "video_events", "fusion_review"],
+        "caption_schemes": ["multiview_semantics", "video_events", "fusion_review", "flora"],
+        **flora_runtime_capabilities(),
         "caption_configured": bool(
             os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("QWEN_DASHSCOPE_API_KEY")
         ),

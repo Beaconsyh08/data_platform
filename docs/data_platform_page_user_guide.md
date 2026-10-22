@@ -135,7 +135,7 @@ ssh -L 9091:127.0.0.1:9091 user@remote-host
 
 页面上的数据集名称显示实际目录名，不显示 Agent 注册时添加的路径哈希后缀；内部标识和链接保持不变，同名数据集可通过节点和完整路径区分。
 
-主页、管理页及独立工具页共用字体、焦点提示和导航样式。页面先显示操作和简短说明。权限限制、错误、费用及源数据修改风险仍直接显示。Temporal Caption Review 默认使用平台深色配色，可通过 `Theme` 切换浅色；`Method & diagnostics` 按需展开，视频、片段和待人工审核提示保持可见。
+主页、管理页及独立工具页共用字体、焦点提示和导航样式。页面先显示操作和简短说明。权限限制、错误、费用及源数据修改风险仍直接显示。Temporal Caption 的 Annotation 和 Review 共用平台深色配色及 Dataset / Annotation / Review 导航；`Method & diagnostics` 按需展开，视频、片段和待人工审核提示保持可见。FLORA 方法会依次运行分段、Caption 和 Reward，关闭信号输入；Review 的 Reward review 分开展示整体结果与动作评分，点击 Window disagreements 区间或评分轨道可跳转，展开查看各窗口原始理由。评分分歧只表示待复核证据，不自动改动数据。
 
 首页采用单主画布布局，不再常驻显示数据集左栏和任务右栏：
 

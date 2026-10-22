@@ -13,6 +13,12 @@ from pathlib import Path
 from lerobot.data_platform.temporal_caption import validate_result, write_json
 
 SCHEMES = {
+    "flora": {
+        "id": "flora",
+        "name": "FLORA",
+        "supports_signals": False,
+        "description": "Visual segmentation, captions and action rewards. Native inference on an 80 GB GPU.",
+    },
     "fusion_review": {
         "id": "fusion_review",
         "name": "Fusion + Review",
@@ -32,6 +38,12 @@ SCHEMES = {
 
 
 REVIEW_SCHEMES = {
+    "flora": {
+        "id": "flora",
+        "name": "FLORA",
+        "supports_signals": False,
+        "description": "Visual segmentation, captions and action rewards. Native inference on an 80 GB GPU.",
+    },
     **SCHEMES,
     "hybrid_windows": {
         "id": "hybrid_windows",

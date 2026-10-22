@@ -225,7 +225,7 @@ let artifact = {fps:30, frame_count:656, duration_s:656/30, result:{segments:[
     {start_frame:0,end_frame:248}, {start_frame:248,end_frame:360}, {start_frame:360,end_frame:656}]}};
 let active=0, selectedLoop=1;
 const elements = {video:{currentTime:8.266666,seeking:false}, loop:{checked:false}, clock:{textContent:''}};
-const $ = id => elements[id]; const highlight = () => {};
+const $ = id => elements[id]; const highlight = () => {}; const updateReward = () => {};
 const document = {getElementById: () => null};
 """
         + "function syncPlayback() {"

@@ -11,7 +11,7 @@
 [data-caption-id=method-description], [data-caption-id=selection-summary] { font-size: .8125rem; color: var(--dp-muted); }
 </style>
 <section class="card block" aria-label="Annotation tasks">
-<h2>Temporal Caption</h2><div class="row"><a data-caption-id="open-review">Review captions →</a></div>
+<h2>Temporal Caption</h2><div class="row"><a data-caption-id="open-review"{% if review_url is defined %} href="{{ review_url }}"{% endif %}>Review captions →</a></div>
 <form data-caption-id="caption-job-form" class="transport caption-task-form">
 <label>Method <select data-caption-id="job-scheme"></select></label>
 <label>Episodes <select data-caption-id="episode-mode"><option value="range">Indices / ranges</option><option value="all">Entire dataset</option></select></label>
@@ -21,5 +21,5 @@
 <details class="dp-help"><summary>Method details</summary><p data-caption-id="method-description"></p></details>
 <p data-caption-id="selection-summary"></p>
 <p data-caption-id="job-readiness">Checking annotation executor…</p><p data-caption-id="job-status" role="status" aria-live="polite" aria-atomic="true"></p>
-<p>One job per episode; API usage is charged per episode. Track or cancel in Jobs.</p>
+<p>One job per episode. Track or cancel in Jobs.</p>
 </section>

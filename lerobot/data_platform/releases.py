@@ -52,6 +52,7 @@ VALIDATION_TESTS = [
     "tests/datasets/test_task_suggestions.py",
     "tests/datasets/test_dataset_captions.py",
     "tests/datasets/test_temporal_caption_jobs.py",
+    "tests/datasets/test_temporal_caption_flora.py",
     "tests/datasets/test_dataset_results.py",
     "tests/datasets/test_viewer_cache_publication.py",
     "tests/datasets/test_viewer_csv_compression.py",

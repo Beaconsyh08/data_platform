@@ -4,6 +4,13 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## V0.3.10 · FloraTemporalReward · 2026-10-22（候选，未部署）
+
+- Temporal Caption 新增 FLORA：同一个 Job/Attempt 串行执行本地 TempSeg、Captioner、terminal 和 dense Rewarder；原生 BF16、独立 GPU 环境与共享 GPU 锁、超时/取消/父进程退出清理。无需 DashScope 凭据，明确拒绝 action/state 输入。
+- 保留原始分段时间和 Reward 窗口，显式展示分段空隙/重叠、窗口评分分歧及官方合并结果。Review 的视频评分叠加、轨道和分歧区间支持联动跳转；页面统一平台导航、配色和控件，取消独立 Theme。
+- 复用已有结果上传、校验、权限、幂等和最终确认。`caption.annotate` 1.1.0 新增 flora 方法；Server/Agent 需同步升级，新增 `caption_flora_protocol=1` 能力，Job 2 / Caption 1 传输协议及数据库结构不变。A100 原生四阶段与本地真实浏览器验收已完成，线上验收另行执行。
+- **CLI**：配套候选 0.3.10，参数及登录契约不变，不添加 GPU 依赖；发行时仍须不可变安装器/wheel/CA 发布、正常 TLS 登录、`--web` 与授权 `/open` 验收后推进 latest。
+
 ## V0.3.9 · HindsightExperience · 2026-10-22（候选，未部署）
 
 - 修复开发环境真实 MySQL 验收发现的任务创建时间精度问题：通过原始发起请求的 BIGINT 时间和 Run 幂等键证明新旧关系，拒绝旧 Run 的后续复用请求续期。配套 CLI 0.3.9。

@@ -112,6 +112,10 @@ def register_temporal_caption_routes(app, ctx) -> None:
             if artifact["dataset_key"] != key or artifact["variant"] != variant:
                 abort(404)
             validate_result(artifact["result"], artifact["frame_count"])
+            if artifact.get("scheme_id") == "flora":
+                from lerobot.data_platform.temporal_caption_flora import validate_flora
+
+                validate_flora(artifact)
         except (ValueError, KeyError, TypeError):
             abort(422, description="Invalid temporal caption artifact")
         return artifact

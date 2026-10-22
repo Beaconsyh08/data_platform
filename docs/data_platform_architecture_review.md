@@ -21,6 +21,7 @@ release directory and must be checked independently.
 | AI capability description, preview and execution interfaces | Operator and pipeline APIs | Implemented |
 | MCP, conversational UI and autonomous planning | Explicitly excluded from this round by the original plan | Deferred by design |
 | Every model/media/conversion/build operator exercised on its real execution runtime | Contract and compatibility suites exist; some model backends/Embedding and local MCAP runtime were unavailable at the `.67` baseline | Full real-runtime acceptance remains outstanding |
+| Offline FLORA caption/reward pipeline | Existing caption Job/Attempt and publication contracts; isolated GPU environments; per-method capabilities and raw-window disagreement review | Implemented; native A100 and local browser acceptance, online rollout separate |
 | Production promotion | Same immutable package requires development evidence and the existing production approval mechanism | Separate release step |
 
 ## Scope of the console completion

@@ -83,13 +83,109 @@ review ZIPs. Results remain review evidence and do not write back to source data
 Deploy through the existing immutable dev/prod release workflow. A local preview is not a production
 release. Update Server A and the Agent together to expose supported annotation methods.
 
-## Three reusable annotation methods, one review UI
+## FLORA: offline segmentation, captions and rewards
+
+Select **FLORA** in the existing Annotation task form. Each episode creates one `caption.annotate`
+Job/Attempt: export → TempSeg → Captioner → terminal Rewarder → dense Rewarder → validated publication.
+Progress and cancellation stay in Jobs; Review opens only a complete, acknowledged run. It produces
+`episode.json`, `video.mp4`, and `caption.json`, so caption upload protocol 1 and Job protocol 2 remain
+unchanged. Operator version is 1.1.0; the Agent additionally advertises `caption_flora_protocol=1` and
+`caption_flora_configured`. Qwen credentials and FLORA runtime readiness are independent. An old Agent,
+missing runtime, unsupported view layout, or read-only account cannot submit this method.
+
+The initial adapter supports image-backed v2.1/v3.0 episodes with three unambiguous camera names:
+left wrist, scene, right wrist; a recorded task instruction; regular FPS; and the upstream 120-second /
+7200-frame limits. Camera videos retain source resolution and use lossless H.264 encoding rather than
+cropping the compressed Review montage. Source Parquet, videos and annotations remain unchanged.
+FLORA receives no action/state/pose/gripper evidence: the signal checkbox is disabled and submissions
+with `include_signals=true` are rejected. The recorded task is supplied to Rewarder; TempSeg/Captioner
+retain their official visual inference prompts. The native Captioner currently returns English text.
+
+Native segment seconds and the TempSeg output remain in diagnostics. Review derives half-open frame
+boundaries using `ceil(time * fps)`, labels uncovered intervals, and preserves overlapping native caption
+indices; it does not silently close gaps or select one overlapping caption. The existing limit of 40
+review intervals still applies: excessive partitions fail validation rather than dropping content.
+
+Review shows episode outcome (1–5) separately from action quality (1 failure, 2 suboptimal, 3 normal).
+Each raw dense window is aligned using the official nearest sampled-frame-pair rule without tail trim,
+and masked outside its actual coverage. The official merged scores and selected source windows remain
+unchanged. A disagreement means two covered windows assign different numeric scores at that frame;
+it is not a human failure label, and absence of disagreement does not certify correctness. Click a
+highlighted interval or a score track to seek; arrow keys on a focused track move one frame. Raw model
+reasoning is expandable. Terminal progress is not a calibrated success probability. No reward automatically
+accepts, excludes, deletes, or relabels an episode.
+
+### Executor configuration
+
+Use a dedicated free 80 GB GPU for the native pipeline. The tested environments use Python 3.11,
+Torch 2.11.0+cu130, Transformers 5.8.1, Accelerate 1.12.0 and PEFT 0.18.1 for Captioner; the separate
+Rewarder environment uses vLLM 0.24.0, decord 0.6.0 and qwen-vl-utils 0.0.14. Keep these GPU environments
+separate from the platform interpreter. No GPU/model packages are added to the Server or CLI.
+
+Provision official code and verify offline checkpoint manifests before enabling an executor. Tested pins:
+
+| Component | Revision |
+| --- | --- |
+| Captioner code, `batch_utils` plus native loader helpers | `f736ca36925ae55d2f7915993ed1bc9f87288bb3` |
+| `nvidia/Flora-TempSeg` | `114a1076f70eb53f4a58ac045505db3087e79347` |
+| `Qwen/Qwen3.5-9B` TempSeg base | `c202236235762e1c871ad0ccb60c8ee5ba337b9a` |
+| `nvidia/Flora-Captioner` | `fef0bbfe11829ca7f3539d58da7a6a2c2f109dc6` |
+| `nvidia/Flora-Rewarder`, including its `batch_utils` | `7de68d22c4a9decec5ddb7f86ddcaee8f82d3367` |
+
+Set `DATA_PLATFORM_FLORA_RUNTIME=/etc/data-platform/flora-runtime.json` in the chosen Agent service
+environment (or local executor environment). This administrator-owned JSON contains absolute paths:
+
+```json
+{
+  "caption_python": "/srv/flora/caption-env/bin/python",
+  "reward_python": "/srv/flora/reward-env/bin/python",
+  "caption_code": "/srv/flora/caption-code",
+  "weights": "/srv/flora/weights",
+  "lock_dir": "/var/lib/flora/runtime",
+  "gpu": 0,
+  "stage_timeout_s": 3600
+}
+```
+
+`weights` contains `tempseg`, `tempseg_base`, `captioner` and `rewarder`. Keep original manifests,
+configuration and tokenizer files. The service account needs read/execute access to code, environments
+and weights, and write access to the lock/cache directory and normal job workspace. Never grant world
+write permissions. All services using this physical GPU must use the same lock directory/index; external
+training jobs do not participate in this lock, so reserve the GPU operationally. Execution requires at
+least 73000 MiB free and 75000 MiB total. Each stage runs in a separate process and releases the model
+before the next stage. Cancellation, timeout and supervisor death terminate model workers and descendants.
+Per-stage elapsed time and sampled device memory peaks are retained; peaks include vLLM's reserved cache
+and are not minimum hardware requirements. The timeout also bounds waiting for the configured GPU.
+
+The worker forces offline Hugging Face operation, redirects the pinned TempSeg base to local storage,
+and does not download models or establish SSH tunnels. The platform has no client-supplied model path
+or arbitrary execution command. Native inference keeps BF16 and the official sensitive FP32 parameters;
+Rewarder rejects quantization and non-BF16 engine configuration.
+
+For a standalone acceptance on the data/GPU host:
+
+```bash
+python -m lerobot.data_platform.temporal_caption prepare \
+  --root /path/to/dataset --episode 0 --output /path/to/flora-bundle --flora
+DATA_PLATFORM_FLORA_RUNTIME=/etc/data-platform/flora-runtime.json \
+python -m lerobot.data_platform.temporal_caption infer \
+  --scheme flora --bundle /path/to/flora-bundle --dataset-key namespace/registered-dataset \
+  --output /path/to/new-flora-run
+```
+
+After installing the same compatible Server/Agent release, verify the configured Agent heartbeat,
+submit an authorized three-camera episode through Annotation, observe all four phases in Jobs and
+final acknowledgement, then verify video seeking and disagreement evidence in Review. Exercise Viewer
+read-only restrictions and cancellation; keep running old Agent generations until their attempts finish.
+A standalone A100 run and local browser acceptance do not establish online deployment. Publish and
+accept the companion independently versioned CLI before declaring the platform upgrade complete.
+
+## Four reusable annotation methods, one review UI
 
 The shared page follows the caption demo layout: synchronized camera video, colored semantic timeline,
 gripper event markers, measured gripper/speed curves, bilingual captions, scene and task-quality panels.
-The **Annotation method** selector always offers Multi-view Semantics, Video + Events, and Fusion + Review,
-including when the dataset has no saved annotations. It is synchronized with the new-task method selector
-and remembers the choice in this browser; an explicit `?scheme=` link takes precedence.
+The task form offers FLORA, Multi-view Semantics, Video + Events, and Fusion + Review,
+including when the dataset has no saved annotations. Review lists saved methods and remembers the choice in this browser; an explicit `?scheme=` link takes precedence.
 
 Choose a method, then a **Saved episode / result** to review an earlier run. Switching methods keeps the
 same episode when available and prefers `refined`, `caption`, or `fusion_reviewed`; intermediate results
@@ -108,7 +204,7 @@ Executor readiness is reported per method, including unsupported Agent versions 
   that increasing values always mean closing or that a threshold crossing proves contact. Pose units
   remain source units. This makes the adaptation explicit rather than silently adopting rig conventions.
 
-Both run against an explicitly exported **single episode** using the same CLI:
+The Qwen methods run against an explicitly exported **single episode** using the same CLI:
 
 ```bash
 python -m lerobot.data_platform.temporal_caption infer \
@@ -237,9 +333,9 @@ inference because it starts a fresh isolated execution. No API keys are stored i
 ## Annotation and review pages
 
 `/<namespace>/<dataset>/temporal-caption` and `/remote/<location_id>/temporal-caption`
-are task pages: select one of the three methods, enter an episode, then start annotation.
+are task pages: select one of the four methods, enter an episode, then start annotation.
 They retain executor readiness, task progress, cancellation, retry, and authorized ZIP import.
-Standalone previews show all three methods but cannot submit work without an executor.
+Standalone previews show all four methods but cannot submit work without an executor.
 
 Append `/review` for the separate video, timeline, caption, and model-review page.
 The task page links to review; completed jobs link directly to their result. The dataset

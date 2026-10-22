@@ -15,6 +15,7 @@ from lerobot.data_platform.temporal_caption_demo import infer_video_events
 
 OPERATION = "caption.annotate"
 SCHEMES = {
+    "flora": ("caption",),
     "multiview_semantics": ("coarse", "refined"),
     "video_events": ("caption",),
     "fusion_review": ("fusion_draft", "fusion_reviewed"),
@@ -44,6 +45,10 @@ def validate_options(options: dict) -> dict:
         raise ValueError("Unknown caption scheme")
     if "include_signals" in options and type(options["include_signals"]) is not bool:
         raise ValueError("include_signals must be a boolean")
+    if options["scheme"] == "flora":
+        if options.get("include_signals") is True:
+            raise ValueError("FLORA is visual only; disable action/state inputs")
+        options = {**options, "include_signals": False}
     return dict(options)
 
 
@@ -76,6 +81,10 @@ def validate_run(source: Path, *, key: str | None = None, options: dict | None =
             or value["variant"] != variant
         ):
             raise ValueError("Invalid scheme/variant")
+        if scheme == "flora":
+            from lerobot.data_platform.temporal_caption_flora import validate_flora
+
+            validate_flora(value)
         if scheme == "fusion_review":
             from lerobot.data_platform.temporal_caption_fusion import validate_partition, validate_review
 
@@ -176,7 +185,15 @@ def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
     from lerobot.data_platform.lifecycle import dataset_snapshot
     from lerobot.data_platform.qwen import QwenClient
 
-    client = QwenClient(timeout_s=600)  # Fail before export if the Agent has no runtime credential.
+    flora = options["scheme"] == "flora"
+    if flora:
+        from lerobot.data_platform.temporal_caption_flora import FloraRuntime, camera_roles
+
+        FloraRuntime.load()
+        info = json.loads((source / "meta/info.json").read_text())
+        camera_roles([key for key, value in info["features"].items() if value.get("dtype") == "image"])
+    client = None if flora else QwenClient(timeout_s=600)
+    model = "FLORA TempSeg / Captioner / Rewarder" if flora else "qwen3.8-max"
     fingerprint, _ = dataset_snapshot(source)
 
     def progress(message):
@@ -187,7 +204,10 @@ def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
     with tempfile.TemporaryDirectory(prefix="episode-", dir=workspace) as temporary:
         bundle, output = Path(temporary) / "bundle", Path(temporary) / "result"
         progress(f"Preparing episode {options['episode_index']} camera frames and measured signals")
-        prepare(source, options["episode_index"], bundle)
+        if flora:
+            prepare(source, options["episode_index"], bundle, export_camera_videos=True)
+        else:
+            prepare(source, options["episode_index"], bundle)
         metadata_path = bundle / "episode.json"
         metadata = json.loads(metadata_path.read_text())
         metadata["include_signals"] = options.get("include_signals", True)
@@ -197,14 +217,16 @@ def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
                 "Visual only. No action/state, pose, gripper or motion evidence supplied."
             )
         write_json(metadata_path, metadata)
+        from lerobot.data_platform.temporal_caption_flora import infer_flora
         from lerobot.data_platform.temporal_caption_fusion import infer_fusion
 
         run = {
+            "flora": infer_flora,
             "multiview_semantics": infer,
             "video_events": infer_video_events,
             "fusion_review": infer_fusion,
         }[options["scheme"]]
-        run(bundle, output, location["dataset_key"], "qwen3.8-max", client=client, progress=progress)
+        run(bundle, output, location["dataset_key"], model, client=client, progress=progress)
         if dataset_snapshot(source)[0] != fingerprint:
             raise ValueError("Source changed during caption inference")
         for variant in SCHEMES[options["scheme"]]:
@@ -224,7 +246,7 @@ def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
                 continue
             progress(f"Uploading annotation artifact: {name}")
             agent.client.upload_artifact(agent.state, job["job_id"], Path(name), output / name, caption=True)
-    return {"episode_index": options["episode_index"], "scheme": options["scheme"], "model": "qwen3.8-max"}
+    return {"episode_index": options["episode_index"], "scheme": options["scheme"], "model": model}
 
 
 def import_archive(stream, root: Path, key: str, dataset_name: str) -> list[str]:

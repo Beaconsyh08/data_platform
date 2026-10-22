@@ -396,3 +396,13 @@ def test_cli_explicit_memory_revision_and_updates_use_existing_safe_links():
         {"title": "Open run", "url": "https://platform.example.com/pipelines?run_id=confirmed"},
     ]
     assert [c[0] for c in transport.calls] == ["GET", "PUT", "GET"]
+
+
+def test_flora_review_link_preserves_scheme_episode_and_run():
+    transport = Transport([])
+    client = PlatformClient("https://platform.example.com", session=transport)
+    relative = "/remote/location/temporal-caption/review?scheme=flora&episode=3&run=completed-attempt"
+    assert client.result_links({"links": [{"title": "FLORA Review", "url": relative}]}) == [
+        {"title": "FLORA Review", "url": client.origin + relative}
+    ]
+    assert transport.calls == []

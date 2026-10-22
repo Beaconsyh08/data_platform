@@ -393,6 +393,7 @@ def test_methods_are_listed_without_results_and_have_executor_readiness(remote):
         "multiview_semantics",
         "video_events",
         "fusion_review",
+        "flora",
     }
     methods = {item["id"]: item for item in client.get(api + "/jobs").get_json()["schemes"]}
     assert methods["multiview_semantics"]["can_submit"]
@@ -418,7 +419,11 @@ def test_all_three_methods_can_be_reused_in_new_jobs(remote):
     schemes = ["multiview_semantics", "video_events", "fusion_review"]
     current = next(n for n in store.list_nodes() if n["node_id"] == node["node_id"])
     store.heartbeat(node["node_id"], capabilities={**current["capabilities"], "caption_schemes": schemes})
-    assert all(item["can_submit"] for item in client.get(api + "/jobs").get_json()["schemes"])
+    assert all(
+        item["can_submit"]
+        for item in client.get(api + "/jobs").get_json()["schemes"]
+        if item["id"] in schemes
+    )
     for index, scheme in enumerate(schemes):
         response = client.post(
             api + "/jobs",

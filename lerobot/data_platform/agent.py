@@ -45,6 +45,7 @@ from lerobot.data_platform.precompute.preprocess import (
 from lerobot.data_platform.precompute.preprocess.common import default_preprocess_path
 from lerobot.data_platform.precompute.preprocess.dataset_merge import validate_merge_sources
 from lerobot.data_platform.task_catalog import TASK_CONFIG_PROTOCOL, TaskConfigSnapshot
+from lerobot.data_platform.temporal_caption_flora import runtime_capabilities as flora_runtime_capabilities
 
 _PREPROCESS_OPS = {
     name.removeprefix("preprocess.") for name in operation_ids(family="preprocess", remote=True)
@@ -750,7 +751,8 @@ class DataPlatformAgent:
             "job_concurrent_limit": agent_slots(),
             "caption_dataset_versions": ["v2.1", "v3.0"],
             "caption_signal_options": True,
-            "caption_schemes": ["multiview_semantics", "video_events", "fusion_review"],
+            "caption_schemes": ["multiview_semantics", "video_events", "fusion_review", "flora"],
+            **flora_runtime_capabilities(),
             "caption_configured": bool(os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_DASHSCOPE_API_KEY")),
             "job_protocol": 2,
             "local_requests": self.local_requests,

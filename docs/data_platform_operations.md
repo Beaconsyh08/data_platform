@@ -99,6 +99,13 @@ verify anonymous downloads and hashes, denied anonymous bucket listing, installa
 account, password login, and archive protection. Never replace an existing versioned object with
 different bytes. Client distribution changes do not allocate a new server release: production promotion
 continues to use the exact accepted development package.
+FLORA temporal annotation additionally requires the offline GPU runtime on the actual dataset executor;
+see [FLORA executor configuration](temporal_caption_trial.md#executor-configuration). Upgrade Server and
+Agent together, check `caption_flora_protocol=1` and configured readiness, and accept a full queued
+segmentation/caption/terminal/dense job plus review seeking and cancellation. Existing Qwen execution
+and protocol 1 publication remain supported. Native full-pipeline inference requires a reserved 80 GB GPU;
+installing the website alone does not provision models or enroll an A100 node.
+
 Every platform release must also publish a new compatible CLI release, even for browser-only platform
 changes. Increment the independent CLI version, build/test the wheel, update the installer's
 pinned SHA-256, publish all immutable versioned objects and verify anonymous readback before updating
