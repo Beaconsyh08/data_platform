@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -181,6 +182,8 @@ def test_restart_at_model_response_window(asynchronous, monkeypatch, saved_respo
     monkeypatch.setattr(repo, "record_response", crash)
     with pytest.raises(ProcessLost):
         generate(service, repo, lease)
+    wall_clock = time.time
+    monkeypatch.setattr(time, "time", lambda: wall_clock() + 2)
     expire_lease(service, lease)
     assert AssistantRunner(service).tick()
     result = service.turn(owner, value["request_id"])

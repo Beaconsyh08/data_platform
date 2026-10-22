@@ -77,6 +77,7 @@ def main() -> int:
                     tests = [
                         "tests/datasets/test_ai_assistant_runtime.py",
                         "tests/datasets/test_ai_memory_followups.py",
+                        "tests/datasets/test_ai_experience.py",
                     ]
                 return subprocess.run(
                     [sys.executable, "-m", "pytest", *tests, "--confcutdir=tests/datasets", "-q"],

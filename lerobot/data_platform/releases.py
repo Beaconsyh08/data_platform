@@ -28,6 +28,7 @@ VALIDATION_TESTS = [
     "tests/datasets/test_ai_assistant_cli.py",
     "tests/datasets/test_ai_personalization.py",
     "tests/datasets/test_ai_memory_followups.py",
+    "tests/datasets/test_ai_experience.py",
     "tests/datasets/test_cli_installer.py",
     "tests/datasets/test_mem_export.py",
     "tests/datasets/test_artifact_store.py",
@@ -571,7 +572,7 @@ def prepare_server(
 def install_server_units(deployment: Deployment):
     release = (deployment.root / "current").resolve()
     directory = Path("/etc/systemd/system")
-    from lerobot.data_platform.deployment import assistant_unit, coordinator_unit
+    from lerobot.data_platform.deployment import assistant_unit, coordinator_unit, experience_unit
 
     (directory / deployment.units[0]).write_text(server_unit(deployment, worker=False))
     has_coordinator = deployment.coordinator_unit_name in deployment.units
@@ -586,6 +587,12 @@ def install_server_units(deployment: Deployment):
     elif (directory / deployment.assistant_unit_name).exists():
         run(["systemctl", "stop", deployment.assistant_unit_name])
         run(["systemctl", "disable", deployment.assistant_unit_name])
+    has_experience = deployment.experience_unit_name in deployment.units
+    if has_experience:
+        (directory / deployment.experience_unit_name).write_text(experience_unit(deployment))
+    elif (directory / deployment.experience_unit_name).exists():
+        run(["systemctl", "stop", deployment.experience_unit_name])
+        run(["systemctl", "disable", deployment.experience_unit_name])
     generation = f"data-platform-local-worker-{release.name}@{deployment.environment}.service"
     (directory / generation).write_text(server_unit(deployment, worker=True, release=release))
     alias = directory / deployment.units[1]
@@ -608,6 +615,9 @@ def install_server_units(deployment: Deployment):
     if has_assistant:
         run(["systemctl", "enable", deployment.assistant_unit_name])
         run(["systemctl", "restart", deployment.assistant_unit_name])
+    if has_experience:
+        run(["systemctl", "enable", deployment.experience_unit_name])
+        run(["systemctl", "restart", deployment.experience_unit_name])
 
 
 def wait_healthy(deployment: Deployment, version: str):

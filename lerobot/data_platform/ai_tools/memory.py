@@ -134,6 +134,9 @@ def change(service, owner, value):
                 )
         row.notes, row.updated_at = notes, int(time.time())
         row.revision += 1
+        from lerobot.data_platform.ai_tools.experience import invalidate
+
+        invalidate(session, owner)
         service.manager._audit(session, owner, "assistant.memory." + operation, revision=row.revision)
     return read(service, owner)
 

@@ -119,3 +119,23 @@ class AssistantFollowup(ManagementBase):
     summary: Mapped[dict] = mapped_column(JSON, default=dict)
     next_check_at: Mapped[int] = mapped_column(BigInteger, index=True)
     updated_at: Mapped[int] = mapped_column(BigInteger, index=True)
+
+
+class AssistantExperience(ManagementBase):
+    """Fenced background work and a locally validated, disposable experience cache."""
+
+    __tablename__ = "dp_ai_experiences"
+    scope_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(36), index=True)
+    location_id: Mapped[str] = mapped_column(String(36))
+    epoch: Mapped[int] = mapped_column(BigInteger, default=0)
+    notes_revision: Mapped[int] = mapped_column(Integer, default=-1)
+    source_digest: Mapped[str] = mapped_column(String(64), default="")
+    observations: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    bank_id: Mapped[str] = mapped_column(String(128), default="")
+    lease_owner: Mapped[str] = mapped_column(String(36), default="")
+    lease_until: Mapped[float] = mapped_column(Double, default=0)
+    next_check_at: Mapped[float] = mapped_column(Double, default=0, index=True)
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[int] = mapped_column(BigInteger, default=0)

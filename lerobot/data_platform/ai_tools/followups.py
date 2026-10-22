@@ -189,6 +189,9 @@ def tick(service, *, now=None):
                 continue
             row.summary = _summary(session, row, run, steps)
             row.status, row.updated_at = "ready", now
+            from lerobot.data_platform.ai_tools.experience import enqueue
+
+            enqueue(session, row.owner, row.location_id)
             service.manager._audit(
                 session,
                 row.owner,
@@ -209,6 +212,18 @@ def tick(service, *, now=None):
     if expired:
         with service.store.sessions.begin() as session:
             scheduler_lock(session)
+            from lerobot.data_platform.ai_tools.experience import enqueue
+
+            for owner, location in session.execute(
+                select(AssistantFollowup.owner, AssistantFollowup.location_id)
+                .where(
+                    AssistantFollowup.action_id.in_(expired),
+                    AssistantFollowup.status != "pending",
+                    AssistantFollowup.updated_at < now - 30 * 86400,
+                )
+                .distinct()
+            ):
+                enqueue(session, owner, location)
             session.execute(
                 delete(AssistantFollowup).where(
                     AssistantFollowup.action_id.in_(expired),

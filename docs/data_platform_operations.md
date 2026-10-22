@@ -28,7 +28,7 @@ Pipeline: explicit confirmation still goes through the original API.
 
 The Runner supports four concurrent generations, 30-second leases and five-second heartbeats. Requests
 queue for at most 120 seconds; generation has a persistent 75-second wall deadline and eight model-call
-budget. A reserved model request without a durable response ends as outcome unknown instead of being
+budget, with at most 30 seconds per model call. A reserved model request without a durable response ends as outcome unknown instead of being
 automatically resent. Monitor error rates and queued requests; process `active` alone is not acceptance.
 For acceptance, submit an authenticated S3 request, reload during pending, verify exactly one completed
 answer and no task, then explicitly confirm and verify the single Pipeline plus its final acknowledged result.
@@ -44,6 +44,13 @@ delete them, independently of conversation expiry. Notes are account/environment
 notes of 500 characters; prompts use at most eight currently authorized notes (current dataset first).
 The memory API uses optimistic revisions and the existing audit outbox without recording note text.
 Viewer accounts can edit their own memory, but gain no task submission permission.
+
+Optional Hindsight background experience adds `dp_ai_experiences` and a separate
+`data-platform-experience@<env>.service`. Foreground reads use only revalidated SQL cache; no network
+recall or reflect runs in the interactive request. Explicit note/settings edits immediately invalidate
+derived history and exclude older Runs from future derivation. Existing explicit memory and mem0 remain
+unchanged. Provisioning, provenance checks, source retention, bounded retries and installed acceptance
+are defined in [the Hindsight operations contract](data_platform_hindsight.md).
 
 The Runner has a separate SQL-only observation loop (no model or compute slot). Explicit assistant
 confirmation atomically stores a followup with its receipt; retrying a lost confirmation response recovers

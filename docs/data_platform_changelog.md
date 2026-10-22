@@ -4,12 +4,20 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
-## V0.3.7 · AssistantMemoryFollowup · 2026-10-22（未发布）
+## V0.3.8 · HindsightExperience · 2026-10-22（候选，未部署）
+
+- Hindsight 仅在独立后台进程中归纳本人已确认任务的有界终态摘要，前台读取 SQL 缓存；保留已有显式记忆和 mem0，不在交互链路调用 recall/reflect。
+- 校验所有来源、原文摘要哈希和任务权限，要求跨两个独立 Run 的引用与精确原文摘录，并增加语义核验。记忆/规则修改原子清空缓存、隔离旧 Run，模型调用和最终回答发布均复核版本。
+- 后台租约、删除银行、退避和停机回退独立于交互；Qwen 单次上限 30 秒，整轮 75 秒及未知结果不重发不变；修正仅跨秒导致持久恢复请求摘要不一致的问题。
+- **影响范围**：Server 新增 `dp_ai_experiences` 和 experience worker，新增独立 Hindsight/PostgreSQL 侧车安装；Agent 协议及计算行为不变。配套候选 CLI 0.3.8，不改变 API、确认或登录契约；需完成 dev 与生产的实际安装验收和 CLI 同步发布。
+- 来源、安全边界、隔离实测与上线门禁见 [后台经验契约](data_platform_hindsight.md)。
+
+## V0.3.7 · AssistantMemoryFollowup · 2026-10-22
 
 - 新增显式长期记忆：本人保存、编辑、删除、清空和停用，支持账号与当前数据集范围；最多 20 条、每条 500 字，模型每轮最多使用 8 条当前授权记忆，不从聊天自动学习。
 - 助手确认操作后持久登记任务跟进；独立 Runner 观察 Run/Job/Attempt 的最终确认，生成事实性完成、失败或取消总结。断开网页/CLI 后继续，重复确认与并发 Runner 不重复发布；新任务仍须明确确认。
 - 网页 Memory/Updates 与 CLI `/memory`、`/updates` 共用授权接口；停用、范围撤销、输入身份变化和手动重试均防止旧结果被当成当前成功。总结不调用模型、不修改会话 revision、不自动重试或提交任务。
-- **影响范围**：Server/Runner 与控制数据库新增 `dp_ai_memory`、`dp_ai_followups`；Agent 协议和计算行为不变。候选 CLI 0.3.7 提供新入口；尚未上传版本对象或推进 latest，实际升级须同步完成两端验收。
+- **影响范围**：Server/Runner 与控制数据库新增 `dp_ai_memory`、`dp_ai_followups`；Agent 协议和计算行为不变。CLI 0.3.7 提供新入口；安装与两端验收以对应不可变发行记录为准。
 
 ## V0.3.6 · AssistantAsyncRunner · 2026-10-22
 

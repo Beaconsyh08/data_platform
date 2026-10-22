@@ -7,6 +7,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
+from lerobot.data_platform.ai_tools.experience import ExperienceChangedError
 from lerobot.data_platform.ai_tools.runtime_repository import (
     BudgetExceededError,
     LeaseLostError,
@@ -62,6 +63,8 @@ class AssistantRunner:
                 result = {"error": "Authorized context changed during recovery. Start a new request."}
             except BudgetExceededError:
                 result = {"error": "The assistant generation budget was exhausted. Start a new request."}
+            except ExperienceChangedError:
+                result = {"error": "Saved memory or task evidence changed. Start a new request."}
             except (PermissionError, JobConflictError, KeyError):
                 result = {"error": "Dataset access or identity changed. Start a new conversation."}
             except Exception:

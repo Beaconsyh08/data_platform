@@ -706,7 +706,7 @@ def test_pipeline_coordinator_unit_follows_release_and_legacy_rollback(tmp_path,
 
 
 def test_assistant_unit_pins_release_and_drains_before_legacy_rollback(tmp_path, monkeypatch):
-    from lerobot.data_platform.deployment import assistant_unit
+    from lerobot.data_platform.deployment import assistant_unit, experience_unit
 
     monkeypatch.setattr(Deployment, "root", property(lambda self: tmp_path / self.environment))
     deployment = Deployment("dev")
@@ -716,6 +716,7 @@ def test_assistant_unit_pins_release_and_drains_before_legacy_rollback(tmp_path,
     module = new / "lerobot/data_platform/ai_tools/runner.py"
     module.parent.mkdir(parents=True)
     module.touch()
+    module.with_name("experience_worker.py").touch()
     current = deployment.root / "current"
     current.symlink_to(new)
     assert deployment.assistant_unit_name in deployment.units
@@ -723,9 +724,14 @@ def test_assistant_unit_pins_release_and_drains_before_legacy_rollback(tmp_path,
     assert f"ExecStart={new}/.venv/bin/python -m lerobot.data_platform.ai_tools.runner" in unit
     assert "TimeoutStopSec=100" in unit and "KillMode=mixed" in unit
     assert "ProtectSystem=strict" in unit and "InaccessiblePaths=" in unit
+    background = experience_unit(deployment)
+    assert deployment.experience_unit_name in deployment.units
+    assert "ai_tools.experience_worker" in background and "TimeoutStopSec=260" in background
+    assert f"EnvironmentFile={deployment.config}" in background
     current.unlink()
     current.symlink_to(old)
     assert deployment.assistant_unit_name not in deployment.units
+    assert deployment.experience_unit_name not in deployment.units
 
 
 def test_browser_gate_rejects_skips_and_empty_reports(tmp_path):

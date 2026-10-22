@@ -80,6 +80,8 @@ class Deployment:
             units.append(self.coordinator_unit_name)
         if (self.root / "current/lerobot/data_platform/ai_tools/runner.py").is_file():
             units.append(self.assistant_unit_name)
+        if (self.root / "current/lerobot/data_platform/ai_tools/experience_worker.py").is_file():
+            units.append(self.experience_unit_name)
         return units
 
     @property
@@ -89,6 +91,10 @@ class Deployment:
     @property
     def assistant_unit_name(self) -> str:
         return f"data-platform-assistant@{self.environment}.service"
+
+    @property
+    def experience_unit_name(self) -> str:
+        return f"data-platform-experience@{self.environment}.service"
 
     @property
     def maintenance_file(self) -> Path:
@@ -241,4 +247,15 @@ def assistant_unit(deployment: Deployment) -> str:
             f"Description=Data Platform {deployment.environment} web",
             f"Description=Data Platform {deployment.environment} assistant runner",
         )
+    )
+
+
+def experience_unit(deployment: Deployment) -> str:
+    """Separate bounded provider work from interactive generation and SQL-only followups."""
+    return (
+        assistant_unit(deployment)
+        .replace("ai_tools.runner", "ai_tools.experience_worker")
+        .replace("ai_tools/runner.py", "ai_tools/experience_worker.py")
+        .replace("assistant runner", "background experience")
+        .replace("TimeoutStopSec=100", "TimeoutStopSec=260")
     )
