@@ -13,10 +13,10 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.3.4"
-BASE_URL = "https://algorithm-vla-cli-downloads.oss-cn-beijing.aliyuncs.com/cli/0.3.4"
+VERSION = "0.3.5"
+BASE_URL = "https://algorithm-vla-cli-downloads.oss-cn-beijing.aliyuncs.com/cli/0.3.5"
 FILES = {
-    "data_platform_cli-0.3.4-py3-none-any.whl": "6827b252850d270cda6c300bc2a4ba2ee7a223d582a12494f5548ea559397e4f",
+    "data_platform_cli-0.3.5-py3-none-any.whl": "8ed6d30a4031b7eeb68f33d3f2c04d5cc7f07b06c1127d754f915e34407692c4",
     "data-platform-ca.crt": "03bb065cae8c77a02af2f3d2bfec97ecb4be0c8a913d8b5934261be43343b776",
 }
 LAUNCHER_MARKER = "# Data Platform CLI managed launcher"
