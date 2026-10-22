@@ -12,7 +12,12 @@ from sqlalchemy import select
 
 from lerobot.data_platform.ai_tools import experience, experience_worker, followups, hindsight
 from lerobot.data_platform.ai_tools.actions import confirm
-from lerobot.data_platform.ai_tools.models import AssistantExperience, AssistantFollowup, AssistantMemory
+from lerobot.data_platform.ai_tools.models import (
+    AssistantExperience,
+    AssistantFollowup,
+    AssistantMemory,
+    AssistantTurn,
+)
 from lerobot.data_platform.ai_tools.service import AssistantService
 from lerobot.data_platform.control_plane import ControlPlaneUser, DatasetLocation
 from lerobot.data_platform.job_management import JobConflictError
@@ -130,6 +135,7 @@ def test_new_rule_clears_old_derivation_and_late_completion_cannot_restore_it(hi
     tick(service)
     save(service, owner, "Use only the newly approved rule; older task settings are obsolete")
     assert experience.context(service, owner, body["location_id"]) == []
+
     # Even a late completion imported after the edit still belongs to an older Run.
     with service.store.sessions.begin() as session:
         note = session.get(AssistantMemory, owner)
@@ -137,6 +143,40 @@ def test_new_rule_clears_old_derivation_and_late_completion_cannot_restore_it(hi
         session.get(PipelineRun, snapshot.sources[0].run_id).created_at = note.updated_at - 5
     assert tick(service, backend_factory=lambda *a, **k: pytest.fail("Old tasks cannot be re-derived"))
     assert experience.context(service, owner, body["location_id"]) == []
+
+
+def test_exact_action_time_survives_mysql_float_run_timestamp_loss(history):
+    service, _, owner, body, original = history
+    with service.store.sessions.begin() as session:
+        for source in original.sources:
+            session.get(PipelineRun, source.run_id).created_at = 0
+    with service.store.sessions() as session:
+        current = experience.snapshot(service, session, owner, body["location_id"])
+    assert len(current.sources) == 2
+    tick(service)
+    assert experience.context(service, owner, body["location_id"])
+
+
+@pytest.mark.parametrize("mutation", ["missing", "older", "reused"])
+def test_origin_proof_rejects_old_or_missing_actions_and_later_reuse(history, mutation):
+    service, _, owner, body, original = history
+    with service.store.sessions.begin() as session:
+        for source in original.sources:
+            origin = session.get(AssistantTurn, source.source_id)
+            session.get(PipelineRun, source.run_id).created_at = time.time() + 86400
+            if mutation == "missing":
+                session.delete(origin)
+            elif mutation == "older":
+                origin.created_at = 0
+            else:
+                # A new action points at an already-existing Run. Its recent
+                # timestamp must not renew that Run's original evidence age.
+                values = {c.name: getattr(origin, c.name) for c in AssistantTurn.__table__.columns}
+                values.update(request_id=str(uuid.uuid4()), created_at=int(time.time()) + 5)
+                session.add(AssistantTurn(**values))
+                session.get(AssistantFollowup, source.source_id).action_id = values["request_id"]
+    with service.store.sessions() as session:
+        assert not experience.snapshot(service, session, owner, body["location_id"]).sources
 
 
 def test_rule_change_during_derivation_fences_publisher(history):

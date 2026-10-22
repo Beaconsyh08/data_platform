@@ -6,15 +6,22 @@ import hashlib
 import json
 import os
 import time
+import uuid
 from dataclasses import asdict, dataclass
 
 from sqlalchemy import select
 
 from lerobot.data_platform.ai_tools import followups, memory
-from lerobot.data_platform.ai_tools.models import AssistantExperience, AssistantFollowup, AssistantMemory
+from lerobot.data_platform.ai_tools.models import (
+    AssistantExperience,
+    AssistantFollowup,
+    AssistantMemory,
+    AssistantTurn,
+)
 from lerobot.data_platform.ai_tools.security import DisclosureGuard
 from lerobot.data_platform.environment import EnvironmentIdentity
 from lerobot.data_platform.job_management import JobConflictError
+from lerobot.data_platform.task_catalog import content_digest
 
 
 class ExperienceChangedError(JobConflictError):
@@ -105,9 +112,20 @@ def snapshot(service, session, owner, location):
             run, steps = followups._authorized(service, session, row)
         except (PermissionError, KeyError, JobConflictError, ValueError):
             continue
+        # PipelineRun.created_at is a legacy MySQL FLOAT and loses epoch precision.
+        # Prove the original initiating action through the deterministic run key,
+        # then use its exact BIGINT creation time. A later action reusing an old
+        # Run cannot supply a newer timestamp for that Run.
+        origin = session.get(AssistantTurn, row.action_id)
+        delivery = "assistant:" + row.action_id
+        pipeline_id = str(uuid.uuid5(uuid.NAMESPACE_URL, content_digest([owner, delivery])))
+        original_key = content_digest([owner, pipeline_id, 1, location, delivery])
         if (
             run.run_id in seen_runs
-            or run.created_at <= cutoff
+            or origin is None
+            or origin.owner != owner
+            or origin.created_at <= cutoff
+            or run.idempotency_key != original_key
             or run.status != row.summary.get("run_status")
             or run.revision != row.summary.get("run_revision")
             or not followups._acknowledged(session, run, steps)
@@ -115,6 +133,8 @@ def snapshot(service, session, owner, location):
             continue
         record = {
             "run_id": run.run_id,
+            "origin_action_id": origin.request_id,
+            "origin_created_at": origin.created_at,
             "run_revision": run.revision,
             "completed_at": row.updated_at,
             "outcome": row.summary,
