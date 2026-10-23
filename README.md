@@ -891,6 +891,7 @@ Agent 文件权限、任务提交反馈及 operator 删除 episode 的审批流�
 按 episode 查看双语 caption、运动曲线和各自结果版本。Fusion V2 在本地计算信号变化、候选边界来源和时间一致性矩阵，
 再由模型进行语义融合与独立复核。支持按 episode 区间或整个数据集提交标注 Jobs，并选择是否输入 action/state 等信号；
 FLORA 使用已配置的 80 GB GPU、仅输入视频，在 Review 保留原始 Reward 窗口及评分分歧，支持点击回看。
+支持每卡一个 episode、最多 8 卡并行；复用未变化文件的校验结果并流式生成视频，资源配置和分阶段验收见下方文档。
 不覆盖现有标注，不回写源数据。运行步骤、范围和结果复核限制见
 [Temporal Caption 实验](docs/temporal_caption_trial.md)。
 

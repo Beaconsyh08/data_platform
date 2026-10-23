@@ -591,6 +591,10 @@ H100 开发节点可将 Server 的 `DATA_PLATFORM_NODE_RUNNING_LIMIT` 和
 同一数据集的 Caption 可以并行标注不同 episode，同一 episode 不会重复执行；直接修改源数据的
 任务独占节点。Agent 启动前以解析后的真实路径再次检查，持有资源锁至结果确认；等待锁位时续租。
 Jobs 显示 `queue_wait_reason` 与 `node_slots`，以区分节点容量、用户容量与路径冲突。
+Agent 通用槽位上限为 8；默认仍为 1，现有 2/4 槽配置不变。FLORA 多卡批处理须同时检查
+Server 节点/用户额度、Agent 槽位和 GPU 池，按 4 卡验收后再扩到 8 卡。
+新旧执行器共享 GPU 锁但使用各自的运行配置文件；保持旧执行器直到原任务完成，不为扩容重启
+正在工作的 Agent。前处理优化与资源预算、分阶段验收见 [FLORA 执行配置](temporal_caption_trial.md#executor-configuration)。
 
 原始 MCAP location 不设置 Viewer `output_dir`；`import.mcap.inspect` 只保留源路径占用，
 `import.mcap.convert` 保留源路径及最终输出路径。对已完成计算、但上传中断的 `viewer.prepare`

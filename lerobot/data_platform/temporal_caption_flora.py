@@ -11,7 +11,7 @@ import shutil
 import signal
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from lerobot.data_platform.temporal_caption import validate_result, write_json
@@ -26,6 +26,7 @@ class FloraRuntime:
     lock_dir: Path
     gpu: int = 0
     stage_timeout_s: int = 3600
+    gpus: tuple[int, ...] = ()
 
     @classmethod
     def load(cls) -> FloraRuntime:
@@ -33,6 +34,10 @@ class FloraRuntime:
         if not filename or not Path(filename).is_absolute():
             raise ValueError("Configure DATA_PLATFORM_FLORA_RUNTIME with an absolute runtime JSON path")
         data = json.loads(Path(filename).read_text())
+        if "gpus" in data:
+            if not isinstance(data["gpus"], list) or not data["gpus"]:
+                raise ValueError("FLORA gpus must be a nonempty list of physical indices")
+            data["gpus"] = tuple(data["gpus"])
         config = cls(
             **{
                 **data,
@@ -60,6 +65,12 @@ class FloraRuntime:
             raise ValueError("FLORA code or offline weights are incomplete")
         if type(config.gpu) is not int or config.gpu < 0:
             raise ValueError("FLORA GPU must be a non-negative physical index")
+        if (
+            len(config.gpus) > 8
+            or any(type(gpu) is not int or gpu < 0 for gpu in config.gpus)
+            or len(set(config.gpus)) != len(config.gpus)
+        ):
+            raise ValueError("FLORA gpus must contain up to eight unique non-negative indices")
         if type(config.stage_timeout_s) is not int or not 60 <= config.stage_timeout_s <= 86400:
             raise ValueError("FLORA stage timeout must be between 60 and 86400 seconds")
         return config
@@ -74,7 +85,46 @@ def runtime_capabilities() -> dict:
         configured = True
     except (OSError, ValueError, TypeError, KeyError):
         configured = False
-    return {"caption_flora_protocol": 1, "caption_flora_configured": configured}
+    return {"caption_flora_protocol": 1, "caption_flora_configured": configured, "caption_flora_gpu_pool": 1}
+
+
+@contextlib.contextmanager
+def acquire_gpu(config: FloraRuntime, progress):
+    """Reserve one free physical GPU, sharing lock names with single-GPU executors."""
+    config.lock_dir.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    while True:
+        for gpu in config.gpus or (config.gpu,):
+            with (config.lock_dir / f"gpu-{gpu}.lock").open("a") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                available = subprocess.run(
+                    [
+                        "nvidia-smi",
+                        "-i",
+                        str(gpu),
+                        "--query-gpu=memory.total,memory.free",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                total, free = map(int, available.stdout.strip().split(","))
+                if total < 75000:
+                    raise ValueError("Native FLORA requires an 80 GB GPU")
+                if free < 73000:
+                    continue
+                progress(f"FLORA acquired GPU {gpu}")
+                yield replace(config, gpu=gpu)
+                return
+        if time.monotonic() - started > config.stage_timeout_s:
+            raise TimeoutError("FLORA GPU pool remained busy")
+        progress("FLORA waiting for a free GPU in its configured pool")
+        time.sleep(5)
 
 
 def camera_roles(cameras: list[str]) -> dict[str, str]:
@@ -299,6 +349,7 @@ def run_stage(config: FloraRuntime, stage: str, workspace: Path, progress) -> di
             process.wait()
     return {
         "stage": stage,
+        "gpu": config.gpu,
         "elapsed_s": time.monotonic() - started,
         "device_peak_mib": peak,
         "precision": "native_bf16_with_fp32_sensitive_parameters"
@@ -333,47 +384,22 @@ def infer_flora(bundle: Path, output: Path, dataset_key: str, model: str = "", *
     config.lock_dir.mkdir(parents=True, exist_ok=True)
     work = bundle / "flora"
     work.mkdir()
-    write_json(
-        work / "request.json",
-        {
-            "runtime": config.payload(),
-            "frame_count": meta["frame_count"],
-            "fps": meta["fps"],
-            "task": task,
-            "videos": {
-                role: str(bundle / "camera-videos" / f"{meta['cameras'].index(camera)}.mp4")
-                for role, camera in roles.items()
-            },
-        },
-    )
     metrics = []
-    with (config.lock_dir / f"gpu-{config.gpu}.lock").open("a") as lock:
-        waiting = time.monotonic()
-        while True:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                progress("FLORA waiting for its configured GPU")
-                if time.monotonic() - waiting > config.stage_timeout_s:
-                    raise TimeoutError("FLORA GPU remained busy") from None
-                time.sleep(5)
-        available = subprocess.run(
-            [
-                "nvidia-smi",
-                "-i",
-                str(config.gpu),
-                "--query-gpu=memory.total,memory.free",
-                "--format=csv,noheader,nounits",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
+    with acquire_gpu(config, progress) as allocated:
+        config = allocated
+        write_json(
+            work / "request.json",
+            {
+                "runtime": config.payload(),
+                "frame_count": meta["frame_count"],
+                "fps": meta["fps"],
+                "task": task,
+                "videos": {
+                    role: str(bundle / "camera-videos" / f"{meta['cameras'].index(camera)}.mp4")
+                    for role, camera in roles.items()
+                },
+            },
         )
-        total, free = map(int, available.stdout.strip().split(","))
-        if total < 75000 or free < 73000:
-            raise ValueError("Native FLORA pipeline requires a free 80 GB GPU (at least 73000 MiB available)")
         for stage in ("segment", "caption", "terminal", "dense"):
             metrics.append(run_stage(config, stage, work, progress))
     artifact = build_artifact(
