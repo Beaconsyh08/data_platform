@@ -53,9 +53,9 @@ def validate_options(options: dict) -> dict:
 
 
 def validate_source(info: dict) -> None:
-    cameras = [v for v in info.get("features", {}).values() if v.get("dtype") == "image"]
+    cameras = [v for v in info.get("features", {}).values() if v.get("dtype") in {"image", "video"}]
     if info.get("codebase_version") not in {"v2.1", "v3.0"} or not 1 <= len(cameras) <= 4:
-        raise ValueError("Caption jobs currently require v2.1 or v3.0 data with 1–4 embedded image cameras")
+        raise ValueError("Caption jobs currently require v2.1 or v3.0 data with 1–4 image or video cameras")
 
 
 def validate_run(source: Path, *, key: str | None = None, options: dict | None = None) -> list[dict]:

@@ -14,7 +14,7 @@ from lerobot.data_platform.temporal_caption_flora import (
     review_partition,
     validate_flora,
 )
-from lerobot.data_platform.temporal_caption_jobs import publish_run, validate_options
+from lerobot.data_platform.temporal_caption_jobs import publish_run, validate_options, validate_source
 from tests.datasets import test_temporal_caption_jobs as job_fixtures
 
 
@@ -563,3 +563,14 @@ def test_two_wrist_long_episode_chunks_keep_frame_count(tmp_path):
 def test_long_native_partition_can_publish_more_than_forty_actions():
     segments = [{"start_s": i, "end_s": i + 1, "caption": "Move", "status": "complete"} for i in range(100)]
     assert len(review_partition(segments, 3000, 30)["segments"]) == 100
+
+
+def test_video_dataset_passes_submission_and_export_validation():
+    info = {
+        "codebase_version": "v3.0",
+        "features": {name: {"dtype": "video"} for name in ["left_wrist", "right_wrist"]},
+    }
+    validate_source(info)
+    caps = {"caption_schemes": ["flora"], "caption_flora_protocol": 1, "caption_flora_configured": True}
+    status = caption_scheme_status(caps, None, {"role": "operator"}, metadata=info)
+    assert next(s for s in status if s["id"] == "flora")["can_submit"]
