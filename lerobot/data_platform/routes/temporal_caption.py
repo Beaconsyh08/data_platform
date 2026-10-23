@@ -111,7 +111,11 @@ def register_temporal_caption_routes(app, ctx) -> None:
             artifact = json.loads(path.read_text())
             if artifact["dataset_key"] != key or artifact["variant"] != variant:
                 abort(404)
-            validate_result(artifact["result"], artifact["frame_count"])
+            validate_result(
+                artifact["result"],
+                artifact["frame_count"],
+                max_segments=1000 if artifact.get("scheme_id") == "flora" else 40,
+            )
             if artifact.get("scheme_id") == "flora":
                 from lerobot.data_platform.temporal_caption_flora import validate_flora
 

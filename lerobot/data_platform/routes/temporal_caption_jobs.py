@@ -54,7 +54,7 @@ def caption_scheme_status(capabilities, reason, user, metadata=None):
                     [
                         key
                         for key, feature in metadata.get("features", {}).items()
-                        if feature.get("dtype") == "image"
+                        if feature.get("dtype") in {"image", "video"}
                     ]
                 )
             except ValueError as exc:

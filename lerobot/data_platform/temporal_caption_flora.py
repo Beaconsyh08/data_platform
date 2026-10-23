@@ -78,15 +78,15 @@ def runtime_capabilities() -> dict:
 
 
 def camera_roles(cameras: list[str]) -> dict[str, str]:
-    """Accept an unambiguous three-camera YAM layout; never guess a wrist identity."""
-    if len(cameras) != 3:
-        raise ValueError("FLORA currently requires three embedded views: scene, left wrist, right wrist")
+    """Accept named left/right wrists with an optional scene camera."""
+    if len(cameras) not in {2, 3}:
+        raise ValueError("FLORA requires left/right wrist views and an optional scene view")
     left = [name for name in cameras if "left" in name.lower()]
     right = [name for name in cameras if "right" in name.lower()]
     main = [name for name in cameras if name not in left + right]
-    if len(left) != 1 or len(right) != 1 or len(main) != 1 or left == right:
-        raise ValueError("FLORA needs unambiguous left/right camera names and one scene camera")
-    return {"left": left[0], "main": main[0], "right": right[0]}
+    if len(left) != 1 or len(right) != 1 or len(main) != len(cameras) - 2 or left == right:
+        raise ValueError("FLORA needs unambiguous left/right camera names")
+    return {"left": left[0], **({"main": main[0]} if main else {}), "right": right[0]}
 
 
 def disagreement_intervals(windows: list[dict], count: int) -> list[dict]:
@@ -104,8 +104,8 @@ def disagreement_intervals(windows: list[dict], count: int) -> list[dict]:
 
 def review_partition(native: list[dict], count: int, fps: float) -> dict:
     """Preserve native seconds; explicitly label gaps/overlaps in the frame-based review partition."""
-    if not isinstance(native, list) or not native or len(native) > 40:
-        raise ValueError("FLORA requires 1–40 complete native segments")
+    if not isinstance(native, list) or not native or len(native) > 500:
+        raise ValueError("FLORA requires 1–500 complete native segments")
     intervals = []
     for item in native:
         if not isinstance(item, dict):
@@ -153,9 +153,11 @@ def review_partition(native: list[dict], count: int, fps: float) -> dict:
                 "Model judgments, not human approval. No action/state signals supplied.",
                 "Native seconds are retained. Review frame boundaries use ceil(time × FPS); gaps and overlaps are explicit.",
                 "Raw dense windows can disagree. Official merged rewards are retained without smoothing.",
+                "Two-wrist inputs use a synchronized montage. Long inputs use bounded chunks; chunk cuts are not semantic boundaries. See input_adaptation for layout and offsets.",
             ],
         },
         count,
+        max_segments=1000,
     )
 
 
@@ -163,7 +165,7 @@ def validate_flora(artifact: dict) -> None:
     count, fps = artifact["frame_count"], artifact["fps"]
     if (
         type(count) is not int
-        or not 1 <= count <= 7200
+        or not 1 <= count <= 36000
         or type(fps) not in (int, float)
         or not math.isfinite(fps)
         or fps <= 0
@@ -226,6 +228,7 @@ def build_artifact(meta: dict, dataset_key: str, native: dict, reward: dict, met
         "result": review_partition(native["segments"], meta["frame_count"], meta["fps"]),
         "reward": reward,
         "stage_metrics": metrics,
+        "input_adaptation": native.get("input_adaptation", "native_three_view"),
     }
     validate_flora(value)
     return value
@@ -316,13 +319,13 @@ def infer_flora(bundle: Path, output: Path, dataset_key: str, model: str = "", *
     count, fps = meta["frame_count"], meta["fps"]
     if (
         type(count) is not int
-        or not 1 <= count <= 7200
+        or not 1 <= count <= 36000
         or type(fps) not in (int, float)
         or not math.isfinite(fps)
         or fps <= 0
-        or count / fps > 120
+        or count / fps > 600
     ):
-        raise ValueError("FLORA requires at most 120 seconds / 7200 frames with valid FPS")
+        raise ValueError("FLORA requires at most 600 seconds / 36000 frames with valid FPS")
     roles = camera_roles(meta["cameras"])
     task = "; ".join(meta.get("task_hint", [])).strip()
     if not task:

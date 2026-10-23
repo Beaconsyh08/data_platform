@@ -5,8 +5,10 @@ from __future__ import annotations
 import ctypes
 import importlib
 import json
+import math
 import os
 import signal
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,6 +22,71 @@ def save(path, value):
         raise TypeError(type(item).__name__)
 
     path.write_text(json.dumps(value, ensure_ascii=False, default=encode))
+
+
+def caption_inputs(work, request):
+    """Keep model calls within official 120-second limits; retain episode offsets."""
+    paths = {key: Path(value) for key, value in request["videos"].items()}
+    instruction = ""
+    if "main" not in paths:
+        montage = work / "wrists.mp4"
+        if not montage.exists():
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-i",
+                    str(paths["left"]),
+                    "-i",
+                    str(paths["right"]),
+                    "-filter_complex",
+                    "hstack=inputs=2",
+                    "-c:v",
+                    "libx264",
+                    "-crf",
+                    "0",
+                    "-pix_fmt",
+                    "yuv444p",
+                    str(montage),
+                ],
+                check=True,
+            )
+        paths = {"main": montage}
+        instruction = "The video is a synchronized side-by-side montage: left panel is the left wrist camera, right panel is the right wrist camera. No scene camera is available."
+    count, fps = request["frame_count"], request["fps"]
+    # Equal chunks avoid a tiny final tail while never stretching or duplicating frames.
+    chunks = math.ceil(count / min(7200, math.floor(120 * fps)))
+    inputs = []
+    for index in range(chunks):
+        start, end = index * count // chunks, (index + 1) * count // chunks
+        chunk_paths = {}
+        for role, path in paths.items():
+            target = work / f"chunk-{index}-{role}.mp4" if chunks > 1 else path
+            if chunks > 1 and not target.exists():
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-v",
+                        "error",
+                        "-i",
+                        str(path),
+                        "-vf",
+                        f"trim=start_frame={start}:end_frame={end},setpts=PTS-STARTPTS",
+                        "-an",
+                        "-c:v",
+                        "libx264",
+                        "-crf",
+                        "0",
+                        "-pix_fmt",
+                        "yuv444p",
+                        str(target),
+                    ],
+                    check=True,
+                )
+            chunk_paths[role] = target
+        inputs.append((start / fps, chunk_paths))
+    return inputs, instruction
 
 
 def caption_stage(stage, work, request):
@@ -41,25 +108,60 @@ def caption_stage(stage, work, request):
         return original(repo_id, local_files_only=True, **kwargs)
 
     huggingface_hub.snapshot_download = snapshot
-    paths = {key: Path(value) for key, value in request["videos"].items()}
-    videos, profile = DataEnginePipeline._inputs(
-        paths["main"], "yam", paths["left"], paths["right"], False, ""
-    )
+    inputs, instruction = caption_inputs(work, request)
     torch.set_num_threads(4)
 
     def progress(message, **kwargs):
-        print(message, flush=True)
+        print(message, kwargs.get("desc", ""), flush=True)
 
     session = models.Session()
     try:
-        if stage == "segment":
-            segments, audit = pipeline.segment(videos, "yam", session, "", progress)
-        else:
-            segments = json.loads((work / "segment.json").read_text())["segments"]
-            segments, audit = pipeline.caption_three(videos, segments, session, "", progress, profile=profile)
-            if not segments or any(item["status"] != "complete" for item in segments):
-                raise RuntimeError("Incomplete FLORA captions")
-        save(work / f"{stage}.json", {"segments": segments, "audit": audit, "model_revisions": models.MODELS})
+        saved = json.loads((work / "segment.json").read_text())["chunks"] if stage == "caption" else []
+        chunks, all_segments, all_audit = [], [], []
+        for index, (offset, paths) in enumerate(inputs):
+            videos, profile = DataEnginePipeline._inputs(
+                paths["main"], "yam", paths.get("left"), paths.get("right"), False, instruction
+            )
+            if stage == "segment":
+                segments, audit = pipeline.segment(videos, "yam", session, instruction, progress)
+            else:
+                segments = saved[index]["segments"]
+                if len(videos) == 3:
+                    segments, audit = pipeline.caption_three(
+                        videos, segments, session, instruction, progress, profile=profile
+                    )
+                else:
+                    segments, audit = pipeline.caption_single(
+                        videos, segments, profile, session, instruction, progress
+                    )
+                if not segments or any(item["status"] != "complete" for item in segments):
+                    raise RuntimeError("Incomplete FLORA captions")
+            chunks.append({"offset_s": offset, "segments": segments})
+            all_segments.extend(
+                {
+                    **item,
+                    "start_s": item["start_s"] + offset,
+                    "end_s": item["end_s"] + offset,
+                    "input_chunk": index,
+                }
+                for item in segments
+            )
+            all_audit.append({"offset_s": offset, "audit": audit})
+        save(
+            work / f"{stage}.json",
+            {
+                "segments": all_segments,
+                "chunks": chunks,
+                "audit": all_audit,
+                "model_revisions": models.MODELS,
+                "input_adaptation": {
+                    "camera_layout": "two_wrist_montage" if instruction else "native_three_view",
+                    "chunk_offsets_s": [offset for offset, _ in inputs],
+                    "instruction": instruction,
+                    "reward_scope": "whole_episode_original_cameras",
+                },
+            },
+        )
     finally:
         session.close()
 
@@ -84,7 +186,9 @@ def reward_stage(stage, work, request):
         {
             "id": "episode",
             "task": request["task"],
-            "videos": [request["videos"][key] for key in ("left", "main", "right")],
+            "videos": [
+                request["videos"][key] for key in ("left", "main", "right") if key in request["videos"]
+            ],
         },
     )
     target = work / f"{stage}.jsonl"

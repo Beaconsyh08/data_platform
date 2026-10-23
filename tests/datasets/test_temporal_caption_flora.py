@@ -118,7 +118,8 @@ def test_visual_only_options_and_camera_identity():
     with pytest.raises(ValueError, match="visual only"):
         validate_options({"episode_index": 0, "scheme": "flora", "include_signals": True})
     assert camera_roles(["image_right", "scene", "image_left"])["main"] == "scene"
-    for names in (["a", "b", "c"], ["left", "right"], ["left_right", "scene", "other"]):
+    assert camera_roles(["right_wrist", "left_wrist"]) == {"left": "left_wrist", "right": "right_wrist"}
+    for names in (["a", "b", "c"], ["left", "scene"], ["left_right", "scene", "other"]):
         with pytest.raises(ValueError):
             camera_roles(names)
 
@@ -456,3 +457,109 @@ def test_executor_exports_visual_only_and_publishes_without_api_key(tmp_path, mo
     assert result["scheme"] == "flora"
     records = validate_run(uploaded, key="node/source", options=options)
     assert len(records) == 1 and records[0]["source_fingerprint"]
+
+
+def test_video_shard_export_uses_selected_episode_range(tmp_path):
+    import av
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from tests.datasets.test_temporal_caption import (
+        test_export_reads_only_selected_episode_from_shared_v3_shard,
+    )
+
+    test_export_reads_only_selected_episode_from_shared_v3_shard(tmp_path)
+    root = tmp_path / "source"
+    info = json.loads((root / "meta/info.json").read_text())
+    info["features"]["head_image"]["dtype"] = "video"
+    info["video_path"] = "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
+    (root / "meta/info.json").write_text(json.dumps(info))
+    path = root / "videos/head_image/chunk-000/file-000.mp4"
+    path.parent.mkdir(parents=True)
+    with av.open(str(path), "w") as out:
+        stream = out.add_stream("libx264", rate=30)
+        stream.width = stream.height = 16
+        stream.pix_fmt = "yuv444p"
+        stream.options = {"crf": "0"}
+        for color in [(255, 0, 0)] * 2 + [(0, 255, 0)] * 2:
+            frame = av.VideoFrame.from_ndarray(np.full((16, 16, 3), color, dtype=np.uint8), format="rgb24")
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    ep_path = root / "meta/episodes/file-000.parquet"
+    episodes = pq.read_table(ep_path).to_pylist()
+    for ep in episodes:
+        ep.update(
+            {
+                "videos/head_image/chunk_index": 0,
+                "videos/head_image/file_index": 0,
+                "videos/head_image/from_timestamp": ep["episode_index"] * 2 / 30,
+                "videos/head_image/to_timestamp": (ep["episode_index"] + 1) * 2 / 30,
+            }
+        )
+    pq.write_table(pa.Table.from_pylist(episodes), ep_path)
+    data = root / "data/chunk-000/file-000.parquet"
+    pq.write_table(pq.read_table(data).drop(["head_image"]), data)
+    before = {str(p): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    output = tmp_path / "video-export"
+    prepare(root, 1, output, export_camera_videos=True)
+    with av.open(str(output / "camera-videos/0.mp4")) as video:
+        frames = list(video.decode(video=0))
+    assert len(frames) == 2
+    assert all(f.to_ndarray(format="rgb24")[0, 0, 1] > 240 for f in frames)
+    assert before == {str(p): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    episodes[1]["videos/head_image/to_timestamp"] = 3 / 30
+    pq.write_table(pa.Table.from_pylist(episodes), ep_path)
+    with pytest.raises(ValueError, match="range"):
+        prepare(root, 1, tmp_path / "invalid-export", export_camera_videos=True)
+    assert not (tmp_path / "invalid-export").exists()
+
+
+def test_two_wrist_long_episode_chunks_keep_frame_count(tmp_path):
+    import subprocess
+
+    import av
+
+    from lerobot.data_platform.temporal_caption_flora_worker import caption_inputs
+
+    videos = {}
+    for role, color in [("left", "red"), ("right", "blue")]:
+        path = tmp_path / f"{role}.mp4"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={color}:s=16x16:r=4",
+                "-frames:v",
+                "485",
+                "-c:v",
+                "libx264",
+                str(path),
+            ],
+            check=True,
+        )
+        videos[role] = str(path)
+    inputs, instruction = caption_inputs(tmp_path, {"videos": videos, "frame_count": 485, "fps": 4})
+    assert "left wrist" in instruction and "No scene camera" in instruction
+    assert [offset for offset, _ in inputs] == [0, 242 / 4]
+    counts = []
+    for _, paths in inputs:
+        assert list(paths) == ["main"]
+        with av.open(str(paths["main"])) as video:
+            frames = list(video.decode(video=0))
+            counts.append(len(frames))
+            assert frames[0].width == 32 and frames[0].height == 16
+            image = frames[0].to_ndarray(format="rgb24")
+            assert image[8, 8, 0] > 240 and image[8, 24, 2] > 240
+    assert counts == [242, 243]
+
+
+def test_long_native_partition_can_publish_more_than_forty_actions():
+    segments = [{"start_s": i, "end_s": i + 1, "caption": "Move", "status": "complete"} for i in range(100)]
+    assert len(review_partition(segments, 3000, 30)["segments"]) == 100

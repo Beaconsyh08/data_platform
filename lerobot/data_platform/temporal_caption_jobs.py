@@ -73,8 +73,8 @@ def validate_run(source: Path, *, key: str | None = None, options: dict | None =
         if not path.exists():
             continue
         value = json.loads(path.read_text())
-        validate_result(value["result"], value["frame_count"])
         scheme = value.get("scheme_id", "multiview_semantics")
+        validate_result(value["result"], value["frame_count"], max_segments=1000 if scheme == "flora" else 40)
         if (
             scheme not in REVIEW_VARIANTS
             or variant not in REVIEW_VARIANTS[scheme]

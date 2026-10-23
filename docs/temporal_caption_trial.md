@@ -93,18 +93,25 @@ unchanged. Operator version is 1.1.0; the Agent additionally advertises `caption
 `caption_flora_configured`. Qwen credentials and FLORA runtime readiness are independent. An old Agent,
 missing runtime, unsupported view layout, or read-only account cannot submit this method.
 
-The initial adapter supports image-backed v2.1/v3.0 episodes with three unambiguous camera names:
-left wrist, scene, right wrist; a recorded task instruction; regular FPS; and the upstream 120-second /
-7200-frame limits. Camera videos retain source resolution and use lossless H.264 encoding rather than
+The adapter supports image/video-backed v2.1/v3.0 episodes with named left/right wrist cameras
+and an optional scene camera, a recorded task instruction, and regular FPS. Video-backed episodes
+are decoded from their metadata timestamp range with frame-level alignment checks. Two-wrist inputs
+use a lossless left/right montage through the official single-video YAM path; the montage instruction
+and layout are recorded in `input_adaptation`. Rewarder receives the original two camera streams.
+Episodes up to 600 seconds / 36000 frames are split into equal contiguous chunks within the official
+120-second / 7200-frame limit for segmentation/caption only; original frame timing and chunk offsets
+are retained. Chunk boundaries may split an action; terminal/dense rewards still cover the complete
+episode with original cameras. No frames are padded to make short clips appear valid. Camera videos
+retain source resolution and use lossless H.264 encoding rather than
 cropping the compressed Review montage. Source Parquet, videos and annotations remain unchanged.
 FLORA receives no action/state/pose/gripper evidence: the signal checkbox is disabled and submissions
 with `include_signals=true` are rejected. The recorded task is supplied to Rewarder; TempSeg/Captioner
-retain their official visual inference prompts. The native Captioner currently returns English text.
+retain their official visual inference prompts, with the montage layout instruction for two-wrist inputs. The native Captioner currently returns English text.
 
 Native segment seconds and the TempSeg output remain in diagnostics. Review derives half-open frame
 boundaries using `ceil(time * fps)`, labels uncovered intervals, and preserves overlapping native caption
-indices; it does not silently close gaps or select one overlapping caption. The existing limit of 40
-review intervals still applies: excessive partitions fail validation rather than dropping content.
+indices; it does not silently close gaps or select one overlapping caption. FLORA allows up to 500 native segments and 1000 review intervals; other methods retain their
+40-interval limit. Excessive partitions fail validation rather than dropping content.
 
 Review shows episode outcome (1–5) separately from action quality (1 failure, 2 suboptimal, 3 normal).
 Each raw dense window is aligned using the official nearest sampled-frame-pair rule without tail trim,
@@ -238,7 +245,7 @@ Deploy Server A first, then the Agent from the same immutable development releas
 `DASHSCOPE_API_KEY` (optionally `DASHSCOPE_BASE_URL`) in the Agent's protected service environment and
 restart that development Agent. Its heartbeat advertises `caption_protocol=1` and credential availability
 as a boolean. The key never travels through job options, result artifacts, or the browser. The Agent needs
-FFmpeg and the dataset dependencies; v2.1 and v3.0 datasets with 1–4 embedded image cameras are
+FFmpeg and the dataset dependencies; v2.1 and v3.0 datasets with 1–4 image/video cameras are
 supported. Agents advertise `caption_dataset_versions`; v2.1 submissions require upgraded executors. Raw source access is restricted to the Agent's registered allowed roots.
 
 Execution prepares exactly one episode outside the dataset, calls Qwen3.8-max, and retains upload files

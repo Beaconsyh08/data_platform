@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -53,14 +54,14 @@ def write_json(path: Path, value: dict) -> None:
     temporary.replace(path)
 
 
-def validate_result(result: dict, frame_count: int) -> dict:
+def validate_result(result: dict, frame_count: int, *, max_segments: int = 40) -> dict:
     if type(frame_count) is not int or frame_count <= 0:
         raise ValueError("Invalid frame count")
     if not isinstance(result, dict) or not isinstance(result.get("summary"), str):
         raise ValueError("Missing episode summary")
     segments = result.get("segments")
-    if not isinstance(segments, list) or not segments or len(segments) > 40:
-        raise ValueError("Expected 1–40 segments")
+    if not isinstance(segments, list) or not segments or len(segments) > max_segments:
+        raise ValueError(f"Expected 1–{max_segments} segments")
     previous = 0
     for segment in segments:
         if not isinstance(segment, dict):
@@ -88,8 +89,41 @@ def validate_result(result: dict, frame_count: int) -> dict:
     return result
 
 
+def episode_video_images(root, meta, episode, camera, count):
+    """Decode only the episode's timestamp range, validating every selected source frame."""
+    import av
+
+    path = (root / meta.get_video_file_path(episode, camera)).resolve()
+    if not path.is_relative_to(root.resolve()):
+        raise ValueError("Video path escapes dataset root")
+    start, end = (
+        meta.get_video_time_range(episode, camera)
+        if hasattr(meta, "get_video_time_range")
+        else (0, count / meta.fps)
+    )
+    fps = float(meta.fps)
+    if start < 0 or end - start < (count - 0.51) / fps:
+        raise ValueError("Episode video range does not cover its frames")
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        container.seek(int(start / stream.time_base), stream=stream, backward=True)
+        selected = 0
+        for frame in container.decode(stream):
+            timestamp = float(frame.pts * stream.time_base)
+            target = start + selected / fps
+            if timestamp < target - 0.51 / fps:
+                continue
+            if abs(timestamp - target) > 0.51 / fps or timestamp >= end:
+                raise ValueError("Video timestamps do not match the selected episode")
+            yield frame.to_image()
+            selected += 1
+            if selected == count:
+                return
+        raise ValueError("Episode video ended before all frames were decoded")
+
+
 def prepare(root: Path, episode: int, output: Path, *, export_camera_videos: bool = False) -> None:
-    """Export exactly one image-backed v2.1/v3.0 episode using shared format readers."""
+    """Export one image/video-backed v2.1/v3.0 episode using shared format readers."""
     import numpy as np
     from PIL import Image, ImageDraw
 
@@ -107,12 +141,12 @@ def prepare(root: Path, episode: int, output: Path, *, export_camera_videos: boo
         meta.repo_id, meta.root = f"local/{root.name}", root
         meta.load_metadata()
     else:
-        raise ValueError("Caption export supports image-backed v2.1 and v3.0 datasets")
+        raise ValueError("Caption export supports v2.1 and v3.0 datasets")
     if episode not in meta.episodes:
         raise ValueError("Episode is not present in dataset metadata")
-    cameras = [key for key, feature in meta.features.items() if feature.get("dtype") == "image"]
+    cameras = [key for key, feature in meta.features.items() if feature.get("dtype") in {"image", "video"}]
     if not cameras or len(cameras) > 4:
-        raise ValueError("Expected 1–4 image cameras")
+        raise ValueError("Expected 1–4 image or video cameras")
     data_path = (root / meta.get_data_file_path(episode)).resolve()
     if not data_path.is_relative_to(root.resolve()):
         raise ValueError("Episode data path escapes dataset root")
@@ -134,95 +168,107 @@ def prepare(root: Path, episode: int, output: Path, *, export_camera_videos: boo
         raise ValueError("Output must be outside the source dataset")
     output.mkdir(parents=True, exist_ok=False)
     try:
-        frames = output / "frames"
-        frames.mkdir()
-        if export_camera_videos:
-            for j in range(len(cameras)):
-                (output / "camera-videos" / str(j)).mkdir(parents=True)
-        signal_keys = [
-            key
-            for key in rows[0]
-            if "pose" in key or "gripper" in key or key in {"action", "state", "observation.state"}
-        ]
-        signals = [{"frame": i, **{key: row[key] for key in signal_keys}} for i, row in enumerate(rows)]
-        source_digest = hashlib.sha256(json.dumps(signals, sort_keys=True).encode())
-        for i, row in enumerate(rows):
-            canvas = Image.new("RGB", (224 * len(cameras), 248), "#0f172a")
-            draw = ImageDraw.Draw(canvas)
-            for j, camera in enumerate(cameras):
-                value = row[camera]
-                if value.get("bytes"):
-                    source = io.BytesIO(value["bytes"])
-                else:
-                    source = (root / value["path"]).resolve()
-                    if not source.is_relative_to(root.resolve()):
-                        raise ValueError("Image path escapes dataset root")
-                with Image.open(source) as image:
-                    canvas.paste(image.convert("RGB").resize((224, 224)), (224 * j, 24))
-                    if export_camera_videos:
-                        image.convert("RGB").save(output / "camera-videos" / str(j) / f"{i:06d}.png")
-                draw.text((224 * j + 5, 5), f"{camera}  f={i}", fill="white")
-            canvas.save(frames / f"{i:06d}.jpg", quality=90)
-            source_digest.update((frames / f"{i:06d}.jpg").read_bytes())
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-v",
-                "error",
-                "-framerate",
-                str(fps),
-                "-i",
-                str(frames / "%06d.jpg"),
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                "-crf",
-                "18",
-                "-movflags",
-                "+faststart",
-                str(output / "video.mp4"),
-            ],
-            check=True,
-        )
-        if export_camera_videos:
-            for j in range(len(cameras)):
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-v",
-                        "error",
-                        "-framerate",
-                        str(fps),
-                        "-i",
-                        str(output / "camera-videos" / str(j) / "%06d.png"),
-                        "-c:v",
-                        "libx264",
-                        "-pix_fmt",
-                        "yuv444p",
-                        "-crf",
-                        "0",
-                        str(output / "camera-videos" / f"{j}.mp4"),
-                    ],
-                    check=True,
+        with contextlib.ExitStack() as stack:
+            video_images = {
+                camera: stack.enter_context(
+                    contextlib.closing(episode_video_images(root, meta, episode, camera, len(rows)))
                 )
-                shutil.rmtree(output / "camera-videos" / str(j))
-        write_json(
-            output / "episode.json",
-            {
-                "schema_version": 1,
-                "dataset_name": root.name,
-                "episode_index": episode,
-                "frame_count": len(rows),
-                "fps": fps,
-                "duration_s": len(rows) / fps,
-                "task_hint": meta.episodes[episode].get("tasks", []),
-                "cameras": cameras,
-                "signal_features": {key: meta.features[key] for key in signal_keys},
-                "signals": signals,
-                "source_digest": source_digest.hexdigest(),
-            },
-        )
+                for camera in cameras
+                if meta.features[camera].get("dtype") == "video"
+            }
+            frames = output / "frames"
+            frames.mkdir()
+            if export_camera_videos:
+                for j in range(len(cameras)):
+                    (output / "camera-videos" / str(j)).mkdir(parents=True)
+            signal_keys = [
+                key
+                for key in rows[0]
+                if "pose" in key or "gripper" in key or key in {"action", "state", "observation.state"}
+            ]
+            signals = [{"frame": i, **{key: row[key] for key in signal_keys}} for i, row in enumerate(rows)]
+            source_digest = hashlib.sha256(json.dumps(signals, sort_keys=True).encode())
+            for i, row in enumerate(rows):
+                canvas = Image.new("RGB", (224 * len(cameras), 248), "#0f172a")
+                draw = ImageDraw.Draw(canvas)
+                for j, camera in enumerate(cameras):
+                    if camera in video_images:
+                        image_source = next(video_images[camera])
+                    else:
+                        value = row[camera]
+                        if value.get("bytes"):
+                            source = io.BytesIO(value["bytes"])
+                        else:
+                            source = (root / value["path"]).resolve()
+                            if not source.is_relative_to(root.resolve()):
+                                raise ValueError("Image path escapes dataset root")
+                        image_source = Image.open(source)
+                    with image_source as image:
+                        canvas.paste(image.convert("RGB").resize((224, 224)), (224 * j, 24))
+                        if export_camera_videos:
+                            image.convert("RGB").save(output / "camera-videos" / str(j) / f"{i:06d}.png")
+                    draw.text((224 * j + 5, 5), f"{camera}  f={i}", fill="white")
+                canvas.save(frames / f"{i:06d}.jpg", quality=90)
+                source_digest.update((frames / f"{i:06d}.jpg").read_bytes())
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-framerate",
+                    str(fps),
+                    "-i",
+                    str(frames / "%06d.jpg"),
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-crf",
+                    "18",
+                    "-movflags",
+                    "+faststart",
+                    str(output / "video.mp4"),
+                ],
+                check=True,
+            )
+            if export_camera_videos:
+                for j in range(len(cameras)):
+                    subprocess.run(
+                        [
+                            "ffmpeg",
+                            "-v",
+                            "error",
+                            "-framerate",
+                            str(fps),
+                            "-i",
+                            str(output / "camera-videos" / str(j) / "%06d.png"),
+                            "-c:v",
+                            "libx264",
+                            "-pix_fmt",
+                            "yuv444p",
+                            "-crf",
+                            "0",
+                            str(output / "camera-videos" / f"{j}.mp4"),
+                        ],
+                        check=True,
+                    )
+                    shutil.rmtree(output / "camera-videos" / str(j))
+            write_json(
+                output / "episode.json",
+                {
+                    "schema_version": 1,
+                    "dataset_name": root.name,
+                    "episode_index": episode,
+                    "frame_count": len(rows),
+                    "fps": fps,
+                    "duration_s": len(rows) / fps,
+                    "task_hint": meta.episodes[episode].get("tasks", []),
+                    "cameras": cameras,
+                    "signal_features": {key: meta.features[key] for key in signal_keys},
+                    "signals": signals,
+                    "source_digest": source_digest.hexdigest(),
+                },
+            )
     except Exception:
         shutil.rmtree(output)
         raise
