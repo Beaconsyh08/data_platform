@@ -4,6 +4,12 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## V0.3.11 · FloraCaptionCompletion · 2026-10-23（候选，未部署）
+
+- 包含 V0.3.10 的 FLORA 全流程与 Review 改造；修复任务链 Caption 完成确认错误：校验模型输入时排除平台内部算子收据，保留收据与其余输入字段校验，已上传结果可继续完成确认，无需重新推理。
+- **Server / Agent**：Server 完成处理兼容修复，Agent 与 Job 2 / Caption 1 协议不变；仍采用同一不可变包同步部署。V0.3.10 在开发验收中暴露此问题，未推广生产。
+- **CLI**：配套 0.3.11；发行仍需安装器、wheel、CA 校验以及正常 TLS、登录和结果导航验收后推进 latest。
+
 ## V0.3.10 · FloraTemporalReward · 2026-10-23（候选，未部署）
 
 - Temporal Caption 新增 FLORA：同一个 Job/Attempt 串行执行本地 TempSeg、Captioner、terminal 和 dense Rewarder；原生 BF16、独立 GPU 环境与共享 GPU 锁、超时/取消/父进程退出清理。无需 DashScope 凭据，明确拒绝 action/state 输入。

@@ -202,7 +202,7 @@ occur, and direct form/editor tasks and pre-upgrade work are not backfilled.
 
 ## Implementation choice
 
-Candidate 0.3.10 adds compatibility coverage for FLORA Review links and remains compatible with explicit memory and Updates, and with the server's optional
+Candidate 0.3.11 adds compatibility coverage for FLORA Review links and remains compatible with explicit memory and Updates, and with the server's optional
 background task experience. It requires no Hindsight/mem0 SDK or personal model key. Experience never
 confirms a task or changes CLI parameter/permission checks. Publication follows platform acceptance.
 

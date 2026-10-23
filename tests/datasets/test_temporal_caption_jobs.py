@@ -229,6 +229,31 @@ def test_remote_job_publication_and_attempt_guards(remote, tmp_path):
     assert not any("key" in key for key in store.get_job(job["job_id"])["options"])
 
 
+def test_pipeline_caption_completion_retains_receipt_and_input_validation(remote, tmp_path):
+    client, store, _, _, _, root = remote
+    job, headers, _ = queue(remote)
+    source = make_run(tmp_path / "source", key="node/source")
+    for path in source.iterdir():
+        response = client.put(
+            f"/api/agents/jobs/{job['job_id']}/caption-artifacts/{path.name}",
+            headers=headers,
+            data=path.read_bytes(),
+        )
+        assert response.status_code == 200
+    receipt = {"operator_id": "caption.annotate", "version": "1.1.0", "pipeline_run": "run"}
+    job["options"]["operator_snapshot"] = receipt
+    complete = client.application.extensions["data_platform_complete_caption"]
+    with client.application.test_request_context(headers=headers):
+        completed = complete(job, {})
+        assert completed["episode_index"] == 25
+        assert completed["scheme"] == "multiview_semantics"
+        assert job["options"]["operator_snapshot"] == receipt
+        assert list(root.glob(f"*/{job['job_id']}/refined.json"))
+        job["options"]["unexpected"] = True
+        with pytest.raises(ValueError, match="Specify episode_index"):
+            complete(job, {})
+
+
 def test_viewer_denied_submit_import_and_owner_jobs_scoped(remote, tmp_path):
     client, store, _, _, location, _ = remote
     _, _, url = queue(remote)
