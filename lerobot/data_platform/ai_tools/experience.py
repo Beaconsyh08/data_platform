@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 
 from sqlalchemy import select
 
-from lerobot.data_platform.ai_tools import followups, memory
+from lerobot.data_platform.ai_tools import experience_evidence, followups, memory
 from lerobot.data_platform.ai_tools.models import (
     AssistantExperience,
     AssistantFollowup,
@@ -144,6 +144,9 @@ def snapshot(service, session, owner, location):
                 key: row.summary[key] for key in ("operators", "run_status", "completed_steps", "total_steps")
             },
         }
+        execution = experience_evidence.collect(session, run, steps)
+        if execution:
+            record["execution"] = asdict(execution)
         text = encode(guard.tree(record))
         if len(text.encode()) > 6000:
             continue

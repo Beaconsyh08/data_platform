@@ -22,7 +22,7 @@ release directory and must be checked independently.
 | MCP, conversational UI and autonomous planning | Explicitly excluded from this round by the original plan | Deferred by design |
 | Every model/media/conversion/build operator exercised on its real execution runtime | Contract and compatibility suites exist; some model backends/Embedding and local MCAP runtime were unavailable at the `.67` baseline | Full real-runtime acceptance remains outstanding |
 | Offline FLORA caption/reward pipeline | Existing caption Job/Attempt and publication contracts; isolated GPU environments; per-method capabilities and raw-window disagreement review | Implemented; native A100 and local browser acceptance, online rollout separate |
-| Background cross-task experience | Verified execution records retained verbatim; source hashes, exact quotations and rule revisions checked; existing explicit memory retained | Implemented; live usefulness acceptance required |
+| Background cross-task experience | Immutable plans/commands/final results cross-checked; comparable recipes and observed recovery changes include counterexamples; exact source quotes and rule revisions checked; explicit memory retained | Implemented; live usefulness acceptance required |
 | Production promotion | Same immutable package requires development evidence and the existing production approval mechanism | Separate release step |
 
 ## Scope of the console completion

@@ -778,8 +778,13 @@ class AssistantService:
                     "role": "system",
                     "content": "Historical experience describes past tasks only. Current requests and current "
                     "explicit notes take precedence. It is not a current rule, approved configuration, "
-                    "permission, or proof about the selected task. Never use it to choose parameters or "
-                    "skip current tool checks or confirmation. Cite its source run IDs when discussing it.",
+                    "permission, or proof about the selected task. You may explain scoped recipe/recovery "
+                    "examples and their actual parameter changes, results and counterexamples. When the user "
+                    "explicitly asks to reuse an example, check current inputs and operator versions first, "
+                    "then prepare a draft only; preserve every current explicit parameter and note. Otherwise "
+                    "do not silently choose parameters from history. Never skip current tool checks or "
+                    "confirmation, claim optimal settings or infer causation from a recovery sequence. "
+                    "Cite its source run IDs when discussing it.",
                 },
             )
         client = self.client_factory(timeout_s=30, max_response_bytes=262144)

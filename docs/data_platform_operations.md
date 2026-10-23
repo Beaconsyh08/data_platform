@@ -46,7 +46,8 @@ The memory API uses optimistic revisions and the existing audit outbox without r
 Viewer accounts can edit their own memory, but gain no task submission permission.
 
 Optional Hindsight background experience adds `dp_ai_experiences` and a separate
-`data-platform-experience@<env>.service`. Verified execution records are retained verbatim; source
+`data-platform-experience@<env>.service`. Verified plans, submitted parameters, bounded final metrics and explicit failure classes are retained verbatim;
+comparable recipes/recovery observations include counterexamples and never establish optimality or causality. Source
 completeness is checked before consolidation, and UI guidance/operator review flags are excluded.
 Foreground reads use only revalidated SQL cache; no network
 recall or reflect runs in the interactive request. Explicit note/settings edits immediately invalidate

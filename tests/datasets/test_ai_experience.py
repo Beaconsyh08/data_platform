@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from lerobot.data_platform.ai_tools import experience, experience_worker, followups, hindsight
+from lerobot.data_platform.ai_tools import experience_evidence as evidence
 from lerobot.data_platform.ai_tools.actions import confirm
 from lerobot.data_platform.ai_tools.models import (
     AssistantExperience,
@@ -19,9 +20,10 @@ from lerobot.data_platform.ai_tools.models import (
     AssistantTurn,
 )
 from lerobot.data_platform.ai_tools.service import AssistantService
-from lerobot.data_platform.control_plane import ControlPlaneUser, DatasetLocation
+from lerobot.data_platform.control_plane import ControlPlaneUser, DatasetLocation, RemoteJob
 from lerobot.data_platform.job_management import JobConflictError
-from lerobot.data_platform.processing.models import PipelineRun
+from lerobot.data_platform.management_storage import JobAttempt, JobControl
+from lerobot.data_platform.processing.models import PipelineRun, PipelineVersion
 from tests.datasets.test_ai_assistant import assistant  # noqa: F401
 from tests.datasets.test_ai_assistant_actions import prepared
 from tests.datasets.test_ai_assistant_context import text_response
@@ -111,6 +113,110 @@ def test_task_evidence_does_not_turn_pipeline_review_flag_into_quality_certifica
         outcome = json.loads(source.text)["outcome"]
         assert "review_required" not in outcome and "message" not in outcome
         assert outcome["run_status"] == "done"
+
+
+def test_execution_evidence_matches_plan_command_and_final_result(history):
+    service, _, owner, body, _ = history
+    with service.store.sessions.begin() as session:
+        for job in session.scalars(select(RemoteJob)):
+            attempt = session.get(JobAttempt, session.get(JobControl, job.job_id).attempt_id)
+            job.result = {"uploaded_files": 7, "summary": {"quality_issue_count": 99}, "private": "secret"}
+            attempt.result = {"uploaded_files": 7, "summary": {"quality_issue_count": 1}}
+    with service.store.sessions() as session:
+        snap = experience.snapshot(service, session, owner, body["location_id"])
+    for source in snap.sources:
+        item = json.loads(source.text)["execution"]["steps"][0]
+        assert item["recipe"]["operator"] == "viewer.prepare"
+        assert item["metrics"] == {"uploaded_files": 7}
+        assert item["attempt_id"] and item["job_id"]
+        assert "secret" not in source.text and "root" not in source.text
+
+
+@pytest.mark.parametrize("change", ["plan", "command", "attempt"])
+def test_unproven_execution_details_are_not_used(history, change):
+    service, _, owner, body, original = history
+    with service.store.sessions.begin() as session:
+        job = session.scalar(select(RemoteJob))
+        if change == "plan":
+            run = session.get(PipelineRun, job.options["operator_snapshot"]["pipeline_run"])
+            session.get(PipelineVersion, run.version_id).digest = "tampered"
+        elif change == "command":
+            job.options = {
+                **job.options,
+                "operator_snapshot": {**job.options["operator_snapshot"], "version": "changed"},
+            }
+        else:
+            attempt = session.get(JobAttempt, session.get(JobControl, job.job_id).attempt_id)
+            attempt.result = {"uploaded_files": 17}
+            job.result = {"uploaded_files": 4}
+    with service.store.sessions() as session:
+        current = experience.snapshot(service, session, owner, body["location_id"])
+    if change == "attempt":
+        assert all("uploaded_files" not in s.text for s in current.sources)
+    else:
+        assert current.digest != original.digest
+        assert sum('"execution":' in s.text for s in current.sources) == 1
+
+
+def recipe_source(identity, status="done", selection="0:1", started=100, completed=110, condition="same"):
+    record = {
+        "origin_created_at": started,
+        "completed_at": completed,
+        "outcome": {"run_status": status},
+        "execution": {
+            "conditions": {"input_digest": condition, "formats": ["v2.1"], "releases": ["test"]},
+            "steps": [
+                {
+                    "recipe": {
+                        "operator": "preprocess.split",
+                        "version": "1.0.0",
+                        "input": "source",
+                        "parameters": {"episode_range": selection},
+                    },
+                    "status": status,
+                    **(
+                        {"failure": "empty_selection"}
+                        if status == "error"
+                        else {"metrics": {"total_episodes": 1}}
+                    ),
+                }
+            ],
+        },
+    }
+    return experience.Source(
+        identity, identity, 1, completed, experience.encode(record), experience.digest(record)
+    )
+
+
+def test_recovery_requires_comparable_inputs_and_exact_observed_change():
+    failed = recipe_source("failed", "error", "99:100")
+    success = recipe_source("success", started=111, completed=120)
+    basis = evidence.comparison([failed, success])
+    assert basis["kind"] == "observed_recovery"
+    assert basis["changes"][0]["before"][0]["parameters"] == {"episode_range": "99:100"}
+    assert basis["changes"][0]["after"][0]["parameters"] == {"episode_range": "0:1"}
+    assert evidence.comparison([failed, recipe_source("other", started=111, condition="changed")]) is None
+    assert evidence.comparison([failed, recipe_source("early", started=110)]) is None
+    assert evidence.comparison([failed, recipe_source("same", selection="99:100", started=111)]) is None
+    assert evidence.failure_code("Compute process exited without a result") == "process_lost"
+
+
+def test_counterexamples_are_attached_even_when_model_cites_only_successes():
+    sources = (recipe_source("one"), recipe_source("two"), recipe_source("failure", "error"))
+    chosen, basis = evidence.cohort(experience.Snapshot(0, sources), {"one", "two"})
+    assert len(chosen) == 3 and basis["counts"]["failed_runs"] == 1
+    assert basis["kind"] == "observed_recipe"
+    other = recipe_source("other", condition="another")
+    assert evidence.cohort(experience.Snapshot(0, (*sources, other)), {"one", "other"}) == ([], None)
+
+
+def test_unrelated_operator_success_cannot_become_a_repair():
+    failed = recipe_source("failed", "error", "99:100")
+    later = recipe_source("later", started=111)
+    record = json.loads(later.text)
+    record["execution"]["steps"][0]["recipe"]["operator"] = "viewer.prepare"
+    later = experience.Source("later", "later", 1, 120, experience.encode(record), experience.digest(record))
+    assert evidence.comparison([failed, later]) is None
 
 
 @pytest.mark.parametrize("missing", [False, True])
@@ -338,16 +444,39 @@ def test_forged_or_incomplete_provenance_is_rejected(history, bad):
     assert hindsight.candidates(snapshot, units) == []
 
 
-@pytest.mark.parametrize("bad", [None, "unsupported", "invented_quote", "missing_source", "foreign_source"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        "unsupported",
+        "invented_quote",
+        "missing_source",
+        "foreign_source",
+        "oversized",
+        "invalid_index",
+        "indexed",
+    ],
+)
 def test_semantic_check_needs_all_exact_source_quotes(history, bad):
     snapshot = history[-1]
-    items = [{"text": "Two historical tasks completed.", "sources": [asdict(s) for s in snapshot.sources]}]
+    # Parameter/result evidence can require a longer contiguous quote than terminal-only records.
+    sources = [
+        dict(asdict(s), text=experience.encode({**json.loads(s.text), "padding": "x" * 900}))
+        for s in snapshot.sources
+    ]
+    items = [{"text": "Two historical tasks completed.", "sources": sources}]
     verdict = {
         "index": 0,
         "supported": bad != "unsupported",
-        "evidence": [{"source_id": s.source_id, "quote": s.text[:80]} for s in snapshot.sources],
+        "evidence": [{"source_id": s["source_id"], "quote": s["text"][:650]} for s in sources],
     }
-    if bad == "invented_quote":
+    if bad in {"indexed", "invalid_index"}:
+        verdict["evidence"] = [
+            {"source_id": s["source_id"], "quote_index": 0 if bad == "indexed" else -1} for s in sources
+        ]
+    elif bad == "oversized":
+        verdict["evidence"][0]["quote"] = sources[0]["text"][:801]
+    elif bad == "invented_quote":
         verdict["evidence"][0]["quote"] = "This quote was never present in either source"
     elif bad == "missing_source":
         verdict["evidence"].pop()
@@ -361,7 +490,7 @@ def test_semantic_check_needs_all_exact_source_quotes(history, bad):
     result = hindsight.verify(
         items, model="test", deadline=time.monotonic() + 5, client_factory=lambda **_: Judge()
     )
-    assert bool(result) == (bad is None)
+    assert bool(result) == (bad in {None, "indexed"})
 
 
 def test_deleted_remote_bank_is_retried_after_cleanup_failure(history):

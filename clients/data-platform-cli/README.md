@@ -202,8 +202,9 @@ occur, and direct form/editor tasks and pre-upgrade work are not backfilled.
 
 ## Implementation choice
 
-Candidate 0.3.12 retains FLORA Review compatibility and supports explicit memory, Updates, and the server's optional
-background task experience. It requires no Hindsight/mem0 SDK or personal model key. Experience never
+Candidate 0.3.13 retains FLORA Review compatibility and supports explicit memory, Updates, and the server's optional
+background parameter/workflow and observed recovery experience. Reuse remains an explicit, confirmed action;
+current rules and requested parameters take priority. It requires no Hindsight/mem0 SDK or personal model key. Experience never
 confirms a task or changes CLI parameter/permission checks. Publication follows platform acceptance.
 
 [prompt-toolkit](https://python-prompt-toolkit.readthedocs.io/en/stable/pages/asking_for_input.html)
