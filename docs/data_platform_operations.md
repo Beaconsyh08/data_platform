@@ -817,4 +817,4 @@ Server A preflight found a 259,200-second binlog retention setting (3 days); thi
 dedicated restricted operator, generated synthetic fixtures visible to Server A, explicit budgets and
 administrator-reviewed evaluation cases. Do not equate unit tests, a gate result or dev approval with
 production strategy availability. Private Hindsight and ordinary Jobs are unchanged. Release the compatible
-CLI 0.3.16 with verified immutable installer/wheel/CA objects and normal TLS acceptance; only then advance latest.
+CLI 0.3.17 with verified immutable installer/wheel/CA objects and normal TLS acceptance; only then advance latest.

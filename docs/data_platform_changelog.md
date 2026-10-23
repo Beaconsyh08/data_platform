@@ -1,6 +1,20 @@
 # Data Platform 发行变更
 
-## Unreleased — Shared data-processing strategies (CLI 0.3.16)
+## V0.3.17 — Strategy experiment provider compatibility (CLI 0.3.17)
+
+- Match the Assistant non-thinking provider mode during candidate generation, and respect per-call and
+  remaining experiment time budgets. Generator parameters and evidence contracts come from the exact
+  operator registry. Provider failures remain incomplete with no activation.
+- Allow a new experiment to reuse a suite only when the previous attempt ended before selecting a
+  hidden-evaluation candidate; exposed hidden cases remain single-use.
+- Keep experiment settings inside narrow viewports even with long dataset names.
+- Isolate evaluation requests from private conversation follow-ups. Revoking stale evidence cannot
+  clear a different strategy selected concurrently by an administrator.
+- Generate synthetic fixture video with a single encoder thread so byte-level authorization is reproducible.
+- Server-only strategy correction; no Agent protocol change. CLI 0.3.17 retains strategy attribution
+  and uses the verified platform address. Publication and online acceptance are recorded separately.
+
+## V0.3.16 — Shared data-processing strategies (CLI 0.3.16)
 
 - Add opt-in administrator-managed workflow strategies, structural cross-user evidence, immutable versions,
   paired evaluation, restricted synthetic Pipeline experiments and manual activation/rollback.

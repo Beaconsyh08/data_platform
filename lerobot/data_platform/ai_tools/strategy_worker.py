@@ -53,6 +53,7 @@ class Experiment:
             self.baseline, self.suite_id = row.baseline_id, row.suite_id
             self.status = row.status
         self.started = time.monotonic()
+        self.timeout_s = 120
 
     def guard(self, session):
         row = session.get(StrategyExperiment, self.key)
@@ -122,9 +123,13 @@ class Experiment:
         self.state["calls"] += 1
         self.state["inflight"] = content_digest(payload)
         self.persist()
-        response = self.assistant.client_factory(
-            timeout_s=30, max_response_bytes=262144
-        ).post_chat_completion(payload)
+        remaining = budget["seconds"] - self.state["seconds"] - (time.monotonic() - self.started)
+        try:
+            response = self.assistant.client_factory(
+                timeout_s=min(self.timeout_s, max(0.1, remaining)), max_response_bytes=262144
+            ).post_chat_completion(payload)
+        except Exception as exc:
+            raise IncompleteError("provider_unavailable") from exc
         usage = response.get("usage", {})
         counts = [usage.get(k) for k in ("prompt_tokens", "completion_tokens")]
         if any(type(n) is not int or n < 0 for n in counts) or sum(counts) == 0:
@@ -135,6 +140,9 @@ class Experiment:
         return response
 
     def generate_candidate(self):
+        from lerobot.data_platform.operators import get_operator
+        from lerobot.data_platform.operators.schema import parameter_schema
+
         with self.store.sessions() as session:
             self.guard(session)
             evidence = [
@@ -165,10 +173,11 @@ class Experiment:
             "model": self.assistant.config.model,
             "max_tokens": 2500,
             "temperature": 0,
+            "enable_thinking": False,
             "messages": [
                 {
                     "role": "system",
-                    "content": "Return only a JSON object of optional data workflow templates. No prose, code, paths, literal parameter values, or extra keys. Improve planning using the supplied public synthetic development cases and structured execution evidence. Preserve explicit user goals. Inputs are source or earlier zero-based dataset-step indices; artifacts refer to earlier compatible evidence. Snapshot is an identity artifact. Parameters are only $request.<parameter> placeholders. At most 8 templates, 12 steps each. No hidden evaluation data is available.",
+                    "content": "Return only a JSON object of optional data workflow templates. No prose, code, paths, literal parameter values, or extra keys. Improve planning using the supplied public synthetic development cases and structured execution evidence. Preserve explicit user goals. Inputs are source or earlier zero-based dataset-step indices; artifacts refer to earlier compatible evidence. Snapshot is an identity artifact. Parameters are only $request.<parameter> placeholders, with the same parameter name as their key. Development parameter values are evaluation inputs: never copy them into a template. Omit unnecessary placeholders so ordinary defaults remain available. At most 8 templates, 12 steps each. No hidden evaluation data is available.",
                 },
                 {
                     "role": "user",
@@ -176,7 +185,19 @@ class Experiment:
                         {
                             "schema_example": example,
                             "versions": self.config["compatibility"]["operators"],
-                            "allowed_parameters": {k: sorted(v) for k, v in PARAMETERS.items()},
+                            "allowed_parameters": {
+                                k: sorted(v & set(parameter_schema(get_operator(k))["properties"]))
+                                for k, v in PARAMETERS.items()
+                            },
+                            "operator_contracts": {
+                                k: {
+                                    "formats": get_operator(k).supported_formats,
+                                    "output_type": get_operator(k).output_type,
+                                    "requires": get_operator(k).requires,
+                                    "provides": get_operator(k).provides,
+                                }
+                                for k in PARAMETERS
+                            },
                             "baseline": base.specification if base else None,
                             "evidence": evidence,
                             "development": development,

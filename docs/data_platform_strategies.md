@@ -70,7 +70,9 @@ Each automatic round requires ten new eligible Run records and at least 24 hours
 automatic start. Administrators may also start a round explicitly. Each round generates at most two
 candidates, evaluates baseline/candidates on development cases, then tests only the selected candidate
 against the baseline on hidden cases. Each case is repeated twice. The generator never receives hidden
-cases or answers. Used sets cannot be reused; import a new reviewed set for another round. Imported
+cases or answers. Once a candidate reaches hidden evaluation, that set cannot be reused; import a new reviewed set
+for another round. A round that fails or is cancelled before selecting a hidden-evaluation candidate
+may retry the still-unexposed set under a new experiment identity. Unknown model calls are never replayed. Imported
 holdout cases cannot duplicate existing case contents merely by renaming IDs; semantic independence
 still requires the administrator's review.
 

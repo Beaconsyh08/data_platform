@@ -140,10 +140,16 @@ def create_fixture(root, fmt):
             with av.open(str(path), mode="w") as container:
                 stream = container.add_stream("libx264", rate=10)
                 stream.width, stream.height, stream.pix_fmt = 16, 16, "yuv420p"
+                # Initialize plane padding too: uninitialized conversion buffers can affect
+                # encoded bytes even when decoded pixels agree. Authorization compares bytes.
+                stream.codec_context.thread_count = 1
+                stream.options = {"preset": "ultrafast", "crf": "0", "threads": "1"}
                 for index in range(16):
-                    frame = av.VideoFrame.from_ndarray(
-                        np.full((16, 16, 3), episode * 96 + index * 4, dtype=np.uint8), format="rgb24"
-                    )
+                    frame = av.VideoFrame(16, 16, "yuv420p")
+                    for channel, plane in enumerate(frame.planes):
+                        value = episode * 96 + index * 4 if channel == 0 else 128
+                        plane.update(bytes([value]) * plane.buffer_size)
+                    frame.pts = index
                     for packet in stream.encode(frame):
                         container.mux(packet)
                 for packet in stream.encode():

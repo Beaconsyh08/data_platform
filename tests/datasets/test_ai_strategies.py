@@ -213,6 +213,12 @@ def test_generated_fixtures_and_real_subset_preserve_source(tmp_path, fmt):
         validate_fixture(root, fmt)
 
 
+def test_synthetic_video_is_byte_reproducible(tmp_path):
+    expected = inventory(create_fixture(tmp_path / "reference", "v2.1-video"))
+    for attempt in range(8):
+        assert inventory(create_fixture(tmp_path / str(attempt), "v2.1-video")) == expected
+
+
 def test_admin_revision_activation_and_public_scope(assistant, monkeypatch):  # noqa: F811
     service, _, owner, body = assistant
     monkeypatch.setenv("DATA_PLATFORM_STRATEGIES_ENABLED", "1")
@@ -230,6 +236,29 @@ def test_admin_revision_activation_and_public_scope(assistant, monkeypatch):  # 
     incomplete = version(service, active=False, passed=False)
     with pytest.raises(JobConflictError):
         strategies.activate(owner, 2, incomplete)
+
+
+def test_invalidated_selection_preserves_concurrent_activation(assistant, monkeypatch):  # noqa: F811
+    service, _, owner, body = assistant
+    monkeypatch.setenv("DATA_PLATFORM_STRATEGIES_ENABLED", "1")
+    old = version(service)
+    replacement = version(service, active=False)
+    strategies = Strategies(service)
+
+    def invalidated(session, key):
+        assert key == old
+        binding = session.get(StrategyBinding, "shared")
+        binding.active_id = replacement
+        binding.revision += 1
+        session.flush()
+        raise JobConflictError("Evidence revoked while another strategy was activated")
+
+    monkeypatch.setattr(strategies, "valid_version", invalidated)
+    assert strategies.select(owner, body["location_id"]) is None
+    with service.store.sessions() as session:
+        assert session.get(StrategyBinding, "shared").active_id == replacement
+        assert session.get(StrategyVersion, old).revoked
+        assert not session.get(StrategyVersion, replacement).revoked
 
 
 def test_assistant_pins_strategy_and_resolves_attribution(assistant, monkeypatch):  # noqa: F811
@@ -269,8 +298,8 @@ def test_experiment_authorization_suite_consumption_and_duplicate_start(configur
     with pytest.raises(JobConflictError):
         strategies.start(owner, result["revision"], suite)
     strategies.cancel(owner, result["revision"], result["experiment_id"])
-    with pytest.raises(JobConflictError):
-        strategies.start(owner, result["revision"] + 1, suite)
+    retried = strategies.start(owner, result["revision"] + 1, suite)
+    assert retried["experiment_id"] != result["experiment_id"]
     changed = {**config, "executor_id": owner}
     with pytest.raises(ValueError):
         strategies.configuration(changed, owner)
@@ -395,9 +424,48 @@ def test_worker_uses_development_only_and_resumes_next_phase(configured):
         assert row.status == "development" and len(row.state["candidates"]) == 2
         assert row.state["calls"] == 2 and row.state["tokens"] == 400
     payload = json.dumps(fake.requests)
+    assert all(request["enable_thinking"] is False for request in fake.requests)
+    context = json.loads(fake.requests[0]["messages"][1]["content"])
+    assert context["allowed_parameters"]["preprocess.split"] == ["episode_range"]
+    assert context["operator_contracts"]["curation.quality"]["requires"] == list(
+        get_operator("curation.quality").requires
+    )
     assert "subset_first" in payload and "subset_convert" not in payload
     assert "review-admin" not in payload
     assert strategies.store.list_jobs() == []
+
+
+def test_evaluation_uses_real_planning_path_without_private_conversation(configured, monkeypatch):
+    strategies, owner, suite, _ = configured
+    key = strategies.start(owner, 2, suite)["experiment_id"]
+    with strategies.store.sessions.begin() as session:
+        row = session.get(StrategyExperiment, key)
+        row.lease_owner, row.lease_until = "evaluation", time.time() + 300
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Shared evaluation must not read private task followups")
+
+    monkeypatch.setattr("lerobot.data_platform.ai_tools.followups.read", forbidden)
+    worker = Experiment(strategies.assistant, key, "evaluation")
+    measurement, result = worker.evaluate(initial_cases()["development"][0], None)
+    assert measurement.correct and measurement.safe and measurement.calls == 2
+    assert result["proposal"]["can_execute"]
+    assert strategies.store.list_jobs() == []
+
+
+def test_unused_holdout_can_be_retried_but_exposed_holdout_cannot(configured):
+    strategies, owner, suite, _ = configured
+    first = strategies.start(owner, 2, suite)["experiment_id"]
+    with strategies.store.sessions.begin() as session:
+        session.get(StrategyExperiment, first).status = "incomplete"
+    second = strategies.start(owner, 3, suite)["experiment_id"]
+    assert second != first
+    with strategies.store.sessions.begin() as session:
+        row = session.get(StrategyExperiment, second)
+        row.status = "incomplete"
+        row.state = {**row.state, "winner": "selected-candidate"}
+    with pytest.raises(JobConflictError, match="unused"):
+        strategies.start(owner, 4, suite)
 
 
 def test_two_generations_keep_old_strategy_until_admin_activation(configured, monkeypatch):
@@ -630,6 +698,10 @@ def test_admin_browser_empty_states_and_review(assistant, tmp_path):  # noqa: F8
             playwright.expect(page.get_by_role("button", name="Start experiment")).to_be_disabled()
             page.get_by_role("button", name="Approve cases").click()
             playwright.expect(page.locator("#suites")).to_contain_text("Reviewed")
+            page.get_by_text("Experiment settings", exact=True).click()
+            page.locator("#v21").evaluate(
+                "node => node.add(new Option('synthetic-fixture-' + 'long-name'.repeat(12), 'example'))"
+            )
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
             assert errors == []
             browser.close()

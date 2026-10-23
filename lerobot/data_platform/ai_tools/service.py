@@ -757,7 +757,11 @@ class AssistantService:
         )
         from lerobot.data_platform.ai_tools.followups import read as task_updates
 
-        updates = task_updates(self, owner, conversation_id=value["conversation_id"])["updates"]
+        updates = (
+            []
+            if experiment
+            else task_updates(self, owner, conversation_id=value["conversation_id"])["updates"]
+        )
         if updates:
             context = _json(
                 {

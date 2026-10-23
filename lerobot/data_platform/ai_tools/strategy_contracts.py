@@ -18,7 +18,7 @@ OPERATORS = (
 )
 PARAMETERS = {
     "curation.snapshot": set(),
-    "preprocess.split": {"episode_range", "episode_indices", "train_ratio", "seed"},
+    "preprocess.split": {"episode_range"},
     "preprocess.convert_v3": set(),
     "curation.quality": {"checks", "episodes", "video_mode"},
     "viewer.prepare": {"prepare_videos", "prepare_csv", "downsample", "max_frames"},

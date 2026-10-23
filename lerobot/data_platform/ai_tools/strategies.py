@@ -6,7 +6,7 @@ import os
 import time
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from lerobot.data_platform.ai_tools.strategy_contracts import (
     Measurement,
@@ -149,7 +149,7 @@ class Strategies:
         with self.store.sessions.begin() as session:
             self.edit(session, owner, expected)
             suite = session.get(StrategySuite, suite_id)
-            if suite is None or suite.experiment_id:
+            if not self.suite_available(session, suite):
                 raise JobConflictError("Choose an unused evaluation suite")
             if content_digest(suite.cases) != suite.digest:
                 raise JobConflictError("Evaluation suite changed")
@@ -158,6 +158,20 @@ class Strategies:
                 session, owner, "strategy.suite.reviewed", suite_id=suite_id, digest=suite.digest
             )
         return self.dashboard(owner)
+
+    @staticmethod
+    def suite_available(session, suite):
+        if suite is None:
+            return False
+        if not suite.experiment_id:
+            return True
+        previous = session.get(StrategyExperiment, suite.experiment_id)
+        return bool(
+            previous
+            and previous.status in {"incomplete", "cancelled"}
+            and not previous.state.get("winner")
+            and not any(key.startswith("holdout:") for key in previous.state.get("measurements", {}))
+        )
 
     def start(self, owner, expected, suite_id, *, automatic=False):
         if not experiments_enabled():
@@ -176,7 +190,7 @@ class Strategies:
             ):
                 raise JobConflictError("An experiment is already running")
             suite = session.get(StrategySuite, suite_id)
-            if not suite or not suite.reviewed_by or suite.experiment_id:
+            if not self.suite_available(session, suite) or not suite.reviewed_by:
                 raise JobConflictError("A reviewed, unused evaluation suite is required")
             self.admin(session, suite.reviewed_by)
             evidence = list(
@@ -329,8 +343,10 @@ class Strategies:
                         "suite_id": s.suite_id,
                         "digest": s.digest,
                         "reviewed": bool(s.reviewed_by),
-                        "consumed": bool(s.experiment_id),
-                        "cases": s.cases if not s.experiment_id else {"development": s.cases["development"]},
+                        "consumed": not self.suite_available(session, s),
+                        "cases": s.cases
+                        if self.suite_available(session, s)
+                        else {"development": s.cases["development"]},
                     }
                     for s in suites
                 ],
@@ -343,14 +359,20 @@ class Strategies:
             binding = session.get(StrategyBinding, "shared")
             if not binding or not binding.active_id:
                 return None
+            selected_id = binding.active_id
             try:
-                row = self.valid_version(session, binding.active_id)
+                row = self.valid_version(session, selected_id)
             except (PermissionError, JobConflictError, ValueError):
-                row = session.get(StrategyVersion, binding.active_id)
+                row = session.get(StrategyVersion, selected_id)
                 if row:
                     row.revoked = True
-                binding.active_id = None
-                binding.revision += 1
+                # A concurrent administrator may already have selected another version.
+                session.execute(
+                    update(StrategyBinding)
+                    .where(StrategyBinding.binding_id == "shared", StrategyBinding.active_id == selected_id)
+                    .values(active_id=None, revision=StrategyBinding.revision + 1)
+                    .execution_options(synchronize_session=False)
+                )
                 self.manager._audit(
                     session, owner, "strategy.invalidated", reason="evidence_or_runtime_changed"
                 )
