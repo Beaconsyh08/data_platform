@@ -493,7 +493,7 @@ def test_agent_does_not_overwrite_success_with_error_when_completion_response_fa
     assert [status for status, _result, _error in client.completions] == ["done"]
 
 
-@pytest.mark.parametrize("slots", [2, 4])
+@pytest.mark.parametrize("slots", [2, 4, 8])
 def test_dispatcher_runs_independent_job_types(tmp_path, monkeypatch, slots):
     from threading import Event, Lock
     from types import SimpleNamespace

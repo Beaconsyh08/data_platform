@@ -128,6 +128,7 @@ def prepare(root: Path, episode: int, output: Path, *, export_camera_videos: boo
     from PIL import Image, ImageDraw
 
     from lerobot.data_platform.precompute.dataset_io import V3DatasetMetadata, read_episode_table
+    from lerobot.data_platform.temporal_caption_media import video_encoder
 
     info = json.loads((root / "meta/info.json").read_text())
     version = info.get("codebase_version")
@@ -177,10 +178,14 @@ def prepare(root: Path, episode: int, output: Path, *, export_camera_videos: boo
                 if meta.features[camera].get("dtype") == "video"
             }
             frames = output / "frames"
-            frames.mkdir()
+            encoders = {}
             if export_camera_videos:
-                for j in range(len(cameras)):
-                    (output / "camera-videos" / str(j)).mkdir(parents=True)
+                (output / "camera-videos").mkdir()
+                review_encoder = stack.enter_context(
+                    video_encoder(output / "video.mp4", (224 * len(cameras), 248), fps)
+                )
+            else:
+                frames.mkdir()
             signal_keys = [
                 key
                 for key in rows[0]
@@ -206,53 +211,45 @@ def prepare(root: Path, episode: int, output: Path, *, export_camera_videos: boo
                     with image_source as image:
                         canvas.paste(image.convert("RGB").resize((224, 224)), (224 * j, 24))
                         if export_camera_videos:
-                            image.convert("RGB").save(output / "camera-videos" / str(j) / f"{i:06d}.png")
+                            if j not in encoders:
+                                encoders[j] = stack.enter_context(
+                                    video_encoder(
+                                        output / "camera-videos" / f"{j}.mp4", image.size, fps, lossless=True
+                                    )
+                                )
+                            encoders[j](image.convert("RGB"))
                     draw.text((224 * j + 5, 5), f"{camera}  f={i}", fill="white")
-                canvas.save(frames / f"{i:06d}.jpg", quality=90)
-                source_digest.update((frames / f"{i:06d}.jpg").read_bytes())
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-v",
-                    "error",
-                    "-framerate",
-                    str(fps),
-                    "-i",
-                    str(frames / "%06d.jpg"),
-                    "-c:v",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-crf",
-                    "18",
-                    "-movflags",
-                    "+faststart",
-                    str(output / "video.mp4"),
-                ],
-                check=True,
-            )
-            if export_camera_videos:
-                for j in range(len(cameras)):
-                    subprocess.run(
-                        [
-                            "ffmpeg",
-                            "-v",
-                            "error",
-                            "-framerate",
-                            str(fps),
-                            "-i",
-                            str(output / "camera-videos" / str(j) / "%06d.png"),
-                            "-c:v",
-                            "libx264",
-                            "-pix_fmt",
-                            "yuv444p",
-                            "-crf",
-                            "0",
-                            str(output / "camera-videos" / f"{j}.mp4"),
-                        ],
-                        check=True,
-                    )
-                    shutil.rmtree(output / "camera-videos" / str(j))
+                if export_camera_videos:
+                    # Preserve the export digest without writing and decoding intermediate images.
+                    with io.BytesIO() as encoded:
+                        canvas.save(encoded, format="JPEG", quality=90)
+                        source_digest.update(encoded.getvalue())
+                    review_encoder(canvas)
+                else:
+                    canvas.save(frames / f"{i:06d}.jpg", quality=90)
+                    source_digest.update((frames / f"{i:06d}.jpg").read_bytes())
+            if not export_camera_videos:
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-v",
+                        "error",
+                        "-framerate",
+                        str(fps),
+                        "-i",
+                        str(frames / "%06d.jpg"),
+                        "-c:v",
+                        "libx264",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-crf",
+                        "18",
+                        "-movflags",
+                        "+faststart",
+                        str(output / "video.mp4"),
+                    ],
+                    check=True,
+                )
             write_json(
                 output / "episode.json",
                 {

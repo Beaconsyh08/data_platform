@@ -182,8 +182,8 @@ def publish_run(source: Path, root: Path, key: str, run: str, *, rebind: bool = 
 def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
     options = validate_options(job.get("options"))
     validate_source(json.loads((source / "meta/info.json").read_text()))
-    from lerobot.data_platform.lifecycle import dataset_snapshot
     from lerobot.data_platform.qwen import QwenClient
+    from lerobot.data_platform.temporal_caption_snapshot import caption_source_fingerprint
 
     flora = options["scheme"] == "flora"
     if flora:
@@ -196,11 +196,12 @@ def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
         )
     client = None if flora else QwenClient(timeout_s=600)
     model = "FLORA TempSeg / Captioner / Rewarder" if flora else "qwen3.8-max"
-    fingerprint, _ = dataset_snapshot(source)
 
     def progress(message):
         agent.client.event(agent.state, job["job_id"], message, {"phase": "annotation"})
 
+    fingerprint_cache = agent.state_path.parent / "caption-source-hashes"
+    fingerprint = caption_source_fingerprint(source, fingerprint_cache, progress)
     workspace = agent.state_path.parent / "caption-work"
     workspace.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="episode-", dir=workspace) as temporary:
@@ -229,7 +230,7 @@ def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
             "fusion_review": infer_fusion,
         }[options["scheme"]]
         run(bundle, output, location["dataset_key"], model, client=client, progress=progress)
-        if dataset_snapshot(source)[0] != fingerprint:
+        if caption_source_fingerprint(source, fingerprint_cache, progress) != fingerprint:
             raise ValueError("Source changed during caption inference")
         for variant in SCHEMES[options["scheme"]]:
             artifact = output / f"{variant}.json"

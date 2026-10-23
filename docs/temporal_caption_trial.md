@@ -150,6 +150,7 @@ environment (or local executor environment). This administrator-owned JSON conta
   "weights": "/srv/flora/weights",
   "lock_dir": "/var/lib/flora/runtime",
   "gpu": 0,
+  "gpus": [0, 1, 2, 3],
   "stage_timeout_s": 3600
 }
 ```
@@ -162,7 +163,38 @@ training jobs do not participate in this lock, so reserve the GPU operationally.
 least 73000 MiB free and 75000 MiB total. Each stage runs in a separate process and releases the model
 before the next stage. Cancellation, timeout and supervisor death terminate model workers and descendants.
 Per-stage elapsed time and sampled device memory peaks are retained; peaks include vLLM's reserved cache
-and are not minimum hardware requirements. The timeout also bounds waiting for the configured GPU.
+and are not minimum hardware requirements. The timeout also bounds waiting for an available GPU. `gpus` is optional: omitted configurations retain
+single-GPU `gpu` behavior. A pool accepts one to eight unique physical indices. One episode exclusively
+locks one GPU across all four stages; another process skips locked GPUs or GPUs with insufficient free
+memory. `stage_metrics[].gpu` and job events record the actual physical index. Keep the same lock directory
+across old and new executor generations. The additive `caption_flora_gpu_pool=1` capability identifies
+Agents accepting pool configuration; Job 2 / Caption 1 and caption result identity remain compatible.
+
+FLORA preparation streams native-resolution lossless camera frames and the review mosaic directly into
+bounded H.264 encoders. It avoids full-episode PNG/JPEG intermediates; native camera frame counts,
+timestamps and decoded pixels match the previous lossless path. Other caption schemes retain their sampled
+JPEG inputs. Encoder threads obey `DATA_PLATFORM_VIDEO_THREADS`.
+
+Caption jobs reuse service-owned per-file hashes under `caption-source-hashes`, outside dataset roots.
+Every pre/post-inference check inventories all published meta/data/video assets. Device, inode, size,
+nanosecond modification/change times and symlink target changes invalidate cached hashes; additions and
+removals change the same lifecycle content digest. Changed files are rehashed, the inventory is rechecked,
+and concurrent jobs share a per-dataset lock. Invalid caches are rebuilt. This avoids unused full-dataset
+semantic episode scans without removing the source-change guard. The cache assumes a trusted service
+account and filesystem change timestamps; it is not a defense against privileged filesystem tampering.
+
+For a staged rollout, provision CPU/RAM for eight jobs, start the new Agent with eight maximum slots,
+and initially cap Server admission at four. Configure the pool with GPUs 0–3, validate four overlapping
+jobs and their published results, then expand the pool and Server admission to eight. The Agent need not
+restart for the second step: each new FLORA job reloads its runtime file. Server node/user quotas, path
+locks and ordinary admission still apply. Use an audited per-job extra quota when only an explicitly
+approved batch should exceed a user's ordinary limit. Other nodes retain their own Agent limits.
+
+Do not edit the runtime file still read by old executor processes: point the new generation at a separate
+pool configuration with the shared lock directory. Preserve old executors until all their attempts finish.
+Size the total CPU/RAM budget before startup: `ExecutionResources.for_slots()` divides it by configured
+Agent slots, even while Server admission is temporarily lower. Eight 80 GB GPUs alone do not establish
+sufficient host RAM, CPU or storage bandwidth; record actual overlap, memory and errors before expansion.
 
 The worker forces offline Hugging Face operation, redirects the pinned TempSeg base to local storage,
 and does not download models or establish SSH tunnels. The platform has no client-supplied model path

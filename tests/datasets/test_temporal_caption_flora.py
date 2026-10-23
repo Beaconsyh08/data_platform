@@ -211,6 +211,8 @@ def test_export_native_camera_video_keeps_resolution_and_source(tmp_path):
     before = {str(p): p.read_bytes() for p in source.rglob("*") if p.is_file()}
     output = tmp_path / "flora-export"
     prepare(source, 1, output, export_camera_videos=True)
+    assert not (output / "frames").exists()
+    assert not list(output.rglob("*.png"))
     with av.open(str(output / "camera-videos/0.mp4")) as video:
         frames = list(video.decode(video=0))
     assert len(frames) == 2

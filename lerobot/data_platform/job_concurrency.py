@@ -16,7 +16,7 @@ DATASET_OUTPUT_OPERATIONS = frozenset(
 
 
 def agent_slots() -> int:
-    return min(4, max(1, int(os.environ.get("DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS", "1"))))
+    return min(8, max(1, int(os.environ.get("DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS", "1"))))
 
 
 def default_final_output(operation: str, source: str, job_id: str) -> str | None:

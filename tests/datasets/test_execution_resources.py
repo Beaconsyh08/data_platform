@@ -164,7 +164,9 @@ def test_duplicate_outputs_rejected_before_work(tmp_path):
         run_viewer_work([item, item], 2)
 
 
-@pytest.mark.parametrize("configured, expected", [(None, 1), ("1", 1), ("2", 2), ("4", 4), ("8", 4)])
+@pytest.mark.parametrize(
+    "configured, expected", [(None, 1), ("1", 1), ("2", 2), ("4", 4), ("8", 8), ("99", 8)]
+)
 def test_agent_slot_configuration(monkeypatch, configured, expected):
     from lerobot.data_platform.job_concurrency import agent_slots
 
