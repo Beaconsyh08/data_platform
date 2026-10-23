@@ -381,7 +381,8 @@ def test_parent_death_stops_worker_and_its_children(tmp_path):
             os.killpg(pids[0], signal.SIGKILL)
 
 
-def test_executor_exports_visual_only_and_publishes_without_api_key(tmp_path, monkeypatch):
+@pytest.mark.parametrize("video_backed", [False, True])
+def test_executor_exports_visual_only_and_publishes_without_api_key(tmp_path, monkeypatch, video_backed):
     import shutil
     from types import SimpleNamespace
 
@@ -405,6 +406,45 @@ def test_executor_exports_visual_only_and_publishes_without_api_key(tmp_path, mo
     for row in rows:
         row.update(left_wrist=row["head_image"], right_wrist=row["head_image"])
     pq.write_table(pa.Table.from_pylist(rows), parquet)
+    if video_backed:
+        import subprocess
+
+        info["video_path"] = "videos/{video_key}.mp4"
+        episodes_path = source / "meta/episodes/file-000.parquet"
+        episodes = pq.read_table(episodes_path).to_pylist()
+        (source / "videos").mkdir()
+        cameras = ["head_image", "left_wrist", "right_wrist"]
+        for camera in cameras:
+            info["features"][camera]["dtype"] = "video"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=blue:s=16x16:r=30",
+                    "-frames:v",
+                    "4",
+                    "-c:v",
+                    "libx264",
+                    str(source / "videos" / f"{camera}.mp4"),
+                ],
+                check=True,
+            )
+            for ep in episodes:
+                ep.update(
+                    {
+                        f"videos/{camera}/chunk_index": 0,
+                        f"videos/{camera}/file_index": 0,
+                        f"videos/{camera}/from_timestamp": ep["episode_index"] * 2 / 30,
+                        f"videos/{camera}/to_timestamp": (ep["episode_index"] + 1) * 2 / 30,
+                    }
+                )
+        (source / "meta/info.json").write_text(json.dumps(info))
+        pq.write_table(pa.Table.from_pylist(episodes), episodes_path)
+        pq.write_table(pq.read_table(parquet).drop(cameras), parquet)
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     monkeypatch.delenv("QWEN_DASHSCOPE_API_KEY", raising=False)
     monkeypatch.setattr(

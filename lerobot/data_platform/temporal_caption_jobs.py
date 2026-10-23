@@ -191,7 +191,9 @@ def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
 
         FloraRuntime.load()
         info = json.loads((source / "meta/info.json").read_text())
-        camera_roles([key for key, value in info["features"].items() if value.get("dtype") == "image"])
+        camera_roles(
+            [key for key, value in info["features"].items() if value.get("dtype") in {"image", "video"}]
+        )
     client = None if flora else QwenClient(timeout_s=600)
     model = "FLORA TempSeg / Captioner / Rewarder" if flora else "qwen3.8-max"
     fingerprint, _ = dataset_snapshot(source)
