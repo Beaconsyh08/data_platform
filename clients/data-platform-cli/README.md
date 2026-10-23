@@ -44,7 +44,7 @@ Check your installed version or print the current environment's website without 
 ```bash
 ~/.local/bin/data-platform --version
 ~/.local/bin/data-platform --web
-~/.local/bin/data-platform --server https://10.8.8.40:8443 --web
+~/.local/bin/data-platform --server https://10.8.8.41:8443 --web
 ```
 
 The web address also appears before login. During chat, `/web` prints the console and, once the server
@@ -61,10 +61,10 @@ For subsequent logins:
 ~/.local/bin/data-platform
 ```
 
-This launcher defaults to production at `https://10.8.8.40`. To use development:
+This launcher defaults to production at `https://10.8.8.41`. To use development:
 
 ```bash
-~/.local/bin/data-platform --server https://10.8.8.40:8443
+~/.local/bin/data-platform --server https://10.8.8.41:8443
 ```
 
 The download URLs are public and do not expire; platform access still requires your account and

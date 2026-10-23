@@ -89,7 +89,7 @@ def install(prefix: Path, bin_dir: Path) -> Path:
             f"{LAUNCHER_MARKER}\n"
             f"export DATA_PLATFORM_CLI_BIN_DIR={shlex.quote(str(bin_dir))}\n"
             f"exec {shlex.quote(str(target / 'bin/data-platform'))}"
-            " --server https://10.8.8.40"
+            " --server https://10.8.8.41"
             f" --ca-bundle {shlex.quote(str(target / 'data-platform-ca.crt'))}"
             ' "$@"\n'
         )
