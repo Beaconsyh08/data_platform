@@ -39,6 +39,7 @@
                 <a href="/" class="dp-btn">Dataset console</a>
                 <button class="dp-btn" @click="logout()">Sign out</button>
                 <a href="/account/password" class="dp-btn">Change password</a>
+                {% if user.role == "admin" %}<a href="/admin/strategies" class="dp-btn">Strategies</a>{% endif %}
             </div>
         </header>
 

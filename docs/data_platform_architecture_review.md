@@ -48,3 +48,11 @@ Viewer artifacts enter the normal upload/acknowledgement protocol, and custom da
 included in admission and path locks. Real-process regressions cover cache publication and local v2.1/v3.0
 dataset transforms, checking that the final destination is absent until publication and source bytes remain
 unchanged. A completed attempt awaiting upload is finalized from its retained output rather than recomputed.
+
+## Shared strategy experiment extension (source implementation)
+
+An optional administrator-controlled strategy service reuses the operator/Pipeline/Job architecture;
+its worker generates constrained recipes, measures independent synthetic cases and requires human
+activation. Five additive control tables plus nullable Pipeline attribution retain versions and evidence.
+No new Agent protocol, model training, private-memory sharing or automatic business execution is added.
+Deployment and real-provider effectiveness require separate acceptance; see [the contract](data_platform_strategies.md).

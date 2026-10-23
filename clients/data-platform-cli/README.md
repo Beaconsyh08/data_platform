@@ -218,3 +218,7 @@ From this directory, `uv build --wheel` produces an installable client wheel. Th
 versioned independently and released together: every platform upgrade also publishes a new compatible
 CLI version and advances `latest/install.py` after verification, including browser-only platform changes.
 The upgrade is incomplete until both platform and CLI acceptance finish. An older server without action APIs cannot confirm operations from this client.
+
+CLI 0.3.16 displays the shared strategy version when the server supplies one. This is planning provenance,
+not execution approval; `/confirm` and existing result links are unchanged. Versioned publication and
+advancing the stable latest installer require the normal platform compatibility acceptance.

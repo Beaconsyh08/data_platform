@@ -314,6 +314,19 @@ def action_status(service, owner, action_id):
     action = result.get("action")
     if not action:
         raise PermissionError("No accessible operation card")
+    if not result.get("execution") and result.get("strategy"):
+        from lerobot.data_platform.ai_tools.strategies import Strategies
+
+        try:
+            with service.store.sessions() as session:
+                Strategies(service).check(session, result["strategy"])
+        except (PermissionError, JobConflictError):
+            return {
+                "state": "failed",
+                "can_confirm": False,
+                "message": "Strategy was disabled or its evidence changed. Prepare a new action.",
+                "links": [],
+            }
     observation = inspect_operation(
         service, owner, action, execution_run_id=(result.get("execution") or {}).get("run_id")
     )

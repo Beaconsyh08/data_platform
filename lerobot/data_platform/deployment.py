@@ -82,7 +82,16 @@ class Deployment:
             units.append(self.assistant_unit_name)
         if (self.root / "current/lerobot/data_platform/ai_tools/experience_worker.py").is_file():
             units.append(self.experience_unit_name)
+        if (
+            self.environment == "dev"
+            and (self.root / "current/lerobot/data_platform/ai_tools/strategy_worker.py").is_file()
+        ):
+            units.append(self.strategy_unit_name)
         return units
+
+    @property
+    def strategy_unit_name(self) -> str:
+        return f"data-platform-strategy@{self.environment}.service"
 
     @property
     def coordinator_unit_name(self) -> str:
@@ -258,4 +267,14 @@ def experience_unit(deployment: Deployment) -> str:
         .replace("ai_tools/runner.py", "ai_tools/experience_worker.py")
         .replace("assistant runner", "background experience")
         .replace("TimeoutStopSec=100", "TimeoutStopSec=260")
+    )
+
+
+def strategy_unit(deployment: Deployment) -> str:
+    """Isolated, opt-in dev experiments; no production experiment worker."""
+    return (
+        assistant_unit(deployment)
+        .replace("ai_tools.runner", "ai_tools.strategy_worker")
+        .replace("ai_tools/runner.py", "ai_tools/strategy_worker.py")
+        .replace("assistant runner", "strategy experiments")
     )

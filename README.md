@@ -904,3 +904,7 @@ The data console includes versioned sequential pipelines, a unified operator cat
 For versioned raw multiview exports of selected segmentation/caption artifacts, see
 [MEM export](docs/mem_export.md). Run `python -m lerobot.data_platform.mem_export --help`
 on the source host; the command does not modify source datasets or platform state.
+
+Administrator-managed [workflow strategy experiments](docs/data_platform_strategies.md) are available
+as an opt-in source feature. Strategies are evaluated against a baseline and require manual activation;
+private memory and task confirmation remain unchanged. Server/Agent/CLI deployment acceptance is separate.

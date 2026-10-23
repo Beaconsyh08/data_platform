@@ -40,7 +40,8 @@ function mountPipelineEditor(root, options) {
   };
   const assistantOptions = {api, canEdit, getLocation: () => $('location').value, getDraft: definition,
     undoDraft: () => {if (state.undo) {state.steps = state.undo.steps; $('name').value = state.undo.name; state.undo = null; state.added = []; invalidate(); render();}},
-    loadDraft: async (draft, added = []) => {
+    loadDraft: async (draft, added = [], conversationId, requestId) => {
+      state.assistantRequestId = requestId || null;
       state.undo = structuredClone(definition()); state.added = added; state.selected = draft.steps[0]?.step_id;
       state.pipeline = null; $('saved').value = ''; state.steps = draft.steps; $('name').value = draft.name;
       state.invalid.clear(); invalidate(); render(); await preview();
@@ -72,6 +73,10 @@ function mountPipelineEditor(root, options) {
   };
   function render() {
     const root = $('steps'); root.replaceChildren(); $('step-editor').replaceChildren();
+    if (state.pipeline?.strategy) {
+      const attribution = state.pipeline.strategy;
+      root.append(el('small', 'Strategy ' + attribution.version_id.slice(0,8) + (attribution.user_modified ? ' · User modified' : '')));
+    }
     const visible = visibleSteps();
     if (!visible.some(step => step.step_id === state.selected)) state.selected = visible[0]?.step_id;
     if (!state.steps.length) root.append(el('p', 'Describe a workflow above or add a step.'));
@@ -376,6 +381,7 @@ function mountPipelineEditor(root, options) {
     const epoch = ++state.epoch;
     const value = $('saved').value ? await api('/api/pipelines/' + $('saved').value) : null;
     if (epoch !== state.epoch) return;
+    state.assistantRequestId = null;
     state.run = null; renderRun();
     state.pipeline = value; state.steps = value?.definition.steps || []; $('name').value = value?.definition.name || 'New pipeline';
     invalidate(); state.invalid.clear(); state.dirty = false; render();
@@ -385,7 +391,7 @@ function mountPipelineEditor(root, options) {
     if (!await preview()) return;
     if (state.invalid.size) throw new Error('Correct the invalid parameter fields.');
     const epoch = state.epoch, edit = state.edit, current = state.pipeline;
-    const saved = await api(current ? '/api/pipelines/' + current.pipeline_id : '/api/pipelines', current ? 'PUT' : 'POST', {definition: definition(), expected_revision: current?.revision});
+    const saved = await api(current ? '/api/pipelines/' + current.pipeline_id : '/api/pipelines', current ? 'PUT' : 'POST', {definition: definition(), expected_revision: current?.revision, assistant_request_id: state.assistantRequestId || undefined});
     if (epoch !== state.epoch) return;
     state.pipeline = saved;
     if (edit !== state.edit) {await loadSaved(); $('saved').value = saved.pipeline_id; feedback('Saved the submitted version. Your newer edits are unsaved.'); return;}

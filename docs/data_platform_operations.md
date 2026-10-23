@@ -809,3 +809,12 @@ Performance spot check (2026-10-19, isolated SQLite fixture; 16 Jobs, 2 MiB repo
 These are single local measurements, not production latency guarantees or total process RSS.
 MySQL parity runs use disposable databases; they do not write into development or production data.
 Server A preflight found a 259,200-second binlog retention setting (3 days); this change preserves it.
+
+## Opt-in strategy experiments
+
+[Shared data-processing strategies](data_platform_strategies.md) add a dev-only independent worker,
+`data-platform-strategy@dev.service`, and default-off `DATA_PLATFORM_STRATEGIES_ENABLED`. Setup requires a
+dedicated restricted operator, generated synthetic fixtures visible to Server A, explicit budgets and
+administrator-reviewed evaluation cases. Do not equate unit tests, a gate result or dev approval with
+production strategy availability. Private Hindsight and ordinary Jobs are unchanged. Release the compatible
+CLI 0.3.16 with verified immutable installer/wheel/CA objects and normal TLS acceptance; only then advance latest.

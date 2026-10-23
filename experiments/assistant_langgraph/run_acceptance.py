@@ -70,6 +70,8 @@ def main() -> int:
                     LANGSMITH_TRACING="false",
                     PYTHONDONTWRITEBYTECODE="1",
                 )
+                if os.environ.get("DATA_PLATFORM_BROWSER_EXECUTABLE"):
+                    env["DATA_PLATFORM_BROWSER_EXECUTABLE"] = os.environ["DATA_PLATFORM_BROWSER_EXECUTABLE"]
                 tests = ["tests/datasets/test_assistant_graph_mysql.py"]
                 if not args.storage_only:
                     tests.append("tests/datasets/test_assistant_graph_s3.py")
@@ -78,6 +80,7 @@ def main() -> int:
                         "tests/datasets/test_ai_assistant_runtime.py",
                         "tests/datasets/test_ai_memory_followups.py",
                         "tests/datasets/test_ai_experience.py",
+                        "tests/datasets/test_ai_strategies.py",
                     ]
                 return subprocess.run(
                     [sys.executable, "-m", "pytest", *tests, "--confcutdir=tests/datasets", "-q"],

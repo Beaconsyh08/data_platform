@@ -1,5 +1,16 @@
 # Data Platform 发行变更
 
+## Unreleased — Shared data-processing strategies (CLI 0.3.16)
+
+- Add opt-in administrator-managed workflow strategies, structural cross-user evidence, immutable versions,
+  paired evaluation, restricted synthetic Pipeline experiments and manual activation/rollback.
+- Keep private memory and Hindsight isolated; preserve ordinary confirmation, review and Agent admission.
+- Add Strategies administration and optional Web/CLI version attribution. Server adds control tables and
+  a dev experiment worker; Agent protocol is unchanged. CLI 0.3.16 adds the strategy version indicator.
+- Source implementation is separate from deployment, real-model improvement and synchronized CLI publication.
+  See [strategy operation and acceptance](data_platform_strategies.md).
+
+
 本文件记录源码版本的功能与兼容性变化，不代表某个环境已经安装。
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。

@@ -127,10 +127,16 @@ function mountPipelineAssistant(root, options) {
     $('ai-load').disabled = !canEdit || !capabilities?.can_edit || busy || !proposal;
     $('ai-undo').hidden = !options.undoDraft;
     $('ai-undo').disabled = busy || !canEdit;
-    $('ai-validation').textContent = proposal ? (proposal.can_execute ? 'Validated draft' : 'Blocked draft · not ready to run') : '';
+    $('ai-validation').textContent = proposal ? (proposal.can_execute ? 'Validated draft' + (proposal.strategy ? ' · Strategy ' + proposal.strategy.version_id.slice(0,8) : '') : 'Blocked draft · not ready to run') : '';
     $('ai-references').replaceChildren();
     for (const item of conversation?.references || []) {const link = document.createElement('a'); link.textContent = item.title; link.href = item.url; $('ai-references').append(link);}
     $('ai-proposal-summary').replaceChildren();
+    if (proposal?.strategy) {
+      const details = document.createElement('details'), summary = document.createElement('summary'), explanation = document.createElement('p');
+      summary.textContent = 'Strategy ' + proposal.strategy.version_id.slice(0,8);
+      explanation.textContent = 'An administrator-enabled workflow template helped prepare this draft. Your parameters and review requirements still apply. Loading or editing the draft does not submit it.';
+      details.append(summary, explanation); $('ai-proposal-summary').append(details);
+    }
     for (const [index, step] of (proposal?.definition.steps || []).filter(step => !pipelineSystemStep(step)).entries()) {
       const node = document.createElement('div'); node.textContent = `${index + 1}. ${pipelineStepTitle(step)}`;
       if ((proposal.added_steps || []).includes(step.step_id)) node.append(document.createTextNode(' · AI added'));
@@ -344,7 +350,7 @@ function mountPipelineAssistant(root, options) {
     try {
       await refresh(expected);
       if (disposed || expected !== epoch || !conversation?.proposal) return;
-      await loadDraft(structuredClone(conversation.proposal.definition), conversation.proposal.added_steps || [], conversation.conversation_id);
+      await loadDraft(structuredClone(conversation.proposal.definition), conversation.proposal.added_steps || [], conversation.conversation_id, conversation.proposal.assistant_request_id);
       if (!disposed && expected === epoch) status('Draft loaded. Check parameters, preview, then save a version.');
     } catch (error) {if (!disposed && expected === epoch) status(error.message);}
   });

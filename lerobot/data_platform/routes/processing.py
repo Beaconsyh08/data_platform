@@ -86,7 +86,11 @@ def register_processing_routes(app, ctx):
             result = manager.list(owner(), page=page, search=search)
             rows, paging = result if page else (result, {})
             return jsonify(pipelines=rows, **paging)
-        return jsonify(manager.save(owner(), body().get("definition"))), 201
+        return jsonify(
+            manager.save(
+                owner(), body().get("definition"), assistant_request_id=body().get("assistant_request_id")
+            )
+        ), 201
 
     @app.route("/api/pipelines/<pipeline_id>", methods=["GET", "PUT"])
     @checked
@@ -101,6 +105,7 @@ def register_processing_routes(app, ctx):
                 value.get("definition"),
                 pipeline_id=pipeline_id,
                 expected_revision=value.get("expected_revision"),
+                assistant_request_id=value.get("assistant_request_id"),
             )
         )
 

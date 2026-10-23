@@ -23,6 +23,7 @@ class PipelineVersion(ManagementBase):
     revision: Mapped[int] = mapped_column(Integer)
     spec: Mapped[dict] = mapped_column(JSON)
     digest: Mapped[str] = mapped_column(String(64))
+    attribution: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class PipelineRun(ManagementBase):

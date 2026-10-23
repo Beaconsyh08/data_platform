@@ -247,12 +247,22 @@ class PipelineManager:
         }
 
     def save(
-        self, owner: str, definition: dict, *, pipeline_id=None, expected_revision=None, delivery=None
+        self,
+        owner: str,
+        definition: dict,
+        *,
+        pipeline_id=None,
+        expected_revision=None,
+        delivery=None,
+        assistant_request_id=None,
     ) -> dict:
         spec = PipelineSpec.from_dict(definition)
         with self.store.sessions.begin() as session:
             scheduler_lock(session)
             self._actor(session, owner)
+            from lerobot.data_platform.ai_tools.strategy_attribution import resolve
+
+            attribution = resolve(self, session, owner, assistant_request_id, spec)
             delivered_id = None
             if delivery is not None:
                 if pipeline_id or not isinstance(delivery, str) or not 1 <= len(delivery) <= 128:
@@ -274,6 +284,13 @@ class PipelineManager:
                     raise KeyError("Pipeline not found")
                 if type(expected_revision) is not int or row.revision != expected_revision:
                     raise JobConflictError("Pipeline revision conflict")
+                previous = session.get(PipelineVersion, f"{pipeline_id}:{row.revision}")
+                if not assistant_request_id and previous and previous.attribution:
+                    attribution = {
+                        **previous.attribution,
+                        "user_modified": previous.attribution.get("user_modified", False)
+                        or previous.digest != spec.digest,
+                    }
                 row.revision += 1
                 row.name = spec.name
                 row.updated_at = time.time()
@@ -292,6 +309,7 @@ class PipelineManager:
                 revision=row.revision,
                 spec=spec.to_dict(),
                 digest=spec.digest,
+                attribution=attribution,
             )
             session.add(version)
             self._audit(session, owner, "pipeline.saved", pipeline_id=row.pipeline_id, revision=row.revision)
@@ -300,6 +318,7 @@ class PipelineManager:
                 "revision": row.revision,
                 "definition": spec.to_dict(),
                 "digest": spec.digest,
+                **({"strategy": attribution} if attribution else {}),
             }
 
     def list(self, owner: str, *, page=None, search=""):
@@ -338,6 +357,7 @@ class PipelineManager:
                 "revision": version.revision,
                 "definition": version.spec,
                 "digest": version.digest,
+                **({"strategy": version.attribution} if version.attribution else {}),
             }
 
     def start(
@@ -350,6 +370,7 @@ class PipelineManager:
         *,
         expected_identity=None,
         reuse_equivalent=False,
+        admission_guard=None,
     ) -> dict:
         if not delivery or len(delivery) > 128:
             raise ValueError("An Idempotency-Key of 1–128 characters is required")
@@ -376,6 +397,14 @@ class PipelineManager:
             if existing:
                 run_id = existing.run_id
             else:
+                version = session.get(PipelineVersion, f"{pipeline_id}:{revision}")
+                if version and version.attribution:
+                    from lerobot.data_platform.ai_tools.service import AssistantService
+                    from lerobot.data_platform.ai_tools.strategies import Strategies
+
+                    Strategies(AssistantService(self)).check(session, version.attribution)
+                if admission_guard:
+                    admission_guard(session)
                 active = session.scalars(
                     select(PipelineRun)
                     .where(

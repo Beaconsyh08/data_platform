@@ -21,6 +21,9 @@ def register_ai_assistant_routes(app, ctx):
     if manager is None:
         return
     app.extensions["data_platform_assistant"] = AssistantService(manager)
+    from lerobot.data_platform.routes.strategies import register_strategy_routes
+
+    register_strategy_routes(app, ctx)
 
     @app.after_request
     def assistant_private_response(response):

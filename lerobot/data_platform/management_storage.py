@@ -133,6 +133,7 @@ def migrate_management(engine) -> None:
         source_cleanup,  # noqa: F401
     )
     from lerobot.data_platform.ai_tools import models as ai_models  # noqa: F401
+    from lerobot.data_platform.ai_tools import strategy_models  # noqa: F401
     from lerobot.data_platform.processing import models  # noqa: F401
 
     lock_key = "dp-management-" + hashlib.sha256(str(engine.url.database).encode()).hexdigest()[:32]
@@ -169,6 +170,10 @@ def migrate_management(engine) -> None:
                 column["name"] for column in inspect(conn).get_columns("dp_ai_conversations")
             }:
                 conn.exec_driver_sql("ALTER TABLE dp_ai_conversations ADD COLUMN context JSON NULL")
+            if "attribution" not in {
+                column["name"] for column in inspect(conn).get_columns("dp_pipeline_versions")
+            }:
+                conn.exec_driver_sql("ALTER TABLE dp_pipeline_versions ADD COLUMN attribution JSON NULL")
             conn.commit()
         finally:
             if mysql:

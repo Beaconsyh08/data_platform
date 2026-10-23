@@ -108,6 +108,9 @@ def main(argv=None):
 
     def display(result):
         render_message(result.get("message") or result.get("error") or "Response received.")
+        strategy = result.get("strategy")
+        if isinstance(strategy, dict) and isinstance(strategy.get("version_id"), str):
+            say("Strategy · " + safe_terminal(strategy["version_id"][:8]))
         action = result.get("action")
         if action and client.last_action and action["action_id"] == client.last_action["action_id"]:
             action = client.last_action

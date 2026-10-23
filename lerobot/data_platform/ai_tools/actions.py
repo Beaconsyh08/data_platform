@@ -165,6 +165,11 @@ def confirm(service, owner, action_id, revision, *, rerun=False):
             or revision != turn.result.get("revision")
         ):
             raise JobConflictError("Conversation changed. Prepare the action again.")
+        from lerobot.data_platform.ai_tools.strategies import Strategies
+
+        if not previous_id:
+            Strategies(service).check(session, turn.result.get("strategy"))
+        strategy = turn.result.get("strategy")
         definition = action["definition"]
         if not DisclosureGuard.from_environment().safe_draft(definition):
             raise ValueError("Action is no longer safe to execute")
@@ -208,7 +213,7 @@ def confirm(service, owner, action_id, revision, *, rerun=False):
         preview = service.manager.preview(owner, location_id, definition)
         if not preview["can_execute"]:
             raise JobConflictError("Action is currently blocked. Prepare it again to see the requirements.")
-        saved = service.manager.save(owner, definition, delivery=delivery)
+        saved = service.manager.save(owner, definition, delivery=delivery, assistant_request_id=action_id)
         run = service.manager.start(
             owner,
             saved["pipeline_id"],
@@ -217,11 +222,13 @@ def confirm(service, owner, action_id, revision, *, rerun=False):
             delivery,
             expected_identity=identity,
             reuse_equivalent=True,
+            admission_guard=lambda session: Strategies(service).check(session, strategy),
         )
     receipt = {
         "run_id": run["run_id"],
         "status": run["status"],
         "reused": run.get("reused", False),
+        **({"strategy": strategy} if strategy else {}),
         "url": "/pipelines?location_id=" + location_id + "&run_id=" + run["run_id"],
     }
     with service.store.sessions.begin() as session:

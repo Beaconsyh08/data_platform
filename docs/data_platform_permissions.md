@@ -108,3 +108,12 @@ AI 草稿不接受文件路径、输出目录、网络地址或凭据参数；�
 安全审计只记录拒绝类别和请求身份，不记录命中的敏感值；助手响应禁用浏览器缓存，异常不回显堆栈或 SQL。
 这些检测是纵深防护，不能保证识别所有语言或编码方式；核心边界仍是最小化摘要、对象授权和固定工具白名单。
 历史记录在读取和再次使用时过滤；不会追溯清理既有数据库备份，也不会替代已泄露凭据的轮换。
+
+## Shared strategy experiments
+
+Only active administrators can configure, review or activate shared strategies. Cross-account learning
+uses administrator-accessible structural Pipeline evidence, excluding private conversations, memories,
+paths and parameter values. The original owner's current dataset grants are rechecked too. Test execution
+requires a separate restricted operator and byte-verified generated fixtures. Strategy approval grants
+no data permissions and never bypasses task confirmation or Curation review. Ordinary users can read only
+applicable strategy metadata; see [the strategy contract](data_platform_strategies.md).

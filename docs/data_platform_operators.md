@@ -366,3 +366,11 @@ invalid parameters, derived inputs, review pause/resume, reload, mobile width an
 Model/GPU integration and registered remote-node acceptance still require their corresponding installed
 runtimes and data. See [operations](data_platform_operations.md) for coordinator installation and release
 acceptance. This change does not configure an LLM, MCP server, conversation or autonomous planner.
+
+## Administrator-reviewed workflow strategies
+
+The optional [shared strategy experiment](data_platform_strategies.md) supplies constrained planning
+examples for Split, Convert v3, Quality and Viewer. It does not expand model tools or execute business
+operations. Requests pin their strategy revision; source evidence revocation and disabled versions block
+unconfirmed actions. Pipeline save accepts an optional owned `assistant_request_id` for server-verified
+attribution; edited plans are marked as modified. Existing APIs and private memory remain compatible.
