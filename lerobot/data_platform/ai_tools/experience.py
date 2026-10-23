@@ -137,7 +137,12 @@ def snapshot(service, session, owner, location):
             "origin_created_at": origin.created_at,
             "run_revision": run.revision,
             "completed_at": row.updated_at,
-            "outcome": row.summary,
+            # Followup prose is UI guidance, not evidence. In particular the
+            # operator's review gate flag does not certify dataset quality or
+            # waive human review. Keep only acknowledged execution facts.
+            "outcome": {
+                key: row.summary[key] for key in ("operators", "run_status", "completed_steps", "total_steps")
+            },
         }
         text = encode(guard.tree(record))
         if len(text.encode()) > 6000:

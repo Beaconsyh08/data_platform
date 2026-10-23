@@ -99,6 +99,58 @@ def test_real_completion_queue_restart_cache_and_no_network_foreground(history, 
     assert len(service.manager.runs(owner)) == 2
 
 
+def test_task_evidence_does_not_turn_pipeline_review_flag_into_quality_certification(history):
+    service, _, owner, body, _ = history
+    with service.store.sessions.begin() as session:
+        for row in session.scalars(select(AssistantFollowup).where(AssistantFollowup.owner == owner)):
+            row.summary = {**row.summary, "review_required": False, "message": "No review required"}
+    with service.store.sessions() as session:
+        snapshot = experience.snapshot(service, session, owner, body["location_id"])
+    assert len(snapshot.sources) == 2
+    for source in snapshot.sources:
+        outcome = json.loads(source.text)["outcome"]
+        assert "review_required" not in outcome and "message" not in outcome
+        assert outcome["run_status"] == "done"
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_retain_preserves_verified_source_documents_before_consolidation(history, missing):
+    snapshot = history[-1]
+    calls = []
+
+    class Inspect(hindsight.Backend):
+        def request(self, method, route="", body=None, **kwargs):
+            calls.append((method, route, body))
+            if route.startswith("/memories/list"):
+                return {
+                    "items": [
+                        {
+                            "id": source.source_id,
+                            "fact_type": "world",
+                            "document_id": source.source_id,
+                            "text": source.text,
+                            "metadata": {"source_digest": source.digest},
+                        }
+                        for source in snapshot.sources[1 if missing else 0 :]
+                    ]
+                }
+            return {}
+
+        def wait(self, operation):
+            pass
+
+    backend = Inspect(None, "test", deadline=time.monotonic() + 10)
+    if missing:
+        with pytest.raises(ValueError, match="source"):
+            backend.observations(snapshot)
+        assert not any(route == "/consolidate" for _, route, _ in calls)
+    else:
+        assert backend.observations(snapshot) == []
+        config = next(body["updates"] for _, route, body in calls if route == "/config")
+        assert config["retain_extraction_mode"] == "chunks"
+        assert any(route == "/consolidate" for _, route, _ in calls)
+
+
 @pytest.mark.parametrize("mutation", ["retry", "delete", "identity", "revoke", "disable"])
 def test_changed_sources_never_reuse_old_cache(history, mutation):
     service, _, owner, body, snapshot = history

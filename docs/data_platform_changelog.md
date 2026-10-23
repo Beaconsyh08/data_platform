@@ -4,6 +4,12 @@
 部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
 步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
 
+## V0.3.11 · HindsightRetentionFix · 2026-10-23（候选，未部署）
+
+- 已核验的任务执行记录使用 Hindsight `chunks` 模式原文入库，避免默认“长期重要性”提取丢弃全部短期任务；合并前核对所有源文档与摘要哈希，缺失来源进入失败退避。
+- 归纳输入只包含算子、终态和完成步骤；不将 followup 的页面提示或算子审批标记解释为数据质量认证。保持双 Run 来源、精确引用、独立语义核验及新规则失效机制。
+- **Server/Agent/CLI**：仅 Server 后台经验适配器变化，不增加 Agent 协议；保留已部署 V0.3.10 的 FLORA 改动，配套独立 CLI 0.3.11。实际开发/生产安装和验收以发行记录为准。
+
 ## V0.3.10 · FloraTemporalReward · 2026-10-23（候选，未部署）
 
 - Temporal Caption 新增 FLORA：同一个 Job/Attempt 串行执行本地 TempSeg、Captioner、terminal 和 dense Rewarder；原生 BF16、独立 GPU 环境与共享 GPU 锁、超时/取消/父进程退出清理。无需 DashScope 凭据，明确拒绝 action/state 输入。
