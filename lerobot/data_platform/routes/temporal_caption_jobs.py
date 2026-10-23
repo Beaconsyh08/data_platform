@@ -217,13 +217,15 @@ def register_caption_job_routes(app, ctx, resolve):
 
     def complete_caption(job, result):
         location = store.get_location(job["location_id"])
+        # Pipeline receipts accompany the persisted parameters, but are not model inputs.
+        options = validate_options({k: v for k, v in job["options"].items() if k != "operator_snapshot"})
         try:
             publish_run(
                 staged(job),
                 job_root(job),
                 location["dataset_key"],
                 job["job_id"],
-                options=validate_options(job["options"]),
+                options=options,
             )
         except (KeyError, TypeError, OSError) as exc:
             raise ValueError("Missing or invalid caption artifacts") from exc

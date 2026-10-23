@@ -252,6 +252,8 @@ Execution prepares exactly one episode outside the dataset, calls Qwen3.8-max, a
 in the durable execution spool. Server A accepts only the current node/attempt/lease and allowlisted
 artifact names. It checks queued dataset, episode, scheme, full frame coverage, FPS and required variants
 before atomically publishing a complete run. Upload/acknowledgement retries do not rerun inference.
+Pipeline completion preserves the internal `operator_snapshot` receipt and validates only caption
+parameters as model input; unrelated input fields remain rejected.
 Existing runs remain immutable; source metadata and labels are never rewritten.
 
 Administrators can import existing results using the deployment CLI below. A portable ZIP contains only
