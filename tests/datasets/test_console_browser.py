@@ -212,3 +212,44 @@ def test_console_browse_forms_pipeline_switching_and_viewer_role(tmp_path, monke
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("environment", ["dev", "prod"])
+def test_environment_banner_wraps_long_release_and_account(environment):
+    """Long immutable release IDs must remain readable without horizontal page scrolling."""
+    from jinja2 import Template
+
+    executable = os.environ.get("DATA_PLATFORM_BROWSER_EXECUTABLE")
+    if not executable:
+        pytest.skip("Set DATA_PLATFORM_BROWSER_EXECUTABLE for real-browser acceptance")
+    playwright = pytest.importorskip("playwright.sync_api")
+    root = Path(__file__).resolve().parents[2] / "lerobot/data_platform"
+    release = "V0.3.14_HindsightReusableExperience_20261023"
+    username = "development-acceptance-" + "account" * 8
+    header = Template((root / "templates/data_platform_environment.html").read_text()).render(
+        environment=environment, release=release
+    )
+    with playwright.sync_playwright() as runtime:
+        browser = runtime.chromium.launch(executable_path=executable, args=["--no-sandbox", "--disable-gpu"])
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.route("http://banner.test/", lambda r: r.fulfill(body=f"<head>{header}</head><body></body>"))
+        page.route("**/environment.js", lambda r: r.fulfill(path=str(root / "static/environment.js")))
+        page.route(
+            "**/api/auth/status",
+            lambda r: r.fulfill(json={"user": {"user_id": "test", "username": username, "role": "operator"}}),
+        )
+        page.route(
+            "**/api/dev/production",
+            lambda r: r.fulfill(json={"prod": {"release": release}, "comparison": "same"}),
+        )
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto("http://banner.test/")
+        playwright.expect(page.locator("#dp-environment-bar")).to_contain_text(username)
+        for width in (320, 390, 1280):
+            page.set_viewport_size({"width": width, "height": 844})
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            assert page.locator("#dp-environment-bar strong").inner_text().endswith(release)
+            assert page.locator("#dp-environment-bar").evaluate("el => el.scrollWidth <= el.clientWidth")
+        assert not errors
+        browser.close()

@@ -45,6 +45,9 @@ notes of 500 characters; prompts use at most eight currently authorized notes (c
 The memory API uses optimistic revisions and the existing audit outbox without recording note text.
 Viewer accounts can edit their own memory, but gain no task submission permission.
 
+Shared environment banners wrap long release/account labels within narrow viewports without hiding the
+release identity or changing deployment approval controls.
+
 Optional Hindsight background experience adds `dp_ai_experiences` and a separate
 `data-platform-experience@<env>.service`. Verified plans, submitted parameters, bounded final metrics and explicit failure classes are retained verbatim;
 comparable recipes/recovery observations include counterexamples and never establish optimality or causality. Source
