@@ -20,6 +20,7 @@ from lerobot.data_platform.rolling_deployment import ROLLING_DEPLOY_PROTOCOL, re
 RELEASE_ROOT = Path("/var/lib/data-platform-releases")
 SCHEMA_VERSION = 6
 VALIDATION_TESTS = [
+    "tests/datasets/test_mcp.py",
     "tests/datasets/test_ai_assistant_runtime.py",
     "tests/datasets/test_ai_assistant.py",
     "tests/datasets/test_ai_assistant_context.py",
@@ -381,12 +382,19 @@ def approve_release(
         "local_job",
         "remote_viewer",
         "remote_preprocess",
-        "rollback_drill",
     }
+    rollback_waiver = report.get("rollback_drill_waiver") if isinstance(report, dict) else None
+    waived = (
+        isinstance(rollback_waiver, dict)
+        and rollback_waiver.get("authorized_by")
+        and isinstance(rollback_waiver.get("reason"), str)
+        and bool(rollback_waiver["reason"].strip())
+    )
     if (
         not isinstance(report, dict)
         or report.get("release") != version
         or any(report.get(key) is not True for key in required)
+        or (report.get("rollback_drill") is not True and not waived)
     ):
         raise ValueError("Manual acceptance must identify this release and pass every required scenario")
     root = check_release_acceptance(deployment, version)

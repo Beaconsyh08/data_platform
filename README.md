@@ -908,3 +908,5 @@ on the source host; the command does not modify source datasets or platform stat
 Administrator-managed [workflow strategy experiments](docs/data_platform_strategies.md) are available
 as an opt-in source feature. Strategies are evaluated against a baseline and require manual activation;
 private memory and task confirmation remain unchanged. Server/Agent/CLI deployment acceptance is separate.
+
+External Codex/Claude Code access: [MCP setup and credential management](docs/data_platform_mcp.md).

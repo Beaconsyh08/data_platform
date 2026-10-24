@@ -2110,6 +2110,9 @@ def run_server(
         from lerobot.data_platform.routes.ai_assistant import register_ai_assistant_routes
 
         register_ai_assistant_routes(app, route_context)
+        from lerobot.data_platform.routes.mcp import register_mcp_routes
+
+        register_mcp_routes(app, route_context)
 
     _complete_local_execution = catalog_service.complete_local_execution
 

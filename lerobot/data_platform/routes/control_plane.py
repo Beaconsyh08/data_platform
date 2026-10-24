@@ -176,6 +176,15 @@ def register_control_plane_auth_routes(
     @app.before_request
     def _require_control_plane_session():
         path = request.path
+        if path == "/mcp":
+            from lerobot.data_platform.mcp_access import authenticate
+
+            identity = authenticate(store, _bearer_token())
+            if identity is None:
+                return jsonify(error="A valid platform MCP bearer credential is required"), 401
+            g.mcp_identity = identity
+            g.control_plane_user = {"user_id": identity.owner, "role": identity.role}
+            return None
         if path in public_paths or path.startswith("/api/agents/") or path.startswith("/static/"):
             return None
         from lerobot.data_platform.local_execution import internal_execution_user
@@ -213,7 +222,9 @@ def register_control_plane_auth_routes(
                     "/api/ai-assistant/turns",
                     "/api/ai-assistant/preferences",
                     "/api/ai-assistant/memory",
+                    "/api/mcp/credentials",
                 }
+                and not path.startswith("/api/mcp/credentials/")
                 and user.get("role") == "viewer"
             ):
                 return jsonify({"error": "viewer accounts are read-only"}), 403

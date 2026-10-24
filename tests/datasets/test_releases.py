@@ -794,3 +794,39 @@ def test_browser_gate_preserves_explicit_fixture_assets(tmp_path, monkeypatch):
     result = run_browser_validation("python", tmp_path, executable, tmp_path, {}, runner)
     assert result["passed"] == len(REQUIRED_CASES)
     assert set(result["assets_sha256"]) == {"ui-tailwind.js", "ui-alpine.js"}
+
+
+@pytest.mark.parametrize(
+    "waiver",
+    [
+        None,
+        {},
+        {"authorized_by": "owner"},
+        {"authorized_by": "owner", "reason": "Explicit release-specific request"},
+    ],
+)
+def test_rollback_waiver_is_recorded_without_claiming_a_pass(tmp_path, monkeypatch, waiver):
+    import json
+
+    report = {
+        "release": "candidate",
+        "role_permissions": True,
+        "environment_isolation": True,
+        "local_job": True,
+        "remote_viewer": True,
+        "remote_preprocess": True,
+        "rollback_drill": False,
+        "rollback_drill_waiver": waiver,
+    }
+    (tmp_path / "release.json").write_text("{}")
+    monkeypatch.setattr(releases, "check_release_acceptance", lambda *args: tmp_path)
+    monkeypatch.setenv("DATA_PLATFORM_INSTANCE_ID", "test")
+    if not waiver or not waiver.get("reason"):
+        with pytest.raises(ValueError, match="acceptance"):
+            releases.approve_release(None, "candidate", report)
+    else:
+        releases.approve_release(None, "candidate", report)
+        saved = json.loads((tmp_path / "approval.json").read_text())["evidence"]
+        assert saved["rollback_drill"] is False and saved["rollback_drill_waiver"] == waiver
+        with pytest.raises(ValueError, match="acceptance"):
+            releases.approve_release(None, "candidate", {**report, "role_permissions": False})

@@ -406,3 +406,37 @@ def test_flora_review_link_preserves_scheme_episode_and_run():
         {"title": "FLORA Review", "url": client.origin + relative}
     ]
     assert transport.calls == []
+
+
+def test_mcp_credential_cli_writes_private_file_and_never_prints_token(tmp_path, monkeypatch, capsys):
+    from data_platform_cli.mcp import manage
+
+    token = "dpmcp_test-credential-for-cli"
+    calls = []
+
+    class Client:
+        origin = "https://platform.example.com"
+
+        def login(self, username, password):
+            assert username == "user" and password == "test-password"
+
+        def request(self, method, path, body=None):
+            calls.append((method, path))
+            return {"token": token, "credential_id": "test-id"}
+
+    monkeypatch.setattr("getpass.getpass", lambda _: "test-password")
+    target = tmp_path / "credential"
+    args = SimpleNamespace(
+        command="mcp-token",
+        token_file=str(target),
+        username="user",
+        token_name="test",
+        token_days=30,
+        read_only=False,
+    )
+    assert manage(Client(), args) == 0
+    assert target.read_text().strip() == token and target.stat().st_mode & 0o777 == 0o600
+    assert token not in capsys.readouterr().out
+    assert calls[-1] == ("POST", "/api/auth/logout")
+    with pytest.raises(ClientError, match="never overwritten"):
+        manage(Client(), args)

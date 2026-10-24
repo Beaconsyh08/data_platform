@@ -395,7 +395,9 @@ nano /tmp/data-platform-release-evidence.json
 本地执行器必须在每次心跳中保留此标记；仅注册时设置会被后续心跳覆盖。修复版本为本地执行器
 显式启用此能力，远端 Agent 默认关闭。更新后等待新心跳，再通过本地任务提交与完成确认验收。
 
-只将实际通过的项目改为 `true`。全部验收完成后批准当前安装包：
+只将实际通过的项目改为 `true`。若发布负责人明确豁免本次回退演练，保留 `rollback_drill: false`，
+并在本次证据中记录 `rollback_drill_waiver` 的 `authorized_by` 和 `reason`；其余验收要求不变。
+全部要求满足后批准当前安装包：
 
 ```bash
 bash deploy/data-platform/release.sh approve --env dev --release "$RELEASE" \
@@ -818,3 +820,10 @@ dedicated restricted operator, generated synthetic fixtures visible to Server A,
 administrator-reviewed evaluation cases. Do not equate unit tests, a gate result or dev approval with
 production strategy availability. Private Hindsight and ordinary Jobs are unchanged. Release the compatible
 CLI 0.3.17 with verified immutable installer/wheel/CA objects and normal TLS acceptance; only then advance latest.
+
+### External assistant MCP
+
+See [MCP access and acceptance](data_platform_mcp.md) for per-account credentials, TLS trust,
+model-independent tools and explicit browser confirmation. `/mcp` exclusively uses bearer credentials;
+all other routes retain browser session/CSRF protection. Additive credential storage requires Server
+startup migration, with no Agent protocol change. Publish compatible CLI 0.3.18 with the platform.

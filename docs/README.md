@@ -147,3 +147,5 @@ to this dataset.
 See [Unified operators and pipelines](data_platform_operators.md) for operator contracts, the migration inventory, APIs, review gates and recovery.
 
 - [Architecture upgrade completion review](data_platform_architecture_review.md): implementation coverage, console service boundaries and remaining runtime acceptance.
+
+External Codex/Claude Code access: [MCP setup and credential management](data_platform_mcp.md).

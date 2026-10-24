@@ -1043,3 +1043,9 @@ API 校验、任务归属和配额使用当前测试用户，已提交任务不�
 同一浏览器的开发标签页同步切换，生产会话独立。普通账号与生产环境没有角色切换入口。
 测试用户需由管理员先运行 `data-platform-environment seed-dev-users --env dev` 初始化。
 维护期间新任务和其他业务写入暂不可用；具体部署和验收见 [双环境部署指南](data_platform_environments.md)。
+
+### 外部助手
+
+可用自己的 Codex / Claude Code 和模型 API 连接 [MCP](data_platform_mcp.md)。
+外部助手准备操作后会返回平台确认链接；登录同一账号、核对数据和参数，再点击 **Confirm and run**。
+打开链接或模型调用本身不会执行任务。凭证创建、查询和撤销使用独立 CLI。

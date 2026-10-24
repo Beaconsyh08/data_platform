@@ -1,5 +1,16 @@
 # Data Platform 发行变更
 
+## V0.3.18 — AssistantAccess (CLI 0.3.18)
+
+- Add authenticated Streamable HTTP MCP discovery, bounded queries, pipeline previews and persistent
+  operation preparation. External clients use their own models; platform confirmation still gates execution.
+- Add account-bound, hashed, expiring/revocable credentials with read/prepare scopes and CLI management.
+  Recheck roles, data grants and password changes; credentials cannot call browser confirmation routes.
+- Server adds one credential table. Agent protocols and running-job recovery remain unchanged.
+  CLI 0.3.18 is published with immutable installer/wheel/CA verification. Source changes are not live
+  acceptance; installed identities and results belong in immutable release records.
+- See [MCP setup and acceptance](data_platform_mcp.md).
+
 ## V0.3.17 — Strategy experiment provider compatibility (CLI 0.3.17)
 
 - Match the Assistant non-thinking provider mode during candidate generation, and respect per-call and

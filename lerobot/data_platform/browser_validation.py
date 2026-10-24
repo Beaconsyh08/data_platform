@@ -7,6 +7,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 BROWSER_TESTS = (
+    "tests/datasets/test_mcp.py::test_mcp_browser_confirmation_without_platform_model",
     "tests/datasets/test_ai_assistant_browser.py",
     "tests/datasets/test_ai_workspace_browser.py",
     "tests/datasets/test_console_browser.py",
@@ -14,6 +15,7 @@ BROWSER_TESTS = (
     "tests/datasets/test_ai_strategies.py::test_admin_browser_empty_states_and_review",
 )
 REQUIRED_CASES = {
+    "test_mcp_browser_confirmation_without_platform_model",
     "test_browser_memory_edit_delete_and_durable_readonly_updates",
     "test_async_assistant_browser_restores_pending_and_requires_confirmation",
     "test_qwen_browser_draft_restore_scope_and_explicit_run",

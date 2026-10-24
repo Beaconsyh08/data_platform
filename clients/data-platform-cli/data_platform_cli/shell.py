@@ -42,11 +42,21 @@ def safe_terminal(value):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Chat with your Data Platform using your platform account.")
     parser.add_argument("--version", action="version", version=f"Data Platform CLI {__version__}")
-    parser.add_argument("command", nargs="?", choices=["update"], help="Update the installed CLI")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["update", "mcp-token", "mcp-tokens", "mcp-revoke"],
+        help="Update CLI or manage MCP credentials",
+    )
     parser.add_argument("--server", help="HTTPS platform origin")
     parser.add_argument("--username")
     parser.add_argument("--ca-bundle", help="CA certificate file for an internal deployment")
     parser.add_argument("--web", action="store_true", help="Print the web console URL without logging in")
+    parser.add_argument("--token-file", help="New private file for a newly issued MCP credential")
+    parser.add_argument("--token-name", default="external-assistant")
+    parser.add_argument("--token-days", type=int, default=30)
+    parser.add_argument("--read-only", action="store_true", help="Issue a read-only MCP credential")
+    parser.add_argument("--credential-id", help="Credential UUID to revoke")
     args = parser.parse_args(argv)
     if args.command == "update":
         from data_platform_cli.update import update
@@ -58,6 +68,13 @@ def main(argv=None):
         client = PlatformClient(args.server, ca_bundle=args.ca_bundle)
     except ClientError as error:
         parser.error(str(error))
+    if args.command in {"mcp-token", "mcp-tokens", "mcp-revoke"}:
+        from data_platform_cli.mcp import manage
+
+        try:
+            return manage(client, args)
+        except (ClientError, OSError) as error:
+            parser.error(safe_terminal(str(error)))
     if args.web:
         print(safe_terminal(client.web_links()[0]["url"]))
         return 0

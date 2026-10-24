@@ -130,6 +130,7 @@ def migrate_management(engine) -> None:
 
     from lerobot.data_platform import (
         maintenance,  # noqa: F401 -- register the maintenance table
+        mcp_access,  # noqa: F401 -- register account-bound MCP credentials
         source_cleanup,  # noqa: F401
     )
     from lerobot.data_platform.ai_tools import models as ai_models  # noqa: F401

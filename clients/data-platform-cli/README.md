@@ -222,3 +222,5 @@ The upgrade is incomplete until both platform and CLI acceptance finish. An olde
 CLI 0.3.17 displays the shared strategy version when the server supplies one. This is planning provenance,
 not execution approval; `/confirm` and existing result links are unchanged. Versioned publication and
 advancing the stable latest installer require the normal platform compatibility acceptance.
+
+External Codex/Claude Code access: [MCP setup and credential management](../../docs/data_platform_mcp.md).

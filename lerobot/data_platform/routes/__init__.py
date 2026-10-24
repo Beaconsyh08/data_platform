@@ -18,6 +18,7 @@ from lerobot.data_platform.routes.episode_deletion_requests import register_epis
 from lerobot.data_platform.routes.inspect import register_inspect_routes
 from lerobot.data_platform.routes.lifecycle import register_lifecycle_routes
 from lerobot.data_platform.routes.mcap_import import register_mcap_import_routes
+from lerobot.data_platform.routes.mcp import register_mcp_routes
 from lerobot.data_platform.routes.preprocess import register_preprocess_routes
 from lerobot.data_platform.routes.source_cleanup import register_source_cleanup_routes
 from lerobot.data_platform.routes.strategies import register_strategy_routes
@@ -26,6 +27,7 @@ from lerobot.data_platform.routes.tasks import register_task_routes
 from lerobot.data_platform.routes.temporal_caption import register_temporal_caption_routes
 
 __all__ = [
+    "register_mcp_routes",
     "register_strategy_routes",
     "register_ai_assistant_routes",
     "register_console_dataset_routes",
