@@ -44,6 +44,26 @@
 首次初始化、角色切换、升级和回退请按 [双环境部署指南](docs/data_platform_environments.md) 操作。
 账号统一使用 username；改密和管理员重置流程见 [账号与密码恢复](docs/data_platform_accounts.md)。
 
+### 平台能力与文档入口
+
+平台采用 Server A 统一管理、Agent 就地计算的方式，支持 LeRobot v2.1/v3.0、UMI，以及
+已适配的 GenDAS MCAP 导入。处理默认生成独立输出；源数据写回需要单独授权和确认。
+
+| 工作 | 入口与能力 | 操作说明 |
+| --- | --- | --- |
+| 数据发现 | 选择授权目录或子路径；Scan 即时发现，Refresh 读取登记；记住浏览目录 | [页面手册](docs/data_platform_page_user_guide.md#31-第一次加载数据集) |
+| 数据理解 | 多视角 Viewer、Action/State 曲线、Analysis、只读 Parquet/CSV Inspect | [Explore](docs/data_platform_page_user_guide.md#7-explore-可视化中心与-analysis) |
+| 质量复核 | 按信号启用控制、标注、关节、末端、数值和媒体检查；报告连接 Viewer 人工复核 | [Quality](docs/data_platform_page_user_guide.md#54-data-curation--quality-review) |
+| 标注与构建 | 批量时序描述、可选信号、Review、版本化 Workspace/Manifest 与新数据集物化 | [时序标注](docs/temporal_caption_trial.md)、[生命周期](docs/data_lifecycle_architecture.md) |
+| 任务管理 | 节点/用户配额、分阶段进度、安全停止/重试、MCAP 检查点恢复、管理员单任务额外配额 | [Jobs](docs/data_platform_page_user_guide.md#11-jobs-抽屉与-pipeline-runs) |
+| 发布与恢复 | 不可变包、开发验收后生产批准、兼容滚动升级、缓存发布与结果确认 | [运维手册](docs/data_platform_operations.md) |
+
+2026-10-15 18:04（Asia/Shanghai） 核对：本机 dev/prod 的 `current` 与 `release.env` 均为
+`V0.0.6.55_DatasetIndexRefresh_20261015`。这是安装身份快照，未在本次文档更新中重新验收
+远端 Agent、TLS 或完整页面流程。主工作区可能落后于发行包；更新前检查全部 worktree 和提交。
+近期变更依据及限制见[平台状态说明](docs/distributed_data_platform_current_status.md)，
+完整索引见[文档导航](docs/README.md)。
+
 
 Task definitions are configurable in the console. Existing Pick/Place/Give tasks and new task families share versioned catalogs, dataset mappings, analysis and curation filters, and portable Agent configuration snapshots. See the [task onboarding guide](docs/data_platform_task_catalog.md).
 
@@ -67,7 +87,7 @@ Task suggestions, Qwen API object labeling, and VLM auto-tagging use the same se
 `DASHSCOPE_API_KEY`. Configure it once in the deployed service environment:
 
 ```bash
-sudoedit /etc/data-platform/server.env
+sudoedit /etc/data-platform/dev/server.env
 ```
 
 Add or update these entries in that file (replace the key placeholder there):
@@ -82,10 +102,14 @@ Keep the endpoint in the same region as your key. `DATA_PLATFORM_TASK_MODEL` onl
 suggestions; image labeling and tagging retain their own model selectors. Save the file, then run:
 
 ```bash
-sudo chmod 640 /etc/data-platform/server.env
-sudo systemctl restart data-platform-web
-sudo systemctl status data-platform-web --no-pager -l
+sudo chmod 640 /etc/data-platform/dev/server.env
+sudo systemctl restart data-platform-web@dev.service
+sudo systemctl status data-platform-web@dev.service --no-pager -l
 ```
+
+This example targets development. Configure production separately in `prod/server.env` and
+use its matching service during an authorized maintenance window. Legacy single-environment
+installations may still use `/etc/data-platform/server.env`; check the actual unit before editing.
 
 For a code update, run `data-platform-update-all --env prod --release RELEASE` after development acceptance, following the deployment
 workflow below. That updater preserves the environment file. This Qwen feature runs on Server A

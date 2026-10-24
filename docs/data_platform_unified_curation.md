@@ -69,6 +69,33 @@ cross-node raw-file replication.
   `DATA_PLATFORM_MODEL_ROOTS`. Configure model credentials in the execution service environment;
   they are not stored in Curation commands. Dependencies and credentials differ by node.
 
+## Quality checks and reports
+
+Updated 2026-10-15 against the `.54` installed implementation. Quality runs use the existing
+`curation.quality` operation on the dataset's owning node. New checks require `quality_protocol: 1`
+and the selected names in `quality_checks` at submission and claim. Requests without `checks`
+retain the legacy behavior; upgrading Server alone does not upgrade an older executor.
+
+Independent check names are `control`, `annotations`, `s1`, `eef`, `s3`, and `c3`. Availability
+comes from the actual signals and metadata. Compatible DVT joint processing defaults to DVT2;
+UMI/GenRobot pose fields use EEF rules instead of joint-angle thresholds. EEF is part of Quality.
+Unknown physical units stay unknown, and sampled video coverage cannot certify unchecked frames.
+See the [Quality operation guide](data_platform_page_user_guide.md#54-data-curation--quality-review)
+for the check-by-signal table and review steps.
+
+In the central full console, **Quality → Data Report** opens the newest saved result for the
+selected dataset version; earlier runs remain selectable. Dataset totals, checked episodes,
+issues and video coverage are distinct measures. Viewer navigation preserves the review draft
+and does not save a decision. Read-only users can view saved reports and prepared Viewer results.
+
+Results retain the existing Curation bundle, source fingerprint and checksum validation.
+`annotation_issues.json`, `quality_flagged_episodes.json`, and `quality_coverage.json` hold the
+issues and coverage. Review evidence uses half-open frame/time intervals; legacy frame fields
+keep their existing semantics. Recomputing selected checks with a previous result as input
+replaces only the selected automatic evidence, preserving other episodes/checks and manual
+results. Detection does not modify source datasets or automatically exclude episodes. Human
+Keep/Exclude/Needs review decisions remain revisioned workspace edits, applied through Dataset Build.
+
 ## Validation and rollout
 
 Targeted tests cover v2.1 and shared-shard v3.0 snapshots, source-change rejection,

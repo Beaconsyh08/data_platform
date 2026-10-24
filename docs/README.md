@@ -14,6 +14,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
+# Data Platform 文档导航
+
+本目录同时包含 Data Platform 操作手册与上游 LeRobot 文档构建说明。
+平台 Markdown 手册可以直接阅读，无需启动文档构建服务。
+
+| 需要做什么 | 文档 |
+| --- | --- |
+| 了解近期能力、版本依据与限制 | [平台状态说明](distributed_data_platform_current_status.md) |
+| 查页面入口、参数、角色与操作结果 | [页面操作手册](data_platform_page_user_guide.md) |
+| 更新、验收、恢复和日常排障 | [运维手册](data_platform_operations.md) |
+| 首次建立 dev/prod、批准与回退 | [双环境部署](data_platform_environments.md) |
+| 接入数据节点与 Agent | [分布式部署](distributed_data_platform_deployment.md) |
+| 找源码、安装包、数据库、缓存与数据目录 | [存储位置](data_platform_storage_locations.md) |
+| 账号、数据范围、任务配额与审计 | [账号恢复](data_platform_accounts.md)、[权限](data_platform_permissions.md)、[多用户任务管理](data_platform_multi_user_management.md) |
+| 运行质量检测、复核并构建数据 | [统一 Curation](data_platform_unified_curation.md)、[生命周期](data_lifecycle_architecture.md) |
+| 时序标注、任务定义、UMI 与 Merge | [Temporal Caption](temporal_caption_trial.md)、[任务目录](data_platform_task_catalog.md)、[UMI](umi_dataset_support.md)、[Merge 对齐](data_platform_merge_alignment.md) |
+
+文档中的日期与版本表示核对范围；实时部署、Agent 能力和实际执行结果需要按运维手册重新确认。
+源码、已安装发行包、在线服务验收是不同证据。下方为上游 LeRobot 文档站点的生成流程。
+
 # Generating the documentation
 
 To generate the documentation, you first have to build it. Several packages are necessary to build the doc,

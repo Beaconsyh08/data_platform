@@ -1,10 +1,15 @@
-# Single-episode temporal caption experiment
+# Temporal caption workflows and review
 
-`Data Curation → Annotation → Temporal Caption` is a parallel annotation review surface with remote single-episode jobs.
+`Data Curation → Annotation → Temporal Caption` provides a shared annotation task form and separate Review page.
+The console accepts episode ranges or the entire dataset and submits one durable job per episode.
 It does not replace Stage & Subtask or Object Labeling, and does not apply labels to source data.
 Local and Agent datasets expose this review tab under the same Data Curation navigation.
 Local and remote review use the same template, result selector, synchronized camera video, segment
 navigation, active caption highlighting, and optional segment loop.
+
+For the current UI, start with [task and review pages](#annotation-and-review-pages),
+[batch controls](#batch-annotation-and-review-controls), and [Fusion V2](#cross-modal-fusion-v2).
+The single-episode CLI workflow below remains available for isolated experiments.
 
 ## Independent inference workflow
 
@@ -76,9 +81,9 @@ files. Model result JSON includes the registered dataset key; mismatched keys ar
 
 The remote route resolves the registered location, then reads only the central result artifact. It never
 opens a client-provided remote path or queues Viewer generation. The normal console login guard applies;
-viewer accounts may read results and seek videos using HTTP Range requests. Full console mode is required.
-Operators and administrators can submit single-episode annotation jobs; administrators can import existing
-review ZIPs. Results remain review evidence and do not write back to source datasets.
+viewer accounts may read authorized results and seek videos using HTTP Range requests. Full console mode is required.
+Accounts with task execution permission can submit annotation jobs; administrative CLI import remains
+available for existing review packages. Results remain review evidence and do not write back to source datasets.
 
 Deploy through the existing immutable dev/prod release workflow. A local preview is not a production
 release. Update Server A and the Agent together to expose supported annotation methods.
@@ -87,16 +92,14 @@ release. Update Server A and the Agent together to expose supported annotation m
 
 The shared page follows the caption demo layout: synchronized camera video, colored semantic timeline,
 gripper event markers, measured gripper/speed curves, bilingual captions, scene and task-quality panels.
-The **Annotation method** selector always offers Multi-view Semantics, Video + Events, and Fusion + Review,
-including when the dataset has no saved annotations. It is synchronized with the new-task method selector
-and remembers the choice in this browser; an explicit `?scheme=` link takes precedence.
+The task form offers Multi-view Semantics, Video + Events, and Fusion + Review,
+including when the dataset has no saved annotations. Each episode job retains its method ID and saves
+separate artifacts without overwriting earlier trials. Executor readiness is checked per method and option,
+including unsupported Agent versions and read-only roles.
 
-Choose a method, then a **Saved episode / result** to review an earlier run. Switching methods keeps the
+Use the separate Review page to choose a method, episode and saved result. Switching methods keeps the
 same episode when available and prefers `refined`, `caption`, or `fusion_reviewed`; intermediate results
-remain selectable. If no result exists, the old video and annotations are cleared. To reuse the method,
-enter a new episode index and select **Annotate one episode**. Each job retains its method ID and saves
-separate artifacts; it does not overwrite earlier trials. Completed jobs refresh the saved-result list.
-Executor readiness is reported per method, including unsupported Agent versions and read-only roles.
+remain selectable. If no result exists, the old video and annotations are cleared.
 
 - **Multi-view Semantics** (`multiview_semantics`): the independent image/pose workflow described above,
   with `coarse` and `refined` results. Scene labels, phase labels and instruction success are not fabricated
@@ -132,9 +135,9 @@ reused as segment confidence. Model quality assessments do not approve labels or
 
 ## Remote annotation jobs and existing result import
 
-On a registered remote dataset, the review page offers one episode index and either named scheme.
-Operators and administrators can submit `caption.annotate`; viewers can only review results. The page
-shows queued/running/error/cancelled states, execution messages, and available cancel/retry actions.
+On a registered remote dataset, the task form offers the three schemes and an episode selection.
+Accounts with execution permission can submit `caption.annotate`; viewers can only review authorized results.
+Track queued/running/error/cancelled states, execution messages, and authorized cancel/retry actions in Jobs.
 Submission recovery uses an owner- and input-scoped idempotency key. Retrying a failed/cancelled task
 may call the model again and incur additional usage; provider requests already sent cannot be recalled.
 
@@ -200,8 +203,8 @@ inference because it starts a fresh isolated execution. No API keys are stored i
 ## Annotation and review pages
 
 `/<namespace>/<dataset>/temporal-caption` and `/remote/<location_id>/temporal-caption`
-are task pages: select one of the three methods, enter an episode, then start annotation.
-They retain executor readiness, task progress, cancellation, retry, and authorized ZIP import.
+are task pages: select one of the three methods, choose episodes and signal input, then start annotation.
+They show executor readiness and submission feedback; ongoing progress, cancellation and retry use Jobs.
 Standalone previews show all three methods but cannot submit work without an executor.
 
 Append `/review` for the separate video, timeline, caption, and model-review page.
@@ -211,7 +214,7 @@ including for remote datasets before Viewer preparation. Review remains inspecti
 outputs; it does not record human approval or alter the dataset.
 
 The embedded Temporal Caption tab contains the three-method task form, executor readiness,
-task progress, saved caption results, and a separate video review link. The standalone task
+submission feedback, signal-input option, and a separate video review link. The standalone task
 page uses the same controller and form. Caption tasks do not require a curation snapshot.
 Generic review
 workspace, generated results, episode decisions, and tasks are hidden on this tab and remain

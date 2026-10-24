@@ -1,12 +1,13 @@
 # 开发与生产：代码、数据库和文件具体放在哪里
 
-2026-09-15 实机核对，两套环境当前均运行 R2。
+环境目录来自 2026-09-15 实机快照；当时两套环境均运行 R2。2026-10-15 更新存储与源码工作区约定，
+本文中的 R2 路径仅作历史示例，当前版本请按[运维手册](data_platform_operations.md)现场核对。
 
 ## 先回答“是不是放在一起”
 
 **在同一台机器上的不同目录、不同数据库中，不是开发与生产各占一台机器。**
 
-- Server A（`ubuntu-22`，网页 IP `10.8.8.79`）：同时运行生产和开发 Web、本地执行器、MySQL、Nginx。
+- Server A（`ubuntu-22`，网页地址以当前登记的 HTTPS 入口为准）：同时运行生产和开发 Web、本地执行器、MySQL、Nginx。
 - H100（`h100-05`，可通过 `ssh h100-server` 登录）：同时运行生产和开发 Agent，并存放各自的数据集文件。
 - 两套环境共用操作系统、硬件、Nginx 和 MySQL 服务，但不共用业务库、日志库、登录会话或运行状态目录。
 - Git 源码工作区用于修改代码。运行网站使用另外安装的发行包，修改源码文件不会立即改变网站。
@@ -17,13 +18,17 @@
 
 ## 1. 代码在哪里
 
-日常开发只在 Server A 的这个 Git 工作区修改代码：
+主 Git 工作区位于 Server A：
 
 ```text
 /home/yuhao.song/Codes/data_platform
 ```
 
-生产和开发网站都不是直接从这个工作区启动。部署关系是：
+功能开发也使用独立 worktree；运行 `git worktree list` 与 `git log --all` 查找实际实现。
+发布从包含最新线上基线和目标功能的干净集成工作区构建，不能因为主目录名称固定就将其视为最新代码。
+Server B 的 Agent 与数据根按该节点的环境配置登记；不要把 H100 的路径套到 Server B。
+
+生产和开发网站都不是直接从这些工作区启动。部署关系是：
 
 ```text
 源码工作区 → Git 提交 → 构建一份发行包 → 安装到 dev / prod 各自目录
@@ -34,12 +39,12 @@
 | 内容 | 生产 prod | 开发 dev |
 | --- | --- | --- |
 | 当前程序入口，软链接 | `/opt/data-platform/prod/current` | `/opt/data-platform/dev/current` |
-| 当前 R2 的实际目录 | `/opt/data-platform/prod/releases/R2` | `/opt/data-platform/dev/releases/R2` |
+| 历史 R2 示例目录 | `/opt/data-platform/prod/releases/R2` | `/opt/data-platform/dev/releases/R2` |
 | 应用源码 | `/opt/data-platform/prod/current/lerobot/data_platform` | `/opt/data-platform/dev/current/lerobot/data_platform` |
 | Python 虚拟环境 | `/opt/data-platform/prod/current/.venv` | `/opt/data-platform/dev/current/.venv` |
 | 所有已安装版本 | `/opt/data-platform/prod/releases` | `/opt/data-platform/dev/releases` |
 
-`current` 是指向当前发行版本的软链接。以后升级 R3 等版本时，切换这个链接，R2 目录保留用于回退。
+`current` 是指向当前发行版本的软链接。升级时切换这个链接，旧版本目录保留用于回退。
 **不要直接修改 `current` 或 `releases/R2` 下的文件**：修改应回到 Git 工作区，重新构建新版本。
 
 ### H100 上运行的 Agent 代码
@@ -47,7 +52,7 @@
 | 内容 | 生产 prod | 开发 dev |
 | --- | --- | --- |
 | 当前 Agent 入口 | `/opt/data-platform-agent/prod/current` | `/opt/data-platform-agent/dev/current` |
-| 当前 R2 的实际目录 | `/opt/data-platform-agent/prod/releases/R2` | `/opt/data-platform-agent/dev/releases/R2` |
+| 历史 R2 示例目录 | `/opt/data-platform-agent/prod/releases/R2` | `/opt/data-platform-agent/dev/releases/R2` |
 | Python 虚拟环境 | `/opt/data-platform-agent/prod/current/.venv` | `/opt/data-platform-agent/dev/current/.venv` |
 
 Agent 应用安装在该虚拟环境的 `lib/python3.10/site-packages/lerobot/data_platform` 中。
@@ -131,7 +136,8 @@ Agent 的 `viewer.prepare` 执行期间先写入 `vis/.dp-<job_id>-<attempt_id>/
 若 episode 布局或阶段配置发生变化，不会把不兼容的旧标注套到新结果上，旧副本仍在备份中。
 任务配置已过期的完成结果归档到 `.history/<location_id>/<job_id>/<attempt_id>/`，不覆盖当前结果。
 
-网页是这些标注结果的主副本。Agent 在空闲时约每 10 秒检查有变化的 JSON/JSONL 结果文件，
+网页是这些标注结果的主副本。新版 Agent 约每 10 秒通过独立后台线程检查有变化的结果文件，
+运行任务或槽位满时仍可同步；同位置存在源修改或缓存发布时延后该位置写入并重试。
 校验数据集与文件摘要后写到其登记的 `output_dir/static/`（默认上述 `vis/local_vis_…/static/`）。
 只有 Agent 确认写入成功后，Viewer 才显示“Results synced”；离线、权限不足或网络失败会保持待同步
 或显示失败，随后自动重试。旧 Agent 会提示需要升级。回传不修改源 Parquet、视频或 `meta/`；

@@ -266,7 +266,8 @@ all of these conditions are true:
 3. The selected Agent has `DATA_PLATFORM_AGENT_ALLOW_SOURCE_MUTATIONS=1` in
    `/etc/data-platform/agent.env`.
 4. The dataset itself is below both that Agent's allowed and writable roots.
-5. The user accepts the warning and types `MUTATE <dataset_key>` exactly.
+5. The user accepts the operation warning and confirmation. The console form asks for `MUTATE`
+   and sends the dataset-bound `MUTATE <dataset_key>` value; direct API clients must send that full value.
 
 In the console, select the Agent dataset and open Runs to enter episode indices and a deletion
 reason. Admins and authorized data managers submit deletion directly; operators submit a request for administrator
@@ -280,7 +281,7 @@ Admins configure grants in **Platform management → Users & access → Data per
 to restrict access; an empty selection in that mode grants no source-write access. Search by dataset, Agent, or
 path without losing selections hidden by the search. Existing explicit location grants are preserved.
 Each grant is bound to the location ID, Agent, and source root, not a dataset name or arbitrary path prefix.
-New locations are included in all-dataset mode only. A grant permits the three operations above;
+New locations are included in all-dataset mode only. A grant permits the supported source mutation operations above;
 it does not permit deleting whole dataset directories, managing users, approving deletion requests, or
 controlling other users' jobs. Existing ordinary operator capabilities and dataset visibility are retained.
 Local legacy mutation endpoints remain administrator-only; data managers use registered Agent locations.
@@ -299,28 +300,23 @@ used by release migrations. Deploy using the normal Server A release migration b
 no automatic production schema writes are added to web requests.
 
 
-Cached Viewer EDIT supports Stage and Trim annotations for admin/data_manager/operator accounts without
-loading the remote source dataset. These edits save to the current Viewer cache; they do not apply
-trim or stage changes to the Agent source. Viewer accounts remain read-only. Re-preparing the cache
-may replace these annotations, so preserve them before rebuilding it.
+Cached Viewer EDIT supports Stage and Trim annotations for admin/data_manager/operator accounts with
+access to the dataset, without loading the remote source. Viewer accounts remain read-only. These edits
+save to the Viewer cache and do not apply trim or stage changes to the Agent source. Compatible manual
+results are preserved when rebuilding; incompatible episode layouts or stage configurations retain the
+old results in backups instead of applying them. See [storage and result sync](data_platform_storage_locations.md).
+Only the Agent's acknowledgement of the matching result revision means synchronization succeeded;
+cache synchronization still does not apply annotations to source data.
 
-In the console, select the Agent dataset and open Runs to enter episode indices and a deletion
-reason. Admin accounts can submit deletion directly; operators submit a request for administrator
-review. The form shows which server/Agent mutation switch blocks submission. Admin accounts can
-also use DEL in the cached Viewer, confirm the episode and reason, and follow the submitted task
-in Runs. Deletion does not require turning EDIT on. A submitted task is not a completed deletion.
-The Registered list's `unregister` action only removes a local registration; it does not delete files.
-
-Cached Viewer EDIT supports Stage and Trim annotations for admin/operator accounts without
-loading the remote source dataset. These edits save to the current Viewer cache; they do not apply
-trim or stage changes to the Agent source. Viewer accounts remain read-only. Re-preparing the cache
-may replace these annotations, so preserve them before rebuilding it.
-
-For Admin accounts, Trim Apply submits the displayed inclusive frame range to the Agent as a
-`mutation.trim_episode` task, with confirmation, a reason, and the same persistent source backup.
+For admins and authorized data managers, Trim Apply submits the displayed inclusive frame range as a
+`mutation.trim_episode` task, with confirmation, a reason, and a persistent source backup.
 Both Server A and the Agent must support this operation; an older Agent is rejected with an
 upgrade message. Follow the task in Runs and prepare Viewer again after the source changes.
 Saving trim markers alone still changes only the Viewer cache.
+
+Viewer/operator dataset scopes also restrict read access and task inputs, including all Merge sources.
+These are distinct from data-manager source-write grants. See [dataset scopes](data_platform_permissions.md#dataset-scopes)
+for selected-only access, queued-job checks, and lifecycle/curation limitations.
 
 Chart group buttons and field checkboxes share visibility state. Position fields shared by Head3
 and Head4 remain selected while either group uses them. Drag to zoom, use Focus current time to
