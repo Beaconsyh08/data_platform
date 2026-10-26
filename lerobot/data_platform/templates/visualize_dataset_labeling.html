@@ -60,7 +60,7 @@
     width: 100%;
     min-width: 0;
     border: 1px solid #334155;
-    border-radius: 6px;
+    border-radius: var(--dp-radius);
     background: #020617;
     color: #e2e8f0;
     padding: 5px 7px;
@@ -389,7 +389,7 @@
     background: #020617;
     padding: 8px;
     border: 1px solid #1e293b;
-    border-radius: 6px;
+    border-radius: var(--dp-radius);
     font-size: 12px;
     margin-bottom: 10px;
     white-space: pre-wrap;
@@ -433,7 +433,7 @@
     margin: 4px 0 12px;
     padding: 10px 12px;
     background: #020617;
-    border-radius: 6px;
+    border-radius: var(--dp-radius);
     border: 1px solid #1e293b;
     color: #f8fafc;
   }
@@ -457,7 +457,7 @@
     padding: 6px 8px;
     margin: 4px 0;
     border: 1px solid #334155;
-    border-radius: 6px;
+    border-radius: var(--dp-radius);
     cursor: pointer;
     font-size: 11px;
   }
@@ -472,7 +472,7 @@
   .draftBox {
     background: #1c1917;
     border: 1px solid #facc15;
-    border-radius: 6px;
+    border-radius: var(--dp-radius);
     padding: 8px;
     margin: 8px 0 10px;
   }
@@ -501,7 +501,7 @@
   #variantBar select {
     min-width: 190px;
     border: 1px solid #334155;
-    border-radius: 6px;
+    border-radius: var(--dp-radius);
     background: #0f172a;
     color: #e2e8f0;
     padding: 5px 8px;
@@ -510,7 +510,7 @@
   #variantSummary { color: #94a3b8; }
   .compareItem {
     border: 1px solid #334155;
-    border-radius: 6px;
+    border-radius: var(--dp-radius);
     padding: 6px 8px;
     margin: 4px 0;
     font-size: 11px;
@@ -527,10 +527,10 @@
   button {
     flex: 1;
     padding: 7px 10px;
-    background: #0c4a6e;
+    background: var(--dp-primary);
     color: #e0f2fe;
     border: 1px solid #0369a1;
-    border-radius: 6px;
+    border-radius: var(--dp-radius);
     cursor: pointer;
     font-size: 12px;
   }
@@ -556,7 +556,8 @@
 	    #info { display: none; }
 	  }
 </style>
-	</head>
+	{% include "data_platform_workspace_styles.html" %}
+</head>
 	<body>
 	  {% set page_kind = "Object Labeling" %}
 	  {% set page_title = dataset_key %}

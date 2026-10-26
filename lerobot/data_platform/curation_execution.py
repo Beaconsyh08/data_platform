@@ -12,6 +12,7 @@ from dataclasses import asdict, is_dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from lerobot.data_platform.cache_files import cached_csv_files, logical_csv_path, open_cached_csv
 from lerobot.data_platform.curation import (
     CURATION_PROTOCOL,
     OPERATIONS,
@@ -28,58 +29,14 @@ from lerobot.data_platform.lifecycle import (
     dataset_snapshot,
     materialize_manifest,
 )
+from lerobot.data_platform.operators.registry import list_operators
 from lerobot.data_platform.precompute.data_profile import require_dataset_operation
 from lerobot.data_platform.task_catalog import TaskConfigSnapshot, content_digest
 
 PARAMETERS = {
-    "snapshot": set(),
-    "validate_source": set(),
-    "stage": {"episodes", "prepare_workers", "fallback_stage_count", "data_version"},
-    "quality": {"episodes", "data_version", "workers", "overwrite", "clear_manual_flags"},
-    "labeling": {
-        "episodes",
-        "backend",
-        "model_id",
-        "endpoint",
-        "qwen_model",
-        "min_pixels",
-        "max_pixels",
-        "box_threshold",
-        "text_threshold",
-        "save_vis",
-        "workers",
-        "devices",
-        "output_variant",
-        "run_mode",
-        "trial",
-        "trial_per_type",
-        "trial_seed",
-    },
-    "tagging": {
-        "episodes",
-        "selected_tags",
-        "vlm_backend",
-        "vlm_model",
-        "vlm_endpoint",
-        "output_variant",
-        "workers",
-        "overwrite",
-        "trial",
-        "trial_per_type",
-        "trial_seed",
-    },
-    "embedding": {"episodes", "ckpt_path", "layer_hook", "openpi_config", "refit", "workers", "devices"},
-    "project": {"method", "seed", "n_neighbors", "min_dist", "metric"},
-    "compare_summary": set(),
-    "construction_preview": {"uncertainty_threshold", "allow_pick_to_give"},
-    "construction": {
-        "uncertainty_threshold",
-        "per_scenario_counts",
-        "include_positives",
-        "oversample_factor",
-        "allow_pick_to_give",
-    },
-    "materialize": {"workers"},
+    spec.operator_id.split(".")[1]: set(spec.parameter_names)
+    for spec in list_operators()
+    if spec.family == "curation"
 }
 
 
@@ -141,6 +98,10 @@ def validate_parameters(operation: str, parameters: dict) -> dict:
             raise ValueError("Invalid result variant")
     if operation == "curation.embedding" and not result.get("ckpt_path"):
         raise ValueError("Select a checkpoint on the execution node")
+    if operation == "curation.quality":
+        from lerobot.data_platform.precompute.preprocess.quality_flags import validate_quality_parameters
+
+        validate_quality_parameters(result)
     return result
 
 
@@ -160,6 +121,8 @@ def worker_capabilities() -> dict:
     return {
         "curation_protocol": CURATION_PROTOCOL,
         "curation_operations": sorted(OPERATIONS),
+        "quality_protocol": 1,
+        "quality_checks": ["legacy", "control", "annotations", "s1", "eef", "s3", "c3"],
         "curation_backends": {
             "labeling": labeling,
             "tagging": tagging,
@@ -239,7 +202,7 @@ def _review_inputs(static: Path, snapshot: dict, workspace: dict | None) -> None
 
 def execute_curation_job(agent, job: dict, source: Path, location: dict) -> dict:
     from lerobot.data_platform.agent import _dataset_payload, _json_value, _require_within
-    from lerobot.data_platform.viewer import MetaOnlyDataset
+    from lerobot.data_platform.dataset_metadata import MetaOnlyDataset
 
     options = job["options"]
     operation = job["operation"]
@@ -263,7 +226,8 @@ def execute_curation_job(agent, job: dict, source: Path, location: dict) -> dict
         "embedding": "embedding",
         "project": "embedding",
     }
-    require_dataset_operation(source, aliases.get(kind, kind))
+    if kind != "quality" or "checks" not in parameters:
+        require_dataset_operation(source, aliases.get(kind, kind))
     folder = _require_within(Path(location["output_dir"]), agent.writable_roots, "Curation staging")
     bundle = folder / "curation-result"
     static = bundle / "static"
@@ -327,15 +291,15 @@ def execute_curation_job(agent, job: dict, source: Path, location: dict) -> dict
         )
         transitions = {}
         skipped = []
-        for path in (static / "csv").glob("episode_*_ds1.csv"):
-            metadata_path = path.with_suffix(".stages.json")
+        for path in cached_csv_files(static / "csv", "episode_*_ds1.csv"):
+            metadata_path = logical_csv_path(path).with_suffix(".stages.json")
             if not metadata_path.is_file():
                 skipped.append(int(path.name.split("_")[1]))
                 continue
             profile = json.loads(metadata_path.read_text())
             maximum = max(1, int(profile["stage_count"]) - 1)
             rows = []
-            with path.open() as handle:
+            with open_cached_csv(path) as handle:
                 for row in csv.DictReader(handle):
                     if "stage" not in row:
                         continue

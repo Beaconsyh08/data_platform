@@ -1,0 +1,130 @@
+<div class="space-y-4 px-4 py-4" x-show="activeTab === 'tagging'">
+                    <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
+                        <div class="font-semibold text-slate-200">Tagging status</div>
+                        <div class="mt-2" x-show="selectedDataset && selectedDataset.tagging"
+                             x-text="selectedDataset ? `tags ${selectedDataset.tagging?.tags_count || 0}, reviewed ${selectedDataset.tagging?.reviewed_count || 0}` : ''"></div>
+                        <div class="mt-1 text-slate-500" x-show="!selectedDataset || !selectedDataset.tagging">No tag result has been loaded for this dataset.</div>
+                    </div>
+                    <div class="rounded border border-amber-800 bg-amber-950/30 px-3 py-3 text-xs text-amber-200"
+                         x-show="taggingCapabilities && !taggingCapabilities.available">
+                        Selected VLM backend is unavailable. Rule/geometric tags can still run.
+                        <span x-show="taggingCapabilities && taggingCapabilities.error" x-text="` ${taggingCapabilities?.error || ''}`"></span>
+                    </div>
+                    <div class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs">
+                        <div class="mb-2 text-slate-400">VLM backend</div>
+                        <div class="grid gap-2 md:grid-cols-2">
+                            <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2"
+                                   :class="tagging.vlm_backend === 'qwen_dashscope' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'"
+                                   :title="taggingBackendError('qwen_dashscope')">
+                                <input type="radio" value="qwen_dashscope" x-model="tagging.vlm_backend"
+                                       @change="applyTaggingBackendDefaults(true)"
+                                       :disabled="!taggingBackendAvailable('qwen_dashscope')">
+                                <span>OpenAI-compatible VLM</span>
+                            </label>
+                            <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2"
+                                   :class="tagging.vlm_backend === 'qwen_remote' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'"
+                                   :title="taggingBackendError('qwen_remote')">
+                                <input type="radio" value="qwen_remote" x-model="tagging.vlm_backend"
+                                       @change="applyTaggingBackendDefaults(true)"
+                                       :disabled="!taggingBackendAvailable('qwen_remote')">
+                                <span>Qwen Gradio</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="rounded border border-amber-800 bg-amber-950/30 px-3 py-3 text-xs text-amber-200"
+                         x-show="selectedVlmTagNames().length > 0 && taggingTokenMissing()">
+                        <div x-text="taggingBackendError(tagging.vlm_backend)"></div>
+                    </div>
+                    <div class="rounded border border-amber-800 bg-amber-950/30 px-3 py-3 text-xs text-amber-200"
+                         x-show="selectedVlmTagNames().length > 0 && taggingCapabilities && taggingBackendAvailable(tagging.vlm_backend)">
+                        VLM tags upload the first frame to the configured external API endpoint.
+                    </div>
+                    <div class="rounded border border-slate-800 bg-slate-950">
+                        <div class="border-b border-slate-800 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Tag schema</div>
+                        <div class="grid gap-2 p-3 md:grid-cols-2">
+                            <template x-for="tag in taggingSchema" :key="tag.name">
+                                <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-3 py-2 text-xs"
+                                       :class="tag.backend === 'vlm' && taggingCapabilities && !taggingCapabilities.available ? 'opacity-50' : ''">
+                                    <input type="checkbox" class="accent-sky-500" :value="tag.name" x-model="tagging.tag_names"
+                                           :disabled="tag.backend === 'vlm' && taggingCapabilities && !taggingCapabilities.available">
+                                    <span>
+                                        <span class="font-semibold text-slate-200" x-text="tag.name"></span>
+                                        <span class="block text-[11px] text-slate-500" x-text="`${tag.backend} · ${tag.dtype}`"></span>
+                                    </span>
+                                </label>
+                            </template>
+                        </div>
+                    </div>
+                    <label class="block">
+                        <span class="mb-1 block text-xs text-slate-400">episodes</span>
+                        <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                               x-model="tagging.episodes" placeholder="all, or: 0 1 2">
+                    </label>
+                    <div class="grid gap-3 md:grid-cols-3">
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">
+                            <input type="checkbox" class="accent-red-500" x-model="tagging.overwrite">
+                            <span>Overwrite existing</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">
+                            <input type="checkbox" class="accent-sky-500" x-model="tagging.trial">
+                            <span>Trial sample</span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">per task type</span>
+                            <input type="number" min="1" class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="tagging.trial_per_type">
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">seed</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="tagging.trial_seed" placeholder="random">
+                        </label>
+                    </div>
+                    <div class="grid gap-3 md:grid-cols-2" x-show="selectedVlmTagNames().length > 0">
+                        <label class="block md:col-span-2">
+                            <span class="mb-1 block text-xs text-slate-400" x-text="tagging.vlm_backend === 'qwen_dashscope' ? 'base_url' : 'endpoint'"></span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="tagging.vlm_endpoint">
+                            <span class="mt-1 block text-[11px] text-slate-500" x-show="tagging.vlm_backend === 'qwen_dashscope'">
+                                OpenAI-compatible base_url, e.g. DashScope compatible-mode/v1 or local vLLM/SGLang http://localhost:8000/v1.
+                            </span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400" x-text="tagging.vlm_backend === 'qwen_dashscope' ? 'API key' : 'ModelScope SDK token'"></span>
+                            <input type="password"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="tagging.vlm_token"
+                                   :placeholder="tagging.vlm_backend === 'qwen_dashscope' ? 'Leave blank to use the shared server API key' : 'optional if MODELSCOPE_SDK_TOKEN is set'">
+                            <span class="mt-1 block text-[11px] text-slate-500" x-show="tagging.vlm_backend === 'qwen_dashscope'">Uses DASHSCOPE_API_KEY on the server for the configured endpoint. A custom endpoint requires its own key, or EMPTY for local servers.</span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">VLM model</span>
+                            <select class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                    x-model="tagging.vlm_model">
+                                <template x-for="model in taggingVlmModels()" :key="model">
+                                    <option :value="model" x-text="model"></option>
+                                </template>
+                                <option x-show="tagging.vlm_model && !taggingVlmModels().includes(tagging.vlm_model)"
+                                        :value="tagging.vlm_model"
+                                        x-text="tagging.vlm_model"></option>
+                                <option value="">Custom...</option>
+                            </select>
+                            <input x-show="!tagging.vlm_model || !taggingVlmModels().includes(tagging.vlm_model)"
+                                   class="mt-2 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="tagging.vlm_model"
+                                   placeholder="custom model id, e.g. qwen3.6-plus">
+                        </label>
+                    </div>
+                    <label class="block">
+                        <span class="mb-1 block text-xs text-slate-400">workers</span>
+                        <input type="number" min="1" max="32" class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                               x-model.number="tagging.workers">
+                    </label>
+                    <div class="dp-action-row">
+                        <button class="dp-btn dp-btn-primary"
+                                @click="startTagging()" :disabled="!canStartTagging() || busy">Start tagging</button>
+                        <button class="dp-btn dp-btn-secondary"
+                                x-show="legacyMutationsEnabled && adminModeEnabled"
+                                @click="mergeTags()" :disabled="!canMergeTags() || busy">Merge tags to metadata</button>
+                    </div>
+                </div>

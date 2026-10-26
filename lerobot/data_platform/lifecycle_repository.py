@@ -23,6 +23,8 @@ class LifecycleRepository(Protocol):
         connection: sqlite3.Connection | None = None,
     ) -> dict | None: ...
 
+    def workspace_summaries(self, version_id: str, owner: str, *, limit: int = 200): ...
+
     def list(
         self,
         kind: str,
@@ -62,6 +64,22 @@ class SQLiteLifecycleRepository:
         self.path = self.root / "lifecycle.db"
         self._initialize()
         self.import_legacy_json()
+
+    def workspace_summaries(self, version_id: str, owner: str, *, limit: int = 200):
+        """Project draft identity without loading episode decisions or repair payloads."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT record_id, json_extract(payload_json, '$.revision') AS revision, "
+                "json_extract(payload_json, '$.status') AS status FROM lifecycle_records "
+                "WHERE kind = 'workspaces' AND json_extract(payload_json, '$.base_dataset_version_id') = ? "
+                "AND json_extract(payload_json, '$.owner') = ? AND json_extract(payload_json, '$.status') = 'open' "
+                "ORDER BY updated_at DESC, record_id DESC LIMIT ?",
+                (version_id, owner, min(200, max(1, limit))),
+            ).fetchall()
+        return [
+            {"workspace_id": row["record_id"], "revision": row["revision"], "status": row["status"]}
+            for row in rows
+        ]
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)

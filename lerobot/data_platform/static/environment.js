@@ -124,7 +124,11 @@
                     <p data-deploy-release></p><p data-deploy-status role="status" aria-live="polite"></p>
                     <progress aria-label="Deployment in progress"></progress><p data-deploy-time></p>
                     <ol data-deploy-steps></ol><p data-deploy-connection></p>
-                    <p>Closing this window does not stop the deployment.</p><button type="button" data-deploy-close>Hide</button>`;
+                    <p>Closing this window does not stop the deployment.</p>
+                    <button type="button" data-deploy-retry hidden>Retry production deployment</button>
+                    <button type="button" data-deploy-close>Hide</button>`;
+                const retryButton = progressDialog.querySelector('[data-deploy-retry]');
+                retryButton.addEventListener('click', () => button.click());
                 bar.append(progressButton); document.body.append(progressDialog);
                 let trackedDeployment, hiddenDeployment, completedDeployment, latestProgress, suppressedProgressId;
                 const rememberDeployment = value => {
@@ -175,6 +179,10 @@
                         comparison.title = 'Compares deployed code releases. Databases and datasets remain separate.';
                         renderProgress(snapshot.progress);
                         button.disabled = submittingDeployment || !snapshot.can_promote;
+                        button.textContent = snapshot.can_retry ? 'Retry production deployment' : 'Deploy to production';
+                        retryButton.hidden = !snapshot.progress?.retryable || auth.user.role !== 'admin' || !!auth.user.original_actor;
+                        retryButton.disabled = submittingDeployment || !snapshot.can_retry;
+                        retryButton.title = snapshot.reason || 'Retry this approved release after all jobs have finished';
                         approveButton.disabled = !snapshot.can_approve || approving;
                         approveButton.textContent = snapshot.approved ? 'Release approved' : 'Review and approve';
                         approveButton.title = snapshot.approved ? 'This release has been approved' : (snapshot.can_approve ? 'Review acceptance checks for this release' : snapshot.reason || 'Acceptance unavailable');
@@ -187,6 +195,7 @@
                     } catch (error) {
                         comparison.textContent = error.message || 'Production status unavailable';
                         button.disabled = true;
+                        retryButton.disabled = true;
                         approveButton.disabled = true;
                         if (progressDialog.open) progressDialog.querySelector('[data-deploy-connection]').textContent = 'Connection interrupted; retrying automatically. Deployment may still be running.';
                     } finally { refreshing = false; }
@@ -195,6 +204,7 @@
                     if (submittingDeployment || !snapshot?.can_promote) return;
                     if (!confirm(`Deploy ${snapshot.dev.release} to production? Production will briefly enter maintenance. Production databases and datasets will be preserved.`)) return;
                     button.disabled = true;
+                    retryButton.disabled = true;
                     submittingDeployment = true;
                     suppressedProgressId = latestProgress?.id;
                     progressDialog.querySelector('[data-deploy-status]').textContent = 'Submitting deployment request…';

@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import JSON, Boolean, Float, Integer, String, Text, create_engine, func, select
+from sqlalchemy import JSON, Boolean, Float, Integer, String, Text, create_engine, func, inspect, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from lerobot.data_platform.operation_log import sanitize_for_log
@@ -37,6 +37,7 @@ class JobControl(ManagementBase):
     job_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, default=0)
     priority: Mapped[int] = mapped_column(Integer, default=1)
+    extra_quota: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     queued_at: Mapped[float] = mapped_column(Float, default=time.time, index=True)
     attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     phase: Mapped[str] = mapped_column(String(32), default="queued")
@@ -83,11 +84,58 @@ class AuditOutbox(ManagementBase):
     payload: Mapped[dict] = mapped_column(JSON)
 
 
+class DatasetScan(ManagementBase):
+    __tablename__ = "dp_dataset_scans"
+
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(36), index=True)
+    active_node_id: Mapped[str | None] = mapped_column(String(36), unique=True, nullable=True)
+    requested_by: Mapped[str] = mapped_column(String(36))
+    path: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    dataset_count: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+def _migrate_source_cleanup_clock(conn) -> None:
+    """Widen the additive cleanup table without changing older executor contracts."""
+    if conn.dialect.name != "mysql":
+        return
+    columns = inspect(conn).get_columns("dp_source_cleanups")
+    if not any(
+        str(column["type"].compile(dialect=conn.dialect)).upper().startswith("FLOAT") for column in columns
+    ):
+        return
+    conn.exec_driver_sql(
+        "ALTER TABLE dp_source_cleanups MODIFY first_seen DOUBLE NOT NULL, "
+        "MODIFY updated_at DOUBLE NOT NULL, MODIFY lease_until DOUBLE NOT NULL"
+    )
+    # An earlier FLOAT observation cannot provide a reliable five-second boundary.
+    # Renew only the proof timestamp; do not release task leases or touch cached data.
+    from lerobot.data_platform.source_cleanup import SourceCleanup
+
+    now = time.time()
+    conn.execute(
+        SourceCleanup.__table__.update()
+        .where(SourceCleanup.status == "observed")
+        .values(first_seen=now, updated_at=now)
+    )
+
+
 def migrate_management(engine) -> None:
-    """Migration 1 creates management tables; serialize startup migrations across processes."""
+    """Create additive tables and serialize startup migrations across processes."""
     import hashlib
 
-    from lerobot.data_platform import maintenance  # noqa: F401 -- register the maintenance table
+    from lerobot.data_platform import (
+        maintenance,  # noqa: F401 -- register the maintenance table
+        mcp_access,  # noqa: F401 -- register account-bound MCP credentials
+        source_cleanup,  # noqa: F401
+    )
+    from lerobot.data_platform.ai_tools import models as ai_models  # noqa: F401
+    from lerobot.data_platform.ai_tools import strategy_models  # noqa: F401
+    from lerobot.data_platform.processing import models  # noqa: F401
 
     lock_key = "dp-management-" + hashlib.sha256(str(engine.url.database).encode()).hexdigest()[:32]
     with engine.connect() as conn:
@@ -99,6 +147,7 @@ def migrate_management(engine) -> None:
             conn.exec_driver_sql("BEGIN IMMEDIATE")
         try:
             ManagementBase.metadata.create_all(conn)
+            _migrate_source_cleanup_clock(conn)
             if conn.scalar(select(SchemaMigration.version).where(SchemaMigration.version == 1)) is None:
                 conn.execute(SchedulerLock.__table__.insert().values(lock_id=1, revision=0))
                 conn.execute(SchemaMigration.__table__.insert().values(version=1))
@@ -108,6 +157,24 @@ def migrate_management(engine) -> None:
                 conn.execute(SchemaMigration.__table__.insert().values(version=3))
             if conn.scalar(select(SchemaMigration.version).where(SchemaMigration.version == 4)) is None:
                 conn.execute(SchemaMigration.__table__.insert().values(version=4))
+            if conn.scalar(select(SchemaMigration.version).where(SchemaMigration.version == 5)) is None:
+                conn.execute(SchemaMigration.__table__.insert().values(version=5))
+            if conn.scalar(select(SchemaMigration.version).where(SchemaMigration.version == 6)) is None:
+                if "extra_quota" not in {
+                    column["name"] for column in inspect(conn).get_columns("dp_job_controls")
+                }:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE dp_job_controls ADD COLUMN extra_quota BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                conn.execute(SchemaMigration.__table__.insert().values(version=6))
+            if "context" not in {
+                column["name"] for column in inspect(conn).get_columns("dp_ai_conversations")
+            }:
+                conn.exec_driver_sql("ALTER TABLE dp_ai_conversations ADD COLUMN context JSON NULL")
+            if "attribution" not in {
+                column["name"] for column in inspect(conn).get_columns("dp_pipeline_versions")
+            }:
+                conn.exec_driver_sql("ALTER TABLE dp_pipeline_versions ADD COLUMN attribution JSON NULL")
             conn.commit()
         finally:
             if mysql:
@@ -208,9 +275,25 @@ class UsageLogStore:
                 if session.get(UsageEvent, payload["event_id"]) is None:
                     raise
 
-    def query(self, filters: dict, *, limit=50, offset=0):
+    def get(self, event_id: str):
+        self.ensure_schema()
+        with self.sessions() as session:
+            row = session.get(UsageEvent, event_id)
+            return row.payload if row else None
+
+    def query(self, filters: dict, *, limit=50, offset=0, summary=False):
         self.ensure_schema()
         statement = select(UsageEvent)
+        if summary:
+            statement = select(
+                UsageEvent.event_id,
+                UsageEvent.timestamp,
+                UsageEvent.user_id,
+                UsageEvent.operation,
+                UsageEvent.status,
+                UsageEvent.job_id,
+                func.substr(UsageEvent.payload["actor"]["username"].as_string(), 1, 128),
+            )
         for key in ("user_id", "operation", "status", "job_id", "dataset_key"):
             if filters.get(key):
                 statement = statement.where(getattr(UsageEvent, key) == str(filters[key]))
@@ -219,12 +302,28 @@ class UsageLogStore:
         if filters.get("until"):
             statement = statement.where(UsageEvent.timestamp <= _normalized_timestamp(filters["until"]))
         with self.sessions() as session:
-            rows = session.scalars(
-                statement.order_by(UsageEvent.timestamp.desc(), UsageEvent.event_id)
+            result = session.execute(
+                statement.order_by(UsageEvent.timestamp.desc(), UsageEvent.event_id.desc())
                 .offset(offset)
                 .limit(limit + 1)
-            ).all()
-            return {"events": [row.payload for row in rows[:limit]], "has_more": len(rows) > limit}
+            )
+            rows = result.all() if summary else result.scalars().all()
+            events = (
+                [
+                    {
+                        "event_id": row[0],
+                        "timestamp": row[1],
+                        "actor": {"user_id": row[2], "username": row[6]},
+                        "operation": row[3],
+                        "status": row[4],
+                        "details": {"job_id": row[5]},
+                    }
+                    for row in rows[:limit]
+                ]
+                if summary
+                else [row.payload for row in rows[:limit]]
+            )
+            return {"events": events, "has_more": len(rows) > limit}
 
     def summary(self, filters: dict):
         self.ensure_schema()
@@ -236,6 +335,41 @@ class UsageLogStore:
             predicates.append(UsageEvent.timestamp >= _normalized_timestamp(filters["since"]))
         if filters.get("until"):
             predicates.append(UsageEvent.timestamp <= _normalized_timestamp(filters["until"]))
+        if filters.get("sample_limit"):
+            from collections import Counter
+
+            limit = int(filters["sample_limit"])
+            if not 1 <= limit <= 5000:
+                raise ValueError("sample_limit must be between 1 and 5000")
+            statement = (
+                select(
+                    UsageEvent.user_id,
+                    UsageEvent.operation,
+                    UsageEvent.status,
+                    UsageEvent.timestamp,
+                    UsageEvent.payload["details"]["duration_ms"].as_float(),
+                )
+                .where(*predicates)
+                .order_by(UsageEvent.timestamp.desc(), UsageEvent.event_id.desc())
+                .limit(limit + 1)
+            )
+            with self.sessions() as session:
+                rows = session.execute(statement).all()
+            more, rows = len(rows) > limit, rows[:limit]
+            durations = [row[4] for row in rows if isinstance(row[4], (int, float))]
+            return {
+                "event_count": len(rows),
+                "active_users": len({row[0] for row in rows if row[0]}),
+                "average_request_ms": sum(durations) / len(durations) if durations else None,
+                "counts": [
+                    {"operation": op, "status": status, "count": count}
+                    for (op, status), count in Counter((row[1], row[2]) for row in rows).items()
+                ],
+                "sample_limit": limit,
+                "truncated": more,
+                "since": rows[-1][3] if rows else None,
+                "until": rows[0][3] if rows else None,
+            }
         grouped = (
             select(UsageEvent.operation, UsageEvent.status, func.count())
             .where(*predicates)

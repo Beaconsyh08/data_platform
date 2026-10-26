@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Data assistant</title>
+<style>body{font:14px system-ui;background:#020617;color:#e2e8f0;margin:0;padding:18px}button,textarea{font:inherit;color:inherit;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:10px}button{cursor:pointer}button:disabled{opacity:.5}textarea{width:100%;box-sizing:border-box;min-height:100px}label{display:block;margin:12px 0}.row{display:flex;gap:12px;flex-wrap:wrap}a{color:#7dd3fc}.error{color:#fda4af}.muted,small{color:#94a3b8}.proposal-flow>div{border:1px solid #334155;padding:10px;margin:8px 0;border-radius:8px}#ai-diff{white-space:pre-wrap}#ai-undo{display:none}</style></head><body>
+<h2 id="assistant-context">Data assistant</h2>
+{% include "assistant_panel.html" %}
+<script>
+{% include "pipeline_assistant.js" %}
+const params = new URLSearchParams(location.search); let locationId = params.get('location_id') || '';
+let context = {type: params.get('type') || 'dataset', target_id: params.get('target_id') || locationId};
+document.getElementById('assistant-context').textContent = {dataset:'About this dataset',quality:'Explain this Quality report',job:'Explain this task',pipeline:'Plan a workflow'}[context.type] || 'Data assistant';
+const api = async (path, method='GET', body) => {const response = await fetch(path,{method,headers:{'Content-Type':'application/json'},body:body === undefined ? undefined : JSON.stringify(body)}); const value = await response.json(); if (!response.ok) throw new Error(value.error || 'Request failed'); return value;};
+const assistant = mountPipelineAssistant(document, {api, canEdit: {{ 'true' if can_edit else 'false' }}, getLocation: () => locationId, getContext: () => context, selectContext: value => {locationId=value.location_id; context=value.context; document.getElementById('assistant-context').textContent = 'Conversation · ' + context.type; return true;},
+loadDraft: async (_draft,_added,conversationId) => {const url='/pipelines?'+new URLSearchParams({location_id:locationId,assistant_conversation:conversationId}); window.top.location.href=url;}});
+assistant.reset(); window.addEventListener('pagehide',()=>assistant.destroy());
+</script></body></html>

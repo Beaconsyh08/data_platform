@@ -15,10 +15,12 @@ from lerobot.data_platform.temporal_caption_demo import infer_video_events
 
 OPERATION = "caption.annotate"
 SCHEMES = {
+    "flora": ("caption",),
     "multiview_semantics": ("coarse", "refined"),
     "video_events": ("caption",),
     "fusion_review": ("fusion_draft", "fusion_reviewed"),
 }
+REVIEW_VARIANTS = {**SCHEMES, "hybrid_windows": ("caption",)}
 FILES = {
     "episode.json",
     "video.mp4",
@@ -43,13 +45,17 @@ def validate_options(options: dict) -> dict:
         raise ValueError("Unknown caption scheme")
     if "include_signals" in options and type(options["include_signals"]) is not bool:
         raise ValueError("include_signals must be a boolean")
+    if options["scheme"] == "flora":
+        if options.get("include_signals") is True:
+            raise ValueError("FLORA is visual only; disable action/state inputs")
+        options = {**options, "include_signals": False}
     return dict(options)
 
 
 def validate_source(info: dict) -> None:
-    cameras = [v for v in info.get("features", {}).values() if v.get("dtype") == "image"]
+    cameras = [v for v in info.get("features", {}).values() if v.get("dtype") in {"image", "video"}]
     if info.get("codebase_version") not in {"v2.1", "v3.0"} or not 1 <= len(cameras) <= 4:
-        raise ValueError("Caption jobs currently require v2.1 or v3.0 data with 1–4 embedded image cameras")
+        raise ValueError("Caption jobs currently require v2.1 or v3.0 data with 1–4 image or video cameras")
 
 
 def validate_run(source: Path, *, key: str | None = None, options: dict | None = None) -> list[dict]:
@@ -67,10 +73,18 @@ def validate_run(source: Path, *, key: str | None = None, options: dict | None =
         if not path.exists():
             continue
         value = json.loads(path.read_text())
-        validate_result(value["result"], value["frame_count"])
         scheme = value.get("scheme_id", "multiview_semantics")
-        if scheme not in SCHEMES or variant not in SCHEMES[scheme] or value["variant"] != variant:
+        validate_result(value["result"], value["frame_count"], max_segments=1000 if scheme == "flora" else 40)
+        if (
+            scheme not in REVIEW_VARIANTS
+            or variant not in REVIEW_VARIANTS[scheme]
+            or value["variant"] != variant
+        ):
             raise ValueError("Invalid scheme/variant")
+        if scheme == "flora":
+            from lerobot.data_platform.temporal_caption_flora import validate_flora
+
+            validate_flora(value)
         if scheme == "fusion_review":
             from lerobot.data_platform.temporal_caption_fusion import validate_partition, validate_review
 
@@ -125,7 +139,7 @@ def validate_run(source: Path, *, key: str | None = None, options: dict | None =
     if not results:
         raise ValueError("No caption results")
     scheme = results[0].get("scheme_id", "multiview_semantics")
-    if {r["variant"] for r in results} != set(SCHEMES[scheme]):
+    if {r["variant"] for r in results} != set(REVIEW_VARIANTS[scheme]):
         raise ValueError("Incomplete or mixed caption scheme")
     return results
 
@@ -168,21 +182,35 @@ def publish_run(source: Path, root: Path, key: str, run: str, *, rebind: bool = 
 def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
     options = validate_options(job.get("options"))
     validate_source(json.loads((source / "meta/info.json").read_text()))
-    from lerobot.data_platform.lifecycle import dataset_snapshot
     from lerobot.data_platform.qwen import QwenClient
+    from lerobot.data_platform.temporal_caption_snapshot import caption_source_fingerprint
 
-    client = QwenClient(timeout_s=600)  # Fail before export if the Agent has no runtime credential.
-    fingerprint, _ = dataset_snapshot(source)
+    flora = options["scheme"] == "flora"
+    if flora:
+        from lerobot.data_platform.temporal_caption_flora import FloraRuntime, camera_roles
+
+        FloraRuntime.load()
+        info = json.loads((source / "meta/info.json").read_text())
+        camera_roles(
+            [key for key, value in info["features"].items() if value.get("dtype") in {"image", "video"}]
+        )
+    client = None if flora else QwenClient(timeout_s=600)
+    model = "FLORA TempSeg / Captioner / Rewarder" if flora else "qwen3.8-max"
 
     def progress(message):
         agent.client.event(agent.state, job["job_id"], message, {"phase": "annotation"})
 
+    fingerprint_cache = agent.state_path.parent / "caption-source-hashes"
+    fingerprint = caption_source_fingerprint(source, fingerprint_cache, progress)
     workspace = agent.state_path.parent / "caption-work"
     workspace.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="episode-", dir=workspace) as temporary:
         bundle, output = Path(temporary) / "bundle", Path(temporary) / "result"
         progress(f"Preparing episode {options['episode_index']} camera frames and measured signals")
-        prepare(source, options["episode_index"], bundle)
+        if flora:
+            prepare(source, options["episode_index"], bundle, export_camera_videos=True)
+        else:
+            prepare(source, options["episode_index"], bundle)
         metadata_path = bundle / "episode.json"
         metadata = json.loads(metadata_path.read_text())
         metadata["include_signals"] = options.get("include_signals", True)
@@ -192,15 +220,17 @@ def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
                 "Visual only. No action/state, pose, gripper or motion evidence supplied."
             )
         write_json(metadata_path, metadata)
+        from lerobot.data_platform.temporal_caption_flora import infer_flora
         from lerobot.data_platform.temporal_caption_fusion import infer_fusion
 
         run = {
+            "flora": infer_flora,
             "multiview_semantics": infer,
             "video_events": infer_video_events,
             "fusion_review": infer_fusion,
         }[options["scheme"]]
-        run(bundle, output, location["dataset_key"], "qwen3.8-max", client=client, progress=progress)
-        if dataset_snapshot(source)[0] != fingerprint:
+        run(bundle, output, location["dataset_key"], model, client=client, progress=progress)
+        if caption_source_fingerprint(source, fingerprint_cache, progress) != fingerprint:
             raise ValueError("Source changed during caption inference")
         for variant in SCHEMES[options["scheme"]]:
             artifact = output / f"{variant}.json"
@@ -219,7 +249,7 @@ def execute_caption_job(agent, job: dict, source: Path, location: dict) -> dict:
                 continue
             progress(f"Uploading annotation artifact: {name}")
             agent.client.upload_artifact(agent.state, job["job_id"], Path(name), output / name, caption=True)
-    return {"episode_index": options["episode_index"], "scheme": options["scheme"], "model": "qwen3.8-max"}
+    return {"episode_index": options["episode_index"], "scheme": options["scheme"], "model": model}
 
 
 def import_archive(stream, root: Path, key: str, dataset_name: str) -> list[str]:

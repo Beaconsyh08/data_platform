@@ -13,6 +13,12 @@ from pathlib import Path
 from lerobot.data_platform.temporal_caption import validate_result, write_json
 
 SCHEMES = {
+    "flora": {
+        "id": "flora",
+        "name": "FLORA",
+        "supports_signals": False,
+        "description": "Visual segmentation, captions and action rewards. Native inference on an 80 GB GPU.",
+    },
     "fusion_review": {
         "id": "fusion_review",
         "name": "Fusion + Review",
@@ -31,8 +37,24 @@ SCHEMES = {
 }
 
 
+REVIEW_SCHEMES = {
+    "flora": {
+        "id": "flora",
+        "name": "FLORA",
+        "supports_signals": False,
+        "description": "Visual segmentation, captions and action rewards. Native inference on an 80 GB GPU.",
+    },
+    **SCHEMES,
+    "hybrid_windows": {
+        "id": "hybrid_windows",
+        "name": "hybrid_windows",
+        "description": "Imported hybrid-window captions; available for review only.",
+    },
+}
+
+
 def scheme_info(artifact: dict) -> dict:
-    return SCHEMES[artifact.get("scheme_id", "multiview_semantics")]
+    return REVIEW_SCHEMES[artifact.get("scheme_id", "multiview_semantics")]
 
 
 def normalize_demo(caption: dict, meta: dict, dataset_key: str) -> dict:

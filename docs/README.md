@@ -36,6 +36,12 @@ limitations under the License.
 
 # Generating the documentation
 
+Data Platform documentation: [user guide](data_platform_page_user_guide.md),
+[current architecture](distributed_data_platform_current_status.md),
+[release changes](data_platform_changelog.md), [operations](data_platform_operations.md),
+[permissions](data_platform_permissions.md), and [CLI](../clients/data-platform-cli/README.md).
+Update these contracts with the corresponding implementation before building a release.
+
 To generate the documentation, you first have to build it. Several packages are necessary to build the doc,
 you can install them with the following command, at the root of the code repository:
 
@@ -155,3 +161,11 @@ the ones hosted on [`hf-internal-testing`](https://huggingface.co/hf-internal-te
 them by URL. We recommend putting them in the following dataset: [huggingface/documentation-images](https://huggingface.co/datasets/huggingface/documentation-images).
 If an external contribution, feel free to add the images to your PR and ask a Hugging Face member to migrate your images
 to this dataset.
+
+## Data Platform processing architecture
+
+See [Unified operators and pipelines](data_platform_operators.md) for operator contracts, the migration inventory, APIs, review gates and recovery.
+
+- [Architecture upgrade completion review](data_platform_architecture_review.md): implementation coverage, console service boundaries and remaining runtime acceptance.
+
+External Codex/Claude Code access: [MCP setup and credential management](data_platform_mcp.md).

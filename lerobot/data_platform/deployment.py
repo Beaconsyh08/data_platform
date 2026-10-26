@@ -75,7 +75,35 @@ class Deployment:
 
     @property
     def units(self) -> list[str]:
-        return [f"data-platform-{kind}@{self.environment}.service" for kind in ("web", "local-worker")]
+        units = [f"data-platform-{kind}@{self.environment}.service" for kind in ("web", "local-worker")]
+        if (self.root / "current/lerobot/data_platform/processing/coordinator.py").is_file():
+            units.append(self.coordinator_unit_name)
+        if (self.root / "current/lerobot/data_platform/ai_tools/runner.py").is_file():
+            units.append(self.assistant_unit_name)
+        if (self.root / "current/lerobot/data_platform/ai_tools/experience_worker.py").is_file():
+            units.append(self.experience_unit_name)
+        if (
+            self.environment == "dev"
+            and (self.root / "current/lerobot/data_platform/ai_tools/strategy_worker.py").is_file()
+        ):
+            units.append(self.strategy_unit_name)
+        return units
+
+    @property
+    def strategy_unit_name(self) -> str:
+        return f"data-platform-strategy@{self.environment}.service"
+
+    @property
+    def coordinator_unit_name(self) -> str:
+        return f"data-platform-pipeline-coordinator@{self.environment}.service"
+
+    @property
+    def assistant_unit_name(self) -> str:
+        return f"data-platform-assistant@{self.environment}.service"
+
+    @property
+    def experience_unit_name(self) -> str:
+        return f"data-platform-experience@{self.environment}.service"
 
     @property
     def maintenance_file(self) -> Path:
@@ -140,8 +168,8 @@ def safe_cli(main):
         raise SystemExit(1) from None
 
 
-def server_unit(deployment: Deployment, *, worker: bool) -> str:
-    root = deployment.root / "current"
+def server_unit(deployment: Deployment, *, worker: bool, release: Path | None = None) -> str:
+    root = release or deployment.root / "current"
     command = (
         f"{root}/.venv/bin/python -m lerobot.data_platform.local_execution"
         if worker
@@ -152,6 +180,11 @@ def server_unit(deployment: Deployment, *, worker: bool) -> str:
         if worker
         else ""
     )
+    if worker and release is not None:
+        compute += (
+            f"Environment=DATA_PLATFORM_EXECUTOR_RELEASE={release}\n"
+            f"Environment=DATA_PLATFORM_EXECUTOR_CURRENT={deployment.root / 'current'}\n"
+        )
     dev = (
         "Slice=data-platform-dev.slice\nCPUWeight=10\nIOWeight=10\nProtectSystem=strict\n"
         "ReadWritePaths=/srv/data-platform-dev\n"
@@ -170,11 +203,11 @@ User={deployment.user}
 Group={deployment.user}
 WorkingDirectory={root}
 EnvironmentFile={deployment.config}
-EnvironmentFile={deployment.root}/current/release.env
+EnvironmentFile={root}/release.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=HF_HOME=/srv/{"data-platform-dev" if deployment.environment == "dev" else "data-platform"}/model-cache
 ExecStart={command}
-Restart=always
+Restart={"on-failure" if worker and release is not None else "always"}
 RestartSec=5
 PrivateTmp=true
 NoNewPrivileges=true
@@ -182,3 +215,66 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def coordinator_unit(deployment: Deployment) -> str:
+    """A separate lightweight coordinator shares the control database and release identity."""
+    unit = server_unit(deployment, worker=False)
+    root = deployment.root / "current"
+    original = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+    return (
+        unit.replace(
+            original,
+            f"Environment=DATA_PLATFORM_COORDINATOR_CURRENT={root}\n"
+            f"ExecStart={root}/.venv/bin/python -m lerobot.data_platform.processing.coordinator",
+        )
+        .replace(
+            "Wants=network-online.target",
+            "Wants=network-online.target\n"
+            f"ConditionPathExists={root}/lerobot/data_platform/processing/coordinator.py",
+        )
+        .replace(
+            f"Description=Data Platform {deployment.environment} web",
+            f"Description=Data Platform {deployment.environment} pipeline coordinator",
+        )
+    )
+
+
+def assistant_unit(deployment: Deployment) -> str:
+    """Pin code/interpreter to this release; SIGTERM drains bounded generations."""
+    root = (deployment.root / "current").resolve()
+    unit = server_unit(deployment, worker=False, release=root)
+    original = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+    return (
+        unit.replace(original, f"ExecStart={root}/.venv/bin/python -m lerobot.data_platform.ai_tools.runner")
+        .replace("RestartSec=5", "RestartSec=5\nTimeoutStopSec=100\nKillMode=mixed")
+        .replace(
+            "Wants=network-online.target",
+            f"Wants=network-online.target\nConditionPathExists={root}/lerobot/data_platform/ai_tools/runner.py",
+        )
+        .replace(
+            f"Description=Data Platform {deployment.environment} web",
+            f"Description=Data Platform {deployment.environment} assistant runner",
+        )
+    )
+
+
+def experience_unit(deployment: Deployment) -> str:
+    """Separate bounded provider work from interactive generation and SQL-only followups."""
+    return (
+        assistant_unit(deployment)
+        .replace("ai_tools.runner", "ai_tools.experience_worker")
+        .replace("ai_tools/runner.py", "ai_tools/experience_worker.py")
+        .replace("assistant runner", "background experience")
+        .replace("TimeoutStopSec=100", "TimeoutStopSec=260")
+    )
+
+
+def strategy_unit(deployment: Deployment) -> str:
+    """Isolated, opt-in dev experiments; no production experiment worker."""
+    return (
+        assistant_unit(deployment)
+        .replace("ai_tools.runner", "ai_tools.strategy_worker")
+        .replace("ai_tools/runner.py", "ai_tools/strategy_worker.py")
+        .replace("assistant runner", "strategy experiments")
+    )

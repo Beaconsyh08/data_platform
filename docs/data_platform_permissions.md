@@ -86,3 +86,34 @@ log; administrators register and grant the required locations. Source-local data
 registered control-plane location cannot be selected. Existing explicit grants are preserved.
 Lifecycle/curation APIs use version/workspace IDs without registered-location scope mapping; they
 require unrestricted access until that mapping exists, rather than exposing out-of-scope artifacts.
+
+### AI 上下文助手
+
+Viewer 可在其数据权限范围内使用只读 AI 解读；操作角色可生成流程草稿和准备操作。
+包括 Viewer 在内的已登录用户均可保存、停用或清空自己的 AI 偏好与显式长期记忆；这些接口不接受其他账号身份，
+不授予数据写入或任务执行权限。会话列表仅返回本人当前仍有权限访问的会话。
+模型工具只准备操作卡片，不提交任务。用户可在卡片中确认 Viewer 准备或 Quality 检测；独立确认接口复用原流程服务的权限、版本校验和幂等提交。其他操作、重试、审批、删除和发布继续使用专用入口。
+长期记忆仅由用户显式保存；账号笔记只供本人使用，数据集笔记每次读取绑定当前权限和源身份。
+后台跟进只观察本人明确确认的助手任务；发布与读取总结均重查源、步骤输入/输出和任务终态确认。
+停用、权限撤销或上下文变化会抑制跟进；总结不授予重试、后续任务或人工审批权限。
+任务解释遵守原有 owner/admin 可见性，Quality 报告沿用 Curation 的范围限制。
+服务端在读取上下文、返回结果和恢复对话时重查权限及对象身份；确认操作时也重新检查；降为 Viewer 后不返回可应用草稿或操作卡片。
+默认取消每小时请求额度，保留单用户和全局并发限制；密钥仅在服务端配置。CLI 使用相同的登录、CSRF 与对象权限规则，密码和会话不落盘。
+
+AI 不具有源码、服务器文件、SQL 查询或任意 HTTP 访问工具，也不能以聊天中声称的管理员身份扩权。
+索取源码、内部指令、数据库导出或凭据的典型请求由服务端拒绝；常见编码和零宽字符绕过也纳入检查。
+发往模型的消息、历史及工具摘要统一脱敏；回复、历史恢复和请求回执同样过滤已配置的敏感值、
+常见凭据格式与服务器路径。模型输出命中敏感内容时丢弃该回复和草稿，显示固定拒绝提示。
+AI 草稿不接受文件路径、输出目录、网络地址或凭据参数；需要这些参数时使用已有手动入口及权限检查。
+安全审计只记录拒绝类别和请求身份，不记录命中的敏感值；助手响应禁用浏览器缓存，异常不回显堆栈或 SQL。
+这些检测是纵深防护，不能保证识别所有语言或编码方式；核心边界仍是最小化摘要、对象授权和固定工具白名单。
+历史记录在读取和再次使用时过滤；不会追溯清理既有数据库备份，也不会替代已泄露凭据的轮换。
+
+## Shared strategy experiments
+
+Only active administrators can configure, review or activate shared strategies. Cross-account learning
+uses administrator-accessible structural Pipeline evidence, excluding private conversations, memories,
+paths and parameter values. The original owner's current dataset grants are rechecked too. Test execution
+requires a separate restricted operator and byte-verified generated fixtures. Strategy approval grants
+no data permissions and never bypasses task confirmation or Curation review. Ordinary users can read only
+applicable strategy metadata; see [the strategy contract](data_platform_strategies.md).

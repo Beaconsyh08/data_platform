@@ -83,7 +83,12 @@ def viewer_signal_presentation(features: dict, columns: list[dict], robot_type: 
             native = re.fullmatch(r"(head|left_arm|right_arm)_(?:quaternion_)?pose", key)
             if native and str(name) in {"x", "y", "z", "roll", "pitch", "yaw", "qw", "qx", "qy", "qz"}:
                 part, component = native[1].replace("_arm", ""), str(name)
-            elif key in {"left_gripper_pos", "right_gripper_pos"}:
+            elif key in {
+                "left_gripper_pos",
+                "right_gripper_pos",
+                "left_gripper_width",
+                "right_gripper_width",
+            }:
                 part, component = key.split("_")[0], "gripper"
             elif (umi_robot or named_pose_layout) and key in {"state", "action", "observation.state"}:
                 packed = re.fullmatch(

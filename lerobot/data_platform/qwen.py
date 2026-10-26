@@ -75,6 +75,7 @@ class QwenClient:
     base_url: str = DEFAULT_DASHSCOPE_BASE_URL
     api_key: str = field(default="", repr=False)
     timeout_s: int = 120
+    max_response_bytes: int | None = None
 
     def __post_init__(self):
         self.base_url = normalize_base_url(self.base_url)
@@ -89,7 +90,12 @@ class QwenClient:
         )
         try:
             with urllib.request.build_opener(_NoRedirect()).open(request, timeout=self.timeout_s) as response:
-                result = json.loads(response.read().decode("utf-8"))
+                payload = (
+                    response.read(self.max_response_bytes + 1) if self.max_response_bytes else response.read()
+                )
+                if self.max_response_bytes and len(payload) > self.max_response_bytes:
+                    raise ValueError("Response exceeds configured limit")
+                result = json.loads(payload.decode("utf-8"))
             if not isinstance(result, dict):
                 raise ValueError("Expected a JSON object")
             return result

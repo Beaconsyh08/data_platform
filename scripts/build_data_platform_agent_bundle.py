@@ -81,6 +81,8 @@ def build_bundle(output_dir: Path, *, version: str) -> tuple[Path, Path]:
             required_modules = {
                 "lerobot/data_platform/agent.py",
                 "lerobot/data_platform/dataset_results.py",
+                "lerobot/data_platform/dataset_scans.py",
+                "lerobot/data_platform/routes/dataset_scans.py",
                 "lerobot/data_platform/curation.py",
                 "lerobot/data_platform/curation_execution.py",
                 "lerobot/data_platform/routes/curation.py",
@@ -90,6 +92,7 @@ def build_bundle(output_dir: Path, *, version: str) -> tuple[Path, Path]:
                 "lerobot/data_platform/environment.py",
                 "lerobot/data_platform/deployment.py",
                 "lerobot/data_platform/agent_install.py",
+                "lerobot/data_platform/rolling_deployment.py",
                 "lerobot/data_platform/precompute/preprocess/dataset_merge.py",
                 "lerobot/data_platform/precompute/preprocess/merge_alignment.py",
                 "lerobot/data_platform/precompute/preprocess/v3_native.py",

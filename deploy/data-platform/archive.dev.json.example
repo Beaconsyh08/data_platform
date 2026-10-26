@@ -1,0 +1,13 @@
+{
+  "bucket": "algorithm-vla-data",
+  "region": "cn-beijing",
+  "environment": "dev",
+  "root": "/var/lib/data-platform-archive/dev",
+  "enabled": false,
+  "migration_enabled": false,
+  "unlimited": true,
+  "cache_bytes": 2147483648,
+  "spool_bytes": 5368709120,
+  "min_free_bytes": 10737418240,
+  "min_free_fraction": 0.1
+}

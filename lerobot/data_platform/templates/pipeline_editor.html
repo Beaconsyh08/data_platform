@@ -1,0 +1,56 @@
+  <style>
+    :root,:host{color-scheme:dark;font:14px system-ui;background:#020617;color:#e2e8f0}
+    body{margin:0}main{max-width:1100px;margin:auto;padding:24px}header,.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    header{justify-content:space-between;margin-bottom:24px}h1{font-size:22px;margin:0}h2{font-size:16px}a{color:#7dd3fc}
+    label{display:flex;gap:6px;flex-direction:column;min-width:0}input,select,textarea,button{font:inherit;color:inherit;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:8px;box-sizing:border-box}
+    button{cursor:pointer}button:disabled{opacity:.45;cursor:default}button.primary{background:#075985}textarea{width:100%;min-height:70px;font-family:monospace}select{max-width:100%}
+    article,section{border:1px solid #1e293b;border-radius:8px;padding:16px;margin:14px 0}article{background:#0b1222}
+    .grow{flex:1;min-width:180px}.parameters{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-top:14px}
+    .muted{color:#94a3b8}.error{color:#fda4af}.ok{color:#86efac}pre{white-space:pre-wrap;overflow-wrap:anywhere}.step-title{justify-content:space-between}small{color:#94a3b8}#feedback{min-height:20px}
+    @media(max-width:600px){main{padding:12px}.row>*{max-width:100%}.parameters{grid-template-columns:1fr}}
+
+    .flow-layout{display:grid;grid-template-columns:minmax(230px,1fr) minmax(260px,1fr);gap:16px;align-items:start}
+    #steps{position:relative;padding-left:30px;min-width:0}#step-editor{min-width:0;position:sticky;top:12px}
+    #steps article{position:relative;margin:24px 0;cursor:pointer;border-left:3px solid #38bdf8}
+    #steps article[aria-current=true]{outline:2px solid #38bdf8}#steps article:not(:last-of-type)::after{content:'↓';position:absolute;bottom:-24px;left:50%;color:#94a3b8}
+    .step-summary{overflow-wrap:anywhere;font-size:12px}.dependency-svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+    .proposal-flow>div{border:1px solid #334155;border-radius:8px;margin:8px 0;padding:10px;white-space:pre-wrap}
+    .proposal-flow>div+div::before{content:'↓ ';color:#94a3b8}#ai-diff{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
+    #steps button{padding:4px 8px}#run-steps>.row{border-left:2px solid #38bdf8;padding:8px;margin:8px}
+    @media(max-width:800px){.flow-layout{grid-template-columns:1fr}#step-editor{position:static}.dependency-svg{display:none}}
+  body.standalone-pipeline{padding-right:400px}#pipeline-assistant-host{position:fixed;right:0;top:0;width:400px;height:100dvh;overflow:auto;padding:12px;box-sizing:border-box;background:#020617;border-left:1px solid #334155;z-index:45}
+    @media(max-width:999px){body.standalone-pipeline{padding-right:0;padding-bottom:62dvh}#pipeline-assistant-host{top:auto;bottom:0;width:100%;height:62dvh}}
+    {% include "assistant_trigger.css" %}
+  </style>
+<main data-can-edit="{{ 'true' if can_edit else 'false' }}">
+  <header><h1>Pipelines</h1><nav><a href="/">Datasets</a> · <a href="/?page=runs">Jobs</a> · <a id="review-link" href="/curation">Review</a></nav></header>
+  <div class="row">
+    <label class="grow">Dataset<select id="location" aria-label="Dataset"><option value="">Choose a registered dataset</option></select></label>
+  </div>
+  <details><summary>Saved pipelines and templates</summary><div class="row">
+    <label>Search pipelines<input id="saved-search" type="search" maxlength="128"></label><button id="saved-more" hidden>Load more pipelines</button>
+    <label class="grow">Saved pipeline<select id="saved" aria-label="Saved pipeline"><option value="">New pipeline</option></select></label>
+
+  </div>
+  </details>
+  <label class="grow">Name<input id="name" aria-label="Name" maxlength="128" value="New pipeline"></label>
+  <div id="feedback" role="status" aria-live="polite"></div>
+  <button id="pipeline-ask-ai">Edit workflow with AI</button>
+  {% include "assistant_trigger.html" %}
+  <aside id="pipeline-assistant-host" aria-label="AI assistant workspace"><button id="pipeline-ai-collapse" aria-label="Collapse AI assistant">Collapse</button>
+    {% include "assistant_panel.html" %}
+  </aside>
+  <details><summary>Start from a template</summary><div class="row"><label>Template<select id="template"><option value="quality">Quality</option><option value="subset">Split → Quality</option><option value="viewer">Viewer</option></select></label><button id="use-template">Use template</button></div></details>
+  <details><summary>Technical details</summary><label><input type="checkbox" id="show-system">Show internal steps</label></details>
+  <p class="muted">↓ Execution order · Blue: dataset input · Dashed: evidence. Select a step to edit.</p>
+  <div class="flow-layout"><div id="steps" aria-label="Pipeline flow"></div><aside id="step-editor" aria-label="Step parameters"></aside></div>
+  <div class="row"><button id="add" disabled>Add step</button><button id="preview">Preview</button><button id="save">Save version</button><button id="check-run" class="primary">Validate and run</button><button id="run" hidden disabled>Confirm run</button></div>
+  <section id="preview-panel" hidden><h2>Plan preview</h2><pre id="preview-result"></pre></section>
+  <details id="run-history"><summary>Run history</summary><div class="row"><label>Run status<select id="run-filter"><option value="">All</option><option value="running">Running</option><option value="waiting_review">Waiting for review</option><option value="done">Completed</option><option value="error">Failed</option></select></label><button id="runs-more" hidden>Load more runs</button></div>
+  <label>Recent runs<select id="runs" aria-label="Recent runs"><option value="">Choose a run</option></select></label>
+  <section id="run-panel" hidden><h2>Run</h2><p id="run-status"></p><div id="run-steps"></div>
+    <div class="row"><button id="cancel">Cancel remaining steps</button><button id="retry">Retry failed step</button></div>
+  </section>
+  </details>
+  <p class="muted" id="scope-note">Steps run on the selected dataset's server. Review decisions open after their evidence is published.</p>
+</main>

@@ -195,6 +195,196 @@ def test_viewer_cannot_queue_or_edit(remote):
     assert not caps["can_edit"]
 
 
+@pytest.mark.parametrize("data_version", [None, "DVT1"])
+@pytest.mark.parametrize("source_profile", ["dvt1", "unrecognized_h10_w"])
+def test_s1_default_and_explicit_profile_round_trip(remote, data_version, source_profile, monkeypatch):
+    import pandas as pd
+
+    from lerobot.data_platform.precompute import data_profile
+
+    info_path = remote.source / "meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["data_version"] = "DVT1"
+    for key in ("action", "state"):
+        info["features"][key].update(shape=[16], unit="rad")
+    if source_profile == "unrecognized_h10_w":
+        info.pop("data_version")
+        info["robot_type"] = "h10_w"
+        previous_profile = data_profile.profile_from_info(
+            {"robot_type": "previously_unrecognized", "features": info["features"]}
+        )
+        info["data_profile"] = previous_profile.to_dict()
+    info_path.write_text(json.dumps(info))
+    for path in (remote.source / "data").rglob("*.parquet"):
+        frame = pd.read_parquet(path)
+        for key in ("action", "state"):
+            frame[key] = frame[key].map(lambda value: list(value) + [0.0] * (16 - len(value)))
+        frame.to_parquet(path, index=False)
+    before = _snapshot(remote.source)
+    remote.control.sync_locations(remote.node["node_id"], [{**remote.location, "metadata": info}])
+    remote.control.heartbeat(
+        remote.node["node_id"],
+        capabilities={**remote.node["capabilities"], "quality_protocol": 1, "quality_checks": ["s1"]},
+    )
+    query = {"location_id": remote.location["location_id"]}
+    context = remote.client.get("/api/curation/context", query_string=query).get_json()
+    assert context["quality_checks"]["legacy"]["available"]
+    assert context["quality_checks"]["s1"]["available"]
+    with monkeypatch.context() as old_agent:
+        if source_profile == "unrecognized_h10_w":
+            old_agent.setattr(data_profile, "resolve_data_profile", lambda *args, **kwargs: previous_profile)
+        job, headers = queue(remote, "curation.snapshot")
+        execute(remote, job, headers)
+    # Existing immutable snapshots can still contain the old failed recognition.
+    context = remote.client.get("/api/curation/context", query_string=query).get_json()
+    assert context["quality_checks"]["legacy"]["available"]
+    assert context["quality_checks"]["s1"]["available"]
+    parameters = {"checks": ["s1"], "workers": 1}
+    if data_version:
+        parameters["data_version"] = data_version
+    job, headers = queue(remote, "curation.quality", parameters=parameters)
+    assert job["options"]["parameters"]["data_version"] == (data_version or "DVT2")
+    execute(remote, job, headers)
+    saved = remote.client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    assert saved["quality"]["summary"]["data_version"] == (data_version or "DVT2")
+    assert _snapshot(remote.source) == before
+
+
+def test_umi_quality_keeps_native_profile(remote):
+    from tests.datasets.test_umi_data import umi_root
+
+    remote.source = umi_root.__wrapped__(remote.tmp / "native")
+    info = json.loads((remote.source / "meta/info.json").read_text())
+    remote.location = remote.control.sync_locations(
+        remote.node["node_id"], [{**remote.location, "root": str(remote.source), "metadata": info}]
+    )[0]
+    remote.control.heartbeat(
+        remote.node["node_id"],
+        capabilities={**remote.node["capabilities"], "quality_protocol": 1, "quality_checks": ["s3"]},
+    )
+    before = _snapshot(remote.source)
+    job, headers = queue(remote, "curation.snapshot")
+    execute(remote, job, headers)
+    context = remote.client.get(
+        "/api/curation/context", query_string={"location_id": remote.location["location_id"]}
+    ).get_json()
+    assert not context["quality_checks"]["legacy"]["available"]
+    assert not context["quality_checks"]["s1"]["available"]
+    assert context["quality_checks"]["s3"]["available"]
+    job, headers = queue(remote, "curation.quality", parameters={"checks": ["s3"], "workers": 1})
+    assert not job["options"]["parameters"].get("data_version")
+    execute(remote, job, headers)
+    saved = remote.client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    assert saved["quality"]["summary"]["data_version"] is None
+    assert _snapshot(remote.source) == before
+
+
+def test_quality_capability_upgrade_publication_and_partial_rerun(remote):
+    from lerobot.data_platform.precompute.preprocess.quality_flags import _write_json
+
+    before = _snapshot(remote.source)
+    job, headers = queue(remote, "curation.snapshot")
+    execute(remote, job, headers)
+    body = {
+        "target": {"location_id": remote.location["location_id"]},
+        "operation": "curation.quality",
+        "parameters": {"checks": ["s3"], "workers": 1},
+    }
+    response = remote.client.post(
+        "/api/curation/jobs", json=body, headers={"Idempotency-Key": "unsupported-quality"}
+    )
+    assert response.status_code == 409 and "Upgrade" in response.get_json()["error"]
+    caps = {
+        **remote.node["capabilities"],
+        "quality_protocol": 1,
+        "quality_checks": ["legacy", "s1", "s3", "c3"],
+    }
+    remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
+    job, headers = queue(remote, "curation.quality", parameters={"checks": ["s3"], "workers": 1})
+    # Seed unrelated detector evidence in the attempt's inputs; publication preserves it.
+    inputs = remote.tmp / "inputs"
+    _write_json(
+        inputs / "annotation_issues.json",
+        [
+            {
+                "episode": 0,
+                "detector": "c3",
+                "type": "quality_flag",
+                "reason": "black_frame",
+                "camera": "front",
+            }
+        ],
+    )
+    job["options"]["input_root"] = str(inputs)
+    job["options"]["input_files"] = {"annotation_issues.json": {}}
+    # execute() normally downloads inputs; this attempt supplies its local validated input directly.
+    from lerobot.data_platform.execution import SpoolingClient
+
+    work = remote.tmp / "work" / job["job_id"]
+    agent = SimpleNamespace(
+        client=SpoolingClient("unused", work),
+        state=None,
+        allowed_roots=[remote.tmp],
+        writable_roots=[remote.tmp],
+    )
+    execute_curation_job(agent, job, remote.source, {**job["location"], "output_dir": str(work / "staging")})
+    # Feed the actual generated bundle through the central lease/checksum publication endpoints.
+    endpoint = f"/api/agents/jobs/{job['job_id']}"
+    result = json.loads((work / "staging/curation-result/result.json").read_text())
+    for path in (work / "uploads").glob("*.json"):
+        upload = json.loads(path.read_text())
+        response = remote.client.put(
+            endpoint + "/curation-artifacts/" + upload["relative_path"],
+            headers=headers,
+            data=Path(upload["path"]).read_bytes(),
+        )
+        assert response.status_code == 200, response.get_json()
+    response = remote.client.post(
+        endpoint + "/complete",
+        headers=headers,
+        json={"status": "done", "result": {**result, "curation_protocol": 1}},
+    )
+    assert response.status_code == 200, response.get_json()
+    saved = remote.client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    assert saved["quality"]["flag_reasons"]["0"][0]["camera"] == "front"
+    assert saved["quality"]["summary"]["checks"] == ["s3"]
+    job, headers = queue(
+        remote,
+        "curation.quality",
+        delivery="quality-rerun",
+        parameters={"checks": ["s3"], "episodes": [1], "workers": 1},
+        input_runs=[job["job_id"]],
+    )
+    execute(remote, job, headers)
+    saved = remote.client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    assert saved["quality"]["flag_reasons"]["0"][0]["detector"] == "c3"
+    assert before == _snapshot(remote.source)
+
+
+def test_quality_claim_rechecks_node_protocol(remote):
+    job, headers = queue(remote, "curation.snapshot")
+    execute(remote, job, headers)
+    remote.control.heartbeat(
+        remote.node["node_id"],
+        capabilities={
+            **remote.node["capabilities"],
+            "quality_protocol": 1,
+            "quality_checks": ["legacy", "s3"],
+        },
+    )
+    body = {
+        "target": {"location_id": remote.location["location_id"]},
+        "operation": "curation.quality",
+        "parameters": {"checks": ["s3"]},
+    }
+    response = remote.client.post(
+        "/api/curation/jobs", json=body, headers={"Idempotency-Key": "quality-node-downgraded"}
+    )
+    assert response.status_code == 202, response.get_json()
+    remote.control.heartbeat(remote.node["node_id"], capabilities=remote.node["capabilities"])
+    assert remote.control.claim_job(remote.node["node_id"], worker_instance_id="downgraded") is None
+
+
 def test_changed_source_rejected_before_operator_runs(remote):
     job, headers = queue(remote, "curation.snapshot")
     execute(remote, job, headers)
@@ -362,6 +552,25 @@ def test_local_target_uses_same_durable_worker_protocol(tmp_path):
     assert context["target"]["location_id"] is None
     assert len(context["episodes"]) == 2
     assert client.post("/api/curation/drafts", json={"target": context["target"]}).status_code == 201
+    response = client.post(
+        "/api/curation/jobs",
+        json={
+            "target": context["target"],
+            "operation": "curation.quality",
+            "parameters": {"checks": ["s3"], "workers": 1},
+        },
+        headers={"Idempotency-Key": "local-quality"},
+    )
+    assert response.status_code == 202, response.get_json()
+    job = control.claim_job(state["node_id"], worker_instance_id="local-worker")
+    headers.update(
+        {"X-Job-Attempt": job["execution"]["attempt_id"], "X-Job-Credential": job["execution"]["credential"]}
+    )
+    before = _snapshot(source)
+    execute(fixture, job, headers)
+    saved = client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    assert saved["quality"]["summary"]["checks"] == ["s3"]
+    assert before == _snapshot(source)
 
 
 def test_label_review_input_and_construction_preserve_source(remote, monkeypatch):
@@ -486,3 +695,111 @@ def test_curation_bookmark_redirects_into_console(remote, page):
     url = urlsplit(response.headers["Location"])
     assert url.path == "/"
     assert parse_qs(url.query) == {"select": [f"remote:{remote.location['location_id']}"], "page": [page]}
+
+
+def test_eef_quality_publication_and_episode_review(remote, request):
+    from tests.datasets.test_quality_eef import make_eef
+
+    remote.source = make_eef(remote.tmp / "eef", request.node.callspec.params["remote"], "wxyz")
+    info = json.loads((remote.source / "meta/info.json").read_text())
+    remote.location = remote.control.sync_locations(
+        remote.node["node_id"],
+        [
+            {
+                "dataset_key": "node/eef",
+                "root": str(remote.source),
+                "output_dir": str(remote.tmp / "eef-cache"),
+                "metadata": {**info, "viewer_url": "/node/eef/episode_0"},
+            }
+        ],
+    )[0]
+    job, headers = queue(remote, "curation.snapshot")
+    execute(remote, job, headers)
+    target = {"location_id": remote.location["location_id"]}
+    caps = {**remote.node["capabilities"], "quality_protocol": 1, "quality_checks": ["s3"]}
+    remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
+    response = remote.client.post(
+        "/api/curation/jobs",
+        json={
+            "target": target,
+            "operation": "curation.quality",
+            "parameters": {"checks": ["eef"]},
+        },
+        headers={"Idempotency-Key": "eef-old-agent"},
+    )
+    assert response.status_code == 409 and "Upgrade" in response.get_json()["error"]
+    caps["quality_checks"].extend(["eef", "annotations"])
+    remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
+    before = _snapshot(remote.source)
+    job, headers = queue(remote, "curation.quality", parameters={"checks": ["eef", "annotations", "s3"]})
+    execute(remote, job, headers)
+    saved = remote.client.get(f"/api/curation/runs/{job['job_id']}").get_json()
+    issue = saved["quality"]["flag_reasons"]["0"][0]
+    assert issue["detector"] == "eef" and issue["severity"] == "candidate"
+    assert issue["frame_intervals"] == [[100, 102]]
+    assert issue["metrics"]["baseline_episodes"] == 2
+    context = remote.client.get("/api/curation/context", query_string=target).get_json()
+    assert context["quality_checks"]["eef"]["available"]
+    assert context["quality_checks"]["annotations"]["available"]
+    assert not context["quality_checks"]["control"]["available"]
+    assert context["viewer_url"] == "/node/eef/episode_0"
+    workspace = remote.client.post("/api/curation/drafts", json={"target": target}).get_json()["workspace"]
+    response = remote.client.patch(
+        f"/api/curation/drafts/{workspace['workspace_id']}/episodes/0",
+        json={
+            "expected_revision": workspace["revision"],
+            "decision": "review",
+            "reason": "Inspect pose spike in Viewer",
+        },
+    )
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["workspace"]["decisions"][0]["decision"] == "review"
+    assert before == _snapshot(remote.source)
+
+
+def test_annotation_submission_and_claim_require_split_check_capability(remote):
+    job, headers = queue(remote, "curation.snapshot")
+    execute(remote, job, headers)
+    caps = {**remote.node["capabilities"], "quality_protocol": 1, "quality_checks": ["legacy"]}
+    remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
+    body = {
+        "target": {"location_id": remote.location["location_id"]},
+        "operation": "curation.quality",
+        "parameters": {"checks": ["annotations"]},
+    }
+    response = remote.client.post(
+        "/api/curation/jobs", json=body, headers={"Idempotency-Key": "split-old-node"}
+    )
+    assert response.status_code == 409 and "Upgrade" in response.get_json()["error"]
+    remote.control.heartbeat(
+        remote.node["node_id"], capabilities={**caps, "quality_checks": ["legacy", "annotations"]}
+    )
+    response = remote.client.post(
+        "/api/curation/jobs", json=body, headers={"Idempotency-Key": "split-new-node"}
+    )
+    assert response.status_code == 202, response.get_json()
+    remote.control.heartbeat(remote.node["node_id"], capabilities=caps)
+    assert remote.control.claim_job(remote.node["node_id"], worker_instance_id="old-agent") is None
+
+
+def test_result_bookmark_retains_report_and_subview(remote):
+    import uuid
+    from urllib.parse import parse_qs, urlsplit
+
+    run = str(uuid.uuid4())
+    response = remote.client.get(
+        "/curation",
+        query_string={
+            "location_id": remote.location["location_id"],
+            "page": "quality",
+            "tab": "quality_report",
+            "run": run,
+        },
+    )
+    assert response.status_code == 302
+    assert parse_qs(urlsplit(response.headers["Location"]).query) == {
+        "select": [f"remote:{remote.location['location_id']}"],
+        "page": ["quality"],
+        "tab": ["quality_report"],
+        "run": [run],
+    }

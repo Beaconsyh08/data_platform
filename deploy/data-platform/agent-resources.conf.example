@@ -1,0 +1,7 @@
+# Optional host-specific override; install as
+# /etc/systemd/system/data-platform-agent@dev.service.d/50-resources.conf
+# Keep this separate from the generated service: upgrades preserve drop-ins.
+# Only apply after draining development jobs. This does not change production.
+[Service]
+CPUQuota=3200%
+MemoryMax=64G

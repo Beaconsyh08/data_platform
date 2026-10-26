@@ -5,6 +5,7 @@
   #dp-environment-bar { position: sticky; top: 0; z-index: 10000; display: flex; flex-wrap: wrap;
     align-items: center; gap: 12px; padding: 6px 16px; font: 13px system-ui;
     background: {{ '#fff1c2' if environment == 'dev' else '#e8edf4' }}; color: #17243a; }
+  #dp-environment-bar > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
   #dp-environment-bar select { color: #17243a; background: white; padding: 3px; border-radius: 4px; }
   #dp-environment-bar .dp-production-deploy {
     display: inline-flex; align-items: center; justify-content: center; min-height: 34px;

@@ -136,12 +136,23 @@ Agent 的 `viewer.prepare` 执行期间先写入 `vis/.dp-<job_id>-<attempt_id>/
 若 episode 布局或阶段配置发生变化，不会把不兼容的旧标注套到新结果上，旧副本仍在备份中。
 任务配置已过期的完成结果归档到 `.history/<location_id>/<job_id>/<attempt_id>/`，不覆盖当前结果。
 
-网页是这些标注结果的主副本。新版 Agent 约每 10 秒通过独立后台线程检查有变化的结果文件，
-运行任务或槽位满时仍可同步；同位置存在源修改或缓存发布时延后该位置写入并重试。
+网页是这些标注结果的主副本。Agent 约每 10 秒通过独立后台线程检查有变化的 JSON/JSONL 结果文件，
 校验数据集与文件摘要后写到其登记的 `output_dir/static/`（默认上述 `vis/local_vis_…/static/`）。
+任务运行或槽位占满时继续回传，上一轮尚未完成时不会重复启动同步线程。
+仅同一数据集的源修改任务未确认完成、或缓存正在发布时推迟该位置的写入并自动重试，其他位置继续同步；
+下载和确认请求不持有本地写入锁，缓存发布与回传写入使用同一把锁，避免覆盖刚回传的标注。
 只有 Agent 确认写入成功后，Viewer 才显示“Results synced”；离线、权限不足或网络失败会保持待同步
 或显示失败，随后自动重试。旧 Agent 会提示需要升级。回传不修改源 Parquet、视频或 `meta/`；
 将标注应用到源数据仍是独立操作。已同步文件被删除时只删除对应受同步管理的文件，覆盖前保留备份。
+Server A 发布远端 Viewer 缓存时，将 `static/csv/episode_*_ds*.csv` 原子压缩为 `.csv.gz`，
+并逐文件校验解压内容后移除原 CSV。旧 CSV 与 gzip CSV 可以混用；Viewer 的 `data.csv` 和
+`assets/.../csv/*.csv` 地址保持不变，读取、阶段编辑、分析和缓存失效支持两种格式。
+编辑已压缩 CSV 后仍保存为 gzip，阶段编码 `.stages.json`、其他标注及 MP4 保持原格式。
+结果同步沿用逻辑 `.csv` 文件名和解压内容的字节数/SHA-256；仅压缩不改变结果 revision。
+缓存重建保留已有编辑，Agent 应用结果后仍校验内容并确认相同 revision。
+在混合版本部署或回退到不支持 gzip 的版本前，须在结果锁保护下将服务器缓存解压回 CSV；
+旧版 Server 不支持读取 gzip 缓存。
+
 视频和完整 CSV 缓存不重复回传；结果同步覆盖顶层 JSON/JSONL，以及 labeling、tagging、analysis、
 annotations 下的 JSON/JSONL（不含审计日志），并包含网页阶段编辑实际修改过的 CSV 和阶段编码文件。
 单个数据集的结果文件合计上限 64 MiB；超限显示同步异常，不会误报成功。
@@ -172,6 +183,33 @@ H100:/srv/data-platform-dev/datasets/dev-sample-20260909_165406
 这解释了为什么“数据在 H100”但网页仍能在 Server A 显示：Agent 在 H100 读取源数据，
 生成缓存并上传到 Server A 的 `remote-cache`，Web 再提供页面、视频和曲线。
 这里的缓存不等于源数据全集。
+
+`console/static/operation_log.jsonl` 是文件操作审计账本，不是视频或数据集副本。
+它按解压后 32 MiB 阈值轮转，当前账本保持 JSONL，历史账本无损压缩为 `.1.gz` 至 `.4.gz`；
+读取兼容旧的 `.1` 至 `.4`，单条超大事件可能超过轮转阈值。
+网页仍能查询轮转账本中的近期操作，MySQL 中的审计记录独立保留。
+`dp_dataset_locations` 保存数据集位置与元信息；源目录删除后，登记从可用列表移除，数据库仅保留
+删除状态供历史 Job 和 lineage 引用。无变化的周期同步减少存在时间更新，
+避免将相同的大块元信息反复记录到数据库变更流水。数据库和发行历史的保留策略参见
+[运维手册](data_platform_operations.md#5-怎么确认更新完成)。
+
+### 原始目录删除后的清理
+
+当前版本的本机执行器和远端 Agent 在独立后台线程中检查已登记源路径，每批最多 50 个，
+不占计算槽、不扫描数据内容。只有原始目录确实不存在、父目录可读且两次检查的文件系统身份一致时，
+才停止该位置的新任务、取消尚未执行且依赖它的任务，并从可用数据集列表移除。
+节点离线、权限不足、I/O 错误、悬空符号链接、仅缺少 `meta/info.json` 或内容损坏均不能触发清理。
+cache-only 的远端占位路径不当作原始数据检查。
+
+已有运行、取消待确认或 interrupted 任务仍保留其工作缓存；清理等待它们退出并确认。
+随后删除该位置所属的 Agent Viewer 缓存、已确认退出任务的临时计算缓存，以及 Server A 对应的
+`remote-cache/<location_id>`、上传 staging、历史/备份缓存和计算报告。历史 Job、版本身份、
+Curation 决策与 lineage 数据库记录保留；独立派生数据集不随输入删除。
+共享缓存、未知归属、越出可写根或包含独立登记数据的目录会延后并记录原因，不递归删除源目录。
+单数据集控制台与 Viewer 共用目录时，只删除数据缓存及其辅助备份，保留管理数据库、身份配置和平台审计。
+自定义缓存的归属验证记录目录 inode/device，部分删除后可重试，目录被替换时不沿用旧证明。
+清理进度写入 `dp_source_cleanups`，节点/服务重启或磁盘失败后可重试；已清理部分不要求重新计算。
+源路径在清理前恢复会撤销待清理状态；清理后重新加入需要重新扫描，缓存需重新准备。
 
 ## 4. 配置、运行状态和备份在哪里
 
@@ -223,3 +261,37 @@ exit
 后续更新命令请看 [当前环境构成与更新手册](data_platform_operations.md)。
 记住三个动作的区别：**改工作区代码 → 构建发行包 → 部署到指定环境**。
 这三个动作都不会自动把开发数据库或样本复制覆盖到生产。
+
+## 算子与流程新增状态
+
+流程定义、不可变 revision、运行与步骤状态使用现有管理数据库中的 `dp_pipeline*` 表。
+检测报告继续进入 lifecycle 目录旁的 `curation/runs/`；普通新算子的报告位于 `operator-results/<job_id>/`。
+上传仍先进入 `curation/.jobs/<job_id>/<attempt_id>/`，校验后发布。计算节点的 `operator-work/`
+保存按 Job/Attempt 隔离的工作文件与版本快照。数据转换输出是已登记源目录的独立 sibling，
+不在原始数据根内存放控制面状态。详见 [算子与流程](data_platform_operators.md)。
+
+### Optional object archive
+
+OSS artifacts live only under `data-platform/dev/` or `data-platform/prod/` in the configured Bucket.
+Content-addressed gzip objects are checked against both compressed and original SHA-256 before
+publication. References reuse existing result records or file manifests; no additional database
+is introduced. Original datasets, hot Viewer caches, permissions, leases and recovery state stay
+on their current storage. The archive's `pending`, `cache`, `receipts` and `migrations` directories
+belong outside all dataset roots. On Server A these are under `/srv/data-platform-dev/archive`
+and `/srv/data-platform/archive`, respectively. Failed uploads remain pending within the configured
+byte limit. Configuration and service ownership are documented in
+[operations](data_platform_operations.md#bounded-lists-and-optional-oss-archive).
+
+[Offline MEM exports](mem_export.md) remain on the source host at the explicitly chosen sibling
+output path. Their raw PNG views can exceed compressed video size; they are not automatically
+queued for OSS or stored in the control database.
+
+Owned success/failure acceptance attachments expire after 30/90 days; database backups retain
+30 days and at least the newest three. Cleanup requires a protected-object inventory for current
+and rollback release evidence. Referenced reports never expire automatically. Bucket lifecycle
+rules must not expire the reports prefix; incomplete multipart uploads may expire after seven days.
+The cleanup worker lists and deletes the expired owned object's versions and delete markers.
+Multipart cleanup is explicit and bounded. No lifecycle rule may change
+other applications' prefixes. OSS download traffic and requests can incur charges even when local
+storage usage is bounded. Database page reuse is not the same as reducing its physical file size;
+this workflow never automatically rebuilds tables or vacuums a live database.

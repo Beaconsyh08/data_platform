@@ -38,8 +38,17 @@ def install_environment_web(app, store):
             return jsonify({"error": "Not found"}), 404
         internal = bool(os.environ.get("DATA_PLATFORM_INTERNAL_EXECUTION"))
         machine = request.path.startswith("/api/agents/")
+        mcp = request.path == "/mcp"
+        if (
+            mcp
+            and request.method == "POST"
+            and (request.content_length is None or request.content_length > 32768)
+        ):
+            return jsonify(error="A bounded Content-Length is required"), 413
+        if mcp and request.headers.get("Origin") not in (None, request.host_url.rstrip("/")):
+            return jsonify(error="Invalid request origin"), 403
         write = request.method not in {"GET", "HEAD", "OPTIONS"}
-        if identity and write and not machine and not internal:
+        if identity and write and not machine and not mcp and not internal:
             # A non-simple header also protects unauthenticated login/bootstrap requests.
             origin = request.headers.get("Origin")
             expected_origin = request.host_url.rstrip("/")

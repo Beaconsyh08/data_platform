@@ -1,0 +1,51 @@
+<div class="space-y-4 px-4 py-4" x-show="activeTab === 'embedding'">
+                    <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
+                        <div class="font-semibold text-slate-200">Embedding status</div>
+                        <div class="mt-2" x-show="selectedDataset && selectedDataset.embedding"
+                             x-text="selectedDataset ? `points ${selectedDataset.embedding?.points_count || 0}` : ''"></div>
+                        <div class="mt-1 text-slate-500" x-show="!selectedDataset || !selectedDataset.embedding">No embedding result has been loaded for this dataset.</div>
+                    </div>
+                    <label class="block">
+                        <span class="mb-1 block text-xs text-slate-400">PI / policy checkpoint path</span>
+                        <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                               x-model="embedding.ckpt_path" placeholder="/path/to/checkpoint">
+                        <span class="mt-1 block text-[11px] text-slate-500">OpenPI mode loads this checkpoint and pools prefix encoder hidden states. Use episode_stats_fallback only for stats-only embeddings.</span>
+                    </label>
+                    <div class="grid gap-3 md:grid-cols-2">
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">OpenPI config</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="embedding.openpi_config" placeholder="auto from train_config_full.json">
+                            <span class="mt-1 block text-[11px] text-slate-500">Leave empty to read train_config_full.json:name from the checkpoint directory.</span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">layer hook</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="embedding.layer_hook">
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">episodes</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="embedding.episodes" placeholder="all, or: 0 1 2">
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">workers</span>
+                            <input type="number" min="1" max="8" class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="embedding.workers">
+                            <span class="mt-1 block text-[11px] text-slate-500">One OpenPI process per worker. Use 8 for 8 GPUs if memory allows.</span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">CUDA devices</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="embedding.devices" placeholder="0,1,2,3,4,5,6,7">
+                        </label>
+                    </div>
+                    <label class="flex items-center gap-2 rounded border border-amber-800 bg-amber-950/30 px-3 py-2">
+                        <input type="checkbox" class="accent-amber-500" x-model="embedding.refit">
+                        <span>Refit reducer (old coordinates may move)</span>
+                    </label>
+                    <div class="dp-action-row">
+                        <button class="dp-btn dp-btn-primary dp-full"
+                                @click="startEmbedding()" :disabled="!canStartEmbedding() || busy">Start embedding</button>
+                    </div>
+                </div>

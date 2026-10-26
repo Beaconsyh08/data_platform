@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import logging
@@ -23,7 +24,9 @@ import requests
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.data_platform.cli import get_default_output_dir, run_precompute
+from lerobot.data_platform.job_concurrency import agent_slots
 from lerobot.data_platform.operation_log import append_operation_event
+from lerobot.data_platform.operators.registry import operation_ids
 from lerobot.data_platform.precompute.data_profile import (
     DATA_PROFILE_PROTOCOL,
     dataset_semantics,
@@ -42,22 +45,13 @@ from lerobot.data_platform.precompute.preprocess import (
 from lerobot.data_platform.precompute.preprocess.common import default_preprocess_path
 from lerobot.data_platform.precompute.preprocess.dataset_merge import validate_merge_sources
 from lerobot.data_platform.task_catalog import TASK_CONFIG_PROTOCOL, TaskConfigSnapshot
+from lerobot.data_platform.temporal_caption_flora import runtime_capabilities as flora_runtime_capabilities
 
 _PREPROCESS_OPS = {
-    "convert_action",
-    "convert_v3",
-    "drop_field",
-    "merge",
-    "smooth_action",
-    "split",
-    "standardize",
-    "value_edit",
+    name.removeprefix("preprocess.") for name in operation_ids(family="preprocess", remote=True)
 }
 _SOURCE_MUTATION_OPS = {
-    "trim_episode",
-    "delete_episodes",
-    "repair_v3_video_timestamps",
-    "value_edit",
+    name.removeprefix("mutation.") for name in operation_ids(family="mutation", remote=True)
 }
 _FORBIDDEN_OPTION_KEYS = {
     "in_place",
@@ -305,7 +299,7 @@ def _dataset_payload(root: Path, *, node_name: str, metadata: dict | None = None
     }
 
 
-def discover_datasets(roots: list[Path], *, node_name: str) -> list[dict]:
+def discover_datasets(roots: list[Path], *, node_name: str, strict: bool = False) -> list[dict]:
     datasets = []
     seen = set()
     for configured_root in _resolve_roots(roots):
@@ -322,11 +316,21 @@ def discover_datasets(roots: list[Path], *, node_name: str) -> list[dict]:
                 try:
                     datasets.append(_dataset_payload(current, node_name=node_name))
                 except (OSError, json.JSONDecodeError, ValueError) as exc:
+                    if strict:
+                        raise
                     logging.warning("Could not inspect dataset %s: %s", current, exc)
+                continue
+            mcap_files = [path for path in current.glob("*.mcap") if path.is_file() and not path.is_symlink()]
+            if mcap_files:
+                from lerobot.data_platform.mcap_import import raw_location
+
+                datasets.append(raw_location(current, node_name, mcap_files))
                 continue
             try:
                 children = sorted(current.iterdir(), reverse=True)
             except OSError:
+                if strict:
+                    raise
                 continue
             for child in children:
                 if (
@@ -449,12 +453,24 @@ class AgentClient:
         )
         return list(response["locations"])
 
+    def update_scan(self, state: AgentState, request_id: str, **payload) -> dict:
+        return self._request(
+            "POST",
+            f"/api/agents/scans/{request_id}",
+            token=state.node_token,
+            json=payload,
+        )["scan"]
+
     def claim(self, state: AgentState, *, lease_seconds: int) -> dict | None:
         response = self._request(
             "POST",
             "/api/agents/jobs/claim",
             token=state.node_token,
-            json={"lease_seconds": lease_seconds, "worker_instance_id": self.worker_instance_id},
+            json={
+                "lease_seconds": lease_seconds,
+                "worker_instance_id": self.worker_instance_id,
+                "release": os.environ.get("DATA_PLATFORM_RELEASE"),
+            },
         )
         job = response.get("job")
         if job:
@@ -578,6 +594,7 @@ class DataPlatformAgent:
         enrollment_token: str,
         lease_seconds: int = 300,
         allow_source_mutations: bool = False,
+        local_requests: bool = False,
     ):
         self.client = client
         self.state_path = Path(state_path).expanduser()
@@ -587,6 +604,7 @@ class DataPlatformAgent:
         self.enrollment_token = str(enrollment_token)
         self.lease_seconds = max(30, int(lease_seconds))
         self.allow_source_mutations = bool(allow_source_mutations)
+        self.local_requests = bool(local_requests)
         from lerobot.data_platform.environment import EnvironmentIdentity, validate_dev_path, verify_directory
 
         self.environment_identity = EnvironmentIdentity.from_env()
@@ -671,6 +689,8 @@ class DataPlatformAgent:
 
     def capabilities(self) -> dict:
         from lerobot.data_platform.curation_execution import worker_capabilities
+        from lerobot.data_platform.mcap_contract import OPERATIONS as MCAP_OPERATIONS
+        from lerobot.data_platform.mcap_import import runtime_status
 
         disk = {}
         for root in self.allowed_roots:
@@ -687,14 +707,56 @@ class DataPlatformAgent:
         ]
         if self.allow_source_mutations:
             operations.extend(f"mutation.{op}" for op in sorted(_SOURCE_MUTATION_OPS))
+        mcap_runtime = runtime_status()
+        if mcap_runtime.get("ready"):
+            operations.extend(sorted(MCAP_OPERATIONS))
+        from lerobot.data_platform.operators.registry import list_operators, worker_manifest
+
+        operations.extend(
+            spec.operator_id
+            for spec in list_operators()
+            if spec.remote
+            and spec.family not in {"mcap", "curation", "caption", "viewer", "preprocess", "mutation"}
+        )
+        backends = worker_capabilities().get("curation_backends", {})
+        for kind in ("labeling", "tagging", "embedding"):
+            group = backends.get(kind, {})
+            ready = (
+                any(item.get("available") for item in group.get("backends", {}).values())
+                if "backends" in group
+                else group.get("available")
+            )
+            if not ready and f"curation.{kind}" in operations:
+                operations.remove(f"curation.{kind}")
+        manifest = worker_manifest(operations)
+        operations = sorted(set(operations) & set(manifest["operator_versions"]))
+        if self.local_requests:
+            # Local commands and protected request adapters pin local-only descriptors too.
+            manifest["operator_versions"].update(
+                {
+                    spec.operator_id: spec.version
+                    for spec in list_operators()
+                    if spec.effect != "source" or self.allow_source_mutations
+                }
+            )
         return {
+            **manifest,
             **worker_capabilities(),
             "caption_protocol": 1,
+            "caption_read_protocol": 1,
+            "source_cleanup_protocol": 1,
+            "caption_concurrent_limit": max(
+                1, int(os.environ.get("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "1"))
+            ),
+            "job_concurrent_limit": agent_slots(),
             "caption_dataset_versions": ["v2.1", "v3.0"],
             "caption_signal_options": True,
-            "caption_schemes": ["multiview_semantics", "video_events", "fusion_review"],
+            "caption_schemes": ["multiview_semantics", "video_events", "fusion_review", "flora"],
+            **flora_runtime_capabilities(),
             "caption_configured": bool(os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_DASHSCOPE_API_KEY")),
             "job_protocol": 2,
+            "local_requests": self.local_requests,
+            "rolling_deploy_protocol": 1 if os.environ.get("DATA_PLATFORM_EXECUTOR_RELEASE") else 0,
             "environment": os.environ.get("DATA_PLATFORM_ENV", "legacy"),
             "instance_id": os.environ.get("DATA_PLATFORM_INSTANCE_ID", ""),
             "release": os.environ.get("DATA_PLATFORM_RELEASE", "legacy"),
@@ -702,45 +764,91 @@ class DataPlatformAgent:
             "platform": platform.platform(),
             "cpu_count": os.cpu_count(),
             "disk": disk,
+            "allowed_roots": [str(path) for path in self.allowed_roots],
+            "writable_roots": [str(path) for path in self.writable_roots],
             "data_profile_protocol": DATA_PROFILE_PROTOCOL,
             "operations": operations,
             "merge_alignment_protocol": 3,
             "source_mutations_enabled": self.allow_source_mutations,
             "task_config_protocol": TASK_CONFIG_PROTOCOL,
             "result_sync_protocol": 1,
+            "dataset_scan_protocol": 1,
+            "mcap_import_protocol": 1,
+            "mcap_import": {**mcap_runtime, "adapters": ["genrobot_das"]},
         }
 
     def sync_locations(self) -> list[dict]:
         discovered = discover_datasets(self.allowed_roots, node_name=self.name)
         return self.client.sync_locations(self.state, discovered)
 
-    def run_once(self, *, sync: bool = True) -> bool:
+    def _process_scan_request(self, request: dict | None) -> None:
+        completion = getattr(self, "_pending_scan_completion", None)
+        if completion:
+            request_id, payload = completion
+            self.client.update_scan(self.state, request_id, **payload)
+            self._pending_scan_completion = None
+            if request and request["request_id"] == request_id:
+                return
+        if not request:
+            return
+        request_id = request["request_id"]
+        self.client.update_scan(self.state, request_id, status="running")
+        try:
+            root = _require_within(Path(request["path"]), self.allowed_roots, "scan path")
+            if not root.is_dir():
+                raise FileNotFoundError(f"Scan directory does not exist: {root}")
+            locations = discover_datasets([root], node_name=self.name, strict=True)
+            synced = self.client.sync_locations(self.state, locations)
+            payload = {"status": "done", "dataset_count": len(synced)}
+        except Exception as exc:
+            from lerobot.data_platform.operation_log import sanitize_for_log
+
+            payload = {"status": "error", "error": sanitize_for_log(str(exc))}
+        self._pending_scan_completion = request_id, payload
+        self.client.update_scan(self.state, request_id, **payload)
+        self._pending_scan_completion = None
+
+    def run_once(
+        self, *, sync: bool = True, dispatch=None, allow_claim: bool = True, sync_results: bool = True
+    ) -> bool:
         heartbeat = self.client.heartbeat(self.state, self.capabilities()) or {}
+        if heartbeat.get("draining"):
+            return False
+        if isinstance(self.client, AgentClient) and heartbeat.get("caption_read_protocol") == 1:
+            self._start_caption_reads()
+        if (
+            isinstance(self.client, AgentClient)
+            and heartbeat.get("source_cleanup_protocol") == 1
+            and not getattr(self, "_source_cleanup", None)
+        ):
+            from lerobot.data_platform.source_cleanup_agent import SourceCleanupWorker
+
+            self._source_cleanup = SourceCleanupWorker(self)
+            self._source_cleanup.start()
+        self._process_scan_request(heartbeat.get("scan_request"))
         if isinstance(self.client, AgentClient):
             from lerobot.data_platform.execution import ExecutionSupervisor, StopRequestedError
 
             supervisor = ExecutionSupervisor(self)
-            if supervisor.reconcile():
+            if dispatch is None and supervisor.reconcile():
                 return True
         if sync:
             self.sync_locations()
-        if (
-            heartbeat.get("result_sync_protocol") == 1
-            and time.monotonic() - getattr(self, "_last_result_sync_at", 0) >= 10
-        ):
-            from lerobot.data_platform.dataset_results import sync_agent_results
-
-            try:
-                sync_agent_results(self)
-            except Exception:
-                logging.exception("Dataset result synchronization will retry on the next sync poll")
-            finally:
-                self._last_result_sync_at = time.monotonic()
+        if sync_results and heartbeat.get("result_sync_protocol") == 1:
+            self._sync_results(background=dispatch is not None)
+        if not allow_claim:
+            return False
         job = self.client.claim(self.state, lease_seconds=self.lease_seconds)
         if job is None:
             return False
+        if dispatch is not None and job.get("execution"):
+            dispatch(job)
+            return True
         job_id = job["job_id"]
         if job.get("execution"):
+            lock = supervisor.acquire_supervision(job["execution"]["attempt_id"])
+            if lock is None:
+                return False
             try:
                 supervisor.start(job)
             except Exception as exc:
@@ -753,6 +861,9 @@ class DataPlatformAgent:
                         status="cancelled" if isinstance(exc, StopRequestedError) else "error",
                         error=str(exc),
                     )
+                    supervisor._release(supervisor.root / job["execution"]["attempt_id"] / "reservation.json")
+            finally:
+                lock.close()
             return True
         stop_heartbeat = threading.Event()
         heartbeat_thread = threading.Thread(
@@ -801,24 +912,62 @@ class DataPlatformAgent:
         location = dict(job.get("location") or {})
         source_root = _require_within(Path(location.get("root") or ""), self.allowed_roots, "dataset root")
         operation = str(job.get("operation") or "")
-        require_dataset_operation(
-            source_root, operation, data_version_override=(job.get("options") or {}).get("data_version")
+        from lerobot.data_platform.curation_execution import execute_curation_job
+        from lerobot.data_platform.mcap_import import execute_import
+        from lerobot.data_platform.operators import ExecutionContext, get_operator
+        from lerobot.data_platform.operators.registry import execute_operator
+        from lerobot.data_platform.temporal_caption_jobs import execute_caption_job
+
+        snapshot = (job.get("options") or {}).get("operator_snapshot")
+        if (job.get("options") or {}).get("local_compute"):
+            from lerobot.data_platform.processing.local_executor import execute_local_operator
+
+            get_operator(operation, snapshot.get("version") if snapshot else None)
+            return execute_local_operator(self, job)
+        get_operator(operation, snapshot.get("version") if snapshot else None)
+        if not operation.startswith("import.mcap."):
+            require_dataset_operation(
+                source_root, operation, data_version_override=(job.get("options") or {}).get("data_version")
+            )
+        if snapshot and snapshot.get("source_fingerprint"):
+            from lerobot.data_platform.lifecycle import dataset_snapshot
+
+            if dataset_snapshot(source_root)[0] != snapshot["source_fingerprint"]:
+                raise ValueError("Pinned pipeline dataset version changed")
+        if snapshot:
+            job = {
+                **job,
+                "_operator_version": snapshot["version"],
+                "options": {k: v for k, v in job["options"].items() if k != "operator_snapshot"},
+            }
+        spec = get_operator(operation, job.get("_operator_version"))
+        if spec.family == "preprocess" and job["options"].get("version_inputs"):
+            from lerobot.data_platform.operators.dataset_versions import (
+                publish_preprocess_version,
+                resume_preprocess_result,
+            )
+
+            completed = resume_preprocess_result(self, job)
+            if completed:
+                return publish_preprocess_version(self, job, source_root, completed)
+        if spec.family not in {"mcap", "curation", "caption", "viewer", "preprocess", "mutation"}:
+            from lerobot.data_platform.operators.execution import execute_registered
+
+            return execute_registered(self, job, source_root, location)
+        return execute_operator(
+            operation,
+            ExecutionContext(
+                source_root=source_root,
+                handlers={
+                    "mcap": lambda: execute_import(self, job, source_root),
+                    "curation": lambda: execute_curation_job(self, job, source_root, location),
+                    "caption": lambda: execute_caption_job(self, job, source_root, location),
+                    "viewer": lambda: self._prepare_viewer(job, source_root, location),
+                    "preprocess": lambda: self._run_preprocess(job, source_root, location),
+                    "mutation": lambda: self._run_source_mutation(job, source_root, location),
+                },
+            ),
         )
-        if operation.startswith("curation."):
-            from lerobot.data_platform.curation_execution import execute_curation_job
-
-            return execute_curation_job(self, job, source_root, location)
-        if operation == "caption.annotate":
-            from lerobot.data_platform.temporal_caption_jobs import execute_caption_job
-
-            return execute_caption_job(self, job, source_root, location)
-        if operation == "viewer.prepare":
-            return self._prepare_viewer(job, source_root, location)
-        if operation.startswith("preprocess."):
-            return self._run_preprocess(job, source_root, location)
-        if operation.startswith("mutation."):
-            return self._run_source_mutation(job, source_root, location)
-        raise ValueError(f"unsupported remote operation: {operation}")
 
     def _prepare_viewer(self, job: dict, source_root: Path, location: dict) -> dict:
         options = dict(job.get("options") or {})
@@ -826,13 +975,25 @@ class DataPlatformAgent:
         output_dir = Path(location.get("output_dir") or get_default_output_dir(source_root)).expanduser()
         output_dir = _require_within(output_dir, self.writable_roots, "viewer output directory")
         last_event_at = 0.0
+        last_stage = None
 
         def progress(payload: dict) -> None:
-            nonlocal last_event_at
+            nonlocal last_event_at, last_stage
             now = time.monotonic()
-            if now - last_event_at < 1.0 and payload.get("status") != "error":
+            stage = payload.get("phase") or payload.get("step")
+            finished = (
+                payload.get("status") in {"done", "error"}
+                or (payload.get("total") and payload.get("current", 0) >= payload["total"])
+                or ("files_total" in payload and payload.get("files_current") == payload["files_total"])
+            )
+            if now - last_event_at < 1.0 and stage == last_stage and not finished:
                 return
-            last_event_at = now
+            last_event_at, last_stage = now, stage
+            payload = dict(payload)
+            if "progress" in payload:
+                payload["progress"] = 0.95 * payload["progress"]
+            elif payload.get("total"):
+                payload["progress"] = 95 * payload.get("current", 0) / payload["total"]
             self.client.event(
                 self.state,
                 job["job_id"],
@@ -878,17 +1039,6 @@ class DataPlatformAgent:
         files.sort(key=lambda path: (path == manifest, path.as_posix()))
         for index, path in enumerate(files, start=1):
             relative = path.relative_to(static_dir)
-            progress = (
-                {"current": round(98 + 2 * index / len(files), 2), "total": 100, "phase": "upload"}
-                if derived
-                else {"current": index, "total": len(files), "phase": "upload"}
-            )
-            self.client.event(
-                self.state,
-                job["job_id"],
-                f"Uploading viewer artifact {index}/{len(files)}: {relative}",
-                progress,
-            )
             self.client.upload_artifact(
                 self.state,
                 job["job_id"],
@@ -896,15 +1046,65 @@ class DataPlatformAgent:
                 path,
                 derived=derived,
             )
+            if not getattr(self.client, "deferred_uploads", False):
+                start = 98 if derived else 95
+                self.client.event(
+                    self.state,
+                    job["job_id"],
+                    f"Uploaded viewer artifacts {index}/{len(files)}",
+                    {
+                        "current": index,
+                        "total": len(files),
+                        "phase": "upload",
+                        "progress": start + (99 - start) * index / len(files),
+                    },
+                )
         return len(files)
 
     def _run_preprocess(self, job: dict, source_root: Path, location: dict) -> dict:
         op = str(job["operation"]).removeprefix("preprocess.")
         if op not in _PREPROCESS_OPS:
             raise ValueError(f"unsupported remote preprocess op: {op}")
-        if op == "merge":
-            return self._run_merge(job, source_root)
+        if op in {"merge", "subtract"}:
+            from lerobot.data_platform.operators.dataset_versions import publish_preprocess_version
+
+            computed = (
+                self._run_merge(job, source_root) if op == "merge" else self._run_subtract(job, source_root)
+            )
+            return publish_preprocess_version(self, job, source_root, computed)
         options = dict(job.get("options") or {})
+        version_inputs = options.pop("version_inputs", None)
+        if version_inputs:
+            from lerobot.data_platform.lifecycle import dataset_snapshot
+
+            roots = {str(source_root.resolve()): source_root}
+            roots.update(
+                {
+                    str(Path(item["root"]).resolve()): Path(item["root"])
+                    for item in options.get("_source_locations", [])
+                }
+            )
+            for value in version_inputs:
+                root = roots.get(str(Path(value["version"]["root"]).resolve()))
+                if root is None or dataset_snapshot(root)[0] != value["version"]["fingerprint"]:
+                    raise ValueError("Versioned pipeline input changed")
+            for key in ("target", "parents", "source_batches", "task_config"):
+                options.pop(key, None)
+        if op == "pose_interpolate":
+            from lerobot.data_platform.lifecycle import dataset_snapshot
+            from lerobot.data_platform.task_catalog import content_digest
+
+            review = options.pop("_review", None)
+            if (
+                not isinstance(review, dict)
+                or not review.get("approved_by")
+                or not review.get("evidence_job_ids")
+            ):
+                raise PermissionError("Pose interpolation requires a reviewed pipeline decision")
+            if review.get("repairs_digest") != content_digest(options.get("repairs")) or (
+                review.get("source_fingerprint") != dataset_snapshot(source_root)[0]
+            ):
+                raise ValueError("Reviewed pose inputs changed")
         blocked = sorted(_FORBIDDEN_OPTION_KEYS.intersection(options))
         if blocked:
             raise ValueError(f"remote path/in-place options are not allowed: {blocked}")
@@ -953,14 +1153,26 @@ class DataPlatformAgent:
             def callback(payload: dict) -> None:
                 current = float(payload.get("current") or 0)
                 total = float(payload.get("total") or 0)
-                fraction = current / total if total > 0 else 0.0
+                fraction = (
+                    float(payload["progress"]) / 100
+                    if "progress" in payload
+                    else current / total
+                    if total > 0
+                    else 0.0
+                )
                 mapped = start + max(0.0, min(1.0, fraction)) * (end - start)
                 message = str(payload.get("message") or payload.get("step") or label)
                 self.client.event(
                     self.state,
                     job["job_id"],
                     f"{label}: {message}",
-                    {**payload, "current": round(mapped, 2), "total": 100},
+                    {
+                        **payload,
+                        "phase": label,
+                        "progress": round(mapped, 2),
+                        "current": round(mapped, 2),
+                        "total": 100,
+                    },
                 )
 
             return callback
@@ -990,6 +1202,14 @@ class DataPlatformAgent:
                 show_progress=False,
             )
 
+        if options.get("urdf_path"):
+            options["urdf_path"] = _require_within(
+                Path(options["urdf_path"]),
+                [*self.allowed_roots, Path(__file__).resolve().parents[2]],
+                "robot model",
+            )
+        if job.get("_operator_version"):
+            options["operator_version"] = job["_operator_version"]
         result = run_preprocess_op(
             op,
             src_root=source_root,
@@ -1098,10 +1318,89 @@ class DataPlatformAgent:
                     "output_dir": str(output_dir),
                     "uploaded_files": uploaded_files,
                 }
+        from lerobot.data_platform.operators.dataset_versions import publish_preprocess_version
+
+        return publish_preprocess_version(self, job, source_root, payload)
+
+    def _run_subtract(self, job, source_root):
+        options = dict(job["options"])
+        locations = options.get("_source_locations") or []
+        ids = options.get("source_location_ids") or []
+        if (
+            len(locations) < 2
+            or [row["location_id"] for row in locations] != ids
+            or ids[0] != job["location_id"]
+        ):
+            raise ValueError("Subtract requires matching registered inputs")
+        if any(row["node_id"] != self.state.node_id for row in locations):
+            raise ValueError("Subtract inputs must belong to this node")
+        roots = [
+            _require_within(Path(row["root"]), self.allowed_roots, "subtract source") for row in locations
+        ]
+        if roots[0] != source_root or len(set(roots)) != len(roots):
+            raise ValueError("Subtract inputs must be distinct")
+        if options.get("version_inputs"):
+            from lerobot.data_platform.lifecycle import dataset_snapshot
+
+            expected = {
+                str(Path(row["version"]["root"]).resolve()): row["version"]["fingerprint"]
+                for row in options["version_inputs"]
+            }
+            if set(expected) != {str(root) for root in roots} or any(
+                dataset_snapshot(root)[0] != expected[str(root)] for root in roots
+            ):
+                raise ValueError("Versioned Subtract input changed")
+        from lerobot.data_platform.operators import ExecutionContext, execute_operator, get_operator
+        from lerobot.data_platform.operators.schema import validate_parameters
+
+        params = {
+            key: value
+            for key, value in options.items()
+            if key
+            not in {
+                "version_inputs",
+                "parents",
+                "source_batches",
+                "task_config",
+                "target",
+                "source_location_ids",
+                "_source_locations",
+                "out_root",
+            }
+        }
+        params = validate_parameters(get_operator("preprocess.subtract"), params)
+        output = Path(options.get("out_root") or default_preprocess_path(source_root, "subtract"))
+        for source in roots:
+            output = _require_safe_output(output, source, self.writable_roots)
+        result = execute_operator(
+            "preprocess.subtract",
+            ExecutionContext(
+                source_root,
+                output_root=output,
+                source_roots=tuple(roots),
+                progress=lambda payload: self.client.event(
+                    self.state, job["job_id"], str(payload.get("message") or "Subtract"), payload
+                ),
+            ),
+            params,
+        )
+        payload = {"preprocess": _json_value(result)}
+        if not result.dry_run:
+            payload["dataset_location"] = _dataset_payload(
+                result.out_root,
+                node_name=self.name,
+                metadata={
+                    "derived_from_location_id": job["location_id"],
+                    "derived_from_location_ids": ids,
+                    "derived_by_operation": job["operation"],
+                },
+            )
         return payload
 
     def _run_merge(self, job: dict, source_root: Path) -> dict:
         options = dict(job.get("options") or {})
+        for key in ("version_inputs", "target", "parents", "source_batches", "task_config"):
+            options.pop(key, None)
         unexpected = sorted(set(options) - _MERGE_OPTION_KEYS)
         if unexpected:
             raise ValueError(f"unsupported remote merge options: {unexpected}")
@@ -1125,6 +1424,17 @@ class DataPlatformAgent:
         roots = [
             _require_within(Path(item["root"]), self.allowed_roots, "merge source") for item in locations
         ]
+        if job["options"].get("version_inputs"):
+            from lerobot.data_platform.lifecycle import dataset_snapshot
+
+            expected = {
+                str(Path(value["version"]["root"]).resolve()): value["version"]["fingerprint"]
+                for value in job["options"]["version_inputs"]
+            }
+            if set(expected) != {str(root) for root in roots} or any(
+                dataset_snapshot(root)[0] != expected[str(root)] for root in roots
+            ):
+                raise ValueError("Versioned Merge input changed")
         if roots[0] != source_root or len(set(roots)) != len(roots):
             raise ValueError("merge source roots must be distinct and start with the job source")
         validate_merge_sources(
@@ -1173,7 +1483,13 @@ class DataPlatformAgent:
         def progress(start: int, end: int):
             def callback(payload: dict) -> None:
                 total = float(payload.get("total") or 0)
-                fraction = float(payload.get("current") or 0) / total if total else 0
+                fraction = (
+                    float(payload["progress"]) / 100
+                    if "progress" in payload
+                    else float(payload.get("current") or 0) / total
+                    if total
+                    else 0
+                )
                 self.client.event(
                     self.state,
                     job["job_id"],
@@ -1181,6 +1497,8 @@ class DataPlatformAgent:
                     {
                         **payload,
                         "status": "running",
+                        "phase": "merge" if start == 0 else "output_viewer",
+                        "progress": start + (end - start) * min(1, max(0, fraction)),
                         "current": start + (end - start) * min(1, max(0, fraction)),
                         "total": 100,
                     },
@@ -1428,13 +1746,72 @@ class DataPlatformAgent:
         self._write_completed_mutation(job["job_id"], completed_result)
         return completed_result
 
+    def _sync_results(self, *, background: bool) -> None:
+        """Keep one result transfer independent of job claims and heartbeats."""
+        thread = getattr(self, "_result_sync_thread", None)
+        if thread is not None and thread.is_alive():
+            return
+        if time.monotonic() - getattr(self, "_last_result_sync_at", 0) < 10:
+            return
+
+        def run():
+            from lerobot.data_platform.dataset_results import sync_agent_results
+
+            worker = self
+            client = None
+            try:
+                if background:
+                    client = AgentClient(self.client.server_url, verify=self.client.verify)
+                    worker = copy.copy(self)
+                    worker.client = client
+                    worker.client.worker_instance_id = self.client.worker_instance_id
+                sync_agent_results(worker)
+            except Exception:
+                logging.exception("Dataset result synchronization will retry on the next sync poll")
+            finally:
+                if client is not None:
+                    client.session.close()
+                self._last_result_sync_at = time.monotonic()
+
+        if background:
+            self._result_sync_thread = threading.Thread(
+                target=run, daemon=True, name="data-platform-result-sync"
+            )
+            self._result_sync_thread.start()
+        else:
+            run()
+
     def run_forever(self, *, poll_seconds: float, sync_seconds: float) -> None:
+        from lerobot.data_platform.rolling_deployment import ExecutorGeneration
+
+        with ExecutorGeneration.from_env() as generation:
+            self._run_forever(generation, poll_seconds=poll_seconds, sync_seconds=sync_seconds)
+
+    def _run_forever(self, generation, *, poll_seconds: float, sync_seconds: float) -> None:
+        dispatcher = _ExecutionDispatcher(self) if isinstance(self.client, AgentClient) else None
         last_sync_at = 0.0
         while True:
             now = time.monotonic()
-            should_sync = now - last_sync_at >= max(10.0, sync_seconds)
             try:
-                worked = self.run_once(sync=should_sync)
+                if dispatcher is not None:
+                    dispatcher.reconcile()
+                if generation.draining:
+                    result_sync = getattr(self, "_result_sync_thread", None)
+                    if dispatcher is None or (
+                        not dispatcher.threads
+                        and not dispatcher.supervisor.pending_here()
+                        and not (result_sync and result_sync.is_alive())
+                    ):
+                        return
+                    time.sleep(max(0.5, poll_seconds))
+                    continue
+                # Worker threads keep running while the main loop refreshes the dataset catalog.
+                should_sync = now - last_sync_at >= max(10.0, sync_seconds)
+                worked = self.run_once(
+                    sync=should_sync,
+                    dispatch=dispatcher.dispatch if dispatcher is not None else None,
+                    allow_claim=dispatcher.available() if dispatcher is not None else True,
+                )
                 if should_sync:
                     last_sync_at = now
             except Exception:
@@ -1442,6 +1819,171 @@ class DataPlatformAgent:
                 worked = False
             if not worked:
                 time.sleep(max(0.5, poll_seconds))
+
+    def close(self) -> None:
+        """Stop background reads and release transports when replacing a local executor Agent."""
+        cleanup = getattr(self, "_source_cleanup", None)
+        if cleanup is not None:
+            cleanup.close()
+        stop = getattr(self, "_caption_read_stop", None)
+        if stop is not None:
+            stop.set()
+        for thread in getattr(self, "_caption_read_threads", []):
+            thread.join(timeout=45)
+        self.client.session.close()
+
+    def _start_caption_reads(self) -> None:
+        """Serve reads independently of model jobs, uploads, and heartbeats."""
+        from lerobot.data_platform.dataset_captions import read_dataset_caption
+
+        if any(thread.is_alive() for thread in getattr(self, "_caption_read_threads", [])):
+            return
+        self._caption_video_lock = threading.Lock()
+        self._caption_read_threads = []
+        self._caption_read_stop = stop = threading.Event()
+
+        def serve():
+            client = AgentClient(self.client.server_url, verify=self.client.verify)
+            try:
+                while not stop.is_set():
+                    try:
+                        read = client._request(
+                            "GET", "/api/agents/caption-reads", token=self.state.node_token, timeout=(10, 30)
+                        ).get("read")
+                        if not read:
+                            stop.wait(0.5)
+                            continue
+                        try:
+                            status, body, binary = read_dataset_caption(self, read)
+                        except (OSError, ValueError, KeyError, TypeError) as exc:
+                            status = 404 if isinstance(exc, FileNotFoundError) else 422
+                            body = json.dumps(
+                                {"error": f"Invalid dataset caption: {type(exc).__name__}"}
+                            ).encode()
+                            binary = False
+                        client._request(
+                            "POST",
+                            f"/api/agents/caption-reads/{read['request_id']}",
+                            token=self.state.node_token,
+                            data=body,
+                            params={"status": status},
+                            headers={
+                                "Content-Type": "application/octet-stream",
+                                "X-Caption-Read-Format": "bytes" if binary else "json",
+                            },
+                            timeout=(10, 30),
+                        )
+                    except Exception:
+                        logging.exception("Caption read transport will retry")
+                        stop.wait(5)
+            finally:
+                client.session.close()
+
+        for number in range(2):
+            thread = threading.Thread(target=serve, daemon=True, name=f"data-platform-caption-read-{number}")
+            self._caption_read_threads.append(thread)
+            thread.start()
+
+
+class _ExecutionDispatcher:
+    """Keep supervised jobs independent while the main Agent continues polling."""
+
+    def __init__(self, agent: DataPlatformAgent):
+        from lerobot.data_platform.execution import ExecutionSupervisor
+
+        self.agent = agent
+        self.supervisor = ExecutionSupervisor(agent)
+        self.threads: dict[str, tuple[threading.Thread, dict]] = {}
+        self.job_limit = agent_slots()
+
+    def _worker_agent(self, job: dict) -> DataPlatformAgent:
+        worker = copy.copy(self.agent)
+        worker.client = AgentClient(self.agent.client.server_url, verify=self.agent.client.verify)
+        worker.client.worker_instance_id = self.agent.client.worker_instance_id
+        worker.client.activate(job)
+        return worker
+
+    def _launch(self, job: dict, *, marker: dict | None = None) -> None:
+        from lerobot.data_platform.execution import ExecutionSupervisor, StopRequestedError
+
+        attempt_id = job["execution"]["attempt_id"]
+        lock = self.supervisor.acquire_supervision(attempt_id)
+        if lock is None:
+            return
+        if marker is not None:
+            marker = json.loads((self.supervisor.root / attempt_id / "marker.json").read_text())
+            if marker.get("acknowledged"):
+                lock.close()
+                return
+        worker = self._worker_agent(job)
+
+        def run() -> None:
+            supervisor = ExecutionSupervisor(worker)
+            try:
+                if marker is None:
+                    supervisor.start(job)
+                else:
+                    supervisor.monitor(marker, None)
+            except Exception as exc:
+                logging.exception("Execution requires reconciliation for job %s", job["job_id"])
+                path = supervisor.root / attempt_id / "marker.json"
+                if not path.exists():
+                    try:
+                        worker.client.complete(
+                            worker.state,
+                            job["job_id"],
+                            status="cancelled" if isinstance(exc, StopRequestedError) else "error",
+                            error=str(exc),
+                        )
+                        supervisor._release(supervisor.root / attempt_id / "reservation.json")
+                    except Exception:
+                        logging.exception("Could not report start failure for job %s", job["job_id"])
+            finally:
+                worker.client.session.close()
+                lock.close()
+
+        thread = threading.Thread(target=run, daemon=True, name=f"data-platform-job-{job['job_id'][:8]}")
+        self.threads[attempt_id] = (thread, job)
+        thread.start()
+
+    def reconcile(self) -> None:
+        from lerobot.data_platform.execution import atomic_json
+        from lerobot.data_platform.rolling_deployment import execution_belongs_here
+
+        for attempt_id, (thread, _) in list(self.threads.items()):
+            if not thread.is_alive():
+                del self.threads[attempt_id]
+        for launch in sorted(self.supervisor.root.glob("*/launch.json")):
+            marker_path = launch.parent / "marker.json"
+            if not marker_path.exists():
+                record = json.loads(launch.read_text())
+                if "job" in record:
+                    atomic_json(marker_path, record)
+        for path in sorted(self.supervisor.root.glob("*/marker.json")):
+            marker = json.loads(path.read_text())
+            if not execution_belongs_here(marker["job"]):
+                continue
+            attempt_id = marker["job"]["execution"]["attempt_id"]
+            if (
+                marker.get("acknowledged")
+                and marker.get("reservation")
+                and Path(marker["reservation"]).exists()
+            ):
+                self.supervisor._release(marker["reservation"])
+            if not marker.get("acknowledged") and attempt_id not in self.threads:
+                self._launch(marker["job"], marker=marker)
+        self.supervisor.reconcile_unstarted(self.threads)
+
+    def available(self) -> bool:
+        from lerobot.data_platform.job_concurrency import PARALLEL_OPERATIONS
+
+        active = [job for _, job in self.threads.values()]
+        return not active or (
+            len(active) < self.job_limit and all(job["operation"] in PARALLEL_OPERATIONS for job in active)
+        )
+
+    def dispatch(self, job: dict) -> None:
+        self._launch(job)
 
 
 def main() -> None:

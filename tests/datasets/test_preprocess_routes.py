@@ -8,6 +8,7 @@ from flask import Flask
 
 from lerobot.data_platform.precompute.preprocess.common import PreprocessResult
 from lerobot.data_platform.routes import preprocess as preprocess_routes
+from tests.datasets.console_templates import template_source
 
 
 class _ImmediateThread:
@@ -609,13 +610,13 @@ def test_delete_all_flagged_refreshes_viewer_episode_state_before_job_finishes(
 
 
 def test_convert_v3_homepage_wiring():
-    template = (
+    template = template_source(
         Path(__file__).parents[2]
         / "lerobot"
         / "data_platform"
         / "templates"
         / "visualize_dataset_homepage.html"
-    ).read_text()
+    )
 
     assert 'value="convert_v3"' in template
     assert "/api/preprocess/convert_v3/start" in template
@@ -636,5 +637,5 @@ def test_convert_v3_homepage_wiring():
     assert 'x-text="selectedJob()?.output_root"' in template
     assert "Dataset is already v3.0; no conversion is needed." in template
     assert "selectedDatasetIsV3()" in template
-    assert "v3.0 viewer support uses a read-only adapter in this environment." in template
+    assert "Prepare Viewer data once to open v3.0 episodes. Source data stays unchanged." in template
     assert "Prepare v3.0 viewer cache first" in template

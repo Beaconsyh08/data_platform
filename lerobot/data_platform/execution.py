@@ -12,9 +12,16 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
+
+import requests
+
+from lerobot.data_platform.execution_resources import ExecutionResources, configure_native_threads
+from lerobot.data_platform.job_concurrency import PARALLEL_OPERATIONS, agent_slots, footprint
+from lerobot.data_platform.job_concurrency import conflicts as resource_conflicts
 
 
 def serialize_completion(root):
@@ -64,6 +71,15 @@ def input_fingerprint(roots):
     digest = hashlib.sha256()
     for root in sorted({Path(value).resolve() for value in roots}):
         digest.update(str(root).encode())
+        # Raw imports have no LeRobot meta/data/videos directories yet.
+        for path in sorted(root.glob("*.mcap")):
+            if path.is_symlink():
+                raise ValueError("MCAP source symlinks are not supported")
+            stat = path.stat()
+            digest.update(path.name.encode())
+            digest.update(
+                str((stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)).encode()
+            )
         for directory in ("meta", "data", "videos"):
             for path in sorted((root / directory).rglob("*")):
                 if not path.is_file():
@@ -86,6 +102,10 @@ def process_identity(pid):
         return None
 
 
+def boot_identity() -> str:
+    return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+
+
 def group_members(pgid):
     members = []
     for path in Path("/proc").iterdir():
@@ -103,7 +123,8 @@ def group_members(pgid):
 class ComputeGroup:
     """Use a delegated cgroup v2 subtree; development can explicitly allow process groups."""
 
-    def __init__(self, attempt_id):
+    def __init__(self, attempt_id, resources: ExecutionResources | None = None):
+        resources = resources or ExecutionResources.resolve()
         self.path = None
         root_value = os.environ.get("DATA_PLATFORM_CGROUP_ROOT")
         if root_value:
@@ -123,15 +144,8 @@ class ComputeGroup:
             (root / "cgroup.subtree_control").write_text("+cpu +memory +pids")
             target = root / f"job-{attempt_id}"
             target.mkdir(exist_ok=True)
-            cpus = max(
-                0.1,
-                (os.cpu_count() or 1) * float(os.environ.get("DATA_PLATFORM_COMPUTE_CPU_FRACTION", "0.5")),
-            )
-            (target / "cpu.max").write_text(f"{int(cpus * 100000)} 100000")
-            memory = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-            (target / "memory.max").write_text(
-                str(int(memory * float(os.environ.get("DATA_PLATFORM_COMPUTE_MEMORY_FRACTION", "0.6"))))
-            )
+            (target / "cpu.max").write_text(f"{max(1, int(resources.cpu_limit * 100000))} 100000")
+            (target / "memory.max").write_text(str(resources.memory_limit))
             (target / "memory.oom.group").write_text("1")
             self.path = target
         except OSError:
@@ -161,6 +175,30 @@ def replace_paths(value, replacements):
     return value
 
 
+def rebase_curation_bundle(work: Path, replacements: dict[str, str], result: dict) -> None:
+    """Finalize spooled version/result paths after the dataset's atomic publication."""
+    from lerobot.data_platform.curation import bundle_manifest
+
+    bundle = work / "curation-artifacts"
+    manifest_path = bundle / "curation-manifest.json"
+    if not replacements or not manifest_path.is_file():
+        return
+    manifest = json.loads(manifest_path.read_text())
+    snapshot_path = bundle / "snapshot.json"
+    if snapshot_path.is_file():
+        snapshot = json.loads(snapshot_path.read_text())
+        # Root is a replica path; content and identity digests remain immutable.
+        snapshot["version"] = replace_paths(snapshot["version"], replacements)
+        atomic_json(snapshot_path, snapshot)
+    result_path = bundle / "result.json"
+    if result_path.is_file():
+        value = replace_paths(json.loads(result_path.read_text()), replacements)
+        if result.get("dataset_location"):
+            value["dataset_location"] = result["dataset_location"]
+        atomic_json(result_path, value)
+    bundle_manifest(bundle, operation=manifest["operation"], target=manifest["target"])
+
+
 def publish_viewer_cache(cache: Path, target: Path, source: Path) -> None:
     """Promote one attempt's cache, retaining the previous cache and supporting replay."""
     cache, target, source = Path(cache), Path(target), Path(source).resolve()
@@ -185,7 +223,12 @@ def publish_viewer_cache(cache: Path, target: Path, source: Path) -> None:
         if Path(manifest["root"]).resolve() != source:
             raise ValueError("Viewer cache manifest does not match the source dataset")
 
-    with (lock_dir / hashlib.sha256(target.name.encode()).hexdigest()).open("a") as lock:
+    from lerobot.data_platform.dataset_results import preserve_results, result_lock
+
+    with (
+        result_lock(target),
+        (lock_dir / hashlib.sha256(target.name.encode()).hexdigest()).open("a") as lock,
+    ):
         fcntl.flock(lock, fcntl.LOCK_EX)
         if not cache.exists():
             receipt = target / receipt_name
@@ -199,8 +242,6 @@ def publish_viewer_cache(cache: Path, target: Path, source: Path) -> None:
             validate(target)
             if backup.exists():
                 raise FileExistsError("Previous viewer cache backup already exists")
-            from lerobot.data_platform.dataset_results import preserve_results
-
             preserve_results(target, cache)
         atomic_json(cache / receipt_name, identity)
         if target.exists():
@@ -216,8 +257,13 @@ def publish_viewer_cache(cache: Path, target: Path, source: Path) -> None:
 class SpoolingClient:
     """Compute spools control-plane telemetry/artifacts; provider clients may make inference calls."""
 
+    deferred_uploads = True
+
     def __init__(self, server_url, work, *, server_identity=None):
         self.server_url, self.work = server_url, Path(work)
+        from threading import Lock
+
+        self.event_lock = Lock()
         self.sequence = 0
         self.server_identity = server_identity
 
@@ -233,23 +279,26 @@ class SpoolingClient:
 
     def event(self, state, job_id, message, payload=None):
         self.check_stop()
-        self.sequence += 1
-        from lerobot.data_platform.management_storage import EventSpool
-        from lerobot.data_platform.operation_log import sanitize_for_log
+        with self.event_lock:
+            self.sequence += 1
+            from lerobot.data_platform.management_storage import EventSpool
+            from lerobot.data_platform.operation_log import sanitize_for_log
 
-        spool = EventSpool(
-            self.work / "events",
-            max_bytes=int(os.environ.get("DATA_PLATFORM_AGENT_EVENT_SPOOL_BYTES", str(256 * 1024 * 1024))),
-        )
-        spool.write(
-            sanitize_for_log(
-                {
-                    "event_id": f"{self.work.name}:{self.sequence}",
-                    "message": str(message),
-                    "payload": payload or {},
-                }
+            spool = EventSpool(
+                self.work / "events",
+                max_bytes=int(
+                    os.environ.get("DATA_PLATFORM_AGENT_EVENT_SPOOL_BYTES", str(256 * 1024 * 1024))
+                ),
             )
-        )
+            spool.write(
+                sanitize_for_log(
+                    {
+                        "event_id": f"{self.work.name}:{self.sequence}",
+                        "message": str(message),
+                        "payload": payload or {},
+                    }
+                )
+            )
 
     def upload_artifact(
         self, state, job_id, relative_path, path, *, derived=False, caption=False, curation=False
@@ -287,6 +336,7 @@ def run_worker(config_path):
         time.sleep(0.05)
     if config.get("cgroup"):
         (Path(config["cgroup"]) / "cgroup.procs").write_text(str(os.getpid()))
+    configure_native_threads()
     from lerobot.data_platform.agent import DataPlatformAgent, _json_value
 
     client = SpoolingClient(config["server_url"], work, server_identity=config.get("server_identity"))
@@ -331,9 +381,41 @@ class ExecutionSupervisor:
         self.root = agent.state_path.parent / "executions"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    def flush_events(self, job, work):
-        for path in sorted((work / "events").glob("*.json"))[:100]:
-            payload = json.loads(path.read_text())
+    def acquire_supervision(self, attempt_id):
+        handle = (self.root / f".supervisor-{attempt_id}.lock").open("a")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            return None
+        return handle
+
+    def pending_here(self):
+        from lerobot.data_platform.rolling_deployment import execution_belongs_here
+
+        for path in self.root.glob("*/marker.json"):
+            marker = json.loads(path.read_text())
+            if not marker.get("acknowledged") and execution_belongs_here(marker["job"]):
+                return True
+        return any(
+            execution_belongs_here(json.loads(path.read_text())["job"])
+            for path in self.root.glob("*/reservation.json")
+        )
+
+    def flush_events(self, job, work, *, drain=False):
+        # EventSpool filenames are UUID hashes, not delivery order.
+        pending = [(path, json.loads(path.read_text())) for path in (work / "events").glob("*.json")]
+        pending.sort(key=lambda item: int(item[1]["event_id"].rsplit(":", 1)[-1]))
+        last_heartbeat = time.monotonic()
+        heartbeat_interval = max(1, min(20, self.agent.lease_seconds / 3))
+        for path, payload in pending if drain else pending[:100]:
+            if time.monotonic() - last_heartbeat >= heartbeat_interval:
+                heartbeat = self.agent.client.control_heartbeat(
+                    self.agent.state, job["job_id"], lease_seconds=self.agent.lease_seconds
+                )
+                if drain and heartbeat.get("stop_mode"):
+                    atomic_json(work / "stop.json", {"mode": heartbeat["stop_mode"]})
+                last_heartbeat = time.monotonic()
             self.agent.client.event(
                 self.agent.state,
                 job["job_id"],
@@ -344,24 +426,251 @@ class ExecutionSupervisor:
 
     def reconcile(self):
         """Pending executions always take precedence over claiming more work."""
+        from lerobot.data_platform.rolling_deployment import execution_belongs_here
+
+        for launch in sorted(self.root.glob("*/launch.json")):
+            marker_path = launch.parent / "marker.json"
+            if not marker_path.exists():
+                record = json.loads(launch.read_text())
+                if "job" in record:
+                    atomic_json(marker_path, record)
         for path in sorted(self.root.glob("*/marker.json")):
             marker = json.loads(path.read_text())
-            if marker.get("acknowledged"):
+            if not execution_belongs_here(marker["job"]):
                 continue
-            self.agent.client.activate(marker["job"])
+            if marker.get("acknowledged"):
+                if marker.get("reservation") and Path(marker["reservation"]).exists():
+                    self._release(marker["reservation"])
+                continue
+            lock = self.acquire_supervision(path.parent.name)
+            if lock is not None:
+                with lock:
+                    marker = json.loads(path.read_text())
+                    if marker.get("acknowledged"):
+                        continue
+                    self.agent.client.activate(marker["job"])
+                    self.monitor(marker, None)
+                return True
+        return self.reconcile_unstarted()
+
+    def reconcile_unstarted(self, exclude=()):
+        from lerobot.data_platform.rolling_deployment import execution_belongs_here
+
+        for path in sorted(self.root.glob("*/reservation.json")):
+            if path.parent.name in exclude:
+                continue
+            if (path.parent / "marker.json").exists():
+                continue
+            record = json.loads(path.read_text())
+            if not execution_belongs_here(record["job"]):
+                continue
+            lock = self.acquire_supervision(path.parent.name)
+            if lock is not None:
+                with lock:
+                    if (path.parent / "marker.json").exists() or not path.exists():
+                        continue
+                    self.agent.client.activate(record["job"])
+                    self.agent.client.complete(
+                        self.agent.state,
+                        record["job_id"],
+                        status="error",
+                        error="Agent restarted before compute launch",
+                    )
+                    self._release(path)
+                return True
+        return False
+
+    def _release(self, reservation):
+        with (self.root / ".resource-registry-lock").open("a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            Path(reservation).unlink(missing_ok=True)
+
+    def _reuse_published_viewer(self, job, work, fingerprint, reservation):
+        """Replay a completed attempt's Viewer uploads on retry without recomputing its cache."""
+        if job["operation"] != "viewer.prepare":
+            return False
+        for prior in sorted(
+            self.root.glob("*/published.json"), key=lambda path: path.stat().st_mtime, reverse=True
+        ):
+            previous = prior.parent
+            if previous == work or not (previous / "config.json").is_file():
+                continue
+            config = json.loads((previous / "config.json").read_text())
+            if config.get("job", {}).get("job_id") != job["job_id"]:
+                continue
+            payload = json.loads(prior.read_text())
+            if payload.get("status") != "done":
+                continue
+            if config.get("fingerprint") != fingerprint:
+                raise ValueError("Viewer source changed since the completed attempt; cache cannot be reused")
+            source = Path(job["location"]["root"]).resolve()
+            target = Path(job["location"]["output_dir"]).resolve()
+            static = target / "static"
+            receipt = target / ".viewer-publication.json"
+            if not receipt.is_file() or not (static / "viewer_manifest.json").is_file():
+                raise FileNotFoundError("Completed Viewer cache or publication receipt is missing")
+            identity = json.loads(receipt.read_text())
+            expected_staging = target.parent / f".dp-{job['job_id']}-{previous.name}" / "cache"
+            if identity != {"staging": str(expected_staging), "target": str(target), "source": str(source)}:
+                raise ValueError("Completed Viewer cache belongs to a different execution")
+            manifest = json.loads((static / "viewer_manifest.json").read_text())
+            if (
+                manifest.get("root") != str(source)
+                or manifest.get("repo_id") != job["location"]["dataset_key"]
+                or (manifest.get("task_config") or {}).get("digest")
+                != (job.get("options", {}).get("task_config") or {}).get("digest")
+            ):
+                raise ValueError("Completed Viewer cache does not match this job")
+            uploads = sorted((previous / "uploads").glob("*.json"))
+            names = set()
+            for path in uploads:
+                upload = json.loads(path.read_text())
+                artifact = Path(upload["path"])
+                relative = Path(upload["relative_path"])
+                if (
+                    upload.get("derived")
+                    or upload.get("caption")
+                    or upload.get("curation")
+                    or relative.is_absolute()
+                    or ".." in relative.parts
+                    or artifact.is_symlink()
+                    or not artifact.is_file()
+                    or artifact.resolve() != (static / relative).resolve()
+                ):
+                    raise ValueError("Completed Viewer upload list contains an invalid artifact")
+                names.add(relative.as_posix())
+            cache_files = {
+                path.relative_to(static).as_posix() for path in static.rglob("*") if path.is_file()
+            }
+            if (
+                any(path.is_symlink() for path in static.rglob("*"))
+                or not uploads
+                or len(names) != len(uploads)
+                or names != cache_files
+                or "viewer_manifest.json" not in names
+                or (payload.get("result") or {}).get("uploaded_files") != len(uploads)
+            ):
+                raise ValueError("Completed Viewer upload list does not match the published cache")
+            self.agent.client.checkpoint(
+                self.agent.state, job["job_id"], "finalizing", fingerprint=fingerprint
+            )
+            for path in uploads:
+                destination = work / "uploads" / path.name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, destination)
+            atomic_json(work / "published.json", payload)
+            marker = {
+                "job": job,
+                "work": str(work),
+                "staging": str(target.parent / f".dp-{job['job_id']}-{work.name}"),
+                "final": None,
+                "pid": None,
+                "process_identity": None,
+                "cgroup": None,
+                "acknowledged": False,
+                "publishing": True,
+                "reservation": str(reservation),
+            }
+            atomic_json(work / "launch.json", marker)
+            atomic_json(work / "marker.json", marker)
+            self.agent.client.event(
+                self.agent.state,
+                job["job_id"],
+                "Reusing completed Viewer cache; resuming artifact upload",
+                {"phase": "upload", "total": len(uploads)},
+            )
             self.monitor(marker, None)
             return True
         return False
+
+    def _wait_heartbeat(self, job_id):
+        while True:
+            try:
+                return self.agent.client.control_heartbeat(
+                    self.agent.state, job_id, lease_seconds=self.agent.lease_seconds
+                )
+            except requests.RequestException:
+                time.sleep(1)
+
+    def _reserve(self, job, work, roots, output_dir, final):
+        """Reserve canonical paths through result acknowledgement, including Agent restarts."""
+        mine = footprint(
+            job["operation"],
+            roots[0],
+            output_dir,
+            job.get("options") or {},
+            job["job_id"],
+            final_output=str(final) if final else None,
+            canonical=True,
+        )
+        reservation = work / "reservation.json"
+        options = {
+            key: job.get("options", {}).get(key)
+            for key in ("_source_locations", "source_locations", "episode_index", "out_root")
+            if key in job.get("options", {})
+        }
+        lock_path = self.root / ".resource-registry-lock"
+        announced = False
+        while True:
+            heartbeat = self._wait_heartbeat(job["job_id"])
+            if heartbeat.get("stop_mode"):
+                raise StopRequestedError("Job cancelled while waiting for resources")
+            with lock_path.open("a") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                busy = False
+                for path in self.root.glob("*/reservation.json"):
+                    if path == reservation:
+                        continue
+                    record = json.loads(path.read_text())
+                    other = footprint(
+                        record["operation"],
+                        record["source"],
+                        record["output_dir"],
+                        record["options"],
+                        record["job_id"],
+                        final_output=record.get("final_output"),
+                        canonical=True,
+                    )
+                    if resource_conflicts(mine, other):
+                        busy = True
+                        break
+                if not busy:
+                    atomic_json(
+                        reservation,
+                        {
+                            "operation": job["operation"],
+                            "source": roots[0],
+                            "output_dir": output_dir,
+                            "options": options,
+                            "job_id": job["job_id"],
+                            "final_output": str(final) if final else None,
+                            "job": job,
+                        },
+                    )
+                    return reservation
+            if not announced:
+                with contextlib.suppress(requests.RequestException):
+                    self.agent.client.event(
+                        self.agent.state,
+                        job["job_id"],
+                        "Waiting for another job's data paths",
+                        {"phase": "waiting_resources"},
+                    )
+                announced = True
+            time.sleep(1)
 
     def start(self, job):
         from lerobot.data_platform.agent import _require_safe_output, _require_within
 
         agent = self.agent
+        resources = ExecutionResources.resolve()
+        job_limit = agent_slots()
+        resources = resources.for_slots(job_limit)
         execution = job["execution"]
         work = self.root / execution["attempt_id"]
         work.mkdir(mode=0o700)
         job_copy = copy.deepcopy(job)
-        if job["operation"].startswith("curation."):
+        if job["operation"].startswith("curation.") or job["options"].get("input_files"):
             from lerobot.data_platform.curation import artifact_path
 
             inputs = work / "curation-inputs"
@@ -378,10 +687,11 @@ class ExecutionSupervisor:
                 )
             job_copy["options"]["input_root"] = str(inputs)
         source = _require_within(Path(job["location"]["root"]), agent.allowed_roots, "dataset root")
-        roots = [str(source)] + [item["root"] for item in job["options"].get("source_locations", [])]
+        source_locations = (
+            job["options"].get("_source_locations") or job["options"].get("source_locations") or []
+        )
+        roots = [str(source)] + [item["root"] for item in source_locations]
         roots = [str(_require_within(Path(root), agent.allowed_roots, "input dataset")) for root in roots]
-        fingerprint = input_fingerprint(roots)
-        agent.client.checkpoint(agent.state, job["job_id"], "executing", fingerprint=fingerprint)
         final = Path(execution["final_output"]) if execution.get("final_output") else None
         if final:
             for root in roots:
@@ -389,13 +699,27 @@ class ExecutionSupervisor:
             if final.exists():
                 raise FileExistsError("Final output already exists; reconcile it before retrying")
             staging = final.parent / f".dp-{job['job_id']}-{execution['attempt_id']}"
-        elif job["operation"] == "caption.annotate":
+        elif job["operation"] in {"caption.annotate", "import.mcap.inspect"}:
             staging = work / "staging"
         else:
             output = _require_within(
                 Path(job["location"]["output_dir"]), agent.writable_roots, "viewer cache"
             )
             staging = output.parent / f".dp-{job['job_id']}-{execution['attempt_id']}"
+        output_dir = ""
+        if job["operation"] not in {"caption.annotate", "import.mcap.inspect", "import.mcap.convert"}:
+            output_dir = str(
+                _require_within(
+                    Path(job["location"]["output_dir"]), agent.writable_roots, "dataset output directory"
+                )
+            )
+        reservation = self._reserve(job, work, roots, output_dir, final)
+        if final and final.exists():
+            raise FileExistsError("Final output appeared while waiting for resources")
+        fingerprint = input_fingerprint(roots)
+        if self._reuse_published_viewer(job, work, fingerprint, reservation):
+            return
+        agent.client.checkpoint(agent.state, job["job_id"], "executing", fingerprint=fingerprint)
         if staging.exists():
             raise FileExistsError("Execution staging already exists")
         staging.mkdir(mode=0o700, parents=True)
@@ -406,30 +730,45 @@ class ExecutionSupervisor:
             if "overwrite" in job_copy["options"]:
                 job_copy["options"]["overwrite"] = False
         job_copy["location"]["output_dir"] = str(staging / "source-cache" if final else staging / "cache")
-        cpus = max(
-            1,
-            min(
-                4,
-                int(
-                    (os.cpu_count() or 1) * float(os.environ.get("DATA_PLATFORM_COMPUTE_CPU_FRACTION", "0.5"))
-                ),
-            ),
-        )
-        for key in ("workers", "prepare_workers"):
-            if key in job_copy["options"]:
-                job_copy["options"][key] = min(cpus, max(1, int(job_copy["options"][key])))
+        requested = {
+            key: job_copy["options"][key]
+            for key in ("workers", "prepare_workers")
+            if key in job_copy["options"]
+        }
+        for key, value in requested.items():
+            job_copy["options"][key] = resources.workers(value)
         if job["operation"] == "viewer.prepare":
-            job_copy["options"].setdefault("prepare_workers", cpus)
+            job_copy["options"].setdefault("prepare_workers", resources.max_workers)
         elif job["operation"] in {
             "preprocess.standardize",
             "preprocess.smooth_action",
             "preprocess.convert_v3",
             "preprocess.merge",
         }:
-            job_copy["options"].setdefault("workers", cpus)
-        group = ComputeGroup(execution["attempt_id"])
+            job_copy["options"].setdefault("workers", resources.max_workers)
+        effective = {
+            key: job_copy["options"][key]
+            for key in ("workers", "prepare_workers")
+            if key in job_copy["options"]
+        }
+        agent.client.event(
+            agent.state,
+            job["job_id"],
+            "Resolved execution resource budget",
+            {
+                "phase": "resources",
+                **resources.record(),
+                "requested_workers": requested,
+                "effective_workers": effective,
+                "worker_limit_reason": "node worker limit or inherited CPU budget"
+                if any(value and int(value) > effective[key] for key, value in requested.items())
+                else None,
+            },
+        )
+        group = ComputeGroup(execution["attempt_id"], resources)
         config = {
             "work": str(work),
+            "resources": resources.record(),
             "job": job_copy,
             "state_path": str(agent.state_path),
             "name": agent.name,
@@ -448,19 +787,50 @@ class ExecutionSupervisor:
         }
         atomic_json(work / "config.json", config)
         lock = (self.root / ".node-lock").open("a")
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        env = dict(
-            os.environ, OMP_NUM_THREADS=str(cpus), OPENBLAS_NUM_THREADS=str(cpus), MKL_NUM_THREADS=str(cpus)
-        )
+        slot = None
+        try:
+            while slot is None:
+                heartbeat = self._wait_heartbeat(job["job_id"])
+                if heartbeat.get("stop_mode"):
+                    raise StopRequestedError("Job cancelled while waiting for an execution slot")
+                mode = fcntl.LOCK_SH if job["operation"] in PARALLEL_OPERATIONS else fcntl.LOCK_EX
+                try:
+                    fcntl.flock(lock, mode | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    time.sleep(1)
+                    continue
+                for index in range(job_limit):
+                    candidate = (self.root / f".job-slot-{index}").open("a")
+                    try:
+                        fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        candidate.close()
+                    else:
+                        slot = candidate
+                        break
+                if slot is None:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                    time.sleep(1)
+        except BaseException:
+            lock.close()
+            self._release(reservation)
+            raise
+        env = {**os.environ, **resources.environment()}
         env["DATA_PLATFORM_EXECUTION_STOP_FILE"] = str(work / "stop.json")
-        env["DATA_PLATFORM_EXECUTION_WORKERS"] = str(cpus)
         env["CUDA_VISIBLE_DEVICES"] = os.environ.get("DATA_PLATFORM_GPU_DEVICES", "")
-        process = subprocess.Popen(
-            [sys.executable, "-m", "lerobot.data_platform.execution", str(work / "config.json")],
-            start_new_session=True,
-            pass_fds=(lock.fileno(),),
-            env=env,
-        )
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-m", "lerobot.data_platform.execution", str(work / "config.json")],
+                start_new_session=True,
+                pass_fds=(lock.fileno(), *((slot.fileno(),) if slot else ())),
+                env=env,
+            )
+        except BaseException:
+            lock.close()
+            if slot:
+                slot.close()
+            self._release(reservation)
+            raise
         marker = {
             "job": job,
             "work": str(work),
@@ -468,30 +838,39 @@ class ExecutionSupervisor:
             "final": str(final) if final else None,
             "pid": process.pid,
             "process_identity": process_identity(process.pid),
+            "boot_id": boot_identity(),
             "cgroup": config["cgroup"],
             "acknowledged": False,
             "publishing": False,
+            "reservation": str(reservation),
         }
+        atomic_json(work / "launch.json", marker)
         atomic_json(work / "marker.json", marker)
-        atomic_json(work / "launch.json", {"pid": process.pid})
         try:
             self.monitor(marker, process)
         finally:
             lock.close()
+            if slot:
+                slot.close()
 
     def monitor(self, marker, process):
         agent, job = self.agent, marker["job"]
         work = Path(marker["work"])
         force_at = None
+        current_boot = boot_identity()
+        same_boot = marker.get("boot_id", current_boot) == current_boot
         while True:
             if process:
                 process.poll()
+            pid = marker.get("pid")
             alive = (
-                process_identity(marker["pid"]) == marker["process_identity"]
+                same_boot
+                and pid is not None
+                and process_identity(pid) == marker["process_identity"]
                 and marker["process_identity"] is not None
             )
-            members = group_members(marker["pid"])
-            if marker.get("cgroup") and Path(marker["cgroup"]).exists():
+            members = group_members(pid) if same_boot and pid is not None else []
+            if same_boot and marker.get("cgroup") and Path(marker["cgroup"]).exists():
                 members = list(
                     set(
                         members
@@ -520,6 +899,7 @@ class ExecutionSupervisor:
             time.sleep(1)
         if process:
             process.wait()
+        self.flush_events(job, work, drain=True)
         if (work / "published.json").exists():
             payload = json.loads((work / "published.json").read_text())
         else:
@@ -542,35 +922,83 @@ class ExecutionSupervisor:
                 atomic_json(work / "published.json", payload)
         if payload["status"] != "done" and Path(marker["staging"]).exists():
             shutil.rmtree(marker["staging"], ignore_errors=False)
-        self.flush_events(job, work)
+        self.flush_events(job, work, drain=True)
+        renewal_stop = threading.Event()
+        renewal_thread = None
         if payload["status"] == "done":
-            # Retry uploads and confirmation after a network failure, without executing again.
-            for path in sorted(
-                (work / "uploads").glob("*.json"),
-                key=lambda value: (
-                    json.loads(value.read_text())["relative_path"] == "viewer_manifest.json",
-                    value.name,
-                ),
-            ):
-                upload = json.loads(path.read_text())
-                agent.client.upload_artifact(
-                    agent.state,
-                    job["job_id"],
-                    Path(upload["relative_path"]),
-                    Path(upload["path"]),
-                    derived=upload["derived"],
-                    **({"caption": True} if upload.get("caption") else {}),
-                    **({"curation": True} if upload.get("curation") else {}),
+            from lerobot.data_platform.agent import AgentClient
+
+            heartbeat_client = (
+                AgentClient(agent.client.server_url, verify=agent.client.verify)
+                if isinstance(agent.client, AgentClient)
+                else agent.client
+            )
+            if heartbeat_client is not agent.client:
+                heartbeat_client.activate(job)
+
+            def renew_lease():
+                while not renewal_stop.wait(max(5, agent.lease_seconds / 3)):
+                    # Upload/complete will retain the marker after a transient outage.
+                    with contextlib.suppress(Exception):
+                        heartbeat_client.control_heartbeat(
+                            agent.state, job["job_id"], lease_seconds=agent.lease_seconds
+                        )
+
+            agent.client.control_heartbeat(agent.state, job["job_id"], lease_seconds=agent.lease_seconds)
+            renewal_thread = threading.Thread(target=renew_lease, daemon=True)
+            renewal_thread.start()
+        try:
+            if payload["status"] == "done":
+                # Retry uploads and confirmation after a network failure, without executing again.
+                uploads = sorted(
+                    (work / "uploads").glob("*.json"),
+                    key=lambda value: (
+                        json.loads(value.read_text())["relative_path"] == "viewer_manifest.json",
+                        value.name,
+                    ),
                 )
-        agent.client.complete(
-            agent.state,
-            job["job_id"],
-            status=payload["status"],
-            result=payload.get("result"),
-            error=payload.get("error"),
-        )
+                last_report = 0.0
+                for index, path in enumerate(uploads, start=1):
+                    upload = json.loads(path.read_text())
+                    agent.client.upload_artifact(
+                        agent.state,
+                        job["job_id"],
+                        Path(upload["relative_path"]),
+                        Path(upload["path"]),
+                        derived=upload["derived"],
+                        **({"caption": True} if upload.get("caption") else {}),
+                        **({"curation": True} if upload.get("curation") else {}),
+                    )
+                    now = time.monotonic()
+                    if now - last_report >= 1 or index == len(uploads):
+                        start = 95 if job.get("operation") == "viewer.prepare" else 98
+                        agent.client.event(
+                            agent.state,
+                            job["job_id"],
+                            f"Uploaded artifacts {index}/{len(uploads)}",
+                            {
+                                "phase": "upload",
+                                "current": index,
+                                "total": len(uploads),
+                                "progress": start + (99 - start) * index / len(uploads),
+                            },
+                        )
+                        last_report = now
+            agent.client.complete(
+                agent.state,
+                job["job_id"],
+                status=payload["status"],
+                result=payload.get("result"),
+                error=payload.get("error"),
+            )
+        finally:
+            renewal_stop.set()
+            if renewal_thread:
+                renewal_thread.join(timeout=5)
         marker["acknowledged"] = True
         atomic_json(work / "marker.json", marker)
+        if marker.get("reservation"):
+            self._release(marker["reservation"])
         if marker.get("cgroup"):
             with contextlib.suppress(OSError):
                 Path(marker["cgroup"]).rmdir()
@@ -616,6 +1044,11 @@ class ExecutionSupervisor:
             payload["result"]["dataset_location"] = _dataset_payload(
                 Path(marker["final"]), node_name=self.agent.name, metadata=original.get("metadata")
             )
+            if marker["job"]["operation"] == "import.mcap.convert":
+                checkpoints = Path(marker["final"]).parent / ".mcap-checkpoints" / marker["job"]["job_id"]
+                if checkpoints.is_dir():
+                    shutil.rmtree(checkpoints)
+        rebase_curation_bundle(Path(marker["work"]), replacements, payload.get("result") or {})
         for path in (Path(marker["work"]) / "uploads").glob("*.json"):
             record = json.loads(path.read_text())
             artifact = Path(record["path"])

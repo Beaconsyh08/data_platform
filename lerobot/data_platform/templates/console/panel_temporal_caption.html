@@ -1,0 +1,9 @@
+<div class="space-y-4 px-4 py-4" x-show="activeTab === 'temporal_caption'">
+                    <div class="dp-card p-5">
+                        <h3 class="text-lg font-semibold text-slate-100">Temporal Caption</h3>
+                        <p class="mt-2 text-sm text-slate-400">Review captions alongside synchronized video and signals.</p>
+                        <p class="mt-2 text-xs text-slate-500">Choose an episode and result method. No Viewer cache is required.</p>
+                        <a class="dp-btn dp-btn-primary dp-btn-inline mt-4" :href="temporalCaptionUrl()" x-show="selectedDataset">Create annotation task</a>
+                        <a class="dp-btn dp-btn-inline mt-4" :href="temporalCaptionUrl() + '/review'" x-show="selectedDataset">Temporal Caption Review →</a>
+                    </div>
+                </div>

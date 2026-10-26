@@ -29,7 +29,16 @@ def snapshot():
             response.raise_for_status()
             health = response.json()
             environments[name] = {
-                key: health.get(key) for key in ("environment", "release", "maintenance", "instance_id")
+                key: health.get(key)
+                for key in (
+                    "environment",
+                    "release",
+                    "maintenance",
+                    "instance_id",
+                    "active_jobs",
+                    "active_job_counts",
+                    "maintenance_release",
+                )
             }
         except (requests.RequestException, ValueError):
             environments[name] = {"environment": "unavailable", "release": None}
@@ -60,6 +69,14 @@ def snapshot():
     from lerobot.data_platform.deployment_progress import production_progress
 
     progress = production_progress(Deployment("prod").root, state)
+    retry_ready = bool(
+        progress
+        and progress["retryable"]
+        and prod.get("maintenance")
+        and prod.get("active_jobs") == 0
+        and prod.get("release") == progress["previous_release"]
+        and prod.get("maintenance_release") in {None, progress["release"]}
+    )
     if prod.get("environment") != "prod":
         reason = (
             "Production is unavailable or still uses legacy deployment. Complete production migration first."
@@ -70,12 +87,31 @@ def snapshot():
         progress and progress["status"] in {"running", "maintenance"}
     ):
         reason = "Production deployment is in progress."
-    elif dev.get("maintenance") or prod.get("maintenance"):
+    elif dev.get("maintenance") or (prod.get("maintenance") and not retry_ready):
         reason = "An environment is under maintenance."
     elif dev.get("release") == prod.get("release"):
         reason = "Both environments run the same release."
     elif not approved:
         reason = "This development release requires acceptance approval before production deployment."
+    can_retry = retry_ready and reason is None
+    if progress and progress["retryable"]:
+        if can_retry:
+            progress["message"] += " No blocking jobs remain. Retry deployment from this page."
+        elif prod.get("active_jobs"):
+            counts = prod.get("active_job_counts")
+            if isinstance(counts, dict):
+                from lerobot.data_platform.maintenance import ActiveJobCounts
+
+                progress["message"] += f" Blocking jobs: {ActiveJobCounts(**counts).summary}."
+            else:
+                progress["message"] += (
+                    f" {prod['active_jobs']} unfinished job(s) still block deployment."
+                    " Check production Jobs, including interrupted tasks."
+                )
+            if reason == "An environment is under maintenance.":
+                reason = progress["message"]
+        else:
+            progress["message"] += f" {reason}"
     comparison = "unknown"
     if dev.get("environment") == "dev" and prod.get("environment") == "prod":
         comparison = "same" if dev.get("release") == prod.get("release") else "different"
@@ -92,6 +128,7 @@ def snapshot():
             and not approved
         ),
         "can_promote": reason is None,
+        "can_retry": can_retry,
         "reason": reason,
         "deployment_state": state or "inactive",
         "progress": progress,

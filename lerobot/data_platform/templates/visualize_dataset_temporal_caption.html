@@ -1,29 +1,36 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Temporal Caption · {{ page_title }}</title>{% include 'temporal_caption_styles.html' %}</head><body>
-<header class="topbar"><h1>Temporal Caption Review</h1><span class="crumb">{{ page_title }}</span><span class="spacer"></span>
-<a href="{{ annotation_url }}">Create annotation task</a><a href="{{ home_url }}">Dataset</a><span class="lang" aria-label="Caption language"><button id="lang-both" class="on">ZH + EN</button><button id="lang-en">EN</button><button id="lang-zh">ZH</button></span>
-<button id="theme" title="Toggle light or dark theme">◐ Theme</button></header>
-<div class="selectors"><label>Result method<select id="scheme">{% for scheme in caption_schemes %}<option value="{{ scheme.id }}">{{ scheme.name }}</option>{% endfor %}</select></label>
-<label>Episode (↑ / ↓)<select id="episode" disabled></select></label><label>Result stage / run<select id="variant" disabled></select></label><div><p id="scheme-description"></p><span id="meta" class="crumb"></span></div></div>
+<header class="topbar dp-topbar"><div class="dp-topbar-context"><nav class="dp-dataset-nav"><a class="dp-btn" href="{{ home_url }}">Dataset</a><a class="dp-btn" href="{{ annotation_url }}">Annotation</a><span class="dp-btn" aria-current="page">Review</span></nav><h1>Temporal Caption</h1><p>{{ page_title }}</p></div><span class="spacer"></span><span class="lang" aria-label="Caption language"><button id="lang-both" class="on">ZH + EN</button><button id="lang-en">EN</button><button id="lang-zh">ZH</button></span>
+</header>
+<div class="selectors"><label>Method<select id="scheme">{% for scheme in caption_schemes %}<option value="{{ scheme.id }}">{{ scheme.name }}</option>{% endfor %}</select></label>
+<label>Episode (↑ / ↓)<select id="episode" disabled></select></label><label>Result<select id="variant" disabled></select></label><div><p id="scheme-description"></p><span id="meta" class="crumb"></span></div></div>
 
 <p id="status" role="status">Loading annotation results…</p>
 <main class="wrap" id="review" hidden>
 <section class="stage">
-<div class="card player"><video id="video" controls playsinline preload="metadata"></video>
+<div class="card player"><div class="video-surface"><video id="video" controls playsinline preload="metadata"></video><div id="reward-overlay" class="reward-overlay" hidden></div></div>
 <div class="viewtags"><span>Left wrist</span><span>Head / scene</span><span>Right wrist</span></div>
 <div class="transport"><button id="previous">← Segment</button><button id="next">Segment →</button><span id="clock"></span><span class="spacer"></span>
 <label><input id="loop" type="checkbox"> Loop</label><select id="rate" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></div>
 <div id="current-caption"></div></div>
 <div class="card track-box"><div class="track-head"><span>Semantic segments</span><span id="track-label"></span></div>
 <div class="track"><div class="segs" id="timeline"></div><div id="events" class="ev-row"></div><div id="ticks"></div><div class="playhead" id="playhead"></div></div></div>
-<div class="card plot-box"><div class="track-head"><span>End-effector observations</span><span>gripper · position speed</span></div>
+<section id="reward-review" class="card block" hidden aria-label="FLORA reward review">
+<div class="track-head"><span>Reward review</span><span>Model assessment · unreviewed</span></div>
+<p id="reward-terminal"></p><div id="reward-values" class="reward-values"></div>
+<div id="reward-tracks"></div><p class="note">Action scores: 1 failure · 2 suboptimal · 3 normal. Episode outcome uses a separate 1–5 scale.</p>
+<div class="sec-title">Window disagreements · click to review</div><div id="reward-conflicts" class="reward-values"></div>
+<details class="dp-help"><summary>Window reasoning &amp; alignment</summary><div id="reward-raw"></div></details>
+</section>
+<div id="signal-panel" class="card plot-box"><div class="track-head"><span>End-effector observations</span><span>gripper · position speed</span></div>
 <svg id="plot" class="plot" viewBox="0 0 1000 190" role="img" aria-label="Measured gripper position and motion speed"></svg>
 <div class="legend"><span><i style="background:var(--ph-approach)"></i>Left</span><span><i style="background:var(--ph-release)"></i>Right</span><span>Speed in source position units/s · click to seek</span></div></div>
-<div class="card block"><div class="sec-title">How this was produced</div><p id="method"></p><div class="usage" id="usage"></div>
-<div id="cross-modal" hidden></div><div id="fusion-audit" hidden></div><details><summary>Input provenance & limitations</summary><pre id="provenance"></pre></details><p class="note">Model drafts · not human reviewed. A second pass is not automatically more accurate.</p></div>
+<details class="card block"><summary>Method &amp; diagnostics</summary><p id="method"></p><div class="usage" id="usage"></div>
+<div id="cross-modal" hidden></div><div id="fusion-audit" hidden></div><details><summary>Input provenance & limitations</summary><pre id="provenance"></pre></details><p class="note">A second pass is not automatically more accurate.</p></details>
 </section>
 <section class="panel">
+<p class="note">Model-generated captions · human review required.</p>
 <div class="card verdict" id="quality"></div>
 <div class="card block"><div class="sec-title">Recorded task</div><div class="task-line" id="task"></div>
 <div id="scene-block"><div class="sec-title" style="margin-top:16px">What the model saw</div><div id="scene"></div><div class="objs" id="objects"></div></div>
@@ -32,20 +39,22 @@
 </section></main>
 <script>
 const api = {{ api_base|tojson }};
-const schemes = {{ caption_schemes|tojson }};
+let schemes = {{ caption_schemes|tojson }};
 const methodStorageKey = 'dataPlatform.captionMethod';
 let savedMethod = '';
 try { savedMethod = localStorage.getItem(methodStorageKey) || ''; } catch (_) {}
 const requested = new URLSearchParams(location.search);
 const initialMethod = requested.get('scheme') || savedMethod || 'multiview_semantics';
 let initialSelection = true;
+let initialMethodPending = !requested.has('scheme');
+let methodChanged = false, resultWarnings = [];
 const $ = id => document.getElementById(id);
 let artifact = null, active = 0, generation = 0, selectedLoop = 0, runs = [];
 const phases = {idle:'idle', approach:'approach', reach:'approach', grasp:'grasp', lift:'lift', hold:'hold', transfer:'transfer', release:'release', retreat:'retreat'};
 const palette = ['approach','grasp','transfer','release','retreat','lift','hold'];
 function color(segment, i) { return `var(--ph-${phases[segment.phase] || palette[i % palette.length]})`; }
 function text(tag, value, cls='') { const el=document.createElement(tag); el.textContent=value; el.className=cls; return el; }
-function bilingual(parent, en, zh) { parent.replaceChildren(); if(en) parent.append(text('div',en,'cap-en')); if(zh) parent.append(text('div',zh,'cap-zh')); }
+function bilingual(parent, en, zh) { parent.replaceChildren(); if(en===zh && en){parent.append(text("div",en,"cap-shared"));return;} if(en) parent.append(text('div',en,'cap-en')); if(zh) parent.append(text('div',zh,'cap-zh')); }
 async function get(url) { const response=await fetch(url); if(!response.ok) throw new Error(`Unable to load results (HTTP ${response.status})`); return response.json(); }
 function seek(index) {
     active=index; selectedLoop=index; highlight();
@@ -81,7 +90,7 @@ function renderQuality(result) {
     const box=$('quality'), quality=result.quality;
     box.replaceChildren(text('div','Task outcome assessment','sec-title'));
     box.classList.toggle('quality-unknown',!quality || typeof quality.instruction_followed!=='boolean');
-    if(!quality || typeof quality.instruction_followed!=='boolean') { box.append(text('p','Task success was not assessed in this result. This is not a failure. Segmentation review findings are shown separately below.')); return; }
+    if(!quality || typeof quality.instruction_followed!=='boolean') { box.append(text('p','Task outcome not assessed. See segment review findings below.')); return; }
     box.classList.toggle('pass',quality.instruction_followed===true && quality.success===true);
     const badges=text('div','','verdict-head');
     for(const [label,value] of [['Instruction followed',quality.instruction_followed],['Task success',quality.success]]) badges.append(text('span',`${label}: ${value===true?'yes':value===false?'no':'unknown'}`,`badge ${value===true?'ok':value===false?'bad':'warn'}`));
@@ -116,9 +125,10 @@ function renderCrossModal(data) {
         text('p',cross.signal_audit.meaning),text('pre',JSON.stringify({signal_audit:cross.signal_audit,local_analysis:cross.local_analysis},null,2)));
     box.append(details);
 }
+{% include 'temporal_caption_reward.js' %}
 function render(data) {
     artifact=data; active=0; selectedLoop=0;
-    $('status').textContent=(data.review_notes || []).join(' '); $('review').hidden=false;
+    $('status').textContent=[...resultWarnings, ...(data.review_notes || [])].join(' '); $('review').hidden=false;
     $('video').pause(); $('video').src=data.video_url; $('video').playbackRate=Number($('rate').value);
     $('meta').textContent=`Episode ${data.episode_index} · ${data.frame_count} frames · ${data.duration_s.toFixed(2)} s · ${data.model}${data.pipeline_version ? ` · ${data.pipeline_version}` : ''}`;
     $('scheme-description').textContent=data.scheme.description; $('method').textContent=data.scheme.description;
@@ -128,6 +138,9 @@ function render(data) {
     bilingual($('scene'),scene.description_en,scene.description_zh); $('objects').replaceChildren();
     for(const object of scene.objects || []) $('objects').append(text('span',object,'obj'));
     renderQuality(data.result);
+    $("quality").hidden=data.scheme_id==="flora";
+    $("signal-panel").hidden=!(data.context.signals || []).length;
+    renderReward(data);
     renderCrossModal(data);
     $('usage').replaceChildren();
     for(const [label,value] of [['Model',data.model],['Input tokens',data.usage?.prompt_tokens??'—'],['Output tokens',data.usage?.completion_tokens??'—']]) {
@@ -143,7 +156,7 @@ function render(data) {
         }
         const details=document.createElement('details');details.append(text('summary',`Independent evidence & ${data.review.stages.length} stages`),text('pre',JSON.stringify(data.review,null,2)));audit.append(details);
     }
-    $('provenance').textContent=JSON.stringify({limitations:data.result.limitations,sampled_frames:data.sampled_frames,usage:data.usage,prompt_sha256:data.prompt_sha256,source_digest:data.source_digest},null,2);
+    $('provenance').textContent=JSON.stringify({limitations:data.result.limitations,sampled_frames:data.sampled_frames,usage:data.usage,prompt_sha256:data.prompt_sha256,source_digest:data.source_digest,native_segments:data.native_segments,native_segmentation:data.native_segmentation,stage_metrics:data.stage_metrics,model_revisions:data.model_revisions},null,2);
     $('segments').replaceChildren(); $('timeline').replaceChildren(); $('segcount').textContent=data.result.segments.length;
     data.result.segments.forEach((segment,i)=>{
         const button=text('button','','segcard');button.style.setProperty('--c',color(segment,i));
@@ -152,7 +165,7 @@ function render(data) {
         if(segment.phase) header.append(text('span',segment.phase,'phase'));
         if(segment.active_arm) header.append(text('span',segment.active_arm,'arm'));
         if(segment.confidence!=='not_reported') header.append(text('span',`${segment.confidence} confidence`));
-        body.append(header,text('div',segment.caption_en,'cap-en'),text('div',segment.caption,'cap-zh'));
+        const captions=text('div');bilingual(captions,segment.caption_en,segment.caption);body.append(header,captions);
         const evidence=text('div',segment.evidence,'evidence');body.append(evidence);
         const support=data.cross_modal?.segment_support?.find(item=>item.start_frame===segment.start_frame);
         if(support)body.append(text('div',`Boundary evidence: ${support.candidate_ids.join(', ') || 'no nearby local candidate'}`,'note'));
@@ -170,7 +183,7 @@ function render(data) {
     plot(data.context);highlight();syncPlayback();
 }
 async function load() {
-    const version=++generation;$('video').pause();$('review').hidden=true;$('status').textContent='Loading result…';
+    const version=++generation;clearReward();artifact=null;$('video').pause();$('review').hidden=true;$('status').textContent='Loading result…';
     try { const data=await get(`${api}/${$('variant').value}`);if(version===generation) render(data); }
     catch(error) {if(version===generation) $('status').textContent=error.message;}
 }
@@ -178,6 +191,7 @@ function syncPlayback() {
     if (!artifact) return;
     if ($('video').seeking) return;
     const frame = Math.min(artifact.frame_count-1, Math.floor($('video').currentTime * artifact.fps + 0.001));
+    updateReward(frame);
     const segment = artifact.result.segments[selectedLoop];
     if ($('loop').checked && (frame >= segment.end_frame || frame < segment.start_frame-1)) {
         $('video').currentTime = segment.start_frame / artifact.fps; return;
@@ -202,7 +216,7 @@ function chooseScheme() {
     const method = schemes.find(item => item.id === $('scheme').value);
     if (!method) return;
     generation++; // Invalidate a pending result load, including when this method has no results.
-    $('video').pause(); $('review').hidden = true; artifact = null; $('meta').textContent = '';
+    clearReward(); $('video').pause(); $('review').hidden = true; artifact = null; $('meta').textContent = '';
     $('scheme-description').textContent = method.description;
     try { localStorage.setItem(methodStorageKey, method.id); } catch (_) {}
     $('variant').replaceChildren();
@@ -229,9 +243,9 @@ function chooseScheme() {
     if (candidates.length) initialSelection = false;
     $('variant').disabled = !candidates.length;
     if (matching) { $('variant').value = `${matching.run}/${matching.variant}`; load(); }
-    else $('status').textContent = `No saved results for ${method.name} on this dataset. Select an episode below to create one.`;
+    else $('status').textContent = [...resultWarnings, `No saved results for ${method.name} on this dataset.`].join(' ');
 }
-$('scheme').onchange = chooseScheme;
+$('scheme').onchange = () => {methodChanged = true; initialMethodPending = false; chooseScheme();};
 $('episode').onchange=()=>{$('variant').value='';chooseScheme();};
 document.addEventListener('keydown',event=>{
  if(!['ArrowUp','ArrowDown'].includes(event.key)||event.altKey||event.ctrlKey||event.metaKey)return;
@@ -244,10 +258,29 @@ async function refreshRuns() {
     const data = await get(api);
     const changed = JSON.stringify(data.runs) !== JSON.stringify(runs);
     runs = data.runs;
+    resultWarnings = (data.warnings || []).map(item => `Result unavailable: ${item}`);
+    const selected = methodChanged || !initialSelection ? $('scheme').value : initialMethod;
+    const available = [...new Map(runs.map(run => [run.scheme.id, run.scheme])).values()];
+    if (available.length) {
+        const previous = schemes.find(item => item.id === selected);
+        if (!available.some(item => item.id === selected) && (methodChanged || requested.has('scheme'))) {
+            available.push(previous || {id:selected, name:selected, description:'No saved results for this method.'});
+        }
+        schemes = available;
+        $('scheme').replaceChildren();
+        for (const method of schemes) {const option=text('option',method.name);option.value=method.id;$('scheme').append(option);}
+        if (schemes.some(item => item.id === selected)) $('scheme').value = selected;
+    }
+    if (initialMethodPending) {
+        initialMethodPending = false;
+        if (runs.length && !runs.some(run => run.scheme.id === $('scheme').value)) {
+            $('scheme').value = runs[0].scheme.id;
+        }
+    }
     if (changed || initialSelection) chooseScheme();
 }
 for(const lang of ['both','en','zh']) $(`lang-${lang}`).onclick=()=>{document.body.classList.toggle('hide-en',lang==='zh');document.body.classList.toggle('hide-zh',lang==='en');for(const key of ['both','en','zh']) $(`lang-${key}`).classList.toggle('on',key===lang);};
-$('theme').onclick=()=>{const dark=document.documentElement.dataset.theme==='dark'||(!document.documentElement.dataset.theme&&matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.dataset.theme=dark?'light':'dark';};
+
 
 
 

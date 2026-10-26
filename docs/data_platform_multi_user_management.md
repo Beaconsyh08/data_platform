@@ -48,6 +48,14 @@
 低/普通/高优先级分别为 0/1/2，默认普通；每等待 30 分钟升一级，最高为高，同级按原入队时间排序。
 调整优先级不抢占已运行任务。事务中的调度锁避免多进程领取和取消竞争。
 
+管理员可在 Platform management → Jobs 对排队任务启用 **Use extra quota (+1)**，或撤回该授权。
+接口为 `PATCH /api/control/jobs/<job_id>/extra-quota`，JSON 包含布尔值 `enabled`、当前 `revision`
+和 `idempotency_key`。仅 `admin` 可调用，运行中的任务不能变更；复用现有事务锁、乐观锁、幂等记录和审计。
+授权持久化在 `dp_job_controls.extra_quota`，管理库 migration 6 给现有任务填充 `false`。
+额外任务不占提交者的普通运行额度，但仍占节点槽位；数据锁、权限、维护状态和 Agent 能力检查全部保留。
+手动重试清除授权；同一 MCAP 任务的自动恢复保留授权。排队总数上限和优先级不变。
+本版本的发布 schema 为 6；从 schema 5 升级时由现有部署检查决定排空，不能按 schema 5 的兼容滚动升级处理。
+
 | 场景 | 行为 |
 | --- | --- |
 | 排队取消 | `queued → cancelled`，之后不能被领取 |

@@ -544,13 +544,13 @@ class Element {
     showModal() { this.open = true; }
     close() { this.open = false; this.events.close(); }
 }
-let readyCallback, poll, approved = false, posts = [], progress = null;
+let readyCallback, poll, approved = false, posts = [], progress = null, canRetry = false;
 const body = new Element('body');
 const context = {
     window: {fetch: async (url, init = {}) => {
         let result;
         if (url === '/api/auth/status') result = {csrf_token:'csrf', user:{user_id:'admin',username:'admin',role:'admin'}};
-        else if (url === '/api/dev/production') result = {dev:{release:'R3'},prod:{release:'R2'},revision:'rev3',comparison:'different',approved,can_approve:!approved,can_promote:approved,progress};
+        else if (url === '/api/dev/production') result = {dev:{release:'R3'},prod:{release:'R2'},revision:'rev3',comparison:'different',approved,can_approve:!approved,can_promote:approved && (progress?.status !== 'failed' || canRetry),can_retry:canRetry,progress};
         else if (url.startsWith('/api/dev/acceptance')) {
             if (init.method === 'POST') { posts.push(JSON.parse(init.body)); approved = true; }
             result = {status: approved ? 'approved' : 'ready', release:'R3', revision:'rev3'};
@@ -595,6 +595,19 @@ vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), context);
     assert.equal(progressDialog.querySelector('progress').hidden, true);
     assert.equal(progressDialog.querySelector('[data-deploy-status]').textContent, 'Deployment completed successfully');
     progressDialog.close(); await poll(); assert.equal(progressDialog.open, false);
+
+    progress = {id:'blocked',release:'R3',status:'failed',retryable:true,message:'1 interrupted job',started_at:10,updated_at:20};
+    await poll();
+    const retry = progressDialog.querySelector('[data-deploy-retry]');
+    assert.equal(retry.hidden, false); assert.equal(retry.disabled, true); assert.equal(deploy.disabled, true);
+    canRetry = true;
+    progress = {...progress,message:'No blocking jobs remain. Retry deployment.'};
+    await poll();
+    assert.equal(retry.disabled, false); assert.equal(deploy.disabled, false);
+    assert.equal(deploy.textContent, 'Retry production deployment');
+    canRetry = false; progress = {...progress,retryable:false,message:'Migration failed'};
+    await poll();
+    assert.equal(retry.hidden, true); assert.equal(deploy.disabled, true);
 
 })().catch(error => { console.error(error); process.exit(1); });
 """

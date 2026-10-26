@@ -80,7 +80,7 @@ _MANIFEST_TRANSITIONS = {
     MANIFEST_IN_REVIEW: MANIFEST_APPROVED,
     MANIFEST_APPROVED: MANIFEST_PUBLISHED,
 }
-_SUPPORTED_REPAIR_OPS = {"trim", "value_edit"}
+_SUPPORTED_REPAIR_OPS = {"trim", "value_edit", "pose_interpolate"}
 _ALLOWED_ANNOTATION_FIELDS = {
     "first_frame_bbox",
     "prompt",
@@ -3040,6 +3040,21 @@ class LifecycleStore:
             if excluded_targets:
                 raise ValueError(f"repair recipe targets excluded episodes: {excluded_targets}")
             params = dict(recipe.get("params") or {})
+            if operation == "pose_interpolate":
+                from lerobot.data_platform.precompute.preprocess.pose_interpolate import PoseRepair
+
+                repairs = params.get("repairs")
+                if not isinstance(repairs, list) or not repairs:
+                    raise ValueError("Pose repair requires explicit intervals")
+                indices = base.index_by_uid()
+                allowed_indices = {indices[uid] for uid in target_uids}
+                bound_repairs = []
+                for repair in repairs:
+                    parsed = PoseRepair.parse(repair, features)
+                    if parsed.episode_index not in allowed_indices:
+                        raise ValueError("Pose interval targets an episode outside the recipe")
+                    bound_repairs.append({**repair, "episode_uid": base.uid_by_index()[parsed.episode_index]})
+                params["repairs"] = bound_repairs
             if operation == "trim":
                 if not refs:
                     raise ValueError("trim repair requires explicit episode_refs")
@@ -3675,6 +3690,18 @@ def _apply_repair_recipes(
                     )
                 )
             results.append({"op": operation, "episodes": episode_ids, "results": per_episode})
+        elif operation == "pose_interpolate":
+            from lerobot.data_platform.precompute.preprocess.pose_interpolate import apply_pose_repairs
+
+            repairs = [
+                {
+                    **{k: v for k, v in item.items() if k != "episode_uid"},
+                    "episode_index": output_index_by_uid[item["episode_uid"]],
+                }
+                for item in recipe["params"]["repairs"]
+            ]
+            summary = apply_pose_repairs(root, repairs)
+            results.append({"op": operation, "episodes": episode_ids, "summary": summary})
         elif operation == "value_edit":
             result = run_value_edits(
                 root,

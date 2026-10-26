@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 from lerobot.data_platform import releases
@@ -70,14 +71,18 @@ print(json.dumps(values))
             raise RuntimeError("Remote Agent configuration does not match the selected environment/node")
 
 
-def install_agent(deployment, version, *, hard=False):
-    return [_install_agent_target(deployment, version, target, hard=hard) for target in agent_targets()]
+def install_agent(deployment, version, *, hard=False, index_url=None, rolling=False):
+    return [
+        _install_agent_target(deployment, version, target, hard=hard, index_url=index_url, rolling=rolling)
+        for target in agent_targets()
+    ]
 
 
-def _install_agent_target(deployment, version, target, *, hard=False):
+def _install_agent_target(deployment, version, target, *, hard=False, index_url=None, rolling=False):
     root, manifest = releases.verify_release(
         version, production=deployment.environment == "prod" and not hard
     )
+    releases.validate_package_index(index_url)
     host, options = agent_connection(target)
     archive = manifest["agent_archive"]
     remote = f"data-platform-updates/{deployment.environment}/{version}"
@@ -107,6 +112,9 @@ def _install_agent_target(deployment, version, target, *, hard=False):
             ]
         )
     env = deployment.environment
+    installer = "./install.sh"
+    if index_url:
+        installer = f"env UV_DEFAULT_INDEX={shlex.quote(index_url)} ./install.sh"
     command = f"""set -eu
 cd {remote}
 sha256sum --check {archive}.sha256
@@ -114,7 +122,7 @@ tar -xzf {archive}
 cd {archive.removesuffix(".tar.gz")}
 ./install.sh --verify-only
 if [ "$(id -u)" = 0 ]; then set --; else set -- sudo -n; fi
-"$@" ./install.sh --env {env}
+"$@" {installer} --env {env}{" --rolling" if rolling else ""}
 test "$(readlink -f /opt/data-platform-agent/{env}/current)" = /opt/data-platform-agent/{env}/releases/{version}
 "$@" systemctl is-active --quiet data-platform-agent@{env}.service
 """
@@ -124,24 +132,38 @@ test "$(readlink -f /opt/data-platform-agent/{env}/current)" = /opt/data-platfor
 
 
 def deploy(
-    deployment, version, *, with_agent=True, index_url=None, rollback=False, restore_from=None, hard=False
+    deployment,
+    version,
+    *,
+    with_agent=True,
+    index_url=None,
+    rollback=False,
+    restore_from=None,
+    hard=False,
+    wait_for_jobs=False,
 ):
     from sqlalchemy import func, select
 
     from lerobot.data_platform.deployment_backup import backup, restore_backup, validate_backup
     from lerobot.data_platform.environment import check_server_environment
-    from lerobot.data_platform.maintenance import set_maintenance, wait_until_idle
+    from lerobot.data_platform.maintenance import JobDrainError, set_maintenance, wait_until_idle
     from lerobot.data_platform.management_storage import SchemaMigration
+    from lerobot.data_platform.rolling_deployment import rolling_ready
 
     load_environment(deployment)
     check_server_environment()
     root, manifest = releases.verify_release(
         version, production=deployment.environment == "prod" and not hard
     )
+    index_url = index_url or manifest.get("package_index_url")
+    releases.validate_package_index(index_url)
     deployment.root.mkdir(parents=True, exist_ok=True)
     with (deployment.root / ".deployment.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         store = _store()
+        from lerobot.data_platform.report_archive import require_reader_compatibility
+
+        require_reader_compatibility(store, manifest.get("artifact_reader_protocol", 0))
         with store.sessions() as session:
             schema = session.scalar(select(func.max(SchemaMigration.version)))
         if restore_from is not None:
@@ -183,45 +205,93 @@ def deploy(
             # Dependency errors never modify the running installation or pause user work.
             progress("dependencies")
             target = releases.prepare_server(deployment, version, index_url=index_url, hard=hard)
-            progress("draining")
             set_maintenance(store, True, release=version)
-            wait_until_idle(store)
+            rolling = bool(
+                with_agent
+                and not rollback
+                and restore_from is None
+                and not wait_for_jobs
+                and rolling_ready(
+                    store,
+                    deployment,
+                    manifest,
+                    schema=schema,
+                    required_names=[name for target in agent_targets() for name in target.node_names],
+                )
+            )
+            state["rolling"] = rolling
+            if rolling:
+                progress("preserving-jobs")
+            else:
+                progress("draining")
+                wait_until_idle(store)
             progress("stopping")
-            # Only the selected environment is stopped. Existing jobs have already drained.
+            # Compatible old worker generations remain alive, including their compute cgroups.
             if previous is not None:
-                releases.run(["systemctl", "stop", *deployment.units])
+                releases.run(
+                    [
+                        "systemctl",
+                        "stop",
+                        *(
+                            [unit for unit in deployment.units if "local-worker" not in unit]
+                            if rolling
+                            else deployment.units
+                        ),
+                    ]
+                )
             saved = deployment.root / "backups" / f"{version}-{time.time_ns()}"
             progress("backup")
-            backup(deployment, saved)
+            backup(deployment, saved, **({"quiescent": False} if rolling else {}))
             state["backup"] = str(saved)
             releases.atomic_json(state_path, state)
             if restore_from is not None:
                 progress("restore")
                 restore_backup(deployment, restore_from)
-            progress("migration")
-            migration_env = dict(os.environ, DATA_PLATFORM_RELEASE=version)
-            releases.run(
-                [
-                    target / ".venv/bin/python",
-                    "-m",
-                    "lerobot.data_platform.environment_cli",
-                    "init",
-                    "--env",
-                    deployment.environment,
-                ],
-                cwd=target,
-                env=migration_env,
-            )
+            if not rolling:
+                progress("migration")
+                migration_env = dict(os.environ, DATA_PLATFORM_RELEASE=version)
+                releases.run(
+                    [
+                        target / ".venv/bin/python",
+                        "-m",
+                        "lerobot.data_platform.environment_cli",
+                        "init",
+                        "--env",
+                        deployment.environment,
+                    ],
+                    cwd=target,
+                    env=migration_env,
+                )
+            if rolling and (target / "lerobot/data_platform/processing/models.py").is_file():
+                # Add only new management tables while old attempts retain their existing schema.
+                progress("additive-schema")
+                releases.run(
+                    [
+                        target / ".venv/bin/python",
+                        "-m",
+                        "lerobot.data_platform.management_cli",
+                        "--env",
+                        deployment.environment,
+                        "migrate",
+                    ],
+                    cwd=target,
+                )
             set_maintenance(store, True, release=version)
             progress("restart")
             releases.switch_current(deployment, target)
             releases.install_server_units(deployment)
-            releases.run(["systemctl", "restart", *deployment.units])
+            releases.run(["systemctl", "restart", deployment.units[0]])
+            generation = f"data-platform-local-worker-{version}@{deployment.environment}.service"
+            releases.run(["systemctl", "start", generation])
             progress("health")
             releases.wait_healthy(deployment, version)
             if with_agent:
                 progress("agents")
-            remote = install_agent(deployment, version, hard=hard) if with_agent else None
+            remote = (
+                install_agent(deployment, version, hard=hard, index_url=index_url, rolling=rolling)
+                if with_agent
+                else None
+            )
             if with_agent:
                 progress("heartbeats")
                 for attempt in range(30):
@@ -251,6 +321,12 @@ def deploy(
                 progress("reopening")
                 set_maintenance(store, False, release=version)
                 deployment.maintenance_file.unlink(missing_ok=True)
+            if with_agent:
+                try:
+                    state["history_cleanup"] = releases.prune_deployment_history(deployment)
+                except OSError as exc:
+                    # A cleanup failure does not turn a healthy installation into a failed deployment.
+                    state["history_cleanup_error"] = type(exc).__name__
             state["status"] = "installed" if with_agent else "server-installed"
             state["finished_at"] = time.time()
             progress("complete" if with_agent else "server-only")
@@ -259,16 +335,19 @@ def deploy(
                 with history.open("a") as stream:
                     stream.write(json.dumps(state) + "\n")
             print(json.dumps(state))
-        except BaseException:
+        except BaseException as exc:
             state["status"] = "failed"
             state["finished_at"] = time.time()
             state["updated_at"] = state["finished_at"]
+            if isinstance(exc, JobDrainError):
+                state["failure_code"] = exc.code
+                state["blocking_jobs"] = asdict(exc.counts)
             releases.atomic_json(state_path, state)
             # No automatic DB reversal and no automatic reopening after a partial upgrade.
             raise
 
 
-def deploy_both(version, *, index_url=None):
+def deploy_both(version, *, index_url=None, wait_for_jobs=False):
     """Explicit direct upgrade; no acceptance receipt is created or modified."""
     from lerobot.data_platform.environment import check_server_environment
 
@@ -281,7 +360,13 @@ def deploy_both(version, *, index_url=None):
         agent_preflight(deployment)
     for deployment in deployments:
         print(f"Hard upgrade: {deployment.environment} -> {version}", flush=True)
-        deploy(deployment, version, index_url=index_url, hard=True)
+        deploy(
+            deployment,
+            version,
+            index_url=index_url,
+            hard=True,
+            **({"wait_for_jobs": True} if wait_for_jobs else {}),
+        )
 
 
 def main():
@@ -298,7 +383,13 @@ def main():
     parser.add_argument("--source", type=Path, default=Path.cwd())
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--index-url")
+    parser.add_argument("--browser-executable", type=Path, default=Path("/usr/bin/google-chrome"))
     parser.add_argument("--server-only", action="store_true")
+    parser.add_argument(
+        "--wait-for-jobs",
+        action="store_true",
+        help="Wait for every active job before upgrading instead of using compatible executor generations",
+    )
     parser.add_argument(
         "--restore-backup",
         type=Path,
@@ -320,14 +411,20 @@ def main():
         if args.release and args.version:
             parser.error("Choose --version to build once or --release to reuse existing artifacts")
         if args.version:
-            releases.build_release(args.source, version, index_url=args.index_url)
-        deploy_both(version, index_url=args.index_url)
+            releases.build_release(
+                args.source, version, index_url=args.index_url, browser_executable=args.browser_executable
+            )
+        deploy_both(version, index_url=args.index_url, wait_for_jobs=args.wait_for_jobs)
         return
     deployment = Deployment(args.env)
     if args.command == "build":
         if args.env != "dev":
             parser.error("Build candidates in dev; production reuses approved artifacts")
-        print(releases.build_release(args.source, version, index_url=args.index_url))
+        print(
+            releases.build_release(
+                args.source, version, index_url=args.index_url, browser_executable=args.browser_executable
+            )
+        )
     elif args.command == "approve":
         if not args.evidence:
             parser.error("--evidence is required for manual acceptance")
@@ -336,7 +433,9 @@ def main():
         if args.version and not args.release:
             if args.env != "dev":
                 parser.error("Production requires --release for an approved artifact")
-            releases.build_release(args.source, version, index_url=args.index_url)
+            releases.build_release(
+                args.source, version, index_url=args.index_url, browser_executable=args.browser_executable
+            )
         deploy(
             deployment,
             version,
@@ -344,6 +443,7 @@ def main():
             index_url=args.index_url,
             rollback=args.command == "rollback",
             restore_from=args.restore_backup,
+            wait_for_jobs=args.wait_for_jobs,
         )
     else:
         load_environment(deployment)

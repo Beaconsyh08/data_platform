@@ -24,6 +24,7 @@ from lerobot.common.datasets.utils import (
     write_jsonlines,
     write_stats,
 )
+from lerobot.data_platform.cache_files import cached_csv_files
 from lerobot.data_platform.precompute.dataset_io import (
     V3DatasetMetadata,
     is_v3_dataset,
@@ -536,7 +537,7 @@ def _reindex_cached_files(
             old_cached.rename(new_cached)
     cache_dir = static_folder / "csv"
     if cache_dir.is_dir():
-        for csv_file in cache_dir.glob(f"episode_{old_idx:06d}_ds*.csv"):
+        for csv_file in cached_csv_files(cache_dir, f"episode_{old_idx:06d}_ds*.csv"):
             new_name = csv_file.name.replace(f"episode_{old_idx:06d}", f"episode_{new_idx:06d}")
             csv_file.rename(cache_dir / new_name)
 
@@ -559,7 +560,7 @@ def _delete_cached_files(
             cached_video.unlink()
     cache_dir = static_folder / "csv"
     if cache_dir.is_dir():
-        for csv_file in cache_dir.glob(f"episode_{episode_id:06d}_ds*.csv"):
+        for csv_file in cached_csv_files(cache_dir, f"episode_{episode_id:06d}_ds*.csv"):
             csv_file.unlink()
 
 

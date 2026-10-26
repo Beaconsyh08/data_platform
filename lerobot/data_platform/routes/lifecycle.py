@@ -197,7 +197,11 @@ def register_lifecycle_routes(app, ctx) -> None:
                 ctx.fail_job(job, "Lifecycle ingest failed", exc)
 
         launch_background(
-            target=run, name=f"lifecycle-ingest-{job['id']}", daemon=True, thread_factory=threading.Thread
+            compatibility_operator="lifecycle.ingest",
+            target=run,
+            name=f"lifecycle-ingest-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -205,7 +209,11 @@ def register_lifecycle_routes(app, ctx) -> None:
     def api_lifecycle_versions():
         dataset_key = request.args.get("dataset_key") or None
         versions = _store().list_versions(dataset_key=dataset_key)
-        return jsonify({"versions": [item.to_dict() for item in versions]})
+        rows = [item.to_dict() for item in versions]
+        if request.args.get("summary") == "1":
+            for row in rows:
+                row["episode_count"] = len(row.pop("episode_refs", []))
+        return jsonify({"versions": rows})
 
     @app.route("/api/lifecycle/versions/<string:version_id>/identity")
     def api_lifecycle_version_identity(version_id: str):
@@ -503,7 +511,11 @@ def register_lifecycle_routes(app, ctx) -> None:
                 ctx.fail_job(job, "Lifecycle preprocessing failed", exc)
 
         launch_background(
-            target=run, name=f"lifecycle-preprocess-{job['id']}", daemon=True, thread_factory=threading.Thread
+            compatibility_operator="lifecycle.preprocess",
+            target=run,
+            name=f"lifecycle-preprocess-{job['id']}",
+            daemon=True,
+            thread_factory=threading.Thread,
         )
         return jsonify({"job": ctx.serialize_job(job)})
 
@@ -786,6 +798,7 @@ def register_lifecycle_routes(app, ctx) -> None:
                 ctx.fail_job(job, "Lifecycle materialization failed", exc)
 
         launch_background(
+            compatibility_operator="lifecycle.materialize",
             target=run,
             name=f"lifecycle-materialize-{job['id']}",
             daemon=True,

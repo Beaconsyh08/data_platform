@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import pytest
 
-from lerobot.data_platform.control_plane import ControlPlaneStore, RemoteJob, _utcnow
+from lerobot.data_platform.control_plane import ControlPlaneNode, ControlPlaneStore, RemoteJob, _utcnow
 from lerobot.data_platform.job_management import JobConflictError
 from lerobot.data_platform.management_storage import EventSpool, LogDelivery, UsageLogStore
 from lerobot.data_platform.operation_log import build_operation_event
@@ -55,6 +55,44 @@ def command(store, job, actor, action, **extra):
         action,
         {"revision": current["revision"], "idempotency_key": f"{action}-{current['revision']}", **extra},
     )
+
+
+@pytest.mark.parametrize("status", ["running", "cancel_requested", "interrupted"])
+def test_deployment_drain_reports_all_blockers_without_discarding_jobs(setup, status):
+    from lerobot.data_platform.maintenance import JobDrainError, active_job_counts, wait_until_idle
+
+    store, _, _, _, _, create = setup
+    queued = create()
+    job = create()
+    with store.sessions.begin() as session:
+        session.get(RemoteJob, job["job_id"]).status = status
+    counts = active_job_counts(store)
+    assert counts.total == 1
+    assert getattr(counts, status) == 1
+    with pytest.raises(JobDrainError) as error:
+        wait_until_idle(store, timeout=0)
+    assert error.value.code == ("interrupted_jobs" if status == "interrupted" else "drain_timeout")
+    assert error.value.counts == counts
+    assert "running or finalizing" in str(error.value)
+    assert store.get_job(job["job_id"])["status"] == status
+    assert store.get_job(queued["job_id"])["status"] == "queued"
+
+
+def test_deployment_wait_finishes_after_current_job_is_acknowledged(setup, monkeypatch):
+    from lerobot.data_platform.maintenance import active_jobs, wait_until_idle
+
+    store, _, _, _, _, create = setup
+    job = create()
+    with store.sessions.begin() as session:
+        session.get(RemoteJob, job["job_id"]).status = "running"
+
+    def acknowledge(_):
+        with store.sessions.begin() as session:
+            session.get(RemoteJob, job["job_id"]).status = "done"
+
+    monkeypatch.setattr("time.sleep", acknowledge)
+    wait_until_idle(store)
+    assert active_jobs(store) == 0
 
 
 def test_owner_job_listing_sorts_ids_without_large_json(setup):
@@ -116,6 +154,170 @@ def test_claim_race_has_one_winner(setup):
             )
         )
     assert sum(result is not None for result in results) == 1
+
+
+def test_caption_jobs_share_node_only_for_distinct_episodes(setup):
+    store, _, owner, node, location, create = setup
+    store.job_manager.caption_limit = 2
+    with store.sessions.begin() as session:
+        row = session.get(ControlPlaneNode, node["node_id"])
+        row.capabilities = {**row.capabilities, "caption_concurrent_limit": 2}
+
+    def caption(episode):
+        return store.create_job(
+            location_id=location["location_id"],
+            requested_by=owner["user_id"],
+            operation="caption.annotate",
+            options={"episode_index": episode, "scheme": "fusion_review"},
+        )
+
+    first = caption(0)
+    duplicate = caption(0)
+    second = caption(1)
+    normal = create()
+    claimed_first = store.claim_job(node["node_id"], worker_instance_id="one")
+    claimed_second = store.claim_job(node["node_id"], worker_instance_id="two")
+    assert {claimed_first["job_id"], claimed_second["job_id"]} == {first["job_id"], second["job_id"]}
+    assert store.claim_job(node["node_id"], worker_instance_id="three") is None
+    assert store.get_job(duplicate["job_id"])["status"] == "queued"
+    assert store.get_job(normal["job_id"])["status"] == "queued"
+
+    for claimed in (claimed_first, claimed_second):
+        store.complete_job(
+            claimed["job_id"],
+            node_id=node["node_id"],
+            status="error",
+            attempt_id=claimed["execution"]["attempt_id"],
+            credential=claimed["execution"]["credential"],
+        )
+    assert store.claim_job(node["node_id"], worker_instance_id="four") is not None
+
+
+def test_caption_parallelism_requires_matching_agent_capability(setup):
+    store, _, owner, node, location, _ = setup
+    store.job_manager.caption_limit = 2
+    for episode in (0, 1):
+        store.create_job(
+            location_id=location["location_id"],
+            requested_by=owner["user_id"],
+            operation="caption.annotate",
+            options={"episode_index": episode, "scheme": "fusion_review"},
+        )
+    assert store.claim_job(node["node_id"], worker_instance_id="one") is not None
+    assert store.claim_job(node["node_id"], worker_instance_id="two") is None
+
+
+def _enable_two_slots(store, node):
+    store.job_manager.node_limit = 2
+    store.job_manager.user_limit = 2
+    with store.sessions.begin() as session:
+        row = session.get(ControlPlaneNode, node["node_id"])
+        row.capabilities = {**row.capabilities, "job_concurrent_limit": 2}
+
+
+def test_two_independent_viewer_jobs_claim_and_report_slots(setup):
+    store, _, owner, node, location, create = setup
+    _enable_two_slots(store, node)
+    other = store.sync_locations(
+        node["node_id"],
+        [{"root": "/data/other", "dataset_key": "other", "output_dir": "/data/other-cache"}],
+    )[0]
+    first = create()
+    second = store.create_job(
+        location_id=other["location_id"], requested_by=owner["user_id"], operation="viewer.prepare"
+    )
+    claimed_first = store.claim_job(node["node_id"], worker_instance_id="one")
+    claimed_second = store.claim_job(node["node_id"], worker_instance_id="two")
+    assert claimed_first["job_id"] == first["job_id"]
+    assert claimed_second["job_id"] == second["job_id"]
+    queued = store.create_job(
+        location_id=other["location_id"], requested_by=owner["user_id"], operation="viewer.prepare"
+    )
+    status = store.job_manager.decorate(store.get_job(queued["job_id"]), owner)
+    assert status["node_slots"] == {"used": 2, "limit": 2}
+    assert status["queue_wait_reason"] == "data_path_conflict"
+    third = store.sync_locations(
+        node["node_id"],
+        [{"root": "/data/third", "dataset_key": "third", "output_dir": "/data/third-cache"}],
+    )[0]
+    independent = store.create_job(
+        location_id=third["location_id"], requested_by=owner["user_id"], operation="viewer.prepare"
+    )
+    assert (
+        store.job_manager.decorate(store.get_job(independent["job_id"]), owner)["queue_wait_reason"]
+        == "node_capacity"
+    )
+    assert command(store, first, owner, "cancel")["status"] == "cancel_requested"
+    assert store.claim_job(node["node_id"], worker_instance_id="three") is None
+    store.complete_job(
+        first["job_id"],
+        node_id=node["node_id"],
+        status="cancelled",
+        attempt_id=claimed_first["execution"]["attempt_id"],
+        credential=claimed_first["execution"]["credential"],
+    )
+    assert store.claim_job(node["node_id"], worker_instance_id="three")["job_id"] == independent["job_id"]
+    assert store.get_job(second["job_id"])["status"] == "running"
+
+
+@pytest.mark.parametrize("other_output", ["/data/cache", "/data/cache/subdir"])
+def test_shared_output_and_merge_secondary_input_wait(setup, other_output):
+    store, _, owner, node, location, create = setup
+    _enable_two_slots(store, node)
+    shared_cache = store.sync_locations(
+        node["node_id"],
+        [{"root": "/data/other", "dataset_key": "other", "output_dir": other_output}],
+    )[0]
+    first = create()
+    shared = store.create_job(
+        location_id=shared_cache["location_id"],
+        requested_by=owner["user_id"],
+        operation="viewer.prepare",
+    )
+    merge = store.create_job(
+        location_id=shared_cache["location_id"],
+        requested_by=owner["user_id"],
+        operation="preprocess.merge",
+        options={"source_location_ids": [location["location_id"]]},
+    )
+    assert store.claim_job(node["node_id"], worker_instance_id="one")["job_id"] == first["job_id"]
+    assert store.claim_job(node["node_id"], worker_instance_id="two") is None
+    for job in (shared, merge):
+        status = store.job_manager.decorate(store.get_job(job["job_id"]), owner)
+        assert status["queue_wait_reason"] == "data_path_conflict"
+
+
+def test_caption_can_mix_with_other_dataset_but_mutation_waits(setup):
+    store, admin, owner, node, location, _ = setup
+    _enable_two_slots(store, node)
+    other = store.sync_locations(
+        node["node_id"],
+        [{"root": "/data/other", "dataset_key": "other", "output_dir": "/data/other-cache"}],
+    )[0]
+    third = store.sync_locations(
+        node["node_id"],
+        [{"root": "/data/third", "dataset_key": "third", "output_dir": "/data/third-cache"}],
+    )[0]
+    caption = store.create_job(
+        location_id=location["location_id"],
+        requested_by=owner["user_id"],
+        operation="caption.annotate",
+        options={"episode_index": 0},
+    )
+    viewer = store.create_job(
+        location_id=other["location_id"], requested_by=owner["user_id"], operation="viewer.prepare"
+    )
+    mutation = store.create_job(
+        location_id=third["location_id"],
+        requested_by=admin["user_id"],
+        operation="mutation.value_edit",
+    )
+    assert store.claim_job(node["node_id"], worker_instance_id="one")["job_id"] == caption["job_id"]
+    assert store.claim_job(node["node_id"], worker_instance_id="two")["job_id"] == viewer["job_id"]
+    assert (
+        store.job_manager.decorate(store.get_job(mutation["job_id"]), admin)["queue_wait_reason"]
+        == "exclusive_job"
+    )
 
 
 def test_cancel_does_not_release_running_slot_and_stale_attempt_is_rejected(setup):
@@ -228,10 +430,17 @@ def test_admin_browser_existing_role_and_denied_login_audit(tmp_path, monkeypatc
     logs = client.get("/api/admin/usage-events?status=failed").get_json()["events"]
     assert any(row["operation"] == "control_plane_login" for row in logs)
     assert "do-not-store" not in json.dumps(logs)
+    summary = client.get("/api/admin/usage-events?summary=1&limit=1").get_json()
+    event_id = summary["events"][0]["event_id"]
+    assert client.get(f"/api/admin/usage-events/{event_id}").get_json()["event"]["event_id"] == event_id
+    assert client.get("/api/admin/usage-events/missing").status_code == 404
+    assert client.get("/api/admin/usage-summary?sample_limit=0").status_code == 400
+    assert client.get("/api/admin/usage-summary?sample_limit=10").get_json()["sample_limit"] == 10
     viewer = store.register_user(username="read-only", password="long-test-password", display_name="Viewer")
     client.post("/api/auth/logout", json={})
     client.post("/api/auth/login", json={"username": viewer["username"], "password": "long-test-password"})
     assert client.get("/api/admin/database/tables").status_code == 403
+    assert client.get(f"/api/admin/usage-events/{event_id}").status_code == 403
     assert 'id="admin-usage-panel"' not in client.get("/control-plane").get_data(as_text=True)
     app.extensions["data_platform_log_delivery"].flush()
     denied = app.extensions["data_platform_log_delivery"].logs.query({"status": "failed"})["events"]
@@ -308,3 +517,146 @@ def test_job_reads_are_private_and_queue_exposes_only_count(setup, tmp_path):
     client.post("/api/auth/login", json={"username": viewer["username"], "password": "long-test-password"})
     assert client.get("/api/control/jobs").get_json()["jobs"] == []
     assert client.get(f"/api/control/jobs/{own_job['job_id']}").status_code == 404
+
+
+def test_four_node_slots_keep_two_per_user(setup):
+    store, admin, owner, node, _, _ = setup
+    store.job_manager.node_limit = 4
+    store.job_manager.user_limit = 2
+    with store.sessions.begin() as session:
+        row = session.get(ControlPlaneNode, node["node_id"])
+        row.capabilities = {**row.capabilities, "job_concurrent_limit": 4}
+    jobs = []
+    for index, user in enumerate([owner, owner, owner, admin, admin, admin]):
+        location = store.sync_locations(
+            node["node_id"],
+            [
+                {
+                    "root": f"/data/input-{index}",
+                    "dataset_key": f"input-{index}",
+                    "output_dir": f"/data/cache-{index}",
+                }
+            ],
+        )[0]
+        jobs.append(
+            store.create_job(
+                location_id=location["location_id"], requested_by=user["user_id"], operation="viewer.prepare"
+            )
+        )
+    first = [store.claim_job(node["node_id"], worker_instance_id=f"worker-{i}") for i in range(2)]
+    assert [job["job_id"] for job in first] == [job["job_id"] for job in jobs[:2]]
+    assert (
+        store.job_manager.decorate(store.get_job(jobs[2]["job_id"]))["queue_wait_reason"] == "user_capacity"
+    )
+    second = [store.claim_job(node["node_id"], worker_instance_id=f"other-{i}") for i in range(2)]
+    assert [job["job_id"] for job in second] == [job["job_id"] for job in jobs[3:5]]
+    assert store.claim_job(node["node_id"], worker_instance_id="fifth") is None
+    status = store.job_manager.decorate(store.get_job(jobs[5]["job_id"]))
+    assert status["node_slots"] == {"used": 4, "limit": 4}
+    assert status["queue_wait_reason"] == "node_capacity"
+
+
+def test_mysql_scheduler_lock_serializes_claims_without_row_changes():
+    import os
+
+    from sqlalchemy import select
+    from sqlalchemy.engine import make_url
+
+    from lerobot.data_platform.management_storage import SchedulerLock
+
+    url = os.environ.get("DATA_PLATFORM_TEST_MYSQL_URL")
+    if not url:
+        pytest.skip("Requires an isolated native MySQL acceptance database")
+    assert make_url(url).database.startswith("dp_test_")
+    store = ControlPlaneStore(url)
+    owner = store.bootstrap_admin(
+        username="native-admin",
+        password="long-native-password",
+        display_name="Native Admin",
+        bootstrap_token="test",
+        expected_token="test",
+    )
+    _, node = store.enroll_node(
+        name="native-node",
+        hostname="localhost",
+        allowed_roots=["/data"],
+        writable_roots=[],
+        capabilities={"job_protocol": 2, "data_profile_protocol": 100},
+        enrollment_token="test",
+        expected_token="test",
+    )
+    location = store.sync_locations(node["node_id"], [{"root": "/data/source", "dataset_key": "source"}])[0]
+
+    def revision():
+        with store.sessions() as session:
+            return session.scalar(select(SchedulerLock.revision).where(SchedulerLock.lock_id == 1))
+
+    before = revision()
+    for index in range(5):
+        assert store.claim_job(node["node_id"], worker_instance_id=str(index)) is None
+    assert revision() == before
+    store.create_job(
+        location_id=location["location_id"],
+        requested_by=owner["user_id"],
+        operation="viewer.prepare",
+    )
+    with ThreadPoolExecutor(8) as pool:
+        claims = list(
+            pool.map(
+                lambda index: store.claim_job(node["node_id"], worker_instance_id=str(index)),
+                range(8),
+            )
+        )
+    assert sum(claim is not None for claim in claims) == 1
+    assert revision() == before
+    store.engine.dispose()
+
+
+@pytest.mark.parametrize("secondary", [False, True])
+def test_deleted_input_disables_retry_and_rejects_direct_command(setup, secondary):
+    from lerobot.data_platform.control_plane import DatasetLocation
+
+    store, admin, owner, node, location, create = setup
+    job = create()
+    command(store, job, owner, "cancel")
+    retired = location
+    if secondary:
+        retired = store.sync_locations(
+            node["node_id"],
+            [{"root": "/data/other", "dataset_key": "other", "output_dir": "/data/other-cache"}],
+        )[0]
+    with store.sessions.begin() as session:
+        session.get(DatasetLocation, retired["location_id"]).state = "deleting"
+        if secondary:
+            session.get(RemoteJob, job["job_id"]).options = {"source_location_ids": [retired["location_id"]]}
+    visible = store.job_manager.decorate(store.get_job(job["job_id"]), owner)
+    assert "retry" not in visible["available_actions"]
+    assert "deleted" in visible["action_reasons"]["retry"]
+    with pytest.raises(JobConflictError, match="deleted"):
+        command(store, job, owner, "retry")
+    assert store.get_job(job["job_id"])["status"] == "cancelled"
+
+
+def test_deleted_input_cannot_trigger_automatic_mcap_recovery(setup):
+    from types import SimpleNamespace
+
+    from lerobot.data_platform.control_plane import DatasetLocation
+    from lerobot.data_platform.job_management import PROCESS_LOSS_ERROR
+
+    store, admin, owner, node, location, create = setup
+    job = create()
+    with store.sessions.begin() as session:
+        row = session.get(RemoteJob, job["job_id"])
+        row.operation, row.status = "import.mcap.convert", "running"
+        session.get(DatasetLocation, location["location_id"]).state = "deleting"
+        assert (
+            store.job_manager._recovery_number(
+                session,
+                row,
+                SimpleNamespace(stop_mode=None, phase="computing"),
+                SimpleNamespace(protocol=2),
+                "error",
+                PROCESS_LOSS_ERROR,
+            )
+            is None
+        )

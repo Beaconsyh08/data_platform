@@ -4,6 +4,8 @@ import json
 from contextlib import suppress
 from pathlib import Path
 
+from lerobot.data_platform.cache_files import logical_csv_path
+
 
 def cached_subtask_names(task: str, static_dir: Path, episode_id: int) -> tuple[int, dict[int, str]]:
     from lerobot.data_platform.precompute.analysis import find_cached_episode_csv
@@ -17,7 +19,9 @@ def cached_subtask_names(task: str, static_dir: Path, episode_id: int) -> tuple[
     csv_path = find_cached_episode_csv(Path(static_dir), episode_id)
     if csv_path:
         with suppress(OSError, ValueError, TypeError, KeyError):
-            count = int(json.loads(csv_path.with_suffix(".stages.json").read_text())["stage_count"])
+            count = int(
+                json.loads(logical_csv_path(csv_path).with_suffix(".stages.json").read_text())["stage_count"]
+            )
     return count - 1, {
         stage: generate_subtask_text(
             task,

@@ -239,6 +239,13 @@ def install_usage_audit(app):
                 if user.get("original_actor"):
                     actor["original_actor"] = user["original_actor"]
         body = request.get_json(silent=True) if not is_read else None
+        if path == "/mcp" and isinstance(body, dict):
+            # MCP arguments can contain arbitrary external model text; audit identifiers only.
+            params = body.get("params")
+            body = {
+                "mcp_method": str(body.get("method", ""))[:80],
+                "tool": str(params.get("name", ""))[:80] if isinstance(params, dict) else "",
+            }
         event = build_operation_event(
             request.endpoint or f"{request.method} {path}",
             status="started",

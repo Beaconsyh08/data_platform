@@ -5,10 +5,8 @@ from __future__ import annotations
 import io
 import json
 import subprocess
-import threading
-from concurrent.futures import as_completed
-from lerobot.data_platform.execution_pools import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,6 +16,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 from PIL import Image
 
+from lerobot.data_platform.cache_files import resolve_cached_csv
+from lerobot.data_platform.execution_resources import video_threads
 from lerobot.data_platform.precompute.annotation import write_episode_csv
 from lerobot.data_platform.precompute.data_profile import (
     DatasetDataProfile,
@@ -32,6 +32,7 @@ from lerobot.data_platform.precompute.preprocess.dataset_version import (
 )
 from lerobot.data_platform.precompute.signal_columns import SIGNAL_COLUMNS_VERSION, signal_columns
 from lerobot.data_platform.precompute.video import temporary_output_path
+from lerobot.data_platform.precompute.viewer_work import ViewerWork, run_viewer_work
 
 ProgressCallback = Callable[[dict], None] | None
 
@@ -132,8 +133,21 @@ def _clip_video(source: Path, target: Path, start: float, end: float) -> None:
     if duration <= 0:
         raise ValueError(f"Invalid v3.0 video interval {start}..{end}: {source}")
     temporary = temporary_output_path(target)
+    threads = video_threads()
     command = [
         "ffmpeg",
+        *(
+            [
+                "-threads",
+                str(threads),
+                "-filter_threads",
+                str(threads),
+                "-filter_complex_threads",
+                str(threads),
+            ]
+            if threads
+            else []
+        ),
         "-loglevel",
         "error",
         "-y",
@@ -148,6 +162,7 @@ def _clip_video(source: Path, target: Path, start: float, end: float) -> None:
         "-an",
         "-c:v",
         "libx264",
+        *(["-threads", str(threads)] if threads else []),
         "-pix_fmt",
         "yuv420p",
         "-movflags",
@@ -202,6 +217,8 @@ def _encode_image_feature(
     try:
         with av.open(str(temporary), mode="w") as container:
             stream = container.add_stream("libx264", rate=int(info["fps"]))
+            if video_threads() is not None:
+                stream.codec_context.thread_count = video_threads()
             first = _decode_image(values[0], root)
             stream.width = int(first.shape[1])
             stream.height = int(first.shape[0])
@@ -279,6 +296,30 @@ def _write_manifest(
     (static_dir / "viewer_manifest.json").write_text(json.dumps(manifest, indent=2))
 
 
+def video_work_items(root, info, episode, static_dir, overwrite=False):
+    """Return one independent task per visual feature for the selected episode."""
+    items = []
+    episode_index = int(episode["episode_index"])
+    for key, feature in sorted(info["features"].items()):
+        if feature.get("dtype") not in {"video", "image"}:
+            continue
+        target = static_dir / "videos" / key / f"episode_{episode_index:06d}_h264.mp4"
+        if not overwrite and _has_nonempty_cache(target):
+            run = partial(lambda: None)
+        elif feature["dtype"] == "video":
+            run = partial(
+                _clip_video,
+                root / _format_video_path(info, episode, key),
+                target,
+                float(episode[f"videos/{key}/from_timestamp"]),
+                float(episode[f"videos/{key}/to_timestamp"]),
+            )
+        else:
+            run = partial(_encode_image_feature, root, info, episode, key, target)
+        items.append(ViewerWork(episode_index, target, run))
+    return items
+
+
 def run_v3_viewer_precompute(
     root: Path,
     repo_id: str,
@@ -338,18 +379,14 @@ def run_v3_viewer_precompute(
     visual_keys = [*video_keys, *image_keys]
     static_dir = output_dir / "static"
     csv_dir = static_dir / "csv"
-    videos_dir = static_dir / "videos"
-    workers = max(1, int(workers or 1))
-    completed = 0
-    completed_lock = threading.Lock()
-
-    def _prepare_episode(episode: pd.Series) -> None:
-        nonlocal completed
+    items = []
+    for _, episode in selected.iterrows():
         episode_index = int(episode["episode_index"])
         if prepare_csv:
-            csv_path = csv_dir / f"episode_{episode_index:06d}_ds{downsample or 1}.csv"
+            csv_path = resolve_cached_csv(csv_dir / f"episode_{episode_index:06d}_ds{downsample or 1}.csv")
             if overwrite_csv or not _has_nonempty_cache(csv_path):
-                _write_episode_csv(
+                run = partial(
+                    _write_episode_csv,
                     root,
                     info,
                     episode,
@@ -359,42 +396,12 @@ def run_v3_viewer_precompute(
                     fallback_stage_count,
                     force_recompute_stage,
                 )
+            else:
+                run = partial(lambda: None)
+            items.append(ViewerWork(episode_index, csv_path, run))
         if prepare_videos:
-            for video_key in video_keys:
-                target = videos_dir / video_key / f"episode_{episode_index:06d}_h264.mp4"
-                if overwrite_videos or not _has_nonempty_cache(target):
-                    source = root / _format_video_path(info, episode, video_key)
-                    _clip_video(
-                        source,
-                        target,
-                        float(episode[f"videos/{video_key}/from_timestamp"]),
-                        float(episode[f"videos/{video_key}/to_timestamp"]),
-                    )
-            for image_key in image_keys:
-                target = videos_dir / image_key / f"episode_{episode_index:06d}_h264.mp4"
-                if overwrite_videos or not _has_nonempty_cache(target):
-                    _encode_image_feature(root, info, episode, image_key, target)
-        with completed_lock:
-            completed += 1
-            _emit(
-                progress_callback,
-                status="running",
-                current=completed,
-                total=len(selected_ids),
-                message=f"Prepared v3.0 viewer cache for episode {episode_index}",
-            )
-
-    _emit(
-        progress_callback,
-        status="running",
-        current=0,
-        total=len(selected_ids),
-        message=f"Preparing read-only v3.0 viewer cache for {len(selected_ids)} episodes",
-    )
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(_prepare_episode, episode) for _, episode in selected.iterrows()]
-        for future in as_completed(futures):
-            future.result()
+            items.extend(video_work_items(root, info, episode, static_dir, overwrite_videos))
+    run_viewer_work(items, workers, progress_callback)
 
     _write_manifest(
         root,

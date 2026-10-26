@@ -4,13 +4,21 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from lerobot.data_platform.execution import ExecutionSupervisor, atomic_json, group_members, process_identity
+from lerobot.data_platform.execution import (
+    ExecutionSupervisor,
+    atomic_json,
+    group_members,
+    input_fingerprint,
+    process_identity,
+)
+from lerobot.data_platform.job_concurrency import footprint
 from tests.datasets.test_preprocess_ops import _add_v21_stat_counts, _make_dataset
 
 
@@ -63,6 +71,101 @@ def fake_agent(tmp_path, client):
         allow_source_mutations=False,
         lease_seconds=60,
     )
+
+
+@pytest.mark.parametrize("operation", ["import.mcap.inspect", "import.mcap.convert"])
+def test_raw_mcap_execution_does_not_require_viewer_output_dir(tmp_path, monkeypatch, operation):
+    source = tmp_path / "raw" / "00001"
+    source.mkdir(parents=True)
+    (source / "sample.mcap").write_bytes(b"sample")
+    final = tmp_path / "converted" / "00001" if operation.endswith("convert") else None
+    job = {
+        "job_id": "mcap-job",
+        "operation": operation,
+        "location": {"root": str(source), "output_dir": "", "dataset_key": "raw/00001"},
+        "options": {},
+        "execution": {"attempt_id": "attempt", "final_output": str(final) if final else None},
+    }
+    paths = footprint(
+        operation, str(source), "", {}, job["job_id"], final_output=str(final) if final else None
+    )
+    assert paths.sources == (str(source),)
+    assert paths.outputs == ((str(final),) if final else ())
+    supervisor = ExecutionSupervisor(fake_agent(tmp_path, Client()))
+
+    def reserved(_job, _work, _roots, output_dir, requested_final):
+        assert output_dir == ""
+        assert requested_final == final
+        raise RuntimeError("reached reservation")
+
+    monkeypatch.setattr(supervisor, "_reserve", reserved)
+    with pytest.raises(RuntimeError, match="reached reservation"):
+        supervisor.start(job)
+
+
+def test_completed_viewer_cache_retry_replays_uploads_without_compute(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "meta.json").write_text("stable")
+    target = tmp_path / "vis" / "local_vis_source"
+    static = target / "static"
+    static.mkdir(parents=True)
+    atomic_json(
+        static / "viewer_manifest.json",
+        {"root": str(source), "repo_id": "node/source", "task_config": {"digest": "task-digest"}},
+    )
+    (static / "video.bin").write_bytes(b"existing cached video")
+    client = Client()
+    uploaded = []
+    client.upload_artifact = lambda _state, _job_id, relative, _path, **_flags: uploaded.append(str(relative))
+    supervisor = ExecutionSupervisor(fake_agent(tmp_path, client))
+    old = supervisor.root / "old-attempt"
+    old.mkdir()
+    fingerprint = input_fingerprint([source])
+    atomic_json(old / "config.json", {"job": {"job_id": "viewer-job"}, "fingerprint": fingerprint})
+    atomic_json(old / "published.json", {"status": "done", "result": {"uploaded_files": 2}})
+    atomic_json(
+        target / ".viewer-publication.json",
+        {
+            "staging": str(target.parent / ".dp-viewer-job-old-attempt" / "cache"),
+            "target": str(target),
+            "source": str(source),
+        },
+    )
+    for name in ("video.bin", "viewer_manifest.json"):
+        atomic_json(
+            old / "uploads" / f"{name}.json",
+            {
+                "relative_path": name,
+                "path": str(static / name),
+                "derived": False,
+            },
+        )
+    current = supervisor.root / "new-attempt"
+    reservation = current / "reservation.json"
+    job = {
+        "job_id": "viewer-job",
+        "operation": "viewer.prepare",
+        "location": {"root": str(source), "output_dir": str(target), "dataset_key": "node/source"},
+        "options": {"task_config": {"digest": "task-digest"}},
+        "execution": {"attempt_id": "new-attempt"},
+    }
+    with pytest.raises(ValueError, match="Viewer source changed"):
+        supervisor._reuse_published_viewer(job, current, "changed-source", reservation)
+    assert not uploaded
+    from lerobot.data_platform import execution
+
+    def real_process_group_only(pid):
+        assert pid is not None and pid > 0
+        return []
+
+    monkeypatch.setattr(execution, "group_members", real_process_group_only)
+    supervisor.start(job)
+    assert uploaded == ["video.bin", "viewer_manifest.json"]
+    assert client.completions[-1]["status"] == "done"
+    assert client.checkpoints[-1][0] == "finalizing"
+    assert json.loads((current / "marker.json").read_text())["acknowledged"] is True
+    assert not reservation.exists()
 
 
 def test_spooling_client_provides_only_inherited_identity(tmp_path):
@@ -138,8 +241,9 @@ def test_first_viewer_job_creates_missing_cache_parent(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("version", ["v2.1", "v3.0"])
 @pytest.mark.parametrize("named_environment", [False, True])
+@pytest.mark.parametrize("local_command", [False, True])
 def test_real_worker_preserves_source_and_publishes_drop_field(
-    tmp_path, monkeypatch, version, named_environment
+    tmp_path, monkeypatch, version, named_environment, local_command
 ):
     monkeypatch.setenv("DATA_PLATFORM_REQUIRE_CGROUP", "0")
     source = tmp_path / "source"
@@ -187,6 +291,23 @@ def test_real_worker_preserves_source_and_publishes_drop_field(
             "final_output": str(final),
         },
     }
+    if local_command:
+        from lerobot.data_platform.precompute.preprocess.field_ops import run_drop_field
+        from lerobot.data_platform.processing.commands import build_command
+
+        command = build_command(
+            "preprocess.drop_field", run_drop_field, source, field_name="old_field", out_root=final
+        )
+        assert command["options"]["out_root"] == str(final)
+        job["options"] = command["options"]
+    publish = supervisor.publish
+
+    def check_staging(marker, payload):
+        assert not final.exists()
+        assert (Path(marker["staging"]) / final.name / "meta/info.json").is_file()
+        return publish(marker, payload)
+
+    monkeypatch.setattr(supervisor, "publish", check_staging)
     supervisor.start(job)
     result = client.completions[-1]
     assert result["status"] == "done", result
@@ -203,6 +324,65 @@ def test_real_worker_preserves_source_and_publishes_drop_field(
         str(path.relative_to(source)): path.read_bytes() for path in source.rglob("*") if path.is_file()
     } == before
     assert [phase for phase, _ in client.checkpoints] == ["executing", "finalizing"]
+
+
+def test_local_viewer_command_publishes_attempt_cache_and_registers_result(tmp_path, monkeypatch):
+    from lerobot.data_platform.cli import run_precompute
+    from lerobot.data_platform.processing.commands import build_command
+
+    monkeypatch.setenv("DATA_PLATFORM_REQUIRE_CGROUP", "0")
+    source = tmp_path / "source"
+    _make_dataset(source)
+    _add_v21_stat_counts(source)
+    before = {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()}
+    target = tmp_path / "viewer"
+    command = build_command(
+        "viewer.prepare",
+        run_precompute,
+        root=source,
+        repo_id="local/source",
+        output_dir=target,
+        prepare_videos=False,
+        prepare_csv=True,
+        prepare_workers=1,
+        visualize_only=True,
+        show_progress=False,
+    )
+    client = Client()
+    supervisor = ExecutionSupervisor(fake_agent(tmp_path, client))
+    job = {
+        "job_id": "viewer-job",
+        **command,
+        "location_id": "location",
+        "location": {"root": str(source), "dataset_key": "local/source", "output_dir": str(target)},
+        "execution": {
+            "attempt_id": "attempt",
+            "credential": "test-credential",
+            "worker_instance_id": "worker",
+            "protocol": 2,
+            "final_output": None,
+        },
+    }
+    publish = supervisor.publish
+
+    def check_staging(marker, payload):
+        assert not target.exists()
+        assert (Path(marker["staging"]) / "cache/static/viewer_manifest.json").is_file()
+        return publish(marker, payload)
+
+    monkeypatch.setattr(supervisor, "publish", check_staging)
+    supervisor.start(job)
+    completed = client.completions[-1]
+    assert completed["status"] == "done", completed
+    assert (target / "static/viewer_manifest.json").is_file()
+    assert completed["result"]["local_registrations"] == [
+        {"root": str(source), "repo_id": "local/source", "output_dir": str(target)}
+    ]
+    assert completed["result"]["local_job"]["viewer_url"] == "/local/source/episode_0"
+    uploads = [json.loads(p.read_text()) for p in (supervisor.root / "attempt/uploads").glob("*.json")]
+    assert any(p["relative_path"] == "viewer_manifest.json" for p in uploads)
+    assert all(Path(p["path"]).is_relative_to(target) for p in uploads)
+    assert {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()} == before
 
 
 def test_completion_outage_replays_result_without_recomputing(tmp_path, monkeypatch):
@@ -223,25 +403,74 @@ def test_completion_outage_replays_result_without_recomputing(tmp_path, monkeypa
         "process_identity": "never",
         "publishing": True,
         "acknowledged": False,
+        "reservation": str(work / "reservation.json"),
     }
+    atomic_json(work / "reservation.json", {"job_id": "job"})
     atomic_json(work / "marker.json", marker)
     real_complete = client.complete
     monkeypatch.setattr(client, "complete", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("offline")))
     with pytest.raises(RuntimeError, match="offline"):
         supervisor.reconcile()
     assert not json.loads((work / "marker.json").read_text())["acknowledged"]
+    assert (work / "reservation.json").exists()
     monkeypatch.setattr(client, "complete", real_complete)
     assert supervisor.reconcile()
     assert client.completions == [payload | {"error": None}]
     assert json.loads((work / "marker.json").read_text())["acknowledged"]
+    assert not (work / "reservation.json").exists()
     assert not supervisor.reconcile()
 
 
-def test_local_validated_request_is_queued_and_replayed(tmp_path, monkeypatch):
+def test_agent_path_reservation_waits_and_renews_until_release(tmp_path):
+    client = Client()
+    supervisor = ExecutionSupervisor(fake_agent(tmp_path, client))
+    source = str(tmp_path / "source")
+    output = str(tmp_path / "cache")
+    first_work = supervisor.root / "one"
+    second_work = supervisor.root / "two"
+    first_work.mkdir()
+    second_work.mkdir()
+    first = supervisor._reserve(
+        {"job_id": "one", "operation": "viewer.prepare", "options": {}},
+        first_work,
+        [source],
+        output,
+        None,
+    )
+    finished = threading.Event()
+    reservations = []
+
+    def wait_for_reservation():
+        reservations.append(
+            supervisor._reserve(
+                {"job_id": "two", "operation": "viewer.prepare", "options": {}},
+                second_work,
+                [source],
+                output,
+                None,
+            )
+        )
+        finished.set()
+
+    thread = threading.Thread(target=wait_for_reservation)
+    thread.start()
+    try:
+        assert not finished.wait(0.2)
+        assert "Waiting for another job's data paths" in client.events
+        supervisor._release(first)
+        assert finished.wait(3)
+        assert reservations[0].exists()
+    finally:
+        supervisor._release(first)
+        for path in reservations:
+            supervisor._release(path)
+        thread.join(timeout=3)
+
+
+def test_local_validated_command_is_queued_and_executed(tmp_path, monkeypatch):
     from lerobot.data_platform import viewer
     from lerobot.data_platform.cli import get_default_output_dir
     from lerobot.data_platform.execution import input_fingerprint
-    from lerobot.data_platform.local_execution import execute_local_request
 
     monkeypatch.setenv("DATA_PLATFORM_DATABASE_URL", f"sqlite:///{tmp_path / 'control.db'}")
     monkeypatch.setenv("DATA_PLATFORM_INTERNAL_EXECUTION", "")
@@ -312,8 +541,10 @@ def test_local_validated_request_is_queued_and_replayed(tmp_path, monkeypatch):
     assert not output.exists()
     persistent = store.get_job(job_id)
     assert persistent["status"] == "queued"
-    assert persistent["operation"].startswith("local.request.")
+    assert persistent["operation"] == "preprocess.drop_field"
+    assert "request" not in persistent["options"]
     claimed = store.claim_job(persistent["node_id"], worker_instance_id="test-worker")
+    assert claimed["execution"]["final_output"] == str(output)
     work = tmp_path / "worker"
     config = {
         "job": claimed,
@@ -322,7 +553,12 @@ def test_local_validated_request_is_queued_and_replayed(tmp_path, monkeypatch):
         "fingerprint": input_fingerprint([source]),
     }
     atomic_json(work / "config.json", config)
-    result = execute_local_request(config)
+    from lerobot.data_platform.processing.local_executor import execute_local_operator
+    from tests.datasets.test_data_platform_agent import _agent
+
+    agent = _agent(tmp_path, tmp_path, tmp_path)
+    agent.name = "local-test"
+    result = execute_local_operator(agent, claimed)
     assert result["local_job"]["status"] == "done"
     assert "old_field" not in json.loads((output / "meta" / "info.json").read_text())["features"]
     assert "old_field" in json.loads((source / "meta" / "info.json").read_text())["features"]

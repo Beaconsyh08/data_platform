@@ -26,11 +26,18 @@ from lerobot.data_platform.curation import (
     publish_bundle,
     register_snapshot,
     snapshot_from_version,
+    supports_artifact_transport,
 )
 from lerobot.data_platform.curation_execution import validate_parameters
 from lerobot.data_platform.lifecycle import MATERIALIZATION_COMMITTED, MaterializationRun
 from lerobot.data_platform.local_execution import enqueue_local
-from lerobot.data_platform.precompute.data_profile import operation_capabilities, profile_from_info
+from lerobot.data_platform.precompute.data_profile import (
+    default_processing_profile,
+    operation_capabilities,
+    profile_from_data_version,
+    profile_from_info,
+    quality_check_capabilities,
+)
 from lerobot.data_platform.routes.control_plane import (
     _current_user,
     _role_denied,
@@ -140,16 +147,44 @@ def register_curation_routes(app, ctx):
             info = snapshot["info"]
         return target, location, node, snapshot, info
 
-    def capabilities(target, node, snapshot, info):
+    def capabilities(target, node, snapshot, info, parameters=None):
         user = _current_user()
         editable = ctx.control_plane_store is None or bool(
             user and user["role"] in {"operator", "data_manager", "admin"}
         )
         caps = node.get("capabilities", {})
-        semantics = operation_capabilities(profile_from_info(info), info.get("features", {}))
+        profile = default_processing_profile(profile_from_info(info), info.get("features", {}))
+        parameters = parameters or {}
+        if parameters.get("data_version"):
+            if profile.robot_profile == "umi":
+                raise ValueError("UMI data cannot use a DVT processing profile")
+            profile = profile_from_data_version(
+                parameters["data_version"],
+                info.get("features", {}),
+                resolution_source="explicit_override",
+                confirmed=True,
+            )
+        semantics = operation_capabilities(profile, info.get("features", {}))
+        quality_checks = quality_check_capabilities(profile, info.get("features", {}))
+        for check, value in quality_checks.items():
+            supported = check == "legacy" or (
+                caps.get("quality_protocol") == 1 and check in caps.get("quality_checks", [])
+            )
+            if not supported:
+                value.update(
+                    available=False,
+                    reason="Upgrade the execution node for this quality check",
+                    can_confirm_profile=False,
+                )
+        semantics["curation_quality"] = {
+            "available": any(
+                value["available"] or value.get("can_confirm_profile") for value in quality_checks.values()
+            ),
+            "reason": "No quality check is supported for this dataset and execution node",
+        }
         aliases = {
             "curation.stage": "auto_stage",
-            "curation.quality": "quality_flags",
+            "curation.quality": "curation_quality",
             "curation.embedding": "embedding",
             "curation.project": "embedding",
         }
@@ -183,6 +218,8 @@ def register_curation_routes(app, ctx):
             "execution_node": node["name"],
             "operations": operations,
             "backends": caps.get("curation_backends", {}),
+            "quality_checks": quality_checks,
+            "quality_protocol": caps.get("quality_protocol", 0),
             "can_edit": editable,
         }
 
@@ -240,9 +277,29 @@ def register_curation_routes(app, ctx):
         target, location, node, snapshot, info = resolve(body)
         operation = str(body.get("operation") or "")
         parameters = validate_parameters(operation, body.get("parameters", {}))
-        capability = capabilities(target, node, snapshot, info)["operations"][operation]
+        if operation == "curation.quality" and not parameters.get("data_version"):
+            processing = default_processing_profile(profile_from_info(info), info.get("features", {}))
+            if processing.legacy_data_version:
+                parameters["data_version"] = processing.legacy_data_version
+        available = capabilities(
+            target, node, snapshot, info, parameters if operation == "curation.quality" else None
+        )
+        capability = available["operations"][operation]
         if not capability["can_execute"]:
             raise ValueError(capability["reason"])
+        if operation == "curation.quality":
+            from lerobot.data_platform.precompute.preprocess.quality_flags import validate_quality_parameters
+
+            checks, config, _ = validate_quality_parameters(parameters)
+            if (
+                any(key in parameters for key in ("checks", "qc_config", "video_mode", "video_workers"))
+                and available["quality_protocol"] != 1
+            ):
+                raise ValueError("Upgrade the execution node for configurable quality checks")
+            for check in checks:
+                if not available["quality_checks"][check]["available"]:
+                    raise ValueError(f"{check}: {available['quality_checks'][check]['reason']}")
+            config.validate_features(info.get("features", {}))
         backends = node.get("capabilities", {}).get("curation_backends", {})
         if operation == "curation.labeling":
             backend = parameters.get("backend", "grounding_dino")
@@ -413,7 +470,21 @@ def register_curation_routes(app, ctx):
         if page not in {"explore", "quality", "annotation", "dataset_build"}:
             page = "annotation"
         selection = f"remote:{target.location_id}" if target.location_id else target.dataset_key
-        return redirect("/?" + urlencode({"select": selection, "page": page}))
+        query = {"select": selection, "page": page}
+        if request.args.get("run"):
+            query["run"] = str(uuid.UUID(request.args["run"]))
+        tab = request.args.get("tab")
+        if tab in {
+            "quality_report",
+            "quality_flags",
+            "stage_subtask",
+            "labeling",
+            "tagging",
+            "embedding",
+            "construction",
+        }:
+            query["tab"] = tab
+        return redirect("/?" + urlencode(query))
 
     @app.post("/api/curation/drafts")
     @checked
@@ -596,7 +667,12 @@ def register_curation_routes(app, ctx):
         quality = json.loads(quality_path.read_text()) if quality_path.is_file() else {}
         reasons = directory / "static" / "quality_flagged_episodes.json"
         if reasons.is_file():
-            quality["flag_reasons"] = json.loads(reasons.read_text()).get("flag_reasons", {})
+            payload = json.loads(reasons.read_text())
+            quality["flag_reasons"] = payload.get("flag_reasons", {})
+            quality["summary"] = payload.get("summary", {})
+        coverage = directory / "static" / "quality_coverage.json"
+        if coverage.is_file():
+            quality["coverage"] = json.loads(coverage.read_text()).get("streams", [])
         from lerobot.data_platform.precompute.embedding import load_points
 
         snapshot = ledger().curation_snapshot(record["target"]["dataset_version_id"])
@@ -789,7 +865,7 @@ def register_curation_routes(app, ctx):
     @checked
     def curation_upload(job_id, filename):
         job = control.get_job(job_id)
-        if job["operation"] not in OPERATIONS or job["status"] != "running":
+        if not supports_artifact_transport(job) or job["status"] != "running":
             abort(409)
         destination = artifact_path(staged(job), filename)
         maximum = 1024**3 if filename.startswith("static/") else 128 * 1024**2
@@ -817,9 +893,10 @@ def register_curation_routes(app, ctx):
     def curation_input(job_id, filename):
         job = control.get_job(job_id)
         item = job["options"].get("input_files", {}).get(filename)
-        if item is None or job["operation"] not in OPERATIONS or job["status"] != "running":
+        if item is None or not supports_artifact_transport(job) or job["status"] != "running":
             abort(404)
-        return send_file(artifact_path(root() / "runs" / item["run"], item["path"]))
+        storage = ledger().root / "operator-results" if item.get("storage") == "operator" else root() / "runs"
+        return send_file(artifact_path(storage / item["run"], item["path"]))
 
     def complete(job, returned):
         destination = root() / "runs" / job["job_id"]

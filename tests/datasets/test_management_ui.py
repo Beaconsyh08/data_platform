@@ -32,7 +32,11 @@ def test_management_navigation_and_filters(role):
     html = render_page(role)
     assert ('id="admin-usage-panel"' in html) == (role == "admin")
     assert ('id="admin-database-panel"' in html) == (role == "admin")
-    script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    # The composed page registers its shared assistant entry point on the browser global.
+    script = (
+        "global.window = {addEventListener:()=>{}}; global.document={body:{dataset:{}}};\n"
+        + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    )
     checks = """
 const assert = require('node:assert/strict');
 const app = controlPlane();
@@ -81,7 +85,11 @@ def test_pipeline_run_controls_use_owner_endpoint_and_preserve_capabilities():
             initial_selected_dataset="",
             initial_tab="",
         )
-    script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    # The composed page registers its shared assistant entry point on the browser global.
+    script = (
+        "global.window = {addEventListener:()=>{}}; global.document={body:{dataset:{}}};\n"
+        + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    )
     checks = """
 const assert = require('node:assert/strict');
 (async () => {
@@ -133,30 +141,42 @@ def test_admin_data_scope_editor_saves_selected_locations():
     html = render_page("admin")
     assert 'value="data_manager"' in html
     assert 'x-model="scopeLocationIds"' in html
-    script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    # The composed page registers its shared assistant entry point on the browser global.
+    script = (
+        "global.window = {addEventListener:()=>{}}; global.document={body:{dataset:{}}};\n"
+        + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    )
     checks = """
 const assert = require('node:assert/strict');
 (async () => {
  const app = controlPlane();
  const calls = [];
  app.request = async (url, options = {}) => {
-   calls.push({url, ...options}); return {location_ids: ['existing']};
+   calls.push({url, ...options});
+   if (url === '/api/control/locations?format=all&summary=1') {
+     return {locations: [
+       {location_id:'a',root:'/data/Alpha',node_name:'node-one',dataset_format:'lerobot'},
+       {location_id:'b',root:'/data/Beta',node_name:'node-two',dataset_format:'mcap'}
+     ]};
+   }
+   return {location_ids: ['existing']};
  };
  let refreshed = false;
  app.load = async () => { refreshed = true; };
  await app.editDataScopes({user_id: 'manager', username: 'alice'});
  assert.deepEqual(app.scopeLocationIds, ['existing']);
+ assert.equal(calls[1].url, '/api/control/locations?format=all&summary=1');
+ assert.deepEqual(app.scopeLocations.map(x => x.location_id), ['a','b']);
  app.scopeLocationIds = ['new'];
  await app.saveDataScopes();
- assert.equal(calls[1].url, '/api/auth/users/manager/data-scopes');
- assert.equal(calls[1].method, 'PUT');
- assert.deepEqual(JSON.parse(calls[1].body), {location_ids:['new'], all_locations:false});
+ assert.equal(calls[2].url, '/api/auth/users/manager/data-scopes');
+ assert.equal(calls[2].method, 'PUT');
+ assert.deepEqual(JSON.parse(calls[2].body), {location_ids:['new'], all_locations:false});
  assert.equal(app.scopeAccount, null);
  assert(refreshed);
  assert.equal(app.scopeBusy, false);
  assert.equal(app.error, '');
- app.locations = [{location_id:'a',root:'/data/Alpha',node_name:'node-one'},
-                  {location_id:'b',root:'/data/Beta',node_name:'node-two'}];
+ app.locations = [app.scopeLocations[0]];
  app.scopeSearch = 'ALPHA node-one';
  assert.deepEqual(app.filteredScopeLocations().map(x => x.location_id), ['a']);
  app.scopeLocationIds = ['a','b'];
@@ -196,7 +216,11 @@ def test_data_manager_source_navigation_and_scoped_buttons():
             initial_selected_dataset="",
             initial_tab="",
         )
-    script = re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    # The composed page registers its shared assistant entry point on the browser global.
+    script = (
+        "global.window = {addEventListener:()=>{}}; global.document={body:{dataset:{}}};\n"
+        + re.findall(r"<script>(.*?)</script>", html, re.S)[-1]
+    )
     checks = """
 const assert = require('node:assert/strict');
 const app = precomputeConsole();
@@ -214,5 +238,44 @@ assert(app.remoteMutationDisabledReason().includes('permission'));
 app.controlPlaneUser.role = 'operator';
 assert(!app.availableGroups().some(group => group.key === 'legacy_admin'));
 assert(app.canRequestEpisodeDeletion());
+"""
+    subprocess.run(["node"], input=script + checks, check=True, capture_output=True, text=True, timeout=10)
+
+
+def test_usage_independent_requests_and_stale_responses():
+    if not shutil.which("node"):
+        pytest.skip("Node.js required")
+    script = (
+        "global.window = {addEventListener:()=>{}}; global.document={body:{dataset:{}}};\n"
+        + re.findall(r"<script>(.*?)</script>", render_page("admin"), re.S)[-1]
+    )
+    checks = """
+const assert = require('node:assert/strict');
+(async () => {
+ const app = controlPlane();
+ let calls = [], pending = [];
+ app.request = url => { calls.push(url); return new Promise((resolve, reject) => pending.push({resolve, reject})); };
+ app.usageEvents = [{event_id:'old'}]; app.usageSummary = {event_count:2};
+ const first = app.loadUsage();
+ assert(calls[0].includes('summary=1')); assert(calls[1].includes('sample_limit=1000'));
+ const second = app.loadUsage();
+ pending[2].resolve({events:[{event_id:'new'}], has_more:true}); pending[3].reject(new Error('summary offline'));
+ await second; assert.equal(app.usageEvents[0].event_id,'new'); assert.equal(app.usageSummary.event_count,2);
+ assert(app.adminError.includes('summary offline'));
+ pending[0].resolve({events:[{event_id:'stale'}]}); pending[1].resolve({event_count:0}); await first;
+ assert.equal(app.usageEvents[0].event_id,'new');
+ let tries = 0;
+ app.request = async url => { tries++; if(tries===1) throw new Error('detail offline'); return {event:{event_id:'new', details:{full:true}}}; };
+ const entry = app.usageEvents[0]; await app.loadUsageDetail(entry); assert(entry.detailError);
+ await app.loadUsageDetail(entry); assert(entry.fullDetail.details.full); assert(!entry.loading);
+ delete entry.fullDetail;
+ let resolveDetail;
+ app.request = url => url.includes('/usage-events/new') ? new Promise(resolve => resolveDetail=resolve)
+   : Promise.resolve(url.includes('/usage-summary?') ? {event_count:1} : {events:[{event_id:'new'}]});
+ const reading=app.loadUsageDetail(entry); await app.loadUsage();
+ resolveDetail({event:{details:{full:true}}}); await reading;
+ assert(app.usageEvents[0].fullDetail.details.full);
+
+})().catch(error => {console.error(error);process.exit(1);});
 """
     subprocess.run(["node"], input=script + checks, check=True, capture_output=True, text=True, timeout=10)

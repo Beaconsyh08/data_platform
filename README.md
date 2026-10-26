@@ -58,14 +58,36 @@
 | 任务管理 | 节点/用户配额、分阶段进度、安全停止/重试、MCAP 检查点恢复、管理员单任务额外配额 | [Jobs](docs/data_platform_page_user_guide.md#11-jobs-抽屉与-pipeline-runs) |
 | 发布与恢复 | 不可变包、开发验收后生产批准、兼容滚动升级、缓存发布与结果确认 | [运维手册](docs/data_platform_operations.md) |
 
-2026-10-15 18:04（Asia/Shanghai） 核对：本机 dev/prod 的 `current` 与 `release.env` 均为
-`V0.0.6.55_DatasetIndexRefresh_20261015`。这是安装身份快照，未在本次文档更新中重新验收
-远端 Agent、TLS 或完整页面流程。主工作区可能落后于发行包；更新前检查全部 worktree 和提交。
-近期变更依据及限制见[平台状态说明](docs/distributed_data_platform_current_status.md)，
+能力和操作说明以本分支源码为准；安装版本及在线验收以各环境发行记录为准。
 完整索引见[文档导航](docs/README.md)。
+
+**AI 助手：** 点击右下角 **AI assistant**，或按 **Ctrl/Cmd + Shift + Space** 唤出、收起侧栏；
+聊天时仍可操作平台。默认跟随页面、数据集和 Viewer Episode，读取授权的 Instruction 等元数据；可固定上下文。操作卡片放在对应消息中，已有结果和运行进度紧凑显示。支持上下文解读、流程草稿，以及 Viewer、Quality、标注和单数据集派生处理的确认卡片。
+网页与 [CLI](clients/data-platform-cli/README.md) 共用历史会话、个人偏好和显式长期记忆；已确认助手任务由后台跟进，在 Updates 中显示终态总结；使用服务端配置的 Qwen，
+用户无需模型密钥。操作权限和确认规则不变，详见 [助手说明](docs/data_platform_operators.md#qwen-draft-assistant)。
+卡片先检查已有结果与正在运行的任务，再提供结果入口或一键确认；历史结果会注明配置或产物是否可核实。
+网页与 CLI 共用状态判断；CLI 的 `/open` 查看结果链接，`/confirm again` 明确重新运行。
+当前已发布 CLI 版本以 latest 和发行验收记录为准；CLI 支持[后台经验增强](docs/data_platform_hindsight.md)、`/memory`、`/updates`，外部助手接入见 [MCP 文档](docs/data_platform_mcp.md)。CLI 启动时显示网页地址，`/web` 随时查看，`--web` 免登录输出；CLI 0.3.2 起用 `data-platform update` 升级，旧版本先运行一次 `latest` 安装命令。
+
+**版本更新：** 功能与兼容性变化记录在 [发行变更](docs/data_platform_changelog.md)，
+当前架构见 [平台情况说明](docs/distributed_data_platform_current_status.md)。
+文档描述源码能力，实际安装版本以环境状态和验收记录为准。
+
+**远程列表访问：** 数据集、任务列表及任务进度使用摘要响应，避免重复下载逐 episode 元数据和
+完整转换报告；进度、权限和输出链接保留。Datasets 页始终显示 Server 和扫描目录选项。
+排障见 [运维手册](docs/data_platform_operations.md)。
+
+**MCAP 导入：** Data Platform → Data Import 支持 GenDAS MCAP → LeRobot v3.0，
+先预检、再转换，默认每个目录最多 3 个文件。重启导致计算进程丢失时，自动重新排队并复用完整文件检查点，
+连续自动恢复最多 3 次。操作与部署配置见 [MCAP 导入指南](docs/data_platform_mcap_import.md)。
 
 
 Task definitions are configurable in the console. Existing Pick/Place/Give tasks and new task families share versioned catalogs, dataset mappings, analysis and curation filters, and portable Agent configuration snapshots. See the [task onboarding guide](docs/data_platform_task_catalog.md).
+
+**Data Inspect:** Select a dataset and open **Explore → Inspect → Open data inspect** to preview
+actual Parquet records or stored Viewer CSV values, 50 rows at a time (maximum 200). Fields are
+searchable, arrays expand as JSON, and previews remain read-only. Remote datasets use published CSV
+without contacting the Agent. See the [page user guide](docs/data_platform_page_user_guide.md).
 
 ### Run Analysis without preparing caches
 
@@ -335,6 +357,12 @@ data-platform-update-all --env prod --release RELEASE
 命令需要本机 sudo；SSH 使用发起者身份。Server 的依赖同步保持 `--frozen`，先离线、再在线，
 可追加 `--index-url https://pypi.tuna.tsinghua.edu.cn/simple`。常规生产更新使用已经验收的安装包，不重新构建。
 
+首次升级到支持滚动部署的版本仍需等待已有任务完成。之后，兼容版本默认保留旧 Agent 和本地执行器，
+已有任务用原版本运行到上传与完成确认结束，新任务由新版本执行；网页切换期间短暂维护。
+新旧版本共享节点任务配额和输出锁。数据库结构、执行协议或滚动兼容契约变化时自动等待任务结束；
+也可追加 `--wait-for-jobs` 强制等待。操作和备份限制见
+[运维手册](docs/data_platform_operations.md#任务运行期间升级)。
+
 保留两个环境一起硬升级的入口（两套环境需已初始化并接入新部署流程）：
 
 ```bash
@@ -507,6 +535,11 @@ sudo journalctl -u data-platform-agent -n 100 --no-pager -l
 点击 **View N datasets** 后可按名称或路径搜索，并按处理中、最近失败或 Viewer 缺失筛选；
 数据集列表每页显示 20 条。远程预处理统一从首页 Dataset console 发起。
 
+首页选择远端 Agent 后，**Scan** 会请求立即扫描输入路径并登记新数据集，即使计算任务正在运行；
+**Refresh** 只重新读取已登记列表。即时扫描要求支持该能力的在线 Agent 和有发现权限的账号。
+**Known directory** 下拉菜单显示所选 Agent 的授权目录；也可在 **Scan path / custom subdirectory**
+输入其下的子目录。自定义路径仍受 `allowed_roots` 校验，不会增加目录授权。
+
 在首页选择 Agent、扫描路径后，点击数据集卡片上的 **select & preprocess**，即可把该节点的
 数据设为 Working dataset。页面顶部的 **Working dataset** 下拉框也同时列出 Server A 与全部
 Agent 数据集，切换后 Server 和操作表单会一起更新，刷新页面仍会恢复该选择。
@@ -524,7 +557,10 @@ Viewer cache，无需再单独执行 Prepare viewer。**Jobs** 抽屉和 **Pipel
 任务信息，统一显示服务器、进度、耗时、日志、结果摘要和输出数据集；完成后可直接切换到输出
 数据集。输出尚无 Viewer cache 时，Job 卡片可直接启动 **Prepare viewer**，完成后同一位置切换为
 **Open viewer**。本地与 Agent 数据集统一进入 **Data Curation**，包含 Explore、Quality、Annotation 和 Dataset Build；
-计算在数据所在节点执行，草稿、审核与结果保存在中心服务。详见[统一 Curation 工作流](docs/data_platform_unified_curation.md)。
+计算在数据所在节点执行，草稿、审核与结果保存在中心服务。
+**Quality → Data Report** 可查看最近或历史检测报告，包括数据规模、检测范围、异常与视频覆盖率，
+并通过 **Open Episode Viewer** 或异常行的 **Open in Viewer** 进入已准备的 Viewer。
+详见[统一 Curation 工作流](docs/data_platform_unified_curation.md)。
 在 **Explore** 可查看 Episode Viewer；
 Dataset Analysis 可直接使用 Agent 上报的元数据，无需先准备 Viewer cache。Embedding、标注和构造入口仍不显示。
 
@@ -846,6 +882,7 @@ Additionally, if you are using any of the particular policy architecture, pretra
 
 支持 UMI 三路内嵌图像、头部/左右手位姿及夹爪原始信号的预览、基础分析、拆分和同结构合并。
 数据列表显示机器人类型与 LeRobot 版本；DVT1/DVT2 保留为旧处理流程的参数。
+兼容 DVT 的处理默认使用 DVT2，Quality 无需手工确认；只有需要旧规则时才主动选择 DVT1。
 UMI 不套用 DVT 归一化或自动 Stage，也不生成训练用 action/state。
 操作、来源追踪与 Server A → Agent 升级顺序见 [UMI 数据支持](docs/umi_dataset_support.md)。
 
@@ -859,6 +896,8 @@ Agent 文件权限、任务提交反馈及 operator 删除 episode 的审批流�
 
 集中部署支持在现有管理员控制面页面查看使用日志和只读数据库记录。协议 2 Agent 支持持久化执行批次、
 排队优先级、取消及符合条件的重试/终止；本地后台任务使用独立本地执行器和兼容的 `/api/jobs` 查询。
+管理员可在 Platform management → Jobs 点击 **Use extra quota (+1)**，给指定排队任务增加一个用户并发名额，
+仍遵守节点总并发和数据锁；排队时可撤回，手动重试需重新授权。
 需要配置独立日志库、安装本地执行器并升级 Agent。部署顺序、能力限制及存储分工见
 [多用户管理与任务执行](docs/data_platform_multi_user_management.md)。
 
@@ -869,8 +908,26 @@ Agent 文件权限、任务提交反馈及 operator 删除 episode 的审批流�
 ### 单条数据分段与 Caption 实验
 
 在 `Data Curation → Annotation → Temporal Caption` 平行查看三视角视频和分段 caption，
-切换 Multi-view Semantics（多视角语义分段）、Video + Events（视频事件分段）与 Fusion + Review（融合及独立复核），
+选择 FLORA（本地分段、Caption、Reward）、Multi-view Semantics（多视角语义分段）、Video + Events（视频事件分段）或 Fusion + Review（融合及独立复核），
 按 episode 查看双语 caption、运动曲线和各自结果版本。Fusion V2 在本地计算信号变化、候选边界来源和时间一致性矩阵，
 再由模型进行语义融合与独立复核。支持按 episode 区间或整个数据集提交标注 Jobs，并选择是否输入 action/state 等信号；
+FLORA 使用已配置的 80 GB GPU、仅输入视频，在 Review 保留原始 Reward 窗口及评分分歧，支持点击回看。
+支持每卡一个 episode、最多 8 卡并行；复用未变化文件的校验结果并流式生成视频，资源配置和分阶段验收见下方文档。
 不覆盖现有标注，不回写源数据。运行步骤、范围和结果复核限制见
 [Temporal Caption 实验](docs/temporal_caption_trial.md)。
+
+### Data Platform operators and pipelines
+
+The data console includes versioned sequential pipelines, a unified operator catalog, review-gated pose repairs and existing Agent/Job execution. See the [architecture and API guide](docs/data_platform_operators.md).
+
+### Offline MEM export
+
+For versioned raw multiview exports of selected segmentation/caption artifacts, see
+[MEM export](docs/mem_export.md). Run `python -m lerobot.data_platform.mem_export --help`
+on the source host; the command does not modify source datasets or platform state.
+
+Administrator-managed [workflow strategy experiments](docs/data_platform_strategies.md) are available
+as an opt-in source feature. Strategies are evaluated against a baseline and require manual activation;
+private memory and task confirmation remain unchanged. Server/Agent/CLI deployment acceptance is separate.
+
+External Codex/Claude Code access: [MCP setup and credential management](docs/data_platform_mcp.md).

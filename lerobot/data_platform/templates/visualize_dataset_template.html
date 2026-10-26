@@ -10,16 +10,18 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <title>{{ dataset_info.repo_id }} episode {{ episode_id }}</title>
     <style>[x-cloak] { display: none !important; }</style>
+    {% include "data_platform_workspace_styles.html" %}
 </head>
 
 <!-- Use [Alpine.js](https://alpinejs.dev), a lightweight JavaScript framework. -->
 <!-- Use [tailwindcss](https://tailwindcss.com/), CSS classes for styling html -->
 <!-- Use [dygraphs](https://dygraphs.com/), a lightweight JS charting library -->
-<body class="flex h-screen max-h-screen flex-col overflow-hidden bg-slate-950 text-slate-200 font-mono text-sm" x-data="createAlpineData()" @keydown.window="handleFrameKey($event)">
+<body class="flex h-screen max-h-screen flex-col overflow-hidden bg-slate-950 text-slate-200 text-sm" x-data="createAlpineData()" @keydown.window="handleFrameKey($event)">
     {% set page_kind = "Episode Viewer" %}
     {% set page_title = dataset_info.repo_id %}
     {% set page_subtitle = "Episode " ~ episode_id %}
     {% include "visualize_dataset_topbar.html" %}
+    <p x-show="qualityReview" x-cloak class="border-b border-slate-700 px-4 py-2 text-sm text-sky-200">Quality review: paused at the selected candidate. Inspect video and signals, then return to the Quality tab to save your decision.</p>
     {% if result_sync_enabled | default(false) %}
     <div id="dataset-result-sync" role="status" class="border-b border-slate-700 px-4 py-1 text-xs text-amber-300">
         Checking result synchronization…
@@ -198,12 +200,13 @@
                 <span class="text-red-400">Flagged</span>
             </label>
             <select x-model="flagReasonFilter"
-                    x-show="showFlaggedOnly && (flagReasonOptions.length > 0 || flagReasonLoading)"
+                    x-show="showFlaggedOnly"
+                    :disabled="flaggedLoading || flagReasonLoading || flagLoadError || flagReasonOptions.length === 0"
                     class="text-xs bg-slate-800 border border-slate-600 rounded px-1 py-0.5 max-w-[170px] truncate"
-                    title="Filter by flag type">
-                <option value="">All flag types</option>
+                    title="Filter by flag type" aria-label="Filter by flag type">
+                <option value="" x-text="flaggedLoading || flagReasonLoading ? 'Loading flag types...' : flagLoadError ? 'Flag types unavailable' : flagReasonOptions.length ? 'All flag types' : 'No flag types'"></option>
                 <template x-for="item in flagReasonOptions" :key="item.reason">
-                    <option :value="item.reason" x-text="`${item.label} (${item.count})`"></option>
+                    <option :value="item.reason" :selected="flagReasonFilter === item.reason" x-text="`${item.label} (${item.count})`"></option>
                 </template>
             </select>
             <span x-show="showFlaggedOnly && flagReasonLoading" class="text-slate-500">flags...</span>
@@ -212,12 +215,12 @@
                    @keydown.enter="if($event.target.value!=='') jumpToEpisode($event.target.value)"
                    title="Type episode number and press Enter to jump">
             <select x-model="taskFilter"
-                    x-show="taskOptions.length > 0"
+                    :disabled="taskMapLoading || taskOptions.length === 0"
                     class="text-xs bg-slate-800 border border-slate-600 rounded px-1 py-0.5 max-w-[160px] truncate"
-                    title="Filter by task">
-                <option value="">All tasks</option>
+                    title="Filter by Instruction" aria-label="Filter by Instruction">
+                <option value="" x-text="taskMapLoading ? 'Loading Instructions...' : taskMapError ? 'Instructions unavailable' : taskOptions.length ? 'All Instructions' : 'No Instructions'"></option>
                 <template x-for="item in taskOptions" :key="item.task">
-                    <option :value="item.task" x-text="`${item.task} (${item.count})`"></option>
+                    <option :value="item.task" :selected="taskFilter === item.task" x-text="`${item.task} (${item.count})`"></option>
                 </template>
             </select>
             <span x-show="taskMapLoading" class="text-slate-500">tasks...</span>
@@ -281,6 +284,14 @@
                     class="text-[11px] bg-slate-900 border border-slate-600 text-slate-300 rounded-full px-2 py-0.5"
                     title="Clear task, tag, and flag filters"
                     x-text="'clear all'"></button>
+        </div>
+        <div x-show="taskMapError" class="mt-2 text-xs text-red-300" role="status">
+            <span x-text="taskMapError"></span>
+            <button type="button" class="underline" @click="loadTaskEpisodeMap()" :disabled="taskMapLoading">Retry Instructions</button>
+        </div>
+        <div x-show="flagLoadError" class="mt-2 text-xs text-red-300" role="status">
+            <span x-text="flagLoadError"></span>
+            <button type="button" class="underline" @click="loadFlaggedEpisodes()" :disabled="flaggedLoading || flagReasonLoading">Retry flags</button>
         </div>
         <!-- episodes menu for medium & large screens -->
         <div class="ml-2 hidden md:block" x-data="episodePagination">
@@ -556,33 +567,18 @@
                     </div>
                     {% endif %}
                     <div class="ml-auto flex gap-1 text-2xl items-center shrink-0 overflow-x-auto whitespace-nowrap" x-show="(nVideos > 0 || (videos && videos.length > 0))">
-                        <button x-ref="btnPlay" class="-rotate-90" title="Play. Toggle with Space" @click="() => {
-                            videos.forEach(video => {
-                                try { video.play(); } catch (e) {}
-                            });
-                            $refs.btnPlay.classList.toggle('hidden');
-                            $refs.btnPause.classList.toggle('hidden');
-                        }">🔽</button>
-                        <button x-ref="btnPause" class="hidden" title="Pause. Toggle with Space" @click="() => {
-                            videos.forEach(video => {
-                                try { video.pause(); } catch (e) {}
-                            });
-                            $refs.btnPlay.classList.toggle('hidden');
-                            $refs.btnPause.classList.toggle('hidden');
-                        }">⏸️</button>
+                        <button x-ref="btnPlay" class="-rotate-90" title="Play. Toggle with Space"
+                                @click="setPlaybackPaused(false)">🔽</button>
+                        <button x-ref="btnPause" class="hidden" title="Pause. Toggle with Space"
+                                @click="setPlaybackPaused(true)">⏸️</button>
                         <button title="Jump backward 5 seconds"
-                            @click="() => videos.forEach(video => video.currentTime = Math.max(0, video.currentTime - 5))">⏪</button>
+                                @click="seekPlayback(dygraphTime - 5)">⏪</button>
                         <button title="Jump forward 5 seconds"
-                            @click="() => videos.forEach(video => video.currentTime = Math.min(video.duration, video.currentTime + 5))">⏩</button>
-                        <button title="Rewind from start"
-                            @click="() => videos.forEach(video => video.currentTime = 0)">↩️</button>
-                        <input x-ref="slider" max="100" min="0" step="1" type="range" value="0" class="w-44 md:w-56 mx-2" @input="() => {
-                            const sliderValue = $refs.slider.value;
-                            videos.forEach(video => {
-                                const time = (video.duration * sliderValue) / 100;
-                                video.currentTime = time;
-                            });
-                        }" />
+                                @click="seekPlayback(dygraphTime + 5)">⏩</button>
+                        <button title="Rewind from start" @click="seekPlayback(0)">↩️</button>
+                        <input x-ref="slider" max="100" min="0" step="0.1" type="range" value="0"
+                               class="w-44 md:w-56 mx-2"
+                               @input="seekPlayback(playbackDuration() * Number($event.target.value) / 100)" />
                         <div x-ref="timer" class="font-mono text-xs border border-slate-500 rounded-lg px-1 py-0.5 shrink-0">0:00 /
                             0:00
                         </div>
@@ -606,36 +602,20 @@
                         {% for video_info in videos_info %}
                         <div class="relative h-full min-h-0 min-w-0 rounded border border-slate-700 bg-slate-900/50 p-1">
                             <p class="absolute inset-x-2 top-1 text-xs text-gray-300 bg-gray-800/80 px-2 rounded truncate z-10">{{ video_info.filename }}</p>
-                            <video data-video-label="{{ video_info.filename }}" muted autoplay loop preload="auto" playsinline controls type="video/mp4" class="object-contain w-full h-full min-h-0 pt-5 cursor-zoom-in" title="Click to enlarge" @click.stop="openZoomVideoFromElement($event.currentTarget)" @canplay="videoCanPlay($event)" @error="videoLoadError($event)" @timeupdate="() => {
-                                if (video.duration) {
-                                  const time = video.currentTime;
-                                  const pc = (100 / video.duration) * time;
-                                  $refs.slider.value = pc;
-                                  dygraphTime = time;
-                                  $refs.timer.textContent = formatTime(time) + ' / ' + formatTime(video.duration);
-                                  const graph = dygraphArmJoints || dygraphGripperFlag;
-                                  if (!graph) {
-                                    return;
-                                  }
-                                  const rows = graph.numRows();
-                                  if (!rows) {
-                                    return;
-                                  }
-                                  dygraphIndex = timeToGraphRow(time, graph);
-                                  if (dygraphArmJoints) dygraphArmJoints.setSelection(dygraphIndex, undefined, true, true);
-                                  if (dygraphGripperFlag) dygraphGripperFlag.setSelection(dygraphIndex, undefined, true, true);
-
-                                }
-                            }" @ended="() => {
-                                $refs.btnPlay.classList.remove('hidden');
-                                $refs.btnPause.classList.add('hidden');
-                            }"
-                        @loadedmetadata="() => {
-                            $refs.timer.textContent = formatTime(0) + ' / ' + formatTime(video.duration);
-                            const fallbackDuration = (fps && episodeLength > 0) ? (episodeLength / fps) : 0;
-                            const targetDuration = Math.max(video.duration || 0, fallbackDuration);
-                            extendGraphToDuration(targetDuration);
-                        }">
+                            <video data-video-label="{{ video_info.filename }}" muted preload="auto" playsinline controls type="video/mp4"
+                                   class="object-contain w-full h-full min-h-0 pt-5 cursor-zoom-in" title="Click to enlarge"
+                                   @click.stop="openZoomVideoFromElement($event.currentTarget)"
+                                   @canplay="videoCanPlay($event)" @error="videoLoadError($event)"
+                                   @play="videoPlaybackChanged($event.target)" @pause="videoPlaybackChanged($event.target)"
+                                   @seeking="videoSeeking($event.target)" @seeked="_mediaSeekTargets.delete($event.target)"
+                                   @timeupdate="videoTimeUpdate($event.target)"
+                                   @ratechange="if ($event.target.playbackRate !== playbackRate) setPlaybackRate($event.target.playbackRate)"
+                                   @ended="videoEnded($event.target)"
+                                   @loadedmetadata="() => {
+                                       seekVideo($event.target, dygraphTime);
+                                       extendGraphToDuration(playbackDuration());
+                                       updatePlaybackPosition(dygraphTime);
+                                   }">
                                 <source src="{{ video_info.url }}" type="video/mp4">
                                 Your browser does not support the video tag.
                             </video>
@@ -659,7 +639,7 @@
                                 @click="focusChart()" :disabled="!dygraphArmJoints && !dygraphGripperFlag">Focus current time</button>
                         <button type="button" class="rounded border border-slate-500 px-2 py-1 text-xs"
                                 @click="resetChartZoom()" :disabled="!dygraphArmJoints && !dygraphGripperFlag">Reset zoom</button>
-                        <span class="text-xs text-slate-400">Drag to zoom · Shift-drag to pan</span>
+                        <span class="text-xs text-slate-400">Click/drag to pin · Scroll to zoom · Ctrl-drag to zoom · Shift-drag to pan</span>
                         <div x-show="usesUmiPlotGroups" class="flex flex-wrap items-center gap-1.5" role="group" aria-label="UMI pose groups">
                             <template x-for="group in jointGroups.filter(g => g.graph === 'arm')" :key="group.id">
                                 <button type="button"
@@ -699,14 +679,7 @@
                     <div class="grid grid-cols-1 2xl:grid-cols-2 auto-rows-fr gap-2 flex-1 min-h-0">
                         <div class="min-h-0 rounded border border-slate-800 p-2 bg-slate-900/30 flex flex-col">
                             <p class="text-xs font-medium text-gray-300 mb-1" x-text="usesUmiPlotGroups ? 'End-effector Pose/Orientation Signals' : (hasBodyJoints ? 'Arm Joint Groups + Body Joint Group' : 'Left/Right Arm Joint Groups A+B (Combined)')"></p>
-                            <div id="graph-arm-joints" class="relative flex-1 min-h-0" @mouseleave="() => {
-                                if (dygraphArmJoints) {
-                                    dygraphArmJoints.setSelection(dygraphIndex, undefined, true, true);
-                                }
-                                if (video) {
-                                    dygraphTime = video.currentTime;
-                                }
-                            }">
+                            <div id="graph-arm-joints" class="relative flex-1 min-h-0" @mouseleave="if (!_chartSeekState) updatePlaybackPosition(playbackVideo()?.currentTime ?? dygraphTime)">
                                 <div x-show="!dygraphArmJoints"
                                      class="absolute inset-0 flex items-center justify-center rounded bg-slate-950/70 text-xs text-slate-400">
                                     <span x-text="graphLoading ? 'Loading chart...' : 'Preparing chart...'"></span>
@@ -715,14 +688,7 @@
                         </div>
                         <div class="min-h-0 rounded border border-slate-800 p-2 bg-slate-900/30 flex flex-col">
                             <p class="text-xs font-medium text-gray-300 mb-1">Left Gripper / Right Gripper / Stage</p>
-                            <div id="graph-gripper-flag" class="relative flex-1 min-h-0" @mouseleave="() => {
-                                if (dygraphGripperFlag) {
-                                    dygraphGripperFlag.setSelection(dygraphIndex, undefined, true, true);
-                                }
-                                if (video) {
-                                    dygraphTime = video.currentTime;
-                                }
-                            }">
+                            <div id="graph-gripper-flag" class="relative flex-1 min-h-0" @mouseleave="if (!_chartSeekState) updatePlaybackPosition(playbackVideo()?.currentTime ?? dygraphTime)">
                                 <div x-show="!dygraphGripperFlag"
                                      class="absolute inset-0 flex items-center justify-center rounded bg-slate-950/70 text-xs text-slate-400">
                                     <span x-text="graphLoading ? 'Loading chart...' : 'Preparing chart...'"></span>
@@ -831,7 +797,13 @@
                 <button class="text-xs px-2 py-1 rounded border border-slate-500 hover:bg-slate-700" @click="closeZoomVideo()">Close</button>
             </div>
             <div class="flex-1 min-h-0 p-2">
-                <video x-ref="zoomVideo" :src="zoomVideoUrl" class="w-full h-full object-contain rounded bg-black" controls autoplay loop muted playsinline></video>
+                <video x-ref="zoomVideo" :src="zoomVideoUrl" class="w-full h-full object-contain rounded bg-black" controls muted playsinline
+                       @canplay="videoCanPlay($event)" @loadedmetadata="seekVideo($event.target, dygraphTime)"
+                       @play="videoPlaybackChanged($event.target)" @pause="videoPlaybackChanged($event.target)"
+                       @seeking="videoSeeking($event.target)" @seeked="_mediaSeekTargets.delete($event.target)"
+                       @timeupdate="videoTimeUpdate($event.target)"
+                       @ratechange="if (isZoomOpen && $event.target.playbackRate !== playbackRate) setPlaybackRate($event.target.playbackRate)"
+                       @ended="videoEnded($event.target)"></video>
             </div>
         </div>
     </div>
@@ -853,6 +825,7 @@
                 currentFrameData: null,
                 checked: [],
                 dygraphTime: 0.0,
+                chartAnchorTime: null,
                 dygraphIndex: 0,
                 videos: null,
                 video: null,
@@ -886,7 +859,10 @@
                 _imageTimer: null,
                 _onSpeedStep: null,
                 _onCloseZoom: null,
-                _pausedForZoom: [],
+                playbackPaused: true,
+                _playbackRevision: 0,
+                _mediaSeekTargets: new WeakMap(),
+                _chartSeekState: null,
                 labelToGroupIds: {},
                 groupTargetById: {},
                 usesUmiPlotGroups: false,
@@ -917,7 +893,9 @@
                 flagReasonLoadedEpisodes: new Set(),
                 flagReasonFilter: '',
                 flagReasonOptions: [],
+                flaggedLoading: false,
                 flagReasonLoading: false,
+                flagLoadError: '',
                 flagReasonsFullyLoaded: false,
                 flagReasonRevision: 0,
                 isFlagged: false,
@@ -979,6 +957,7 @@
                 taskEpisodeMap: {{ task_episode_map | tojson }},
                 taskOptions: [],
                 taskMapLoading: false,
+                taskMapError: '',
                 taskMapUrl: "{{ task_map_url }}",
                 tagFilterName: '',
                 tagFilterValue: '',
@@ -997,6 +976,7 @@
                 graphLoading: false,
                 _loadGraphs: null,
                 _autoplayStarted: false,
+                qualityReview: new URLSearchParams(window.location.search).get('quality_review') === '1',
                 _queuedNavigationTimer: null,
                 _queuedNavigationEpisode: null,
                 _queuedNavigationSteps: 0,
@@ -1052,6 +1032,11 @@
                 // alpine initialization
                 async init() {
                     window.__viewerNavigating = false;
+                    if (this.qualityReview) {
+                        this._autoplayStarted = true;
+                        const time = Number(new URLSearchParams(window.location.search).get('t'));
+                        if (Number.isFinite(time) && time >= 0) this.dygraphTime = time;
+                    }
                     this.loadSavedManualFlagReasons();
                     ['showFlaggedOnly', 'taskFilter', 'viewerTagFilterName', 'viewerTagFilterValue', 'viewerTagFilters']
                         .forEach(key => localStorage.removeItem(key));
@@ -1064,6 +1049,9 @@
                     this.$watch('showFlaggedOnly', (val) => {
                         if (!val && this.flagReasonFilter) {
                             this.flagReasonFilter = '';
+                        }
+                        if (val && this.flaggedEpisodes.size > 0 && !this.flagReasonsFullyLoaded) {
+                            this.loadAllFlagReasons();
                         }
                         window.__showFlaggedOnly = val;
                         this.publishEpisodeFilter({redirect: true});
@@ -1136,6 +1124,11 @@
                     this.videos = document.querySelectorAll('video[data-video-label]');
                     this.video = this.videos[0] || null;
                     this.nVideos = this.videos.length;
+                    if (this.qualityReview) this.videos.forEach(video => {
+                        video.autoplay = false; video.pause();
+                        if (video.readyState >= 1) this.positionQualityVideo(video);
+                        else video.addEventListener('loadedmetadata', () => this.positionQualityVideo(video), {once:true});
+                    });
 
                     const savedRate = parseFloat(sessionStorage.getItem('lerobot_playback_rate'));
                     if (savedRate && this.playbackRates.includes(savedRate)) {
@@ -1478,16 +1471,14 @@
                         strokeWidth: 1.5,
                         series: seriesOptions,
                         zoomCallback: (min, max) => this.setChartWindow(min, max),
-                        pointClickCallback: (event, point) => {
-                            if (!Number.isFinite(point.xval)) return;
-                            this.dygraphTime = point.xval;
-                            this.updateTableValues(this.dygraphTime);
-                            syncSelection(point.row);
+                        clickCallback: (event, x) => {
+                            if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+                                this.selectChartTime(x);
+                            }
                         },
                         highlightCallback: (event, x, points, row, seriesName) => {
                             if (!Number.isFinite(x) || !Number.isInteger(row) || row < 0) return;
-                            this.dygraphTime = x;
-                            this.updateTableValues(this.dygraphTime);
+                            this.updateTableValues(x);
                             syncSelection(row);
                         },
                         drawCallback: (dygraph, is_initial) => {
@@ -1507,11 +1498,10 @@
                                 let url = new URL(window.location.href);
                                 let params = new URLSearchParams(url.search);
                                 let time = params.get("t");
-                                if(time){
+                                if(time && !this.qualityReview){
                                     const parsedTime = parseFloat(time);
                                     if (!isNaN(parsedTime)) {
-                                        this.dygraphTime = parsedTime;
-                                        this.videos.forEach(video => (video.currentTime = parsedTime));
+                                        this.seekPlayback(parsedTime);
                                     }
                                 }
                                 this.updateTableValues(this.dygraphTime, dygraph);
@@ -1622,7 +1612,13 @@
                         this.dygraphArmJoints = new Dygraph(
                             document.getElementById("graph-arm-joints"),
                             graphCsvData,
-                            { ...commonOptions, colors, visibility: this.armJointMask, underlayCallback: trimUnderlayCallback },
+                            {
+                                ...commonOptions, colors, visibility: this.armJointMask,
+                                underlayCallback: (ctx, area, g) => {
+                                    trimUnderlayCallback(ctx, area, g);
+                                    this.drawChartAnchor(ctx, area, g);
+                                },
+                            },
                         );
                         this.dygraphGripperFlag = new Dygraph(
                             document.getElementById("graph-gripper-flag"),
@@ -1634,11 +1630,14 @@
                                 underlayCallback: (ctx, area, g) => {
                                     trimUnderlayCallback(ctx, area, g);
                                     stageUnderlayCallback(ctx, area, g);
+                                    this.drawChartAnchor(ctx, area, g);
                                 },
                             },
                         );
                         this.initStageDrag();
                         this.initTrimDrag();
+                        this.initChartSeek();
+                        this.initChartResize();
                         this._updateStageInChart();
                         this._redrawTrimCharts();
                     };
@@ -1736,6 +1735,7 @@
                     const rawQuery = window.__viewerFilterQuery || this.filterQueryString();
                     const params = new URLSearchParams(String(rawQuery || '').replace(/^\?/, ''));
                     params.delete('fast');
+                    if (this.qualityReview) { params.delete('t'); params.delete('quality_review'); }
                     const query = params.toString();
                     return `./episode_${episode}${query ? '?' + query : ''}`;
                 },
@@ -1867,7 +1867,7 @@
                 flagReasonValues(episode) {
                     const items = this.flagReasonItems(episode);
                     if (!items.length) {
-                        if (this.flagReasonLoadedEpisodes.has(String(episode))) return ['unknown_flag_reason'];
+                        if (this.flagReasonsFullyLoaded || this.flagReasonLoadedEpisodes.has(String(episode))) return ['unknown_flag_reason'];
                         return [];
                     }
                     const reasons = items
@@ -2235,27 +2235,30 @@
                 },
 
                 scheduleFilterMapLoad() {
-                    if (this._filterMapLoadHandle || this.cacheOnly) return;
+                    if (this._filterMapLoadHandle) return;
                     this._filterMapLoadHandle = window.setTimeout(() => {
                         this._filterMapLoadHandle = null;
                         this.loadTaskEpisodeMap();
                         this.loadTagEpisodeMap();
-                    }, 6000);
+                    }, this.cacheOnly ? 0 : 6000);
                 },
 
                 async loadTaskEpisodeMap() {
-                    if (!this.taskMapUrl || Object.keys(this.taskEpisodeMap || {}).length > 0) {
+                    if (!this.taskMapUrl || this.taskMapLoading || Object.keys(this.taskEpisodeMap || {}).length > 0) {
                         return;
                     }
                     this.taskMapLoading = true;
+                    this.taskMapError = '';
                     try {
                         const resp = await fetch(this.taskMapUrl);
-                        if (!resp.ok) return;
+                        if (!resp.ok) throw new Error('Could not load Instructions. Retry to load the filter.');
                         const data = await resp.json();
                         this.taskEpisodeMap = data.task_episode_map || {};
                         this.saveFilterMapCache('task', data);
                         this.refreshTaskOptions();
                         this.initSelectedTaskAssignment();
+                    } catch (e) {
+                        this.taskMapError = 'Could not load Instructions. Retry to load the filter.';
                     } finally {
                         this.taskMapLoading = false;
                     }
@@ -2697,7 +2700,10 @@
                     if (signal?.component) {
                         const source = ['state', 'observation.state'].includes(signal.source) ? 'State'
                             : signal.source === 'action' ? 'Action' : '';
-                        return signal.component + (source ? ` · ${source}` : '');
+                        const side = {left: 'Left', right: 'Right'}[signal.part];
+                        const component = signal.component === 'gripper' && side
+                            ? `${side} Gripper` : signal.component;
+                        return component + (source ? ` · ${source}` : '');
                     }
                     if (label.endsWith('_gripper_pos')) return 'gripper';
                     return label.split('.').pop();
@@ -2878,22 +2884,239 @@
                     }
                 },
 
+                positionQualityVideo(video) {
+                    if (!this.qualityReview || video.dataset.qualityPositioned === '1') return;
+                    video.dataset.qualityPositioned = '1';
+                    video.pause();
+                    const time = Number(new URLSearchParams(window.location.search).get('t'));
+                    if (Number.isFinite(time) && time >= 0) this.seekVideo(video, time);
+                },
+
+                playbackVideos() {
+                    return [...(this.videos || []), ...(this.isZoomOpen && this.$refs.zoomVideo ? [this.$refs.zoomVideo] : [])];
+                },
+
+                playbackVideo() {
+                    return this.isZoomOpen && this.$refs.zoomVideo?.readyState > 0 ? this.$refs.zoomVideo : this.video;
+                },
+
+                playbackDuration() {
+                    const durations = Array.from(this.videos || []).map(video => video.duration).filter(Number.isFinite);
+                    return durations.length ? Math.max(...durations) : this.episodeLength / (this.fps || 30);
+                },
+
+                updatePlaybackPosition(time) {
+                    if (!Number.isFinite(time)) return;
+                    this.dygraphTime = time;
+                    const duration = this.playbackDuration();
+                    if (this.$refs.slider) this.$refs.slider.value = duration > 0 ? 100 * time / duration : 0;
+                    if (this.$refs.timer) this.$refs.timer.textContent = this.formatTime(time) + ' / ' + this.formatTime(duration);
+                    for (const graph of [this.dygraphArmJoints, this.dygraphGripperFlag]) {
+                        if (!graph || !graph.numRows()) continue;
+                        const row = this.timeToGraphRow(time, graph);
+                        graph.setSelection(row, undefined, true, true);
+                    }
+                    this.dygraphIndex = this.timeToGraphRow(time);
+                    this.updateTableValues(time);
+                    this.updateImages(this.timeToFrame(time));
+                    this._updateCurrentStage();
+                },
+
+                seekVideo(video, time) {
+                    if (!video || video.readyState === 0 || !Number.isFinite(time)) return;
+                    const target = Math.max(0, Math.min(time, Number.isFinite(video.duration) ? video.duration : time));
+                    if (Math.abs(video.currentTime - target) < 0.001) return;
+                    // Media events are asynchronous; remember our own seeks to avoid peer feedback.
+                    this._mediaSeekTargets.set(video, target);
+                    video.currentTime = target;
+                },
+
+                seekPlayback(time) {
+                    if (!Number.isFinite(time)) return;
+                    time = Math.max(0, Math.min(time, this.playbackDuration()));
+                    this.playbackVideos().forEach(video => this.seekVideo(video, time));
+                    this.updatePlaybackPosition(time);
+                },
+
+                playVideo(video) {
+                    const revision = this._playbackRevision;
+                    const result = video.play();
+                    if (result?.catch) result.catch(() => {
+                        if (revision === this._playbackRevision && this.playbackVideos().includes(video)) {
+                            this.setPlaybackPaused(true);
+                        }
+                    });
+                },
+
+                setPlaybackPaused(paused, source = null) {
+                    this.playbackPaused = paused;
+                    this._autoplayStarted = true;
+                    this._playbackRevision += 1;
+                    this.seekPlayback((source || this.playbackVideo())?.currentTime ?? this.dygraphTime);
+                    this.playbackVideos().forEach(video => paused ? video.pause() : this.playVideo(video));
+                    this.$refs.btnPlay?.classList.toggle('hidden', !paused);
+                    this.$refs.btnPause?.classList.toggle('hidden', paused);
+                },
+
+                videoPlaybackChanged(video) {
+                    if (!this.playbackVideos().includes(video) || video.ended || video.paused === this.playbackPaused) return;
+                    this.setPlaybackPaused(video.paused, video);
+                },
+
+                videoSeeking(video) {
+                    if (!this.playbackVideos().includes(video)) return;
+                    const target = this._mediaSeekTargets.get(video);
+                    if (Number.isFinite(target) && Math.abs(video.currentTime - target) < Math.max(0.05, 1 / (this.fps || 30))) return;
+                    this._mediaSeekTargets.delete(video);
+                    this.seekPlayback(video.currentTime);
+                },
+
+                videoTimeUpdate(video) {
+                    if (video !== this.playbackVideo() || video.seeking) return;
+                    const time = video.currentTime;
+                    this.updatePlaybackPosition(time);
+                    if (this.playbackPaused) return;
+                    const tolerance = Math.max(0.08, 2 / (this.fps || 30));
+                    this.playbackVideos().forEach(peer => {
+                        if (peer !== video && Math.abs(peer.currentTime - time) > tolerance) this.seekVideo(peer, time);
+                    });
+                },
+
+                videoEnded(video) {
+                    if (video !== this.playbackVideo() || this.playbackPaused) return;
+                    this.seekPlayback(0);
+                    this.setPlaybackPaused(false);
+                },
+
                 videoCanPlay(event) {
+                    const video = event.target;
+                    if (!this.playbackVideos().includes(video)) return;
                     this.videoCodecError = false;
                     this.videoErrorMessage = '';
-                    if (event && event.target) {
-                        event.target.playbackRate = this.playbackRate;
-                        if (event.target.dataset && event.target.dataset.readyCounted !== '1') {
-                            event.target.dataset.readyCounted = '1';
-                            this.nVideoReadyToPlay += 1;
-                        }
+                    video.playbackRate = this.playbackRate;
+                    if (video.dataset.videoLabel && video.dataset.readyCounted !== '1') {
+                        video.dataset.readyCounted = '1';
+                        this.nVideoReadyToPlay += 1;
                     }
-                    if (!this._autoplayStarted) {
+                    // canplay also fires after every seek; align only when a view first becomes ready.
+                    if (video.dataset.playbackReady !== '1') {
+                        video.dataset.playbackReady = '1';
+                        this.seekVideo(video, this.dygraphTime);
+                    }
+                    if (!this._autoplayStarted && !this.qualityReview) {
                         this._autoplayStarted = true;
-                        if (this.$refs.btnPlay && !this.$refs.btnPlay.classList.contains('hidden')) {
-                            this.$refs.btnPlay.click();
-                        }
+                        this.setPlaybackPaused(false);
+                    } else if (!this.playbackPaused && video.paused) {
+                        this.playVideo(video);
                     }
+                },
+
+                selectChartTime(time) {
+                    if (!Number.isFinite(time)) return;
+                    this.chartAnchorTime = this.frameToTime(this.timeToFrame(time));
+                    this.seekPlayback(this.chartAnchorTime);
+                    this._redrawTrimCharts();
+                },
+
+                drawChartAnchor(ctx, area, graph) {
+                    if (!Number.isFinite(this.chartAnchorTime)) return;
+                    const x = graph.toDomXCoord(this.chartAnchorTime);
+                    if (x < area.x || x > area.x + area.w) return;
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(area.x, area.y, area.w, area.h);
+                    ctx.clip();
+                    ctx.beginPath();
+                    ctx.setLineDash([]);
+                    ctx.strokeStyle = '#0284c7';
+                    ctx.lineWidth = 2;
+                    ctx.moveTo(x, area.y);
+                    ctx.lineTo(x, area.y + area.h);
+                    ctx.stroke();
+                    ctx.restore();
+                },
+
+                zoomChartAtAnchor(event, graph) {
+                    if (!Number.isFinite(this.chartAnchorTime) || !Number.isFinite(event.deltaY) || !event.deltaY
+                        || event.ctrlKey || event.metaKey || this._chartSeekState || this._trimDragState || this._dragState) return;
+                    if (!graph.numRows()) return;
+                    // xAxisExtremes includes visual padding; zoom only within actual episode time.
+                    const full = this.chartFullRange || [Number(graph.getValue(0, 0)),
+                        Math.max(Number(graph.getValue(graph.numRows() - 1, 0)), this.playbackDuration())];
+                    const range = graph.xAxisRange();
+                    const fullWidth = full[1] - full[0], currentWidth = range[1] - range[0];
+                    if (!(fullWidth > 0) || !(currentWidth > 0)) return;
+                    event.preventDefault();
+                    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? graph.getArea().h : 1);
+                    const factor = Math.exp(Math.max(-1, Math.min(1, delta * 0.002)));
+                    const width = Math.min(fullWidth, Math.max(2 / (this.fps || 30), currentWidth * factor));
+                    const center = Math.max(full[0], Math.min(full[1], this.chartAnchorTime));
+                    const start = Math.max(full[0], Math.min(full[1] - width, center - width / 2));
+                    this.setChartWindow(start, start + width, width < fullWidth);
+                },
+
+                initChartResize() {
+                    const charts = new Map([
+                        [document.getElementById('graph-arm-joints'), this.dygraphArmJoints],
+                        [document.getElementById('graph-gripper-flag'), this.dygraphGripperFlag],
+                    ].filter(([element, graph]) => element && graph));
+                    let frame = null;
+                    const sizes = new Map();
+                    const observer = new ResizeObserver(() => {
+                        if (frame !== null) return;
+                        frame = requestAnimationFrame(() => {
+                            frame = null;
+                            for (const [element, graph] of charts) {
+                                const size = `${element.clientWidth}:${element.clientHeight}`;
+                                if (element.clientWidth > 0 && element.clientHeight > 0 && sizes.get(element) !== size) {
+                                    sizes.set(element, size);
+                                    graph.resize();
+                                }
+                            }
+                        });
+                    });
+                    const observe = () => charts.forEach((graph, element) => observer.observe(element));
+                    observe();
+                    window.addEventListener('pagehide', () => {
+                        observer.disconnect();
+                        if (frame !== null) cancelAnimationFrame(frame);
+                        frame = null;
+                    });
+                    window.addEventListener('pageshow', event => {if (event.persisted) observe();});
+                },
+
+                initChartSeek() {
+                    const seek = (event) => {
+                        const {graph, element} = this._chartSeekState;
+                        const area = graph.getArea();
+                        const x = Math.max(area.x, Math.min(area.x + area.w, event.clientX - element.getBoundingClientRect().left));
+                        this.selectChartTime(graph.toDataXCoord(x));
+                    };
+                    for (const [id, graph] of [['graph-arm-joints', this.dygraphArmJoints], ['graph-gripper-flag', this.dygraphGripperFlag]]) {
+                        const element = document.getElementById(id);
+                        if (!element || !graph) continue;
+                        element.addEventListener('wheel', event => this.zoomChartAtAnchor(event, graph), {passive: false});
+                        element.addEventListener('mousedown', event => {
+                            if (event.defaultPrevented || event.button !== 0 || event.shiftKey || event.ctrlKey
+                                || event.metaKey || event.altKey || this._dragState || this._trimDragState) return;
+                            const rect = element.getBoundingClientRect();
+                            const area = graph.getArea();
+                            const x = event.clientX - rect.left, y = event.clientY - rect.top;
+                            if (x < area.x || x > area.x + area.w || y < area.y || y > area.y + area.h) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            this._chartSeekState = {graph, element};
+                            this.setPlaybackPaused(true);
+                            seek(event);
+                        }, true);
+                    }
+                    document.addEventListener('mousemove', event => {
+                        if (!this._chartSeekState) return;
+                        event.preventDefault();
+                        seek(event);
+                    });
+                    document.addEventListener('mouseup', () => { this._chartSeekState = null; });
+                    window.addEventListener('blur', () => { this._chartSeekState = null; });
                 },
 
                 videoLoadError(event) {
@@ -2953,65 +3176,24 @@
                 },
 
                 openZoomVideo(url, label, sourceVideo) {
+                    this._playbackRevision += 1;
+                    if (this.$refs.zoomVideo) delete this.$refs.zoomVideo.dataset.playbackReady;
                     this.zoomVideoUrl = url;
                     this.zoomVideoLabel = label || "";
                     this.isZoomOpen = true;
-                    this._pausedForZoom = [];
-                    if (this.videos) {
-                        this.videos.forEach((video, idx) => {
-                            if (!video) {
-                                return;
-                            }
-                            this._pausedForZoom[idx] = video.paused;
-                            if (!video.paused) {
-                                video.pause();
-                            }
-                        });
-                    }
-                    const startTime = sourceVideo && Number.isFinite(sourceVideo.currentTime)
-                        ? sourceVideo.currentTime
-                        : ((this.video && Number.isFinite(this.video.currentTime)) ? this.video.currentTime : 0);
-                    const shouldPlay = sourceVideo ? !sourceVideo.paused : true;
                     this.$nextTick(() => {
                         const zoomVideo = this.$refs.zoomVideo;
-                        if (!zoomVideo) {
-                            return;
-                        }
+                        if (!zoomVideo || !this.isZoomOpen) return;
                         zoomVideo.playbackRate = this.playbackRate;
-                        if (Number.isFinite(startTime)) {
-                            zoomVideo.currentTime = startTime;
-                        }
-                        if (shouldPlay) {
-                            const maybePlay = zoomVideo.play();
-                            if (maybePlay && typeof maybePlay.catch === "function") {
-                                maybePlay.catch(() => {});
-                            }
-                        } else {
-                            zoomVideo.pause();
-                        }
+                        this.seekVideo(zoomVideo, this.dygraphTime);
+                        if (!this.playbackPaused) this.playVideo(zoomVideo);
                     });
                 },
 
                 closeZoomVideo() {
-                    const zoomVideo = this.$refs.zoomVideo;
-                    if (zoomVideo) {
-                        zoomVideo.pause();
-                    }
-                    if (this.videos && Array.isArray(this._pausedForZoom)) {
-                        this.videos.forEach((video, idx) => {
-                            if (!video) {
-                                return;
-                            }
-                            if (this._pausedForZoom[idx] === false) {
-                                const maybePlay = video.play();
-                                if (maybePlay && typeof maybePlay.catch === "function") {
-                                    maybePlay.catch(() => {});
-                                }
-                            }
-                        });
-                    }
-                    this._pausedForZoom = [];
                     this.isZoomOpen = false;
+                    this.$refs.zoomVideo?.pause();
+                    this.updatePlaybackPosition(this.video?.currentTime ?? this.dygraphTime);
                 },
 
                 getSeriesLabels() {
@@ -3165,8 +3347,12 @@
                 },
 
                 async loadFlaggedEpisodes() {
+                    if (this.flaggedLoading) return;
+                    this.flaggedLoading = true;
+                    this.flagLoadError = '';
                     try {
                         const resp = await fetch(this.flagUrl + (this.flagUrl.includes('?') ? '&' : '?') + 'reasons=0');
+                        if (!resp.ok) throw new Error('Could not load flagged episodes. Retry to load the filter.');
                         const data = await resp.json();
                         this.flagReasonsFullyLoaded = false;
                         this._setFlagState(data);
@@ -3175,17 +3361,20 @@
                             this.loadAllFlagReasons();
                         }
                     } catch (e) {
-                        console.warn('Failed to load flagged episodes:', e);
+                        this.flagLoadError = 'Could not load flagged episodes. Retry to load the filter.';
+                    } finally {
+                        this.flaggedLoading = false;
                     }
                 },
 
                 async loadAllFlagReasons() {
                     if (!this.flagUrl || this.flagReasonLoading) return;
                     this.flagReasonLoading = true;
+                    this.flagLoadError = '';
                     try {
                         const sep = this.flagUrl.includes('?') ? '&' : '?';
                         const resp = await fetch(`${this.flagUrl}${sep}reasons=1`);
-                        if (!resp.ok) return;
+                        if (!resp.ok) throw new Error('Could not load flag types. Retry to load the filter.');
                         const data = await resp.json();
                         if (data.flag_reasons) {
                             this.flagReasons = {...(this.flagReasons || {}), ...(data.flag_reasons || {})};
@@ -3196,7 +3385,7 @@
                         this._lastEpisodeFilterSignature = '';
                         this.publishEpisodeFilter();
                     } catch (e) {
-                        console.warn('Failed to load flag reasons:', e);
+                        this.flagLoadError = 'Could not load flag types. Retry to load the filter.';
                     } finally {
                         this.flagReasonLoading = false;
                     }
@@ -3571,28 +3760,10 @@
                 },
 
                 stepFrame(direction) {
-                    const source = this.isZoomOpen && this.$refs.zoomVideo ? this.$refs.zoomVideo : this.video;
-                    const time = source && Number.isFinite(source.currentTime) ? source.currentTime : this.dygraphTime;
+                    const time = this.playbackVideo()?.currentTime ?? this.dygraphTime;
                     const frame = this.clampTrimFrame(this.timeToFrame(time) + direction);
-                    const nextTime = this.frameToTime(frame);
-                    const videos = new Set([...(this.videos || []), this.video, this.$refs.zoomVideo]);
-                    for (const video of videos) {
-                        if (!video) continue;
-                        video.pause();
-                        if (video.readyState > 0) {
-                            video.currentTime = Number.isFinite(video.duration)
-                                ? Math.min(nextTime, video.duration) : nextTime;
-                        }
-                    }
-                    this._pausedForZoom = (this.videos || []).map(() => true);
-                    this.dygraphTime = nextTime;
-                    this.dygraphIndex = this.timeToGraphRow(nextTime);
-                    for (const graph of [this.dygraphArmJoints, this.dygraphGripperFlag]) {
-                        if (graph) graph.setSelection(this.timeToGraphRow(nextTime, graph), undefined, true, true);
-                    }
-                    this.updateTableValues(nextTime);
-                    this.updateImages(frame);
-                    this._updateCurrentStage();
+                    this.setPlaybackPaused(true);
+                    this.seekPlayback(this.frameToTime(frame));
                 },
 
                 maxTrimFrame() {
@@ -3648,8 +3819,7 @@
                         this.trimEnd = Math.max(minEnd, Math.min(maxFrame, this.clampTrimFrame(frame)));
                     }
                     const time = this.frameToTime(handle === 'start' ? this.trimStart : this.trimEnd);
-                    this.dygraphTime = time;
-                    this.videos.forEach(v => (v.currentTime = time));
+                    this.seekPlayback(time);
                 },
 
                 async loadTrimAnnotation() {
@@ -3981,10 +4151,7 @@
                             e.preventDefault();
                             e.stopPropagation();
                             this._trimDragState = { handle };
-                            this.videos.forEach(video => video.pause());
-                            // Sync play/pause button state
-                            if (this.$refs.btnPlay) this.$refs.btnPlay.classList.remove('hidden');
-                            if (this.$refs.btnPause) this.$refs.btnPause.classList.add('hidden');
+                            this.setPlaybackPaused(true);
                             document.body.style.cursor = 'ew-resize';
                         }, true);
                     }
@@ -4009,26 +4176,7 @@
 
                         // Sync video & playback bar to drag position
                         const newTime = this.frameToTime(this._trimDragState.handle === 'start' ? this.trimStart : this.trimEnd);
-                        this.dygraphTime = newTime;
-                        this.videos.forEach(video => (video.currentTime = newTime));
-                        // Update slider, timer & chart selection immediately
-                        if (this.video && this.video.duration && this.$refs.slider) {
-                            const pc = (100 / this.video.duration) * newTime;
-                            this.$refs.slider.value = pc;
-                            if (this.$refs.timer) {
-                                this.$refs.timer.textContent = this.formatTime(newTime) + ' / ' + this.formatTime(this.video.duration);
-                            }
-                            if (graph && graph.numRows()) {
-                                this.dygraphIndex = this.timeToGraphRow(newTime, graph);
-                                if (this.dygraphArmJoints) this.dygraphArmJoints.setSelection(this.dygraphIndex, undefined, true, true);
-                                if (this.dygraphGripperFlag) this.dygraphGripperFlag.setSelection(this.dygraphIndex, undefined, true, true);
-                            }
-                        } else if (graph && graph.numRows()) {
-                            this.dygraphIndex = this.timeToGraphRow(newTime, graph);
-                            if (this.dygraphArmJoints) this.dygraphArmJoints.setSelection(this.dygraphIndex, undefined, true, true);
-                            if (this.dygraphGripperFlag) this.dygraphGripperFlag.setSelection(this.dygraphIndex, undefined, true, true);
-                        }
-
+                        this.seekPlayback(newTime);
                         // RAF-throttled chart redraw
                         if (!this._trimRafId) {
                             this._trimRafId = requestAnimationFrame(() => {
@@ -4093,9 +4241,7 @@
                         e.stopPropagation();
                         this._dragState = { transitionIndex: idx };
                         // Pause video during drag & sync play/pause buttons
-                        this.videos.forEach(video => video.pause());
-                        if (this.$refs.btnPlay) this.$refs.btnPlay.classList.remove('hidden');
-                        if (this.$refs.btnPause) this.$refs.btnPause.classList.add('hidden');
+                        this.setPlaybackPaused(true);
                         document.body.style.cursor = 'ew-resize';
                     }, true);
 
@@ -4111,20 +4257,7 @@
                         newTime = this._clampTransitionTime(this._dragState.transitionIndex, newTime);
                         this.subtaskTransitions[this._dragState.transitionIndex].time = newTime;
                         // Sync video, slider, timer & chart cursor to drag position
-                        this.dygraphTime = newTime;
-                        this.videos.forEach(video => (video.currentTime = newTime));
-                        if (this.video && this.video.duration && this.$refs.slider) {
-                            const pc = (100 / this.video.duration) * newTime;
-                            this.$refs.slider.value = pc;
-                            if (this.$refs.timer) {
-                                this.$refs.timer.textContent = this.formatTime(newTime) + ' / ' + this.formatTime(this.video.duration);
-                            }
-                            if (graph && graph.numRows()) {
-                                this.dygraphIndex = Math.min(graph.numRows() - 1, Math.max(0, Math.floor(pc * graph.numRows() / 100)));
-                                if (this.dygraphArmJoints) this.dygraphArmJoints.setSelection(this.dygraphIndex, undefined, true, true);
-                                if (this.dygraphGripperFlag) this.dygraphGripperFlag.setSelection(this.dygraphIndex, undefined, true, true);
-                            }
-                        }
+                        this.seekPlayback(newTime);
                         if (!this._rafId) {
                             this._rafId = requestAnimationFrame(() => {
                                 this._updateStageInChart();
@@ -4293,6 +4426,8 @@
     <script>
         window.__stageEditEnabled = {{ 'true' if stage_edit_enabled and annotation_editable else 'false' }};
         window.addEventListener('keydown', (e) => {
+            if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.metaKey || e.altKey ||
+                e.composedPath().some(node => node.id === 'platform-assistant-workspace')) return;
             // Use the space bar to play and pause, instead of default action (e.g. scrolling)
             const { keyCode, key } = e;
             const tagName = e.target && e.target.tagName ? e.target.tagName.toLowerCase() : "";
@@ -4400,6 +4535,14 @@
             <p class="text-[10px] text-slate-500 mt-1" x-text="'Step ' + trimProgressStep + ' / ' + trimProgressTotal"></p>
         </div>
     </div>
+{% if g is defined and g.control_plane_user %}
+{% include "assistant_workspace.html" %}
+<script>document.body.dataset.assistantStandalone = 'true';
+window.platformAssistantPage = {datasetKey: {{ (dataset_namespace ~ '/' ~ dataset_name)|tojson }}, episodeIndex: {{ episode_id|tojson }}};
+{% include "pipeline_assistant.js" %}
+{% include "assistant_launcher.js" %}
+</script>
+{% endif %}
 </body>
 
 </html>

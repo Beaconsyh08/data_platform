@@ -8,13 +8,64 @@ import re
 from pathlib import Path
 from urllib.parse import urlencode
 
-from flask import abort, jsonify, render_template, send_file
+from flask import Response, abort, jsonify, render_template, request, send_file, stream_with_context
+from werkzeug.http import parse_range_header
 
+from lerobot.data_platform.caption_reads import VIDEO_CHUNK_BYTES
 from lerobot.data_platform.temporal_caption import artifact_key, validate_result
-from lerobot.data_platform.temporal_caption_demo import SCHEMES, review_context, scheme_info
+from lerobot.data_platform.temporal_caption_demo import REVIEW_SCHEMES, SCHEMES, review_context, scheme_info
 
 
 def register_temporal_caption_routes(app, ctx) -> None:
+    if ctx.control_plane_store is not None:
+        from lerobot.data_platform.routes.caption_reads import register_caption_read_routes
+
+        register_caption_read_routes(app, ctx)
+
+    def source_location(kwargs):
+        location_id = kwargs.get("location_id")
+        if not location_id or not getattr(ctx, "caption_read_relay", None):
+            return None
+        location = ctx.control_plane_store.get_location(location_id)
+        node = next(
+            item for item in ctx.control_plane_store.list_nodes() if item["node_id"] == location["node_id"]
+        )
+        if node.get("capabilities", {}).get("caption_read_protocol") != 1:
+            return None
+        return {**location, "caption_agent_online": node["status"] == "online"}
+
+    def source_read(location, action, **options):
+        if not location["caption_agent_online"]:
+            abort(503, description="Dataset Agent is offline")
+        try:
+            reply = ctx.caption_read_relay.request(
+                location["node_id"],
+                {
+                    "root": location["root"],
+                    "dataset_key": location["dataset_key"],
+                    "action": action,
+                    **options,
+                },
+                timeout=210 if action == "video-info" else None,
+            )
+        except TimeoutError as exc:
+            abort(503, description=str(exc))
+        if reply.status != 200:
+            abort(reply.status, description="Unable to read the dataset caption result")
+        return reply
+
+    def source_json(location, action, **options):
+        reply = source_read(location, action, **options)
+        if reply.binary:
+            abort(502, description="Invalid caption Agent reply")
+        try:
+            value = json.loads(reply.body)
+            if not isinstance(value, dict):
+                raise ValueError("Expected a caption object")
+            return value
+        except ValueError:
+            abort(502, description="Invalid caption Agent reply")
+
     def resolve(dataset_namespace=None, dataset_name=None, location_id=None):
         if location_id is not None:
             if ctx.control_plane_store is None:
@@ -60,7 +111,15 @@ def register_temporal_caption_routes(app, ctx) -> None:
             artifact = json.loads(path.read_text())
             if artifact["dataset_key"] != key or artifact["variant"] != variant:
                 abort(404)
-            validate_result(artifact["result"], artifact["frame_count"])
+            validate_result(
+                artifact["result"],
+                artifact["frame_count"],
+                max_segments=1000 if artifact.get("scheme_id") == "flora" else 40,
+            )
+            if artifact.get("scheme_id") == "flora":
+                from lerobot.data_platform.temporal_caption_flora import validate_flora
+
+                validate_flora(artifact)
         except (ValueError, KeyError, TypeError):
             abort(422, description="Invalid temporal caption artifact")
         return artifact
@@ -78,7 +137,7 @@ def register_temporal_caption_routes(app, ctx) -> None:
             else "visualize_dataset_temporal_caption_annotation.html",
             page_kind="Temporal Caption Review" if review else "Data Curation / Annotation",
             page_title=name,
-            caption_schemes=list(SCHEMES.values()),
+            caption_schemes=list((REVIEW_SCHEMES if review else SCHEMES).values()),
             api_base=api,
             home_url=home,
             annotation_url=base,
@@ -101,6 +160,14 @@ def register_temporal_caption_routes(app, ctx) -> None:
     def temporal_caption_runs(**kwargs):
         key, _, root, _, _ = resolve(**kwargs)
         runs = []
+        location = source_location(kwargs)
+        source = {"runs": [], "warnings": []}
+        if location:
+            if location["caption_agent_online"]:
+                source = source_json(location, "runs")
+            else:
+                source["warnings"].append("Dataset Agent is offline; dataset-local results are unavailable.")
+        source_hashes = {run["source_caption_sha256"] for run in source["runs"]}
         if root.is_dir():
             for run in sorted(root.iterdir(), reverse=True):
                 if not run.is_dir() or not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", run.name):
@@ -109,6 +176,8 @@ def register_temporal_caption_routes(app, ctx) -> None:
                     if not (run / f"{variant}.json").is_file():
                         continue
                     artifact = read_artifact(root, run.name, variant, key)
+                    if artifact.get("import_provenance", {}).get("caption_sha256") in source_hashes:
+                        continue
                     runs.append(
                         {
                             "run": run.name,
@@ -124,12 +193,20 @@ def register_temporal_caption_routes(app, ctx) -> None:
                             },
                         }
                     )
-        return jsonify(runs=runs, schemes=list(SCHEMES.values()))
+        return jsonify(
+            runs=[*source["runs"], *runs], schemes=list(SCHEMES.values()), warnings=source["warnings"]
+        )
 
     @app.get("/api/temporal-caption/<dataset_namespace>/<dataset_name>/<run>/<variant>")
     @app.get("/api/control/locations/<location_id>/temporal-caption/<run>/<variant>")
     def temporal_caption_result(run, variant, **kwargs):
         key, _, root, api, _ = resolve(**kwargs)
+        location = source_location(kwargs)
+        if location and re.fullmatch(r"source-[0-9a-f]{24}", run) and variant == "caption":
+            artifact = source_json(location, "result", run=run)
+            response = jsonify(**artifact, video_url=f"{api}/{run}/{variant}/video")
+            response.headers.update({"X-Accel-Buffering": "no", "Cache-Control": "private, no-store"})
+            return response
         artifact = read_artifact(root, run, variant, key)
         return jsonify(
             **artifact,
@@ -142,6 +219,53 @@ def register_temporal_caption_routes(app, ctx) -> None:
     @app.get("/api/control/locations/<location_id>/temporal-caption/<run>/<variant>/video")
     def temporal_caption_video(run, variant, **kwargs):
         key, _, root, _, _ = resolve(**kwargs)
+        location = source_location(kwargs)
+        if location and re.fullmatch(r"source-[0-9a-f]{24}", run) and variant == "caption":
+            info = source_json(location, "video-info", run=run)
+            size, revision = info["size"], info["revision"]
+            start, end, status = 0, size, 200
+            headers = {
+                "Accept-Ranges": "bytes",
+                "ETag": f'"{revision}"',
+                "Cache-Control": "private, no-store",
+                "X-Accel-Buffering": "no",
+            }
+            range_value = request.headers.get("Range")
+            if range_value and request.headers.get("If-Range", headers["ETag"]) == headers["ETag"]:
+                selected = parse_range_header(range_value)
+                interval = selected.range_for_length(size) if selected and selected.units == "bytes" else None
+                if interval is None:
+                    return Response(status=416, headers={**headers, "Content-Range": f"bytes */{size}"})
+                start, end = interval
+                status = 206
+                headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
+            headers["Content-Length"] = str(end - start)
+            if request.method == "HEAD":
+                return Response(status=status, headers=headers, mimetype="video/mp4")
+
+            def chunk(offset):
+                reply = source_read(
+                    location,
+                    "video-chunk",
+                    run=run,
+                    start=offset,
+                    length=min(VIDEO_CHUNK_BYTES, end - offset),
+                    revision=revision,
+                )
+                if not reply.binary or len(reply.body) != min(VIDEO_CHUNK_BYTES, end - offset):
+                    abort(502, description="Incomplete caption video reply")
+                return reply.body
+
+            first = chunk(start)
+
+            def stream():
+                yield first
+                for offset in range(start + len(first), end, VIDEO_CHUNK_BYTES):
+                    yield chunk(offset)
+
+            return Response(
+                stream_with_context(stream()), status=status, headers=headers, mimetype="video/mp4"
+            )
         artifact = read_artifact(root, run, variant, key)
         path = root / run / "video.mp4"
         if not path.resolve().is_relative_to(root.resolve()) or not path.is_file():

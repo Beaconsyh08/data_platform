@@ -132,6 +132,7 @@ def register_task_suggestion_routes(app, ctx, *, preview) -> None:
                 ctx.fail_job(job, "Task suggestions failed", exc)
 
         launch_background(
+            compatibility_operator="tasks.suggest",
             target=generate,
             name=f"task-suggestions-{job['id']}",
             daemon=True,

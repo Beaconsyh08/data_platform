@@ -1,0 +1,161 @@
+<div class="space-y-4 px-4 py-4" x-show="activeTab === 'versions'">
+                    <div class="rounded border border-sky-900/70 bg-sky-950/20 px-3 py-3 text-xs text-slate-300">
+                        <div class="font-semibold text-sky-200">Dataset Versions & Lineage</div>
+                        <p class="mt-2 text-slate-400">Register a dataset version and track its episodes and replicas. Source files stay unchanged.</p>
+                    </div>
+                    <div class="dp-action-row">
+                        <button class="dp-btn dp-btn-primary dp-full"
+                                @click="startLifecycleIngest()"
+                                :disabled="!selectedDataset || selectedDataset.cache_only || busy">Register immutable version</button>
+                        <button class="dp-btn dp-btn-secondary dp-full"
+                                @click="loadLifecycle()"
+                                :disabled="!selectedDataset || lifecycleLoading">Refresh lineage</button>
+                    </div>
+                    <div class="rounded border border-sky-900/70 bg-slate-950 px-3 py-3 text-xs">
+                        <div class="font-semibold text-slate-200">Source Delivery</div>
+                        <p class="mt-1 text-slate-500">Record the source before registering a Raw version.</p>
+                        <div class="mt-3 grid gap-3 md:grid-cols-2">
+                            <label class="block">
+                                <span class="mb-1 block text-slate-400">delivery name</span>
+                                <input class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+                                       x-model="sourceBatchForm.name" placeholder="dvt2-2026-08-24-delivery">
+                            </label>
+                            <label class="block">
+                                <span class="mb-1 block text-slate-400">source kind</span>
+                                <select class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+                                        x-model="sourceBatchForm.source_kind">
+                                    <option value="robot">Robot</option>
+                                    <option value="umi">UMI</option>
+                                    <option value="simulation">Simulation</option>
+                                    <option value="generated">Generated</option>
+                                    <option value="imported">Imported</option>
+                                </select>
+                            </label>
+                            <label class="block md:col-span-2">
+                                <span class="mb-1 block text-slate-400">source URI / delivery path</span>
+                                <input class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+                                       x-model="sourceBatchForm.source_uri" placeholder="Defaults to the selected dataset root">
+                            </label>
+                            <label class="block">
+                                <span class="mb-1 block text-slate-400">expected episodes</span>
+                                <input type="number" min="0"
+                                       class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+                                       x-model="sourceBatchForm.expected_episode_count" placeholder="optional">
+                            </label>
+                            <label class="block">
+                                <span class="mb-1 block text-slate-400">delivery attached to next ingest</span>
+                                <select class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+                                        x-model="sourceBatchForm.source_batch_id">
+                                    <option value="">No delivery selected</option>
+                                    <template x-for="batch in sourceBatches" :key="batch.source_batch_id">
+                                        <option :value="batch.source_batch_id" x-text="`${batch.name} v${batch.version} · ${batch.source_kind}`"></option>
+                                    </template>
+                                </select>
+                            </label>
+                        </div>
+                        <button class="dp-btn dp-btn-secondary dp-btn-compact mt-3"
+                                @click="createSourceBatch()"
+                                :disabled="!sourceBatchForm.name || busy">Register source delivery</button>
+                    </div>
+                    <div class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs">
+                        <div class="font-semibold text-slate-200">Versioned Preprocessing Profile</div>
+                        <div class="mt-3 grid gap-3 md:grid-cols-2">
+                            <label class="block">
+                                <span class="mb-1 block text-slate-400">profile name</span>
+                                <input class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+                                       x-model="profileForm.name" placeholder="raw-to-standard-v1">
+                            </label>
+                            <label class="block">
+                                <span class="mb-1 block text-slate-400">output sibling root</span>
+                                <input class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+                                       x-model="profileForm.out_root" placeholder="required when executing">
+                            </label>
+                            <label class="block md:col-span-2">
+                                <span class="mb-1 block text-slate-400">ordered steps JSON</span>
+                                <textarea class="h-24 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-[11px] text-slate-100"
+                                          x-model="profileForm.steps_json"
+                                          placeholder='[{"op":"standardize","params":{"data_version":"DVT2"}}]'></textarea>
+                            </label>
+                            <label class="block md:col-span-2">
+                                <span class="mb-1 block text-slate-400">registered profile</span>
+                                <select class="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100"
+                                        x-model="profileForm.profile_id">
+                                    <option value="">select a preprocessing profile</option>
+                                    <template x-for="profile in preprocessingProfiles()" :key="profile.profile_id">
+                                        <option :value="profile.profile_id" x-text="`${profile.name} v${profile.version} · ${profile.digest.slice(0, 12)}`"></option>
+                                    </template>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="mt-3 flex flex-wrap gap-2">
+                            <button class="dp-btn dp-btn-secondary dp-btn-compact"
+                                    @click="createPreprocessingProfile()" :disabled="busy">Register profile</button>
+                            <button class="dp-btn dp-btn-primary dp-btn-compact"
+                                    @click="startLifecycleProfile()"
+                                    :disabled="busy || !profileForm.profile_id || !profileForm.out_root">Execute profile</button>
+                        </div>
+                    </div>
+                    <div class="space-y-2">
+                        <template x-if="lifecycleVersions.length === 0">
+                            <p class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs text-slate-500">No dataset version registered yet.</p>
+                        </template>
+                        <template x-for="version in lifecycleVersions" :key="version.version_id">
+                            <article class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs">
+                                <div class="flex items-center justify-between gap-3">
+                                    <span class="font-semibold text-slate-100" x-text="version.version_id"></span>
+                                    <span class="rounded border border-emerald-800 px-2 py-0.5 text-emerald-300" x-text="version.stage"></span>
+                                </div>
+                                <p class="mt-2 truncate text-slate-500" x-text="version.root"></p>
+                                <div class="mt-2 grid gap-1 text-slate-400 md:grid-cols-2">
+                                    <span x-text="`${(version.episode_count ?? version.episode_refs?.length ?? 0)} stable episode UIDs`"></span>
+                                    <span x-text="`operation ${version.operation}`"></span>
+                                    <span x-text="`identity ${version.identity_confidence || 'legacy'}`"></span>
+                                    <span class="truncate" x-text="`profile ${version.profile_id || 'none'}`"></span>
+                                    <span class="truncate" x-text="`fingerprint ${version.fingerprint}`"></span>
+                                    <span x-text="`robot ${version.data_dimensions.robot_profile || 'unknown'} · signal ${version.data_dimensions.signal_schema || 'unknown'}`"></span>
+                                    <span x-text="`format ${version.data_dimensions.dataset_format || version.dataset_format_version} · retention ${version.data_dimensions.retention_class || 'unknown'}`"></span>
+                                    <span x-text="formatOperationTime(version.created_at)"></span>
+                                </div>
+                                <button class="dp-btn dp-btn-secondary dp-btn-compact mt-3"
+                                        @click="createDatasetProfile(version)" :disabled="busy">Build dataset profile</button>
+                            </article>
+                        </template>
+                    </div>
+                    <div class="grid gap-3 lg:grid-cols-2" x-show="datasetProfiles.length || reconciliationReports.length">
+                        <div class="space-y-2" x-show="datasetProfiles.length">
+                            <div class="text-xs font-semibold uppercase tracking-wide text-sky-300">Dataset profiles</div>
+                            <template x-for="profile in datasetProfiles" :key="profile.dataset_profile_id">
+                                <article class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs">
+                                    <div class="font-semibold text-slate-200" x-text="profile.dataset_profile_id"></div>
+                                    <p class="mt-1 text-slate-400" x-text="`${profile.metrics.episode_count} episodes · ${profile.metrics.frame_count} frames · ${Math.round(profile.metrics.duration_seconds || 0)}s`"></p>
+                                    <p class="mt-1 text-slate-500" x-text="`${Object.keys(profile.distributions.task || {}).length} task groups`"></p>
+                                </article>
+                            </template>
+                        </div>
+                        <div class="space-y-2" x-show="reconciliationReports.length">
+                            <div class="text-xs font-semibold uppercase tracking-wide text-emerald-300">Processing reconciliation</div>
+                            <template x-for="report in reconciliationReports" :key="report.reconciliation_id">
+                                <article class="rounded border border-slate-800 bg-slate-950 px-3 py-3 text-xs">
+                                    <div class="flex items-center justify-between gap-2">
+                                        <span class="font-semibold text-slate-200" x-text="report.operation"></span>
+                                        <span class="text-slate-500" x-text="`${report.counts.input_episode_count} → ${report.counts.output_episode_count}`"></span>
+                                    </div>
+                                    <p class="mt-1 text-slate-500" x-text="Object.entries(report.counts.outcomes || {}).map(([key, value]) => `${key} ${value}`).join(' · ')"></p>
+                                </article>
+                            </template>
+                        </div>
+                    </div>
+                    <div class="space-y-2" x-show="lifecycleQuarantine.length > 0">
+                        <div class="text-xs font-semibold uppercase tracking-wide text-red-300">Infra quarantine</div>
+                        <template x-for="item in lifecycleQuarantine" :key="item.quarantine_id">
+                            <article class="rounded border border-red-900/70 bg-red-950/20 px-3 py-3 text-xs">
+                                <div class="flex items-center justify-between gap-3">
+                                    <span class="font-semibold text-red-200" x-text="item.quarantine_id"></span>
+                                    <span class="rounded border border-red-800 px-2 py-0.5 text-red-300" x-text="`${item.category} · ${item.status}`"></span>
+                                </div>
+                                <p class="mt-2 break-all text-red-200/80" x-text="item.error"></p>
+                                <p class="mt-1 truncate text-slate-500" x-text="item.root"></p>
+                            </article>
+                        </template>
+                    </div>
+                </div>

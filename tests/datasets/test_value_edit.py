@@ -11,6 +11,7 @@ from lerobot.data_platform.precompute.dataset_io import V3DatasetMetadata, read_
 from lerobot.data_platform.precompute.preprocess import run_convert_v3, run_value_edits
 from lerobot.data_platform.precompute.preprocess.common import PreprocessResult
 from lerobot.data_platform.routes import preprocess as preprocess_routes
+from tests.datasets.console_templates import template_source
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -187,6 +188,12 @@ def test_value_edit_route_forwards_multiple_edits_and_refreshes_in_place_cache(
     monkeypatch,
 ):
     root = tmp_path / "source"
+    _make_dataset(root)
+    from lerobot.data_platform.precompute.data_profile import profile_from_data_version, write_data_profile
+
+    write_data_profile(
+        root, profile_from_data_version("DVT2", {}, resolution_source="test_fixture", confirmed=True)
+    )
     static_dir = tmp_path / "vis" / "static"
     csv_dir = static_dir / "csv"
     csv_dir.mkdir(parents=True)
@@ -269,7 +276,7 @@ def test_value_edit_route_forwards_multiple_edits_and_refreshes_in_place_cache(
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.get_json()
     assert response.get_json()["job"]["status"] == "done"
     assert calls["src_root"] == root
     assert calls["edits"] == edits
@@ -281,13 +288,13 @@ def test_value_edit_route_forwards_multiple_edits_and_refreshes_in_place_cache(
 
 
 def test_value_edit_homepage_exposes_multiple_edits_scopes_and_output_modes():
-    template = (
+    template = template_source(
         Path(__file__).parents[2]
         / "lerobot"
         / "data_platform"
         / "templates"
         / "visualize_dataset_homepage.html"
-    ).read_text()
+    )
 
     assert "data_modification" in template
     assert "/api/preprocess/value_edit/start" in template

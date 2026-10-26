@@ -12,21 +12,80 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from lerobot.data_platform.deployment import Deployment, agent_targets, load_environment, server_unit
+from lerobot.data_platform.rolling_deployment import ROLLING_DEPLOY_PROTOCOL, release_in_use
 
 RELEASE_ROOT = Path("/var/lib/data-platform-releases")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 VALIDATION_TESTS = [
+    "tests/datasets/test_mcp.py",
+    "tests/datasets/test_ai_assistant_runtime.py",
+    "tests/datasets/test_ai_assistant.py",
+    "tests/datasets/test_ai_assistant_context.py",
+    "tests/datasets/test_ai_assistant_security.py",
+    "tests/datasets/test_ai_assistant_actions.py",
+    "tests/datasets/test_ai_assistant_cli.py",
+    "tests/datasets/test_ai_personalization.py",
+    "tests/datasets/test_ai_memory_followups.py",
+    "tests/datasets/test_ai_experience.py",
+    "tests/datasets/test_ai_strategies.py",
+    "tests/datasets/test_cli_installer.py",
+    "tests/datasets/test_mem_export.py",
+    "tests/datasets/test_artifact_store.py",
+    "tests/datasets/test_report_archive.py",
+    "tests/datasets/test_report_migration.py",
+    "tests/datasets/test_list_pagination.py",
+    "tests/datasets/test_acceptance.py",
+    "tests/datasets/test_console_services.py",
+    "tests/datasets/test_console_interactions.py",
+    "tests/datasets/test_remote_dataset_merge.py",
+    "tests/datasets/test_task_ui.py",
+    "tests/datasets/test_value_edit.py",
+    "tests/datasets/test_source_cleanup.py",
+    "tests/datasets/test_operators.py",
+    "tests/datasets/test_processing.py",
+    "tests/datasets/test_pose_interpolate.py",
+    "tests/datasets/test_preprocess_ops.py",
+    "tests/datasets/test_preprocess_routes.py",
+    "tests/datasets/test_lifecycle.py",
+    "tests/datasets/test_compare.py",
+    "tests/datasets/test_task_suggestions.py",
+    "tests/datasets/test_dataset_captions.py",
+    "tests/datasets/test_temporal_caption_jobs.py",
+    "tests/datasets/test_temporal_caption_flora.py",
+    "tests/datasets/test_caption_throughput.py",
+    "tests/datasets/test_execution_resources.py",
+    "tests/datasets/test_dataset_results.py",
+    "tests/datasets/test_viewer_cache_publication.py",
+    "tests/datasets/test_viewer_csv_compression.py",
+    "tests/datasets/test_viewer_editing.py",
+    "tests/datasets/test_viewer_chart_focus.py",
+    "tests/datasets/test_dataset_scans.py",
+    "tests/datasets/test_job_progress.py",
+    "tests/datasets/test_console_layout.py",
+    "tests/datasets/test_inspection.py",
     "tests/datasets/test_data_manager.py",
+    "tests/datasets/test_data_profile.py",
     "tests/datasets/test_curation.py",
     "tests/datasets/test_curation_routes.py",
+    "tests/datasets/test_quality_checks.py",
+    "tests/datasets/test_quality_eef.py",
     "tests/datasets/test_execution_supervisor.py",
+    "tests/datasets/test_local_execution.py",
     "tests/datasets/test_environments.py",
     "tests/datasets/test_releases.py",
+    "tests/datasets/test_rolling_deployment.py",
     "tests/datasets/test_deployment_progress.py",
     "tests/datasets/test_control_plane.py",
+    "tests/datasets/test_operation_log.py",
     "tests/datasets/test_job_management.py",
+    "tests/datasets/test_usage_list_bounds.py",
+    "tests/datasets/test_list_refresh.py",
+    "tests/datasets/test_job_extra_quota.py",
+    "tests/datasets/test_mcap_import.py",
+    "tests/datasets/test_mcap_recovery.py",
     "tests/datasets/test_data_platform_agent.py",
     "tests/datasets/test_management_ui.py",
 ]
@@ -36,6 +95,16 @@ def validate_version(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", value):
         raise ValueError("Release names must contain 1-100 letters, digits, dots, underscores or dashes")
     return value
+
+
+def validate_package_index(index_url: str | None) -> None:
+    if not index_url:
+        return
+    parsed = urlsplit(index_url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("Package index must use HTTPS")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Package index must not contain credentials, query parameters, or fragments")
 
 
 def digest(path: Path) -> str:
@@ -71,9 +140,10 @@ def extract_archive(archive: Path, destination: Path):
         stream.extractall(destination)
 
 
-def build_release(source: Path, version: str, *, index_url: str | None = None) -> Path:
-    if index_url and not index_url.startswith("https://"):
-        raise ValueError("Package index must use HTTPS")
+def build_release(
+    source: Path, version: str, *, index_url: str | None = None, browser_executable: Path | None = None
+) -> Path:
+    validate_package_index(index_url)
     version = validate_version(version)
     source = source.resolve()
     status = run(
@@ -122,14 +192,39 @@ def build_release(source: Path, version: str, *, index_url: str | None = None) -
         env["PYTHONPATH"] = str(snapshot)
         for key in ("HF_HOME", "HF_DATASETS_CACHE", "HF_LEROBOT_HOME", "UV_CACHE_DIR"):
             env[key] = str(root / "test-cache" / key)
-        with (root / "validation.txt").open("w") as report:
-            run(
-                [python, "-m", "pytest", *VALIDATION_TESTS, "-q"],
-                cwd=snapshot,
-                env=env,
-                stdout=report,
-                stderr=subprocess.STDOUT,
+        print(f"Validating {version} ({len(VALIDATION_TESTS)} test modules)", flush=True)
+        try:
+            with (root / "validation.txt").open("w") as report:
+                run(
+                    [python, "-m", "pytest", *VALIDATION_TESTS, "-q"],
+                    cwd=snapshot,
+                    env=env,
+                    stdout=report,
+                    stderr=subprocess.STDOUT,
+                )
+        except subprocess.CalledProcessError as exc:
+            failure = Path(tempfile.mkdtemp(prefix=f".failed-{version}-", dir=RELEASE_ROOT))
+            report_path = failure / "validation.txt"
+            shutil.copyfile(root / "validation.txt", report_path)
+            atomic_json(
+                failure / "failure.json",
+                {"release": version, "commit": commit, "stage": "validation", "exit_code": exc.returncode},
             )
+            raise RuntimeError(
+                f"Release validation failed (exit {exc.returncode}). Log: {report_path}"
+            ) from None
+        from lerobot.data_platform.browser_validation import run_browser_validation
+
+        try:
+            browser = run_browser_validation(python, snapshot, browser_executable, root, env, run)
+        except (RuntimeError, subprocess.CalledProcessError):
+            failure = Path(tempfile.mkdtemp(prefix=f".failed-browser-{version}-", dir=RELEASE_ROOT))
+            for name in ("browser-validation.txt", "browser-validation.xml"):
+                if (root / name).exists():
+                    shutil.copyfile(root / name, failure / name)
+            atomic_json(failure / "failure.json", {"release": version, "commit": commit, "stage": "browser"})
+            raise RuntimeError(f"Browser acceptance failed. Evidence: {failure}") from None
+        print(f"Release validation passed: {version}", flush=True)
         run(
             [
                 python,
@@ -148,13 +243,23 @@ def build_release(source: Path, version: str, *, index_url: str | None = None) -
             agent_manifest_sha256 = hashlib.sha256(internal_manifest.read()).hexdigest()
         shutil.move(agent, root / agent.name)
         shutil.move(Path(str(agent) + ".sha256"), root / (agent.name + ".sha256"))
-        files = {name: digest(root / name) for name in ("server.tar.gz", agent.name, "validation.txt")}
+        files = {
+            name: digest(root / name)
+            for name in (
+                "server.tar.gz",
+                agent.name,
+                "validation.txt",
+                "browser-validation.txt",
+                "browser-validation.xml",
+            )
+        }
         atomic_json(
             root / "release.json",
             {
                 "format": 1,
                 "release": version,
                 "commit": commit,
+                "package_index_url": index_url,
                 "created_at": time.time(),
                 "files": files,
                 "agent_archive": agent.name,
@@ -162,7 +267,10 @@ def build_release(source: Path, version: str, *, index_url: str | None = None) -
                 "schema_min": SCHEMA_VERSION,
                 "schema_max": SCHEMA_VERSION,
                 "job_protocol": 2,
+                "rolling_deploy_protocol": ROLLING_DEPLOY_PROTOCOL,
                 "tests": VALIDATION_TESTS,
+                "browser_acceptance": browser,
+                "artifact_reader_protocol": 1,
             },
         )
         shutil.rmtree(snapshot)
@@ -274,15 +382,52 @@ def approve_release(
         "local_job",
         "remote_viewer",
         "remote_preprocess",
-        "rollback_drill",
     }
+    rollback_waiver = report.get("rollback_drill_waiver") if isinstance(report, dict) else None
+    waived = (
+        isinstance(rollback_waiver, dict)
+        and rollback_waiver.get("authorized_by")
+        and isinstance(rollback_waiver.get("reason"), str)
+        and bool(rollback_waiver["reason"].strip())
+    )
     if (
         not isinstance(report, dict)
         or report.get("release") != version
         or any(report.get(key) is not True for key in required)
+        or (report.get("rollback_drill") is not True and not waived)
     ):
         raise ValueError("Manual acceptance must identify this release and pass every required scenario")
     root = check_release_acceptance(deployment, version)
+    manifest = json.loads((root / "release.json").read_text())
+    if manifest.get("artifact_reader_protocol", 0) >= 1:
+        installed = report.get("installed_browser", {})
+        if (
+            installed.get("release") != version
+            or installed.get("environment") != "dev"
+            or installed.get("instance_id") != os.environ["DATA_PLATFORM_INSTANCE_ID"]
+            or installed.get("manifest_sha256") != digest(root / "release.json")
+            or installed.get("passed") is not True
+            or not {"login", "protected_lists", "pipeline_page"} <= set(installed.get("scenarios", []))
+        ):
+            raise ValueError(
+                "Installed authenticated browser evidence must identify these exact release artifacts"
+            )
+        matrix = report.get("operator_matrix", {})
+        if matrix.get("release") != version or not matrix.get("cases"):
+            raise ValueError("Real operator acceptance matrix is required before production approval")
+        from lerobot.data_platform.acceptance import collect_matrix
+        from lerobot.data_platform.artifact_store import configured_store
+        from lerobot.data_platform.control_plane import ControlPlaneStore
+
+        verified = collect_matrix(
+            ControlPlaneStore(os.environ["DATA_PLATFORM_DATABASE_URL"], initialize_schema=False),
+            configured_store(),
+            matrix["cases"],
+            version,
+            changed_operators=set(matrix["changed_operators"]),
+        )
+        if verified != matrix:
+            raise ValueError("Operator acceptance evidence changed; collect the matrix again")
     atomic_json(
         root / "approval.json",
         {
@@ -294,6 +439,61 @@ def approve_release(
             "evidence": report,
         },
     )
+
+
+def prune_deployment_history(deployment: Deployment) -> list[str]:
+    """Keep the active installation, two other recent versions, and three complete backups."""
+    current = (deployment.root / "current").resolve()
+    removed = []
+    retained = set()
+    output = os.environ.get("DATA_PLATFORM_OUTPUT_DIR")
+    if output:
+        executions = Path(output) / "management" / "executions"
+        for path in executions.glob("*/*.json"):
+            if path.name not in {"marker.json", "reservation.json"}:
+                continue
+            record = json.loads(path.read_text())
+            if not record.get("acknowledged"):
+                retained.add(record.get("job", {}).get("execution", {}).get("release"))
+    parent = deployment.root / "releases"
+    if parent.is_dir():
+        versions = [
+            path
+            for path in parent.iterdir()
+            if path.is_dir()
+            and not path.is_symlink()
+            and not path.name.startswith(".")
+            and (path / "manifest.sha256").is_file()
+        ]
+
+        def version_key(path: Path):
+            match = re.match(r"V(\d+(?:\.\d+)*)", path.name)
+            return (tuple(map(int, match.group(1).split("."))) if match else (0,), path.stat().st_mtime)
+
+        others = sorted(
+            (path for path in versions if path.resolve() != current), key=version_key, reverse=True
+        )
+        for path in others[2:]:
+            if path.name in retained or release_in_use(path):
+                continue
+            shutil.rmtree(path)
+            removed.append(str(path))
+    parent = deployment.root / "backups"
+    if parent.is_dir():
+        backups = []
+        for path in parent.iterdir():
+            if not path.is_dir() or path.is_symlink():
+                continue
+            try:
+                metadata = json.loads((path / "backup.json").read_text())
+            except (OSError, ValueError):
+                continue
+            if metadata.get("complete") and metadata.get("environment") == deployment.environment:
+                backups.append(path)
+        for path in sorted(backups, key=lambda path: path.stat().st_mtime, reverse=True)[3:]:
+            shutil.rmtree(path)
+            removed.append(str(path))
+    return removed
 
 
 def switch_current(deployment: Deployment, release: Path):
@@ -347,6 +547,9 @@ def prepare_server(
                 sync,
                 env=dict(os.environ, UV_CACHE_DIR=f"/var/cache/data-platform-uv/{deployment.environment}"),
             )
+        runtime_probe = "import gunicorn, pymysql; from lerobot.data_platform.wsgi import create_app"
+        if (target / "lerobot/data_platform/ai_tools/runtime.py").is_file():
+            runtime_probe += "; from lerobot.data_platform.ai_tools.runtime import generate"
         run(
             [
                 "runuser",
@@ -355,7 +558,7 @@ def prepare_server(
                 "--",
                 target / ".venv/bin/python",
                 "-c",
-                "import gunicorn, pymysql; from lerobot.data_platform.wsgi import create_app",
+                runtime_probe,
             ],
             cwd=target,
         )
@@ -363,6 +566,15 @@ def prepare_server(
             f"DATA_PLATFORM_RELEASE={version}\nDATA_PLATFORM_AGENT_MANIFEST_SHA256={manifest['agent_manifest_sha256']}\n"
         )
         (target / "manifest.sha256").write_text(digest(root / "release.json") + "\n")
+        atomic_json(
+            target / "deployment-contract.json",
+            {
+                key: manifest.get(key)
+                for key in ("rolling_deploy_protocol", "schema_min", "schema_max", "job_protocol")
+            },
+        )
+        (target / "deployment-contract.json").chmod(0o644)
+        (target / ".executor.lock").touch(mode=0o644)
     except BaseException:
         shutil.rmtree(target)
         raise
@@ -370,14 +582,68 @@ def prepare_server(
 
 
 def install_server_units(deployment: Deployment):
-    for unit, worker in zip(deployment.units, (False, True), strict=True):
-        Path("/etc/systemd/system", unit).write_text(server_unit(deployment, worker=worker))
+    release = (deployment.root / "current").resolve()
+    directory = Path("/etc/systemd/system")
+    from lerobot.data_platform.deployment import (
+        assistant_unit,
+        coordinator_unit,
+        experience_unit,
+        strategy_unit,
+    )
+
+    (directory / deployment.units[0]).write_text(server_unit(deployment, worker=False))
+    has_coordinator = deployment.coordinator_unit_name in deployment.units
+    if has_coordinator:
+        (directory / deployment.coordinator_unit_name).write_text(coordinator_unit(deployment))
+    elif (directory / deployment.coordinator_unit_name).exists():
+        run(["systemctl", "stop", deployment.coordinator_unit_name])
+        run(["systemctl", "disable", deployment.coordinator_unit_name])
+    has_assistant = deployment.assistant_unit_name in deployment.units
+    if has_assistant:
+        (directory / deployment.assistant_unit_name).write_text(assistant_unit(deployment))
+    elif (directory / deployment.assistant_unit_name).exists():
+        run(["systemctl", "stop", deployment.assistant_unit_name])
+        run(["systemctl", "disable", deployment.assistant_unit_name])
+    has_experience = deployment.experience_unit_name in deployment.units
+    if has_experience:
+        (directory / deployment.experience_unit_name).write_text(experience_unit(deployment))
+    elif (directory / deployment.experience_unit_name).exists():
+        run(["systemctl", "stop", deployment.experience_unit_name])
+        run(["systemctl", "disable", deployment.experience_unit_name])
+    has_strategy = deployment.strategy_unit_name in deployment.units
+    if has_strategy:
+        (directory / deployment.strategy_unit_name).write_text(strategy_unit(deployment))
+    elif (directory / deployment.strategy_unit_name).exists():
+        run(["systemctl", "stop", deployment.strategy_unit_name])
+        run(["systemctl", "disable", deployment.strategy_unit_name])
+    generation = f"data-platform-local-worker-{release.name}@{deployment.environment}.service"
+    (directory / generation).write_text(server_unit(deployment, worker=True, release=release))
+    alias = directory / deployment.units[1]
+    previous = alias.resolve().name if alias.is_symlink() else None
+    pointer = alias.with_suffix(".service-next")
+    pointer.unlink(missing_ok=True)
+    pointer.symlink_to(generation)
+    pointer.replace(alias)
     if deployment.environment == "dev":
         Path("/etc/systemd/system/data-platform-dev.slice").write_text(
             "[Slice]\nCPUQuota=400%\nMemoryMax=8G\nCPUWeight=10\nIOWeight=10\n"
         )
     run(["systemctl", "daemon-reload"])
-    run(["systemctl", "enable", *deployment.units])
+    if previous and previous != generation:
+        run(["systemctl", "disable", previous])
+    run(["systemctl", "enable", deployment.units[0], generation])
+    if has_coordinator:
+        run(["systemctl", "enable", deployment.coordinator_unit_name])
+        run(["systemctl", "restart", deployment.coordinator_unit_name])
+    if has_assistant:
+        run(["systemctl", "enable", deployment.assistant_unit_name])
+        run(["systemctl", "restart", deployment.assistant_unit_name])
+    if has_strategy:
+        run(["systemctl", "enable", deployment.strategy_unit_name])
+        run(["systemctl", "restart", deployment.strategy_unit_name])
+    if has_experience:
+        run(["systemctl", "enable", deployment.experience_unit_name])
+        run(["systemctl", "restart", deployment.experience_unit_name])
 
 
 def wait_healthy(deployment: Deployment, version: str):

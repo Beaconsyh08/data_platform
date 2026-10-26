@@ -8,12 +8,15 @@ import posixpath
 import re
 import shutil
 import uuid
+from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable
 from urllib.parse import urlsplit
 
 from flask import Flask, g, jsonify, redirect, render_template, request
 
+from lerobot.data_platform.cache_files import compress_viewer_csvs
+from lerobot.data_platform.control_plane_summaries import summarize_job, summarize_location
 from lerobot.data_platform.environment import EnvironmentIdentity, session_cookie_name
 from lerobot.data_platform.precompute.data_profile import (
     DATA_PROFILE_PROTOCOL,
@@ -27,22 +30,16 @@ from lerobot.data_platform.precompute.data_profile import (
 if TYPE_CHECKING:
     from lerobot.data_platform.control_plane import ControlPlaneStore
 
+from lerobot.data_platform.operators import list_operators
+from lerobot.data_platform.operators.registry import operation_ids
+
 CONTROL_PLANE_SESSION_COOKIE = "data_platform_session"
+
 REMOTE_PREPROCESS_OPS = {
-    "convert_action",
-    "convert_v3",
-    "drop_field",
-    "merge",
-    "smooth_action",
-    "split",
-    "standardize",
-    "value_edit",
+    spec.operator_id.removeprefix("preprocess.") for spec in list_operators() if spec.legacy_remote
 }
 REMOTE_SOURCE_MUTATION_OPS = {
-    "trim_episode",
-    "delete_episodes",
-    "repair_v3_video_timestamps",
-    "value_edit",
+    key.removeprefix("mutation.") for key in operation_ids(family="mutation", remote=True)
 }
 _REMOTE_MUTATION_OPTION_KEYS = {
     "trim_episode": {"episode_id", "start_frame", "end_frame", "reason"},
@@ -179,6 +176,15 @@ def register_control_plane_auth_routes(
     @app.before_request
     def _require_control_plane_session():
         path = request.path
+        if path == "/mcp":
+            from lerobot.data_platform.mcp_access import authenticate
+
+            identity = authenticate(store, _bearer_token())
+            if identity is None:
+                return jsonify(error="A valid platform MCP bearer credential is required"), 401
+            g.mcp_identity = identity
+            g.control_plane_user = {"user_id": identity.owner, "role": identity.role}
+            return None
         if path in public_paths or path.startswith("/api/agents/") or path.startswith("/static/"):
             return None
         from lerobot.data_platform.local_execution import internal_execution_user
@@ -208,7 +214,17 @@ def register_control_plane_auth_routes(
                         return jsonify({"error": "job not found"}), 404
             if (
                 request.method not in {"GET", "HEAD", "OPTIONS"}
-                and path not in {"/api/auth/logout", "/api/dev/role-session", "/api/auth/password"}
+                and path
+                not in {
+                    "/api/auth/logout",
+                    "/api/dev/role-session",
+                    "/api/auth/password",
+                    "/api/ai-assistant/turns",
+                    "/api/ai-assistant/preferences",
+                    "/api/ai-assistant/memory",
+                    "/api/mcp/credentials",
+                }
+                and not path.startswith("/api/mcp/credentials/")
                 and user.get("role") == "viewer"
             ):
                 return jsonify({"error": "viewer accounts are read-only"}), 403
@@ -220,10 +236,13 @@ def register_control_plane_auth_routes(
     @app.route("/healthz")
     def control_plane_health():
         identity = EnvironmentIdentity.from_env()
-        from lerobot.data_platform.maintenance import active_jobs, is_maintenance
+        from lerobot.data_platform.maintenance import MaintenanceState, active_job_counts
 
         with store.sessions() as session:
-            maintenance = is_maintenance(session)
+            maintenance = session.get(MaintenanceState, 1)
+            maintenance_enabled = bool(maintenance and maintenance.enabled)
+            maintenance_release = maintenance.release if maintenance else ""
+        counts = active_job_counts(store)
         return jsonify(
             {
                 "status": "ok",
@@ -233,8 +252,10 @@ def register_control_plane_auth_routes(
                 "instance_id": identity.instance_id if identity else None,
                 "release": os.environ.get("DATA_PLATFORM_RELEASE", "legacy"),
                 "agent_manifest_sha256": os.environ.get("DATA_PLATFORM_AGENT_MANIFEST_SHA256", ""),
-                "maintenance": maintenance,
-                "active_jobs": active_jobs(store),
+                "maintenance": maintenance_enabled,
+                "maintenance_release": maintenance_release,
+                "active_jobs": counts.total,
+                "active_job_counts": asdict(counts),
             }
         )
 
@@ -428,9 +449,13 @@ def register_control_plane_routes(
         app, store, remote_cache_root.parent, getattr(task_catalog_store, "repository", None)
     )
     register_management_routes(app, store)
+    app.config["DATA_PLATFORM_OPERATOR_STAGING"] = str(remote_cache_root / ".jobs")
     from lerobot.data_platform.routes.dataset_results import register_dataset_result_routes
 
     register_dataset_result_routes(app, store, remote_cache_root)
+    from lerobot.data_platform.routes.mcap_import import register_mcap_import_routes
+
+    register_mcap_import_routes(app, store)
 
     def _execution_credentials():
         return {
@@ -453,13 +478,20 @@ def register_control_plane_routes(
         try:
             with store.sessions.begin() as session:
                 job = session.get(RemoteJob, job_id)
-                store.job_manager.validate(
+                _, attempt = store.job_manager.validate(
                     session,
                     job,
                     node["node_id"],
                     **_execution_credentials(),
                     allow_terminal=request.path.endswith("/complete"),
                 )
+                if request.path.endswith("/complete"):
+                    from lerobot.data_platform.job_management import is_recovered_attempt
+
+                    if is_recovered_attempt(attempt):
+                        if (request.get_json(silent=True) or {}).get("status") != attempt.status:
+                            raise JobConflictError("Conflicting recovered attempt status")
+                        return jsonify({"job": store._job_dict(job)})
         except KeyError:
             return jsonify({"error": "job not found for this node"}), 404
         except JobConflictError as exc:
@@ -495,6 +527,8 @@ def register_control_plane_routes(
     def _validate_semantic_operation(location_id: str, operation: str, options: dict) -> None:
         location = store.get_location(location_id)
         metadata = location.get("metadata") or {}
+        if metadata.get("source_format") == "mcap":
+            raise ValueError("Convert this raw MCAP source before using dataset operations")
         profile = profile_from_info(metadata)
         required_protocol = required_data_profile_protocol(metadata)
         if operation == "viewer.prepare" and options.get("force_recompute_stage"):
@@ -559,15 +593,32 @@ def register_control_plane_routes(
 
     @app.route("/api/agents/heartbeat", methods=["POST"])
     def agent_heartbeat():
+        from dataclasses import asdict
+
         node, error = _node_or_error()
         if error:
             return error
         body = request.get_json(silent=True) or {}
+        capabilities = body.get("capabilities") or {}
+        expected_release = os.environ.get("DATA_PLATFORM_RELEASE")
+        if expected_release and capabilities.get("release") != expected_release:
+            return jsonify({"node": node, "draining": True})
         try:
             refreshed = store.heartbeat(node["node_id"], capabilities=body.get("capabilities"))
         except KeyError:
             return jsonify({"error": "node not found"}), 404
-        return jsonify({"node": refreshed, "result_sync_protocol": 1})
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        scan = store.scan_manager.pending(node["node_id"])
+        return jsonify(
+            {
+                "node": refreshed,
+                "result_sync_protocol": 1,
+                "source_cleanup_protocol": 1 if "data_platform_source_cleanup" in app.extensions else 0,
+                "scan_request": asdict(scan) if scan else None,
+                "caption_read_protocol": app.config.get("DATA_PLATFORM_CAPTION_READ_PROTOCOL", 0),
+            }
+        )
 
     @app.route("/api/agents/locations/sync", methods=["POST"])
     def agent_sync_locations():
@@ -578,10 +629,14 @@ def register_control_plane_routes(
         locations = body.get("locations") or []
         if not isinstance(locations, list):
             return jsonify({"error": "locations must be a list"}), 400
+        from lerobot.data_platform.control_plane import LocationSyncChanges
+
+        changes = LocationSyncChanges()
         try:
-            synced = store.sync_locations(node["node_id"], locations)
+            synced = store.sync_locations(node["node_id"], locations, changes=changes)
         except (KeyError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 400
+        g.operation_catalog_changed = bool(changes.created or changes.updated)
         return jsonify({"locations": synced})
 
     @app.route("/api/agents/jobs/claim", methods=["POST"])
@@ -594,6 +649,7 @@ def register_control_plane_routes(
             node["node_id"],
             lease_seconds=int(body.get("lease_seconds") or 60),
             worker_instance_id=body.get("worker_instance_id"),
+            release=body.get("release"),
         )
         return jsonify({"job": job})
 
@@ -702,6 +758,7 @@ def register_control_plane_routes(
             if not previous.resolve().is_relative_to(remote_cache_root):
                 raise ValueError("Registered cache is outside the configured cache root")
             preserve_results(previous, staged_cache)
+        compress_viewer_csvs(staged_cache / "static")
         (staged_cache / ".execution-owner.json").write_text(json.dumps(owner))
         backup = cache_output_dir.with_name(f".{cache_output_dir.name}.backup-{uuid.uuid4().hex}")
         if cache_output_dir.exists():
@@ -796,20 +853,48 @@ def register_control_plane_routes(
                 if complete_caption is None:
                     raise ValueError("Caption completion handler is unavailable")
                 result = complete_caption(current, result)
-            if status == "done" and current["operation"].startswith("curation."):
+            if (
+                status == "done"
+                and current["operation"].startswith("curation.")
+                and not current.get("options", {}).get("local_compute")
+            ):
                 complete_curation = app.extensions.get("data_platform_complete_curation")
                 if complete_curation is None:
                     raise ValueError("Curation completion handler is unavailable")
                 result = complete_curation(current, result)
+            if (
+                status == "done"
+                and current.get("options", {}).get("operator_snapshot")
+                and not current.get("options", {}).get("local_compute")
+            ):
+                from lerobot.data_platform.operators import get_operator
+
+                if current["options"].get("version_inputs") or get_operator(
+                    current["operation"]
+                ).family not in {"mcap", "curation", "caption", "viewer", "preprocess", "mutation", "local"}:
+                    result = app.extensions["data_platform_complete_operator"](current, result)
             derived = result.get("dataset_location")
             if status == "done" and isinstance(derived, dict):
                 synced_location = store.sync_locations(node["node_id"], [derived])[0]
                 result["synced_location"] = synced_location
                 result["output_location_id"] = synced_location["location_id"]
-                if current["operation"] in _DERIVED_VIEWER_OPERATIONS and (
-                    current["operation"] != "preprocess.split"
-                    or result.get("viewer_cache")
-                    or profile_from_info(derived.get("metadata") or {}).robot_profile == "umi"
+                if current.get("options", {}).get("operator_snapshot"):
+                    store.inherit_import_access(current["location_id"], synced_location["location_id"])
+                if current["operation"] == "import.mcap.convert":
+                    store.inherit_import_access(current["location_id"], synced_location["location_id"])
+                from lerobot.data_platform.local_execution import permit_local_derived_input
+
+                permit_local_derived_input(
+                    store, node, current, synced_location, Path(app.static_folder).parent / "management"
+                )
+                if (
+                    not current.get("options", {}).get("local_compute")
+                    and current["operation"] in _DERIVED_VIEWER_OPERATIONS
+                    and (
+                        current["operation"] != "preprocess.split"
+                        or result.get("viewer_cache")
+                        or profile_from_info(derived.get("metadata") or {}).robot_profile == "umi"
+                    )
                 ):
                     cache_output_dir, viewer_url = _promote_derived_cache(job_id, synced_location)
                     refreshed_location = store.mark_viewer_ready(
@@ -834,7 +919,10 @@ def register_control_plane_routes(
                     )
                     os.replace(cache_output_dir, stale_cache)
                     shutil.rmtree(stale_cache, ignore_errors=True)
-            if status == "done" and current["operation"].startswith("local.request."):
+            if status == "done" and (
+                current["operation"].startswith("local.request.")
+                or current.get("options", {}).get("local_compute")
+            ):
                 if not node.get("name", "").startswith("local-"):
                     raise PermissionError("Local completion requires the local executor")
                 complete_local = app.extensions.get("data_platform_complete_local")
@@ -863,37 +951,81 @@ def register_control_plane_routes(
 
     @app.route("/api/control/nodes")
     def control_nodes():
-        return jsonify({"nodes": store.list_nodes()})
+        allowed = store.scan_manager.can_request(_current_user()["user_id"])
+        return jsonify({"nodes": [{**node, "dataset_scan_allowed": allowed} for node in store.list_nodes()]})
 
     @app.route("/api/control/locations")
     def control_locations():
+        from lerobot.data_platform.mcap_contract import default_output_root
+
         allowed = set(store.mutation_location_ids(_current_user()["user_id"]))
-        return jsonify(
+        nodes = {node["node_id"]: node for node in store.list_nodes()}
+        locations = [
             {
-                "locations": [
-                    {**location, "source_mutation_allowed": location["location_id"] in allowed}
-                    for location in store.accessible_locations(_current_user()["user_id"])
-                ]
+                **location,
+                "source_mutation_allowed": location["location_id"] in allowed,
+                **(
+                    {
+                        "default_import_output": default_output_root(
+                            location["root"],
+                            nodes.get(location["node_id"], {}).get("writable_roots") or [],
+                        )
+                    }
+                    if location.get("metadata", {}).get("source_format") == "mcap"
+                    else {}
+                ),
             }
-        )
+            for location in store.accessible_locations(
+                _current_user()["user_id"], summary=request.args.get("summary") == "1"
+            )
+            if request.args.get("format") == "all"
+            or (location.get("metadata", {}).get("source_format") == "mcap")
+            == (request.args.get("format") == "mcap")
+        ]
+        if request.args.get("summary") == "1":
+            locations = [summarize_location(location) for location in locations]
+        return jsonify(locations=locations)
 
     @app.route("/api/control/jobs")
     def control_jobs():
-        return jsonify(
-            {
-                "jobs": [
-                    store.job_manager.decorate(job, _current_user())
-                    for job in store.list_jobs(
-                        limit=int(request.args.get("limit") or 200), actor=_current_user()
-                    )
-                ]
-            }
-        )
+        from lerobot.data_platform.list_queries import ListPage
+
+        actor = _current_user()
+        summary = request.args.get("summary") == "1"
+        filters = {
+            key: request.args.get(key) for key in ("location_id", "status", "created_from", "created_to")
+        }
+        try:
+            page = ListPage.parse(request.args, scope={"actor": actor["user_id"], "kind": "jobs", **filters})
+            result = store.list_jobs(
+                limit=int(request.args.get("limit") or 200),
+                actor=actor,
+                summary=summary,
+                page=page,
+                filters=filters,
+            )
+            jobs, paging = result if page else (result, {})
+        except (ValueError, TypeError) as exc:
+            return jsonify(error=str(exc)), 400
+        jobs = store.job_manager.decorate_many(jobs, actor)
+        if summary:
+            jobs = [summarize_job(job) for job in jobs]
+        return jsonify(jobs=jobs, **paging)
 
     @app.route("/api/control/jobs/<string:job_id>")
     def control_job(job_id: str):
+        from lerobot.data_platform.artifact_store import ArtifactUnavailableError
+        from lerobot.data_platform.report_archive import hydrate_result
+
         try:
-            return jsonify({"job": store.job_manager.decorate(store.get_job(job_id), _current_user())})
+            job = store.job_manager.decorate(store.get_job(job_id), _current_user())
+            if request.args.get("summary") == "1":
+                job = summarize_job(job)
+            else:
+                job["result"] = hydrate_result(job.get("result") or {})
+            return jsonify(job=job)
+        except ArtifactUnavailableError as exc:
+            return jsonify(error=str(exc)), 503
         except KeyError:
             return jsonify({"error": "job not found"}), 404
 

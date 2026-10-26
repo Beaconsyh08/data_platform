@@ -1,7 +1,5 @@
 import json
 import shutil
-from concurrent.futures import as_completed
-from lerobot.data_platform.execution_pools import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,6 +8,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from lerobot.data_platform.execution_pools import ProcessPoolExecutor, map_completed
 from lerobot.data_platform.precompute.data_profile import (
     SIGNAL_SCHEMA_TRAIN_16D,
     resolve_processing_profile,
@@ -319,9 +318,10 @@ def run_standardize_dataset(
             )
     else:
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
-            futures = [executor.submit(_rewrite_parquet_worker, task) for task in tasks]
-            for idx, future in enumerate(as_completed(futures), start=1):
-                parquet_stats, parquet_dropped, parquet_dims = future.result()
+            for idx, result_row in enumerate(
+                map_completed(executor, _rewrite_parquet_worker, tasks), start=1
+            ):
+                parquet_stats, parquet_dropped, parquet_dims = result_row
                 stats_by_episode.update(parquet_stats)
                 dropped_fields.update(parquet_dropped)
                 dims_after.update(parquet_dims)

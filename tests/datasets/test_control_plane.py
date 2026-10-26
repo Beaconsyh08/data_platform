@@ -195,7 +195,13 @@ def test_control_plane_auth_node_location_and_viewer_job_round_trip(tmp_path: Pa
     assert "events" not in listed_job
     detailed_job = client.get(f"/api/control/jobs/{job_id}").get_json()["job"]
     assert detailed_job["events"][-1]["message"] == "Prepared episode 3/12"
-    assert detailed_job["events"][-1]["payload"] == {"current": 3, "total": 12}
+    assert detailed_job["events"][-1]["payload"] == {
+        "current": 3,
+        "total": 12,
+        "attempt_id": None,
+        "log_visible": True,
+    }
+    assert detailed_job["progress"]["progress"] == 25
 
     manifest = {"episodes": [{"episode_index": 3}], "repo_id": location["dataset_key"]}
     uploaded = client.put(
@@ -238,6 +244,77 @@ def test_control_plane_auth_node_location_and_viewer_job_round_trip(tmp_path: Pa
     stale = store.mark_viewer_stale(location["location_id"])
     assert stale["metadata"]["viewer_ready"] is False
     assert "viewer_url" not in stale["metadata"]
+
+
+def test_unchanged_location_sync_avoids_rewriting_large_metadata(tmp_path: Path, monkeypatch):
+    now = datetime(2026, 10, 10, 8)
+    monkeypatch.setattr(control_plane, "_utcnow", lambda: now)
+    store = _store(tmp_path)
+    _, node = store.enroll_node(
+        name="server-b",
+        hostname="server-b.internal",
+        allowed_roots=["/datasets"],
+        writable_roots=["/datasets"],
+        capabilities={},
+        enrollment_token="secret",
+        expected_token="secret",
+    )
+    payload = {
+        "dataset_key": "shared/source",
+        "root": "/datasets/source",
+        "metadata": {"description": "x" * (64 * 1024), "total_episodes": 3},
+    }
+    original = store.sync_locations(node["node_id"], [payload])[0]
+    statements = []
+
+    def capture_updates(connection, cursor, statement, parameters, context, executemany):
+        if statement.lower().startswith("update dp_dataset_locations"):
+            statements.append(statement.lower())
+
+    event.listen(store.engine, "before_cursor_execute", capture_updates)
+    try:
+        now += timedelta(seconds=30)
+        unchanged = store.sync_locations(node["node_id"], [payload])[0]
+        assert statements == []
+        assert unchanged["last_seen_at"] == original["last_seen_at"]
+        assert unchanged["metadata"] == payload["metadata"]
+
+        now += timedelta(minutes=5)
+        refreshed = store.sync_locations(node["node_id"], [payload])[0]
+        assert len(statements) == 1
+        assert "metadata_json" not in statements[0]
+        assert refreshed["last_seen_at"] != original["last_seen_at"]
+        assert refreshed["updated_at"] == original["updated_at"]
+
+        statements.clear()
+        now += timedelta(seconds=1)
+        changed_payload = {**payload, "metadata": {"total_episodes": 4}}
+        changed = store.sync_locations(node["node_id"], [changed_payload])[0]
+        assert len(statements) == 1
+        assert changed["metadata"] == {"total_episodes": 4}
+        assert changed["updated_at"] != original["updated_at"]
+    finally:
+        event.remove(store.engine, "before_cursor_execute", capture_updates)
+
+
+def test_location_sync_immediately_restores_unavailable_locations(tmp_path: Path, monkeypatch):
+    store = _store(tmp_path)
+    _, node = store.enroll_node(
+        name="server-b",
+        hostname="server-b.internal",
+        allowed_roots=["/datasets"],
+        writable_roots=["/datasets"],
+        capabilities={},
+        enrollment_token="secret",
+        expected_token="secret",
+    )
+    payload = {"dataset_key": "shared/source", "root": "/datasets/source"}
+    location = store.sync_locations(node["node_id"], [payload])[0]
+    with store.sessions.begin() as session:
+        session.get(control_plane.DatasetLocation, location["location_id"]).state = "unavailable"
+    restored = store.sync_locations(node["node_id"], [payload])[0]
+    assert restored["state"] == "available"
+    assert restored["location_id"] == location["location_id"]
 
 
 def test_locations_with_the_same_dataset_key_include_their_node_names(tmp_path: Path):
@@ -727,7 +804,7 @@ def test_viewer_enables_central_login_without_changing_local_mode(tmp_path: Path
     assert '@click="scanSelectedServer()"' in homepage_html
     assert '<option value="all">All servers</option>' not in homepage_html
     assert "Server A (local)" in homepage_html
-    assert "this.requestJson('/api/control/locations')" in homepage_html
+    assert "this.requestJson('/api/control/locations?summary=1')" in homepage_html
     assert "async prepareRemoteViewer(location, options = {})" in homepage_html
     assert "useRemoteDataset(location)" in homepage_html
     assert "openDatasetTab(location, 'standardize')" in homepage_html
@@ -744,10 +821,10 @@ def test_viewer_enables_central_login_without_changing_local_mode(tmp_path: Path
     assert "mergeRemoteJobsIntoRuns()" in homepage_html
     assert "mergeRemoteJob(data.job)" in homepage_html
     assert "remoteViewerPending(location)" in homepage_html
-    assert "`/api/control/jobs/${this.remoteViewerJob.job_id}`" in homepage_html
+    assert "`/api/control/jobs/${this.remoteViewerJob.job_id}?summary=1`" in homepage_html
     assert '@click="selectJob(job)"' in homepage_html
     assert "async selectJob(job, remember = true)" in homepage_html
-    assert "`/api/control/jobs/${jobId}`" in homepage_html
+    assert "`/api/control/jobs/${jobId}?summary=1`" in homepage_html
     assert "dataPlatform.selectedJob" in homepage_html
     assert "scheduleSelectedRemoteJobRefresh(jobId)" in homepage_html
 
@@ -923,3 +1000,82 @@ def test_wsgi_factory_trusts_only_explicit_proxy_configuration(tmp_path: Path, m
 
     assert response.status_code == 200
     assert "Secure" in response.headers["Set-Cookie"]
+
+
+def test_heartbeat_coalesces_presence_and_disk_but_keeps_capability_changes(tmp_path, monkeypatch):
+    now = datetime(2026, 10, 10, 10)
+    monkeypatch.setattr(control_plane, "_utcnow", lambda: now)
+    store = _store(tmp_path)
+    caps = {"release": "test-release", "disk": {"/datasets": {"total": 1000, "free": 900}}}
+    _, node = store.enroll_node(
+        name="test-node",
+        hostname="localhost",
+        allowed_roots=["/datasets"],
+        writable_roots=[],
+        capabilities=caps,
+        enrollment_token="test",
+        expected_token="test",
+    )
+    updates = []
+
+    def capture(connection, cursor, statement, parameters, context, executemany):
+        if statement.lower().startswith("update dp_nodes"):
+            updates.append(statement.lower())
+
+    event.listen(store.engine, "before_cursor_execute", capture)
+    try:
+        for seconds in (5, 10, 20, 29):
+            now = datetime(2026, 10, 10, 10) + timedelta(seconds=seconds)
+            reported = {**caps, "disk": {"/datasets": {"total": 1000, "free": 900 - seconds}}}
+            current = store.heartbeat(node["node_id"], capabilities=reported)
+            assert current["status"] == "online"
+            assert updates == []
+        now += timedelta(seconds=1)
+        current = store.heartbeat(node["node_id"], capabilities=reported)
+        assert len(updates) == 1
+        assert current["capabilities"]["disk"] == reported["disk"]
+        now += timedelta(seconds=1)
+        current = store.heartbeat(node["node_id"], capabilities={**reported, "release": "new-release"})
+        assert len(updates) == 2
+        assert current["capabilities"]["release"] == "new-release"
+        now += timedelta(minutes=3)
+        assert store.list_nodes()[0]["status"] == "offline"
+        current = store.heartbeat(node["node_id"])
+        assert current["status"] == "online"
+        assert current["capabilities"]["release"] == "new-release"
+    finally:
+        event.remove(store.engine, "before_cursor_execute", capture)
+
+
+def test_catalog_sync_reports_real_changes_without_counting_presence_refresh(tmp_path, monkeypatch):
+    from lerobot.data_platform.control_plane import LocationSyncChanges
+
+    now = datetime(2026, 10, 10, 10)
+    monkeypatch.setattr(control_plane, "_utcnow", lambda: now)
+    store = _store(tmp_path)
+    _, node = store.enroll_node(
+        name="test-node",
+        hostname="localhost",
+        allowed_roots=["/datasets"],
+        writable_roots=[],
+        capabilities={},
+        enrollment_token="test",
+        expected_token="test",
+    )
+    payload = {"dataset_key": "sample", "root": "/datasets/sample", "metadata": {"total_frames": 2}}
+    changes = LocationSyncChanges()
+    original = store.sync_locations(node["node_id"], [payload], changes=changes)[0]
+    assert (changes.created, changes.updated) == (1, 0)
+    changes = LocationSyncChanges()
+    now += timedelta(minutes=6)
+    refreshed = store.sync_locations(node["node_id"], [payload], changes=changes)[0]
+    assert (changes.created, changes.updated) == (0, 0)
+    assert refreshed["last_seen_at"] != original["last_seen_at"]
+    changes = LocationSyncChanges()
+    refreshed = store.sync_locations(
+        node["node_id"],
+        [{**payload, "metadata": {"total_frames": 3}}],
+        changes=changes,
+    )[0]
+    assert (changes.created, changes.updated) == (0, 1)
+    assert refreshed["metadata"]["total_frames"] == 3

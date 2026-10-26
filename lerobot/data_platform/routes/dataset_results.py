@@ -11,6 +11,7 @@ from pathlib import Path
 
 from flask import g, jsonify, request
 
+from lerobot.data_platform.cache_files import read_cache_bytes
 from lerobot.data_platform.dataset_results import dataset_signature, result_lock, result_path, sync_status
 from lerobot.data_platform.execution import atomic_json
 from lerobot.data_platform.operation_log import append_operation_event
@@ -18,6 +19,8 @@ from lerobot.data_platform.operation_log import append_operation_event
 
 def register_dataset_result_routes(app, store, remote_cache_root: Path):
     def cache_for(location):
+        if location.get("state", "available") != "available":
+            raise ValueError("Source dataset is no longer available")
         cache = Path((location.get("metadata") or {}).get("cache_root") or "")
         if not (location.get("metadata") or {}).get("viewer_ready"):
             raise ValueError("Dataset viewer is not prepared")
@@ -152,7 +155,7 @@ def register_dataset_result_routes(app, store, remote_cache_root: Path):
             snapshot, _ = sync_status(cache)
             contents = {}
             for name, expected in snapshot.files.items():
-                content = result_path(cache / "static", name).read_bytes()
+                content = read_cache_bytes(result_path(cache / "static", name))
                 if hashlib.sha256(content).hexdigest() != expected["sha256"]:
                     return jsonify(error="Results changed; retry synchronization"), 409
                 contents[name] = base64.b64encode(content).decode("ascii")

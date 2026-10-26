@@ -14,8 +14,6 @@ import os
 import shutil
 import subprocess
 import tempfile
-from concurrent.futures import as_completed
-from lerobot.data_platform.execution_pools import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -28,6 +26,8 @@ from PIL import Image as PILImage
 
 from lerobot.common.datasets.compute_stats import aggregate_stats
 from lerobot.common.datasets.utils import cast_stats_to_numpy, serialize_dict
+from lerobot.data_platform.execution_pools import ThreadPoolExecutor, map_completed
+from lerobot.data_platform.execution_resources import video_threads
 from lerobot.data_platform.precompute.dataset_io import (
     V3DatasetMetadata,
     load_episode_records,
@@ -703,7 +703,7 @@ def _encode_image_episodes(
         )
 
     effective_workers = min(workers, len(jobs))
-    encoder_threads = 1 if effective_workers > 1 else None
+    encoder_threads = video_threads() or (1 if effective_workers > 1 else None)
 
     def _encode(job: tuple[int, Path, Path, int]) -> int:
         episode_index, source_path, target_path, expected_frames = job
@@ -724,8 +724,7 @@ def _encode_image_episodes(
         executor = None
     else:
         executor = ThreadPoolExecutor(max_workers=effective_workers)
-        futures = [executor.submit(_encode, job) for job in jobs]
-        completed_episode_indices = (future.result() for future in as_completed(futures))
+        completed_episode_indices = map_completed(executor, _encode, jobs)
 
     try:
         for episode_index in completed_episode_indices:
@@ -1172,7 +1171,7 @@ def materialize_v21_from_v3(
                 for video_key in meta.video_keys
             ]
             effective_workers = min(workers, len(jobs))
-            encoder_threads = 1 if effective_workers > 1 else None
+            encoder_threads = video_threads() or (1 if effective_workers > 1 else None)
 
             def _encode(job: tuple[int, str, Path]) -> tuple[int, str]:
                 episode_index, video_key, target = job
@@ -1191,8 +1190,7 @@ def materialize_v21_from_v3(
                 executor = None
             else:
                 executor = ThreadPoolExecutor(max_workers=effective_workers)
-                futures = [executor.submit(_encode, job) for job in jobs]
-                completed_jobs = (future.result() for future in as_completed(futures))
+                completed_jobs = map_completed(executor, _encode, jobs)
             try:
                 for position, (episode_index, video_key) in enumerate(
                     completed_jobs,

@@ -2,10 +2,7 @@
 
 from flask import jsonify, request
 
-_KEY_FIELDS = {"dataset_key", "repo_id", "base_key", "dataset_key_a", "dataset_key_b", "compare_with"}
-_KEY_LIST_FIELDS = {"dataset_keys", "src_keys", "repo_ids"}
-_LOCATION_FIELDS = {"location_id", "source_location_id"}
-_LOCATION_LIST_FIELDS = {"location_ids", "source_location_ids"}
+from lerobot.data_platform.dataset_references import dataset_references
 
 
 def check_dataset_access(store, user):
@@ -27,26 +24,9 @@ def check_dataset_access(store, user):
     keys, locations = set(), set()
 
     def collect(value):
-        if isinstance(value, dict):
-            namespace = value.get("dataset_namespace") or value.get("ns")
-            name = value.get("dataset_name") or value.get("name")
-            if namespace and name:
-                keys.add(f"{namespace}/{name}")
-            for field, item in value.items():
-                if field in _KEY_FIELDS and isinstance(item, str) and item:
-                    keys.add(item)
-                elif field in _LOCATION_FIELDS and isinstance(item, str) and item:
-                    locations.add(item)
-                elif field in _KEY_LIST_FIELDS | _LOCATION_LIST_FIELDS:
-                    values = item.replace("\n", ",").split(",") if isinstance(item, str) else item
-                    if isinstance(values, list):
-                        target = keys if field in _KEY_LIST_FIELDS else locations
-                        target.update(v.strip() for v in values if isinstance(v, str) and v.strip())
-                if isinstance(item, (dict, list)):
-                    collect(item)
-        elif isinstance(value, list):
-            for item in value:
-                collect(item)
+        found_keys, found_locations = dataset_references(value)
+        keys.update(found_keys)
+        locations.update(found_locations)
 
     collect(request.view_args or {})
     collect(request.args.to_dict())

@@ -1,0 +1,7 @@
+#assistant-reopen{position:fixed;right:max(20px,env(safe-area-inset-right));bottom:max(20px,env(safe-area-inset-bottom));z-index:45;display:flex;align-items:center;gap:12px;min-height:58px;padding:12px 18px;border:1px solid #7dd3fc;border-radius:16px;background:#0369a1;color:#fff;box-shadow:0 8px 28px #0008;font:14px system-ui;cursor:pointer}
+#assistant-reopen[hidden]{display:none!important}
+#assistant-reopen span{display:grid;gap:3px;text-align:left}
+#assistant-reopen strong{font-size:15px}
+#assistant-reopen kbd{font:11px system-ui;color:#e0f2fe}
+#assistant-reopen:hover{background:#075985;border-color:#fff}
+#assistant-reopen:focus-visible{outline:3px solid #fbbf24;outline-offset:4px}

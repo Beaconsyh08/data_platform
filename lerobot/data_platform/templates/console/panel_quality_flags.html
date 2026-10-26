@@ -1,0 +1,112 @@
+<div class="space-y-4 px-4 py-4" x-show="activeTab === 'quality_flags'">
+                    <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
+                        <div class="font-semibold text-slate-200">Semantic quality scan</div>
+                        <div class="mt-1 leading-5">Scans action, state, prompt, and subtask signals. Detection refreshes review flags without rebuilding cache or rewriting Parquet.</div>
+                    </div>
+
+                    <div class="grid gap-3 md:grid-cols-4">
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">Processing policy</span>
+                            <select class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                    x-model="preprocess.quality_data_version">
+                                <option value="">Default: DVT2</option>
+                                <option value="DVT2">H10W DVT2 · normalized gripper semantics</option>
+                                <option value="DVT1">H10W DVT1 legacy</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">workers</span>
+                            <input type="number"
+                                   min="1"
+                                   max="32"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="preprocess.quality_workers">
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">episodes</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.quality_episode_ids"
+                                   placeholder="optional: 0,1,2">
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300 md:mt-5">
+                            <input type="checkbox" class="accent-red-500" x-model="preprocess.quality_overwrite">
+                            <span>Overwrite previous abnormal results</span>
+                        </label>
+                    </div>
+                    <label class="inline-flex items-center gap-2 rounded border border-red-900/50 bg-red-950/20 px-3 py-2 text-xs text-red-100"
+                           :class="{'opacity-50': !preprocess.quality_overwrite}">
+                        <input type="checkbox"
+                               class="accent-red-500"
+                               x-model="preprocess.quality_clear_manual_flags"
+                               :disabled="!preprocess.quality_overwrite">
+                        <span>Also clear manual flags</span>
+                    </label>
+                    <div class="rounded-lg border border-slate-800 bg-slate-950">
+                        <div class="border-b border-slate-800 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Rules</div>
+                        <div class="grid gap-2 p-3 text-xs text-slate-300 md:grid-cols-2">
+                            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-2">Flag early gripper transitions in the first 0.3s.</div>
+                            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-2">Flag episodes without usable subtask_state stage segmentation.</div>
+                            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-2">Flag stuck closed gripper state when action stays near zero.</div>
+                            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-2">Flag gripper state transitions that have no nearby action transition.</div>
+                            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-2">Flag repeated or synchronized joint reset-to-zero spikes.</div>
+                            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-2">Flag prompts containing "," or "." as multi_sentence_prompt.</div>
+                            <div class="rounded border border-slate-800 bg-slate-900 px-3 py-2">Flag episodes assigned to more than one distinct task.</div>
+                        </div>
+                    </div>
+
+                    <div class="dp-action-row">
+                        <button class="dp-btn dp-btn-primary dp-full"
+                                @click="startQualityFlags()"
+                                :disabled="!canStartQualityFlags() || busy">
+                            Detect flags
+                        </button>
+                        <button class="dp-btn dp-btn-secondary dp-full"
+                                @click="startClearFlags()"
+                                :disabled="!canStartFlagFix() || busy">
+                            Clear all flags
+                        </button>
+                    </div>
+
+                    <div class="rounded-lg border border-amber-900/60 bg-amber-950/15"
+                         x-show="legacyMutationsEnabled && adminModeEnabled">
+                        <div class="border-b border-amber-900/50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-amber-200">One-click fixes</div>
+                        <div class="grid gap-3 p-3 text-xs text-slate-300">
+                            <button class="dp-btn dp-btn-secondary"
+                                    @click="startLowercasePrompts()"
+                                    :disabled="!canStartFlagFix() || !canStartLegacyMutation() || busy">
+                                Normalize prompts to lowercase before detection
+                            </button>
+                            <button class="dp-btn dp-btn-secondary"
+                                    @click="startFlagFix('trim_early_gripper_first_frame')"
+                                    :disabled="!canStartFlagFix() || !canStartLegacyMutation() || busy">
+                                Trim first frame for early gripper transition
+                            </button>
+                            <button class="dp-btn dp-btn-secondary"
+                                    @click="startFlagFix('fix_stuck_closed_action')"
+                                    :disabled="!canStartFlagFix() || !canStartLegacyMutation() || busy">
+                                Set stuck closed gripper action to closed
+                            </button>
+                            <button class="dp-btn dp-btn-secondary"
+                                    @click="startFlagFix('fix_state_gripper_transition_action')"
+                                    :disabled="!canStartFlagFix() || !canStartLegacyMutation() || busy">
+                                Add action lead for state-only gripper transition
+                            </button>
+                            <label class="block rounded border border-red-900/60 bg-red-950/20 px-3 py-2">
+                                <span class="mb-1 block font-semibold text-red-100">Deletion reason</span>
+                                <input class="w-full rounded border border-red-900/70 bg-slate-950 px-3 py-2 text-red-100 outline-none focus:border-red-500"
+                                       x-model="preprocess.flag_delete_reason"
+                                       @focus="loadDeleteFlagReasonOptions()"
+                                       maxlength="500"
+                                       placeholder="Required for deleting flagged episodes">
+                                <span class="mt-1 block text-[11px] text-red-200/70"
+                                      x-text="`${flaggedDeleteCount()} currently flagged episodes will be deleted in-place.`"></span>
+                            </label>
+                            <button class="dp-btn dp-btn-danger"
+                                    @click="startFlagFix('delete_all_flagged')"
+                                    :disabled="!canStartFlagFix() || !canStartLegacyMutation() || !preprocess.flag_delete_reason.trim() || flaggedDeleteCount() === 0 || busy">
+                                Delete all flagged episodes
+                            </button>
+                        </div>
+                    </div>
+
+                </div>

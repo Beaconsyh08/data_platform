@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from lerobot.data_platform import agent as agent_module
 from lerobot.data_platform.agent import DataPlatformAgent, discover_datasets
 from lerobot.data_platform.precompute.preprocess.common import PreprocessResult
@@ -80,6 +82,43 @@ def test_agent_installer_uses_service_accessible_system_python_and_recovers_enro
     assert "UV_NO_MANAGED_PYTHON=1" in installer
     assert "DATA_PLATFORM_AGENT_ALLOW_SOURCE_MUTATIONS=0" in installer
     assert "if grep -q '^DATA_PLATFORM_AGENT_ENROLLMENT_TOKEN='" in installer
+
+
+def test_local_identity_survives_repeated_agent_heartbeats(tmp_path, monkeypatch):
+    from lerobot.data_platform import curation_execution, mcap_import
+    from lerobot.data_platform.control_plane import ControlPlaneStore
+
+    monkeypatch.setattr(curation_execution, "worker_capabilities", lambda: {"curation_operations": []})
+    monkeypatch.setattr(mcap_import, "runtime_status", lambda: {"ready": False})
+    agent = _agent(tmp_path, tmp_path, tmp_path)
+    assert not agent.capabilities().get("local_requests")
+    agent.local_requests = True
+    assert agent.capabilities()["operator_versions"]["preprocess.clear_flags"] == "1.0.0"
+    store = ControlPlaneStore(f"sqlite:///{tmp_path / 'control.db'}")
+    _, node = store.enroll_node(
+        name="local-worker",
+        hostname="localhost",
+        allowed_roots=[str(tmp_path)],
+        writable_roots=[str(tmp_path)],
+        capabilities={"local_requests": True},
+        enrollment_token="fixture",
+        expected_token="fixture",
+    )
+    monkeypatch.setattr(
+        agent.client,
+        "heartbeat",
+        lambda state, capabilities: store.heartbeat(node["node_id"], capabilities=capabilities),
+        raising=False,
+    )
+    for _ in range(2):
+        agent.run_once(sync=False, allow_claim=False)
+        store.configure_local_execution_roots(node["node_id"], [str(tmp_path)], [str(tmp_path)])
+    assert (
+        next(item for item in store.list_nodes() if item["node_id"] == node["node_id"])["capabilities"][
+            "local_requests"
+        ]
+        is True
+    )
 
 
 def test_discover_datasets_stops_at_dataset_roots(tmp_path: Path):
@@ -452,3 +491,315 @@ def test_agent_does_not_overwrite_success_with_error_when_completion_response_fa
 
     assert agent.run_once(sync=False) is True
     assert [status for status, _result, _error in client.completions] == ["done"]
+
+
+@pytest.mark.parametrize("slots", [2, 4, 8])
+def test_dispatcher_runs_independent_job_types(tmp_path, monkeypatch, slots):
+    from threading import Event, Lock
+    from types import SimpleNamespace
+
+    from lerobot.data_platform.agent import _ExecutionDispatcher
+    from lerobot.data_platform.execution import ExecutionSupervisor
+
+    monkeypatch.setenv("DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS", str(slots))
+    agent = SimpleNamespace(state_path=tmp_path / "agent.json")
+    dispatcher = _ExecutionDispatcher(agent)
+    entered = Event()
+    release = Event()
+    lock = Lock()
+    active = set()
+
+    def start(_supervisor, job):
+        with lock:
+            active.add(job["job_id"])
+            if len(active) == slots:
+                entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(ExecutionSupervisor, "start", start)
+    monkeypatch.setattr(
+        dispatcher,
+        "_worker_agent",
+        lambda _job: SimpleNamespace(
+            state_path=agent.state_path,
+            client=SimpleNamespace(session=SimpleNamespace(close=lambda: None)),
+        ),
+    )
+    try:
+        dispatcher.dispatch(
+            {"job_id": "a", "operation": "caption.annotate", "execution": {"attempt_id": "a"}}
+        )
+        assert dispatcher.available()
+        dispatcher.dispatch({"job_id": "b", "operation": "viewer.prepare", "execution": {"attempt_id": "b"}})
+        for index in range(2, slots):
+            assert dispatcher.available()
+            key = f"extra-{index}"
+            dispatcher.dispatch(
+                {"job_id": key, "operation": "preprocess.merge", "execution": {"attempt_id": key}}
+            )
+        assert entered.wait(5)
+        assert not dispatcher.available()
+    finally:
+        release.set()
+        for thread, _ in dispatcher.threads.values():
+            thread.join(timeout=5)
+
+    dispatcher.threads.clear()
+    dispatcher.dispatch({"job_id": "c", "operation": "viewer.prepare", "execution": {"attempt_id": "c"}})
+    assert dispatcher.available()
+    for thread, _ in dispatcher.threads.values():
+        thread.join(timeout=5)
+    dispatcher.threads.clear()
+    dispatcher.dispatch({"job_id": "d", "operation": "mutation.trim", "execution": {"attempt_id": "d"}})
+    assert not dispatcher.available()
+    for thread, _ in dispatcher.threads.values():
+        thread.join(timeout=5)
+
+
+def test_caption_dispatcher_reconciles_each_attempt_once(tmp_path, monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+
+    from lerobot.data_platform.agent import _ExecutionDispatcher
+    from lerobot.data_platform.execution import ExecutionSupervisor, atomic_json
+
+    monkeypatch.setenv("DATA_PLATFORM_CAPTION_RUNNING_LIMIT", "2")
+    agent = SimpleNamespace(state_path=tmp_path / "agent.json")
+    dispatcher = _ExecutionDispatcher(agent)
+    release = Event()
+    entered = {name: Event() for name in ("a", "b")}
+    seen = []
+
+    def monitor(_supervisor, marker, _process):
+        name = marker["job"]["job_id"]
+        seen.append(name)
+        entered[name].set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(ExecutionSupervisor, "monitor", monitor)
+    monkeypatch.setattr(
+        dispatcher,
+        "_worker_agent",
+        lambda _job: SimpleNamespace(
+            state_path=agent.state_path,
+            client=SimpleNamespace(session=SimpleNamespace(close=lambda: None)),
+        ),
+    )
+    try:
+        for name in ("a", "b"):
+            path = dispatcher.supervisor.root / name / "marker.json"
+            atomic_json(
+                path,
+                {
+                    "job": {
+                        "job_id": name,
+                        "operation": "caption.annotate",
+                        "execution": {"attempt_id": name},
+                    },
+                    "acknowledged": False,
+                },
+            )
+        dispatcher.reconcile()
+        dispatcher.reconcile()
+        assert all(event.wait(5) for event in entered.values())
+        dispatcher.reconcile()
+        assert sorted(seen) == ["a", "b"]
+        assert not dispatcher.available()
+    finally:
+        release.set()
+        for thread, _ in dispatcher.threads.values():
+            thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("slots", [1, 2])
+def test_agent_discovers_new_datasets_while_job_is_running(tmp_path, monkeypatch, slots):
+    from threading import Event
+    from types import SimpleNamespace
+
+    from lerobot.data_platform.agent import AgentClient, _ExecutionDispatcher
+    from lerobot.data_platform.execution import ExecutionSupervisor
+
+    monkeypatch.setenv("DATA_PLATFORM_AGENT_MAX_RUNNING_JOBS", str(slots))
+    source = tmp_path / "datasets"
+    _make_dataset(source / "first")
+    agent = _agent(tmp_path, source, tmp_path)
+
+    class Client(AgentClient):
+        def __init__(self):
+            super().__init__("https://server-a.example")
+            self.catalogs = []
+            self.claims = 0
+            self.heartbeats = 0
+
+        def heartbeat(self, _state, _capabilities):
+            self.heartbeats += 1
+            return {"result_sync_protocol": 1}
+
+        def sync_locations(self, _state, locations):
+            self.catalogs.append({item["root"] for item in locations})
+            return locations
+
+        def claim(self, _state, *, lease_seconds):
+            self.claims += 1
+            return None
+
+    client = Client()
+    agent.client = client
+    monkeypatch.setattr(agent, "capabilities", lambda: {})
+    dispatcher = _ExecutionDispatcher(agent)
+    entered, release = Event(), Event()
+
+    def start(_supervisor, _job):
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(ExecutionSupervisor, "start", start)
+    monkeypatch.setattr(
+        dispatcher,
+        "_worker_agent",
+        lambda _job: SimpleNamespace(
+            state_path=agent.state_path,
+            client=SimpleNamespace(session=SimpleNamespace(close=lambda: None)),
+        ),
+    )
+    monkeypatch.setattr(agent_module, "_ExecutionDispatcher", lambda _agent: dispatcher)
+    sync_results = []
+    monkeypatch.setattr(
+        "lerobot.data_platform.dataset_results.sync_agent_results", lambda _agent: sync_results.append(True)
+    )
+    ticks = [100.0]
+    monkeypatch.setattr(agent_module.time, "monotonic", lambda: ticks[0])
+
+    class StopPolling(BaseException):
+        pass
+
+    polls = 0
+
+    def sleep(_seconds):
+        nonlocal polls
+        polls += 1
+        assert dispatcher.threads["busy"][0].is_alive()
+        agent._result_sync_thread.join(timeout=1)
+        assert not agent._result_sync_thread.is_alive()
+        if polls == 1:
+            _make_dataset(source / "new")
+            ticks[0] = 101.0
+        if polls == 2:
+            ticks[0] = 111.0
+        if polls == 3:
+            raise StopPolling
+
+    monkeypatch.setattr(agent_module.time, "sleep", sleep)
+    try:
+        dispatcher.dispatch(
+            {"job_id": "busy", "operation": "viewer.prepare", "execution": {"attempt_id": "busy"}}
+        )
+        assert entered.wait(1)
+        with pytest.raises(StopPolling):
+            agent.run_forever(poll_seconds=1, sync_seconds=10)
+        assert client.catalogs == [
+            {str(source / "first")},
+            {str(source / "first"), str(source / "new")},
+        ]
+        assert client.heartbeats == 3
+        assert client.claims == (0 if slots == 1 else 3)
+        assert sync_results == [True, True]
+    finally:
+        release.set()
+        for thread, _ in dispatcher.threads.values():
+            thread.join(timeout=5)
+        client.session.close()
+
+
+def test_result_transfer_does_not_block_agent_heartbeats_or_claims(tmp_path, monkeypatch):
+    from threading import Event
+
+    from lerobot.data_platform.agent import AgentClient
+
+    agent = _agent(tmp_path, tmp_path, tmp_path)
+
+    class Client(AgentClient):
+        def __init__(self):
+            super().__init__("https://server-a.example", verify="/test/ca.pem")
+            self.heartbeats = 0
+            self.claims = 0
+
+        def heartbeat(self, _state, _capabilities):
+            self.heartbeats += 1
+            return {"result_sync_protocol": 1}
+
+        def claim(self, _state, *, lease_seconds):
+            self.claims += 1
+            return None
+
+    agent.client = Client()
+    monkeypatch.setattr(agent, "capabilities", lambda: {})
+    monkeypatch.setattr(agent_module.time, "monotonic", lambda: 100.0)
+    entered, release, closed = Event(), Event(), Event()
+    workers = []
+
+    def transfer(worker):
+        workers.append(worker)
+        worker.client.session.close = closed.set
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr("lerobot.data_platform.dataset_results.sync_agent_results", transfer)
+    try:
+        agent.run_once(sync=False, dispatch=lambda job: None)
+        assert entered.wait(1)
+        for _ in range(3):
+            agent.run_once(sync=False, dispatch=lambda job: None)
+        assert agent.client.heartbeats == agent.client.claims == 4
+        assert len(workers) == 1
+        assert workers[0].client is not agent.client
+        assert workers[0].client.session is not agent.client.session
+        assert workers[0].client.verify == agent.client.verify
+        assert workers[0].client.worker_instance_id == agent.client.worker_instance_id
+    finally:
+        release.set()
+        agent._result_sync_thread.join(timeout=5)
+        agent.client.session.close()
+    assert closed.is_set()
+
+
+def test_once_finishes_result_sync_before_returning(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, tmp_path, tmp_path)
+    completed = []
+    monkeypatch.setattr(agent.client, "heartbeat", lambda *_args: {"result_sync_protocol": 1}, raising=False)
+    monkeypatch.setattr(agent.client, "claim", lambda *_args, **_kwargs: None, raising=False)
+    monkeypatch.setattr(agent, "capabilities", lambda: {})
+    monkeypatch.setattr(agent_module.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(
+        "lerobot.data_platform.dataset_results.sync_agent_results", lambda _agent: completed.append(True)
+    )
+    assert not agent.run_once(sync=False)
+    assert completed == [True]
+
+
+def test_result_client_start_failure_keeps_main_session_open_and_retries(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    agent = _agent(tmp_path, tmp_path, tmp_path)
+    closed, attempts = [], []
+    agent.client = SimpleNamespace(
+        server_url="https://server-a.example",
+        verify=True,
+        worker_instance_id="worker",
+        session=SimpleNamespace(close=lambda: closed.append(True)),
+    )
+    ticks = [100.0]
+    monkeypatch.setattr(agent_module.time, "monotonic", lambda: ticks[0])
+
+    def unavailable_client(*_args, **_kwargs):
+        attempts.append(True)
+        raise RuntimeError("client initialization failed")
+
+    monkeypatch.setattr(agent_module, "AgentClient", unavailable_client)
+    for tick in (100.0, 111.0):
+        ticks[0] = tick
+        agent._sync_results(background=True)
+        agent._result_sync_thread.join(timeout=1)
+        assert not agent._result_sync_thread.is_alive()
+    assert attempts == [True, True]
+    assert closed == []

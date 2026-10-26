@@ -1,0 +1,196 @@
+<section class="dp-page-surface" x-cloak x-show="activePage === 'mcap_import'"
+         x-data="mcapImportApp(controlPlaneUser, jobs => trackMcapJobs(jobs))">
+    <div class="dp-page-header">
+        <div><div class="dp-page-kicker">Data Infra · Data Import</div>
+            <h2 class="dp-page-title mt-1">MCAP → LeRobot</h2>
+            <p class="dp-page-description">Select sources and convert. Each file is checked automatically; progress and reports appear in Jobs.</p>
+        </div>
+    </div>
+    <div class="space-y-4 p-4 sm:p-5">
+        <p class="text-sm text-amber-200" x-show="!canWrite()">Read-only account. You can browse sources and view Jobs.</p>
+        <p class="text-sm text-rose-300" role="alert" x-show="error" x-text="error"></p>
+        <p class="text-sm text-emerald-300" role="status" x-show="notice" x-text="notice"></p>
+        <div class="grid gap-3 md:grid-cols-3">
+            <label class="text-sm">Source node
+                <select class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2" x-model="nodeId" @change="changeNode()" :disabled="busy">
+                    <option value="">Select a node</option>
+                    <template x-for="node in nodes" :key="node.node_id"><option :value="node.node_id" x-text="`${node.name} · ${node.status}`"></option></template>
+                </select>
+            </label>
+            <label class="text-sm">Search source folders
+                <input type="search" class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2" x-model="search" @input="page = 1" placeholder="Task, folder or path">
+            </label>
+            <label class="text-sm">Maximum files per folder
+                <input class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2" type="number" min="0" max="100000" x-model.number="maxFiles" :disabled="busy || !canWrite()">
+                <span class="text-xs text-slate-400">3 for a sample run · 0 for all files.</span>
+            </label>
+        </div>
+        <p class="text-sm text-amber-200" x-show="nodeId && capabilityError()" x-text="capabilityError()"></p>
+        <div class="overflow-hidden rounded-lg border border-slate-700">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 px-3 py-2 text-xs">
+                <span x-text="`${filteredSources().length} folders · ${selected.length} selected`"></span>
+                <div class="flex flex-wrap gap-3">
+                    <button class="text-sky-300 disabled:opacity-40" @click="selectVisible()" :disabled="busy || !canWrite() || !pageSources().length">Select this page</button>
+                    <button class="text-sky-300 disabled:opacity-40" @click="selected = []" :disabled="busy || !selected.length">Clear selection</button>
+                    <button class="text-sky-300 disabled:opacity-40" @click="refresh()" :disabled="busy">Refresh</button>
+                </div>
+            </div>
+            <p class="break-all bg-slate-950/40 px-3 py-2 font-mono text-[11px] text-slate-500" x-show="sourcePrefix()" x-text="sourcePrefix() + '/'"></p>
+            <div class="max-h-72 overflow-y-auto">
+                <template x-for="source in pageSources()" :key="source.location_id">
+                    <label class="flex cursor-pointer items-center gap-3 border-t border-slate-800 px-3 py-2 text-xs hover:bg-slate-800/40" :title="source.root">
+                        <input type="checkbox" x-model="selected" :value="source.location_id" :aria-label="source.root" :disabled="busy || !canWrite()">
+                        <span class="min-w-0 flex-1 break-all font-mono" x-text="sourceLabel(source)"></span>
+                        <span class="shrink-0 text-slate-400" x-text="`${source.metadata.mcap_count} files`"></span>
+                    </label>
+                </template>
+                <p class="p-4 text-sm text-slate-400" x-show="!filteredSources().length" x-text="search ? 'No folders match this search.' : 'No MCAP sources on this node. Check the Agent allowed roots, then refresh.'"></p>
+            </div>
+            <div class="flex items-center justify-between border-t border-slate-700 px-3 py-2 text-xs" x-show="pageCount() > 1">
+                <button class="text-sky-300 disabled:opacity-40" @click="page--" :disabled="page <= 1">Previous</button>
+                <span x-text="`Page ${page} / ${pageCount()}`"></span>
+                <button class="text-sky-300 disabled:opacity-40" @click="page++" :disabled="page >= pageCount()">Next</button>
+            </div>
+        </div>
+        <div class="rounded-lg border border-slate-700 bg-slate-950/30 p-3 text-xs" x-show="selected.length">
+            <div class="flex flex-wrap justify-between gap-2"><span class="font-semibold">Output destination</span>
+                <span class="text-slate-400" x-text="`${selected.length} datasets · up to ${selectedFileCount()} source files`"></span>
+            </div>
+            <p class="mt-2 break-all font-mono text-slate-300" x-text="firstOutput()"></p>
+            <details class="mt-2" x-show="selected.length > 1"><summary class="cursor-pointer text-sky-300">Show all destinations</summary>
+                <div class="mt-2 max-h-40 space-y-2 overflow-auto">
+                    <template x-for="source in selectedSources()" :key="source.location_id">
+                        <div><span class="text-slate-500" x-text="sourceLabel(source)"></span><p class="break-all font-mono" x-text="outputFor(source) || 'Choose a custom output parent below.'"></p></div>
+                    </template>
+                </div>
+            </details>
+            <p class="mt-2 text-slate-500">Creates new datasets beside the source tree where writable. Existing outputs are never overwritten.</p>
+        </div>
+        <details class="rounded-lg border border-slate-800 p-3">
+            <summary class="cursor-pointer text-sm text-slate-300">Advanced settings & optional inspection</summary>
+            <div class="mt-3 grid gap-3 md:grid-cols-3">
+                <label class="text-xs">Video short edge (pixels)
+                    <input class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2" type="number" min="64" max="1600" step="2" x-model.number="shortSide" :disabled="busy || !canWrite()">
+                </label>
+                <label class="text-xs md:col-span-2">Custom output parent (optional)
+                    <input class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2 font-mono" x-model="outputParent" placeholder="Leave empty to use the suggested destinations" :disabled="busy || !canWrite()">
+                </label>
+            </div>
+            <p class="mt-2 text-xs text-slate-500">Custom output keeps each source's path relative to the shared source parent. The destination must be within this Agent's writable roots.</p>
+            <div class="mt-3 flex flex-wrap items-center gap-3">
+                <button class="dp-btn dp-btn-secondary dp-btn-inline" @click="submit('inspect')" :disabled="busy || !canWrite() || !selected.length || Boolean(capabilityError()) || Boolean(configError())">Inspect only</button>
+                <span class="text-xs text-slate-400">Optional preview; no LeRobot dataset is written. See the report in Jobs.</span>
+            </div>
+        </details>
+        <div class="flex flex-wrap items-center gap-3">
+            <button class="dp-btn dp-btn-primary dp-btn-inline" @click="submit('convert')" :disabled="busy || !canWrite() || !readyToConvert()" x-text="busy ? 'Submitting…' : 'Convert selected'"></button>
+            <span class="text-xs text-slate-400">LeRobot v3.0 · 30 FPS · valid continuous segments</span>
+        </div>
+        <p class="text-xs text-amber-200" x-show="selected.length && !readyToConvert()" x-text="conversionHint()"></p>
+    </div>
+</section>
+<script>
+function mcapImportApp(user, onSubmitted) {
+    return {
+        user, onSubmitted, nodes: [], sources: [], nodeId: '', selected: [], search: '', page: 1, pageSize: 8,
+        shortSide: 256, maxFiles: 3, outputParent: '', busy: false, error: '', notice: '',
+        async init() { if (this.user) await this.refresh(); },
+        canWrite() { return ['admin', 'data_manager', 'operator'].includes(this.user?.role); },
+        node() { return this.nodes.find(node => node.node_id === this.nodeId); },
+        capabilityError() {
+            const node = this.node();
+            if (!node) return 'Select a source node';
+            if (node.status !== 'online') return 'Node is offline';
+            return node.capabilities?.mcap_import?.ready ? '' : (node.capabilities?.mcap_import?.reason || 'Upgrade the Agent and install the MCAP runtime');
+        },
+        changeNode() { this.selected = []; this.page = 1; this.search = ''; this.outputParent = ''; this.notice = ''; },
+        sourceRows() {
+            return this.sources.filter(source => source.node_id === this.nodeId)
+                .sort((a, b) => a.root.localeCompare(b.root, undefined, {numeric: true}));
+        },
+        filteredSources() {
+            const search = this.search.trim().toLowerCase();
+            return this.sourceRows().filter(source => source.root.toLowerCase().includes(search));
+        },
+        pageCount() { return Math.max(1, Math.ceil(this.filteredSources().length / this.pageSize)); },
+        pageSources() { return this.filteredSources().slice((this.page - 1) * this.pageSize, this.page * this.pageSize); },
+        selectedSources() { return this.sourceRows().filter(source => this.selected.includes(source.location_id)); },
+        selectVisible() { this.selected = [...new Set([...this.selected, ...this.pageSources().map(source => source.location_id)])]; },
+        sourcePrefix() {
+            const rows = this.sourceRows();
+            if (!rows.length) return '';
+            let parts = rows[0].root.split('/').slice(0, -1);
+            for (const source of rows.slice(1)) {
+                const other = source.root.split('/').slice(0, -1);
+                let length = 0;
+                while (length < parts.length && length < other.length && parts[length] === other[length]) length++;
+                parts = parts.slice(0, length);
+            }
+            return parts.join('/');
+        },
+        sourceLabel(source) { return source.root.slice(this.sourcePrefix().length).replace(/^\/+/, ''); },
+        outputFor(source) {
+            const parent = this.outputParent.trim().replace(/\/+$/, '');
+            return parent ? `${parent}/${this.sourceLabel(source)}` : (source.default_import_output || '');
+        },
+        firstOutput() {
+            const source = this.selectedSources()[0];
+            return source ? (this.outputFor(source) || 'No writable destination beside this source. Choose a custom output parent below.') : '';
+        },
+        selectedFileCount() {
+            return this.selectedSources().reduce((sum, source) => sum + (this.maxFiles ? Math.min(this.maxFiles, source.metadata.mcap_count) : source.metadata.mcap_count), 0);
+        },
+        config() { return {short_side: Number(this.shortSide), max_files: Number(this.maxFiles)}; },
+        configError() {
+            if (!Number.isInteger(this.maxFiles) || this.maxFiles < 0 || this.maxFiles > 100000) return 'Maximum files must be an integer from 0 to 100000.';
+            if (!Number.isInteger(this.shortSide) || this.shortSide < 64 || this.shortSide > 1600 || this.shortSide % 2) return 'Video short edge must be an even integer from 64 to 1600.';
+            return '';
+        },
+        readyToConvert() {
+            return Boolean(this.selected.length && !this.capabilityError() && !this.configError()
+                && this.selectedSources().length === this.selected.length && this.selectedSources().every(source => this.outputFor(source)));
+        },
+        conversionHint() { return this.capabilityError() || this.configError() || 'Choose a custom output parent in Advanced settings.'; },
+        async json(url, body) {
+            const response = await fetch(url, body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)} : {});
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+            return data;
+        },
+        async refresh() {
+            try {
+                const [nodes, sources] = await Promise.all([
+                    this.json('/api/control/nodes'), this.json('/api/control/locations?format=mcap&summary=1')
+                ]);
+                this.nodes = nodes.nodes; this.sources = sources.locations;
+                if (!this.nodeId && this.nodes.length === 1) this.nodeId = this.nodes[0].node_id;
+                this.selected = this.selected.filter(id => this.sourceRows().some(source => source.location_id === id));
+                this.page = Math.min(this.page, this.pageCount());
+                this.error = '';
+            } catch (error) { this.error = error.message; }
+        },
+        async submit(operation) {
+            if (!this.canWrite() || this.busy || !this.selected.length || this.capabilityError() || this.configError()) return;
+            if (operation === 'convert' && !this.readyToConvert()) return;
+            this.busy = true; this.error = ''; this.notice = '';
+            const sources = this.selectedSources();
+            const config = this.config();
+            const failed = [], submitted = [];
+            for (const source of sources) {
+                const body = {operation, config};
+                if (operation === 'convert') body.out_root = this.outputFor(source);
+                try {
+                    const response = await this.json(`/api/control/locations/${encodeURIComponent(source.location_id)}/mcap-jobs`, body);
+                    submitted.push(response.job);
+                } catch (error) { failed.push(`${this.sourceLabel(source)}: ${error.message}`); }
+            }
+            this.selected = this.selected.filter(id => !submitted.some(job => job.location_id === id));
+            this.error = failed.join('; '); this.busy = false;
+            if (submitted.length) {
+                this.notice = `${submitted.length} ${operation === 'convert' ? 'conversion' : 'inspection'} job(s) submitted. Progress and results are in Jobs.`;
+                await this.onSubmitted(submitted);
+            }
+        }
+    };
+}
+</script>

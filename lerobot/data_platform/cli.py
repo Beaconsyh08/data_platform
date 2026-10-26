@@ -21,15 +21,15 @@ import logging
 import os
 import sys
 from collections.abc import Callable
-from concurrent.futures import as_completed
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from tqdm.auto import tqdm
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.common.utils.utils import init_logging
-from lerobot.data_platform.execution_pools import ThreadPoolExecutor
+from lerobot.data_platform.cache_files import resolve_cached_csv
 from lerobot.data_platform.operation_log import audit_cli_main
 from lerobot.data_platform.precompute.annotation import (
     DEFAULT_FALLBACK_STAGE_COUNT,
@@ -96,9 +96,10 @@ from lerobot.data_platform.precompute.timeseries import (
     DATA_VERSION_DVT1,
     DATA_VERSION_DVT2,
 )
-from lerobot.data_platform.precompute.v3_viewer import run_v3_viewer_precompute
+from lerobot.data_platform.precompute.v3_viewer import _load_episode_metadata, video_work_items
 from lerobot.data_platform.precompute.video import encode_episode_video
 from lerobot.data_platform.precompute.viewer_manifest import load_viewer_manifest, write_viewer_manifest
+from lerobot.data_platform.precompute.viewer_work import ViewerWork, run_viewer_work
 from lerobot.data_platform.task_catalog import TaskConfigSnapshot
 
 
@@ -180,7 +181,8 @@ def _all_precomputed_files_exist(
         except FileNotFoundError:
             return False
         for episode_id in episodes:
-            size = csv_sizes.get(f"episode_{episode_id:06d}_ds{downsample_value}.csv")
+            name = f"episode_{episode_id:06d}_ds{downsample_value}.csv"
+            size = csv_sizes.get(name + ".gz") or csv_sizes.get(name)
             if not size or size <= 0:
                 return False
 
@@ -532,27 +534,6 @@ def run_precompute(
     all_boundaries: dict[str, dict] = {}
     all_issues: list[dict] = []
 
-    if source_is_v3 and needs_prepare and (prepare_videos or prepare_csv):
-        # v3.0 data/video files can contain multiple episodes in one shard. Let
-        # the v3 viewer executor prepare videos and its manifest, then use the
-        # shared episode-aware CSV writer below for both plot data and Stage.
-        run_v3_viewer_precompute(
-            root=root,
-            repo_id=repo_id,
-            episodes=episodes,
-            output_dir=output_dir,
-            prepare_videos=prepare_videos,
-            prepare_csv=False,
-            workers=prepare_workers,
-            downsample=downsample,
-            overwrite_videos=overwrite_video,
-            overwrite_csv=False,
-            data_version=data_version,
-            fallback_stage_count=fallback_stage_count,
-            progress_callback=progress_callback,
-        )
-        needs_prepare = prepare_csv
-
     if needs_prepare:
         if prepare_videos or prepare_csv:
             progress = (
@@ -561,107 +542,88 @@ def run_precompute(
                 else None
             )
 
-            def _prepare_episode(episode_id: int) -> tuple[int, dict | None, list[dict]]:
-                if prepare_videos and not source_is_v3:
-                    for image_key in image_keys:
-                        video_path = encode_episode_video(
-                            root,
-                            meta,
-                            episode_id,
-                            image_key,
-                            static_dir,
-                            max_frames,
-                            overwrite_video,
-                        )
-                        if video_path is None:
-                            raise RuntimeError(
-                                f"Failed to prepare video cache for episode {episode_id}, "
-                                f"image key {image_key!r}"
-                            )
+            def prepare_video(episode_id, image_key):
+                video_path = encode_episode_video(
+                    root,
+                    meta,
+                    episode_id,
+                    image_key,
+                    static_dir,
+                    max_frames,
+                    overwrite_video,
+                )
+                if video_path is None:
+                    raise RuntimeError(
+                        f"Failed to prepare video cache for episode {episode_id}, image key {image_key!r}"
+                    )
 
+            def prepare_episode_csv(episode_id, csv_path):
+                _, boundaries, issues = write_episode_csv(
+                    root,
+                    meta,
+                    episode_id,
+                    csv_path,
+                    max_frames,
+                    downsample,
+                    overwrite_csv,
+                    force_recompute_stage=bool(force_recompute_stage),
+                    data_version=data_version,
+                    fallback_stage_count=fallback_stage_count,
+                    task_config=task_config,
+                    stage_transitions=(
+                        annotations[str(episode_id)]
+                        if str(episode_id) in annotations
+                        and annotations[str(episode_id)] != generated_annotations.get(str(episode_id))
+                        else None
+                    ),
+                )
+                return boundaries, issues
+
+            def consume(item, result):
+                if result is not None:
+                    boundaries, issues = result
+                    if boundaries is not None:
+                        all_boundaries[str(item.episode)] = boundaries
+                    all_issues.extend(issues)
+
+            def report(payload):
+                if progress is not None:
+                    progress.update(payload["current"] - progress.n)
+                _emit_progress(
+                    progress_callback,
+                    **{**payload, "progress": 90 * payload["current"] / max(1, payload["total"])},
+                )
+
+            items = []
+            v3_episodes = (
+                _load_episode_metadata(root).set_index("episode_index", drop=False)
+                if source_is_v3 and prepare_videos
+                else None
+            )
+            for episode_id in episodes:
+                if prepare_videos:
+                    if source_is_v3:
+                        items.extend(
+                            video_work_items(
+                                root, meta.info, v3_episodes.loc[episode_id], static_dir, overwrite_video
+                            )
+                        )
+                    else:
+                        for image_key in image_keys:
+                            target = static_dir / "videos" / image_key / f"episode_{episode_id:06d}_h264.mp4"
+                            items.append(
+                                ViewerWork(episode_id, target, partial(prepare_video, episode_id, image_key))
+                            )
                 if prepare_csv:
-                    downsample_value = downsample if downsample and downsample > 1 else 1
-                    csv_path = csv_dir / f"episode_{episode_id:06d}_ds{downsample_value}.csv"
-                    _, boundaries, episode_issues = write_episode_csv(
-                        root,
-                        meta,
-                        episode_id,
-                        csv_path,
-                        max_frames,
-                        downsample,
-                        overwrite_csv,
-                        force_recompute_stage=bool(force_recompute_stage),
-                        data_version=data_version,
-                        fallback_stage_count=fallback_stage_count,
-                        task_config=task_config,
-                        stage_transitions=(
-                            annotations[str(episode_id)]
-                            if str(episode_id) in annotations
-                            and annotations[str(episode_id)] != generated_annotations.get(str(episode_id))
-                            else None
-                        ),
+                    csv_path = resolve_cached_csv(
+                        csv_dir
+                        / f"episode_{episode_id:06d}_ds{downsample if downsample and downsample > 1 else 1}.csv"
                     )
-                    return episode_id, boundaries, episode_issues
-
-                return episode_id, None, []
-
+                    items.append(
+                        ViewerWork(episode_id, csv_path, partial(prepare_episode_csv, episode_id, csv_path))
+                    )
             try:
-                if prepare_workers == 1 or len(episodes) <= 1:
-                    for idx, episode_id in enumerate(episodes, start=1):
-                        _emit_progress(
-                            progress_callback,
-                            status="running",
-                            step="prepare",
-                            current=idx - 1,
-                            total=len(episodes),
-                            episode=episode_id,
-                            message=f"Preparing episode {episode_id}",
-                        )
-                        _, boundaries, episode_issues = _prepare_episode(episode_id)
-                        if boundaries is not None:
-                            all_boundaries[str(episode_id)] = boundaries
-                        all_issues.extend(episode_issues)
-                        if progress is not None:
-                            progress.update(1)
-                        _emit_progress(
-                            progress_callback,
-                            status="running",
-                            step="prepare",
-                            current=idx,
-                            total=len(episodes),
-                            episode=episode_id,
-                            message=f"Prepared episode {episode_id}",
-                        )
-                else:
-                    _emit_progress(
-                        progress_callback,
-                        status="running",
-                        step="prepare",
-                        current=0,
-                        total=len(episodes),
-                        message=f"Preparing {len(episodes)} episodes with {prepare_workers} workers",
-                    )
-                    with ThreadPoolExecutor(max_workers=min(prepare_workers, len(episodes))) as executor:
-                        futures = {
-                            executor.submit(_prepare_episode, episode_id): episode_id
-                            for episode_id in episodes
-                        }
-                        for idx, future in enumerate(as_completed(futures), start=1):
-                            episode_id, boundaries, episode_issues = future.result()
-                            if boundaries is not None:
-                                all_boundaries[str(episode_id)] = boundaries
-                            all_issues.extend(episode_issues)
-                            if progress is not None:
-                                progress.update(1)
-                            _emit_progress(
-                                progress_callback,
-                                status="running",
-                                step="prepare",
-                                current=idx,
-                                total=len(episodes),
-                                episode=episode_id,
-                                message=f"Prepared episode {episode_id}",
-                            )
+                run_viewer_work(items, prepare_workers, report, consume)
             finally:
                 if progress is not None:
                     progress.close()
@@ -679,6 +641,7 @@ def run_precompute(
             progress_callback,
             status="running",
             step="cached",
+            progress=90,
             current=len(episodes),
             total=len(episodes),
             message="Detected cached video/CSV files; skipped prepare stage",
@@ -1037,7 +1000,7 @@ def main():
         "--prepare-workers",
         type=int,
         default=8,
-        help="Parallel episode workers for video/CSV cache preparation. Default: 8.",
+        help="Parallel video/CSV work items (including cameras); limited by Agent resource budget. Default: 8.",
     )
     parser.add_argument(
         "--max-frames",
@@ -1057,7 +1020,8 @@ def main():
         choices=[DATA_VERSION_DVT1, DATA_VERSION_DVT2],
         default=None,
         help=(
-            "Select a legacy DVT processing policy (default: DVT2 stage v1). UMI uses equal-time Stage without "
+            "Select a legacy DVT processing policy (default: DVT2 for compatible action/state data). "
+            "UMI uses equal-time Stage without "
             "a DVT override; unknown layouts keep raw signals. Source profiles are preserved."
         ),
     )

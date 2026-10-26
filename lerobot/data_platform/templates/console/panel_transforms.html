@@ -1,0 +1,482 @@
+<div class="space-y-4 px-4 py-4" x-show="['data_modification', 'standardize', 'transform', 'dataset_ops'].includes(activeTab)">
+                    <div class="dp-context-card px-4 py-3 text-xs text-slate-400">
+                        <div class="font-semibold text-slate-200" x-text="preprocessPanelTitle()"></div>
+                        <div class="mt-1 leading-5" x-text="preprocessPanelDescription()"></div>
+                        <div class="mt-2 text-amber-300" x-show="!operationAvailable(preprocess.schema_op)" x-text="operationReason(preprocess.schema_op)"></div>
+                        <div class="mt-2 text-amber-300" x-show="preprocessCapabilities && !preprocessCapabilities.available"
+                             x-text="preprocessCapabilities?.error || 'Preprocess dependencies unavailable.'"></div>
+                    </div>
+
+                    <div class="rounded border border-sky-900/60 bg-sky-950/20 px-3 py-2 text-xs text-sky-200"
+                         x-show="selectedDataset?.remote && !schemaOperationMutatesSource()">
+                        This operation runs on the Agent. Output paths must be absolute paths inside that Agent's
+                        writable roots and must be separate from the source dataset.
+                        <span class="mt-1 block dp-mono text-[11px] text-sky-300"
+                              x-text="`Allowed output roots: ${(selectedRemoteNode()?.writable_roots || []).join(', ') || 'none configured'}`"></span>
+                    </div>
+                    <div class="rounded border border-amber-900/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200"
+                         x-show="selectedDataset?.remote && schemaOperationMutatesSource() && !remoteSourceMutationsAvailable() && !canRequestEpisodeDeletion()">
+                        Remote source mutation is locked. It must be enabled on Server A and on this Agent, and the
+                        signed-in account must have source mutation permission for this dataset.
+                    </div>
+                    <label class="block rounded border border-amber-900/60 bg-amber-950/15 px-3 py-2"
+                           x-show="selectedDataset?.remote && (preprocess.schema_op === 'repair_v3_video_timestamps' || (preprocess.schema_op === 'value_edit' && preprocess.value_output_mode === 'in_place'))">
+                        <span class="mb-1 block text-xs font-medium text-amber-100">mutation reason</span>
+                        <input class="w-full rounded border border-amber-900/70 bg-slate-950 px-3 py-2 text-amber-100 outline-none focus:border-amber-500"
+                               x-model="preprocess.remote_mutation_reason"
+                               maxlength="500"
+                               :placeholder="preprocess.schema_op === 'value_edit' ? 'Required: why modify the source' : 'Optional repair note'">
+                    </label>
+
+                    <div class="rounded border border-amber-900/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200"
+                         x-show="consoleMode === 'visualize'">
+                        Visualize mode exposes Cache, Abnormal Flags, and Dataset Ops. It is not read-only: enabled actions include flag fixes, prompt lowercasing, flag clearing, and episode deletion.
+                    </div>
+
+                    <div class="grid gap-2 md:grid-cols-3" x-show="activeTab !== 'standardize'">
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               x-show="activeTab === 'data_modification' || (activeTab === 'transform' && selectedDataset?.remote)"
+                               :class="preprocess.schema_op === 'value_edit' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="value_edit" x-model="preprocess.schema_op">
+                            <span>Set action/state values</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               x-show="activeTab === 'transform' && consoleMode !== 'visualize'"
+                               :class="preprocess.schema_op === 'convert_action' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="convert_action" x-model="preprocess.schema_op">
+                            <span>Convert action/state dim</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               x-show="activeTab === 'transform' && consoleMode !== 'visualize' && !selectedDatasetIsV3()"
+                               :class="preprocess.schema_op === 'convert_v3' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="convert_v3" x-model="preprocess.schema_op">
+                            <span>Convert dataset to v3.0</span>
+                        </label>
+                        <div class="rounded border border-emerald-800 bg-emerald-950/30 px-3 py-2 text-emerald-200"
+                             x-show="activeTab === 'transform' && consoleMode !== 'visualize' && selectedDatasetIsV3()">
+                            Dataset is already v3.0; no conversion is needed.
+                        </div>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               x-show="activeTab === 'transform' && consoleMode !== 'visualize' && selectedDatasetIsV3()"
+                               :class="preprocess.schema_op === 'repair_v3_video_timestamps' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="repair_v3_video_timestamps" x-model="preprocess.schema_op">
+                            <span>Repair v3 video timestamps</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               x-show="activeTab === 'transform' && consoleMode !== 'visualize'"
+                               :class="preprocess.schema_op === 'drop_field' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="drop_field" x-model="preprocess.schema_op">
+                            <span>Drop field</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               x-show="activeTab === 'transform' && consoleMode !== 'visualize'"
+                               :class="preprocess.schema_op === 'smooth_action' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="smooth_action" x-model="preprocess.schema_op">
+                            <span>Smooth action</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               x-show="activeTab === 'dataset_ops' && consoleMode !== 'visualize' && !selectedDataset?.remote"
+                               :class="preprocess.schema_op === 'rewrite_prompts' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="rewrite_prompts" x-model="preprocess.schema_op">
+                            <span>Rewrite prompts</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               x-show="activeTab === 'dataset_ops' && consoleMode !== 'visualize' && !selectedDataset?.remote"
+                               :class="preprocess.schema_op === 'fix_prompt_prepositions' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="fix_prompt_prepositions" x-model="preprocess.schema_op">
+                            <span>Fix prepositions</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                               x-show="activeTab === 'dataset_ops' && consoleMode !== 'visualize' && !selectedDataset?.remote"
+                               :class="preprocess.schema_op === 'apply_prompt_assignments' ? 'border-sky-700 bg-sky-950/30 text-sky-100' : 'text-slate-300'">
+                            <input type="radio" value="apply_prompt_assignments" x-model="preprocess.schema_op">
+                            <span>Apply pending prompts</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-red-900/60 bg-slate-950 px-3 py-2"
+                               x-show="activeTab === 'dataset_ops'"
+                               :class="preprocess.schema_op === 'delete_episodes' ? 'border-red-700 bg-red-950/30 text-red-100' : 'text-red-200'">
+                            <input type="radio" value="delete_episodes" x-model="preprocess.schema_op">
+                            <span>Delete episodes</span>
+                        </label>
+                    </div>
+
+                    <div class="grid gap-3 md:grid-cols-2" x-show="preprocess.schema_op === 'convert_action'">
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">target dim</span>
+                            <input type="number" min="1"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="preprocess.target_dim">
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">output root</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.schema_out_root"
+                                   placeholder="auto: <src>_action16_<timestamp>">
+                        </label>
+                    </div>
+
+                    <div class="space-y-3" x-show="preprocess.schema_op === 'convert_v3' && !selectedDatasetIsV3()">
+                        <div class="rounded border border-sky-900/60 bg-sky-950/20 px-3 py-2 text-xs text-sky-200">
+                            Uses LeRobot 0.4.4 as the v3.0 baseline. v2.1 sources create a non-destructive sibling dataset.
+                            Parquet image cameras keep their original resolution and are encoded with the selected MP4 mode.
+                            After conversion, register the reported output root and prepare its viewer cache in this page.
+                        </div>
+                        <label class="block rounded border border-emerald-900/60 bg-emerald-950/20 px-3 py-2">
+                            <span class="mb-1 block text-xs font-medium text-emerald-200">image video encoding</span>
+                            <select class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 outline-none focus:border-emerald-500"
+                                    x-model="preprocess.v3_image_video_mode">
+                                <option value="lerobot_official">LeRobot official — AV1 / YUV420 / CRF 30</option>
+                                <option value="rgb_lossless">RGB lossless — H.264 RGB / CRF 0</option>
+                            </select>
+                            <span class="mt-1 block text-[11px] text-emerald-300/80">
+                                Both modes preserve the source resolution. The official mode is much smaller but lossy;
+                                RGB lossless is pixel-identical to the Parquet image and produces larger files.
+                            </span>
+                        </label>
+                        <div class="grid gap-3 md:grid-cols-4">
+                            <label class="block">
+                                <span class="mb-1 block text-xs text-slate-400">data file limit (MB)</span>
+                                <input type="number" min="1"
+                                       class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                       x-model.number="preprocess.v3_data_file_size_mb">
+                            </label>
+                            <label class="block">
+                                <span class="mb-1 block text-xs text-slate-400">video file limit (MB)</span>
+                                <input type="number" min="1"
+                                       class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                       x-model.number="preprocess.v3_video_file_size_mb">
+                            </label>
+                            <label class="block">
+                                <span class="mb-1 block text-xs text-slate-400">workers</span>
+                                <input type="number" min="1"
+                                       class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                       x-model.number="preprocess.v3_workers">
+                                <span class="mt-1 block text-[11px] text-slate-500">Parallel episode encoders. Default: 8.</span>
+                            </label>
+                            <label class="block">
+                                <span class="mb-1 block text-xs text-slate-400">output root</span>
+                                <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                       x-model="preprocess.schema_out_root"
+                                       placeholder="auto: <src>_v3">
+                            </label>
+                        </div>
+                        <label class="flex items-center gap-2 rounded border border-red-900/70 bg-red-950/20 px-3 py-2 text-red-100">
+                            <input type="checkbox" class="accent-red-500" x-model="preprocess.schema_overwrite">
+                            <span>
+                                <span>Overwrite v3 output if it already exists</span>
+                                <span class="block text-[11px] text-red-300/70">Only an existing dataset directory can be replaced.</span>
+                            </span>
+                        </label>
+                    </div>
+
+                    <div class="rounded border border-sky-900/60 bg-sky-950/20 px-3 py-3 text-xs text-sky-200"
+                         x-show="preprocess.schema_op === 'repair_v3_video_timestamps' && selectedDatasetIsV3()">
+                        Stream-copy remuxes MP4 shards onto the dataset FPS grid, then rewrites
+                        meta/episodes video from_timestamp/to_timestamp. Encoded frames, Parquet
+                        frame data, action/state, episode indices, and norm stats are unchanged.
+                    </div>
+
+                    <div class="grid gap-3 md:grid-cols-2" x-show="preprocess.schema_op === 'drop_field'">
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">field name</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.field_name"
+                                   placeholder="e.g. observation.old_field">
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">output root</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.schema_out_root"
+                                   placeholder="auto: <src>_drop_<field>_<timestamp>">
+                        </label>
+                    </div>
+
+                    <div class="grid gap-3 md:grid-cols-3" x-show="preprocess.schema_op === 'smooth_action'">
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">window</span>
+                            <input type="number" min="1" step="2"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="preprocess.smooth_window">
+                            <span class="mt-1 block text-[11px] text-slate-500">Centered moving average. Use odd values; 1 means no-op.</span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">workers</span>
+                            <input type="number" min="0"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="preprocess.smooth_workers">
+                            <span class="mt-1 block text-[11px] text-slate-500">0 = auto, capped at 8.</span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">output root</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.schema_out_root"
+                                   placeholder="auto: <src>_smooth_action_w5_<timestamp>">
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-300 md:col-span-3">
+                            <input type="checkbox" class="accent-sky-500" x-model="preprocess.smooth_state">
+                            <span>
+                                <span>Smooth state too</span>
+                                <span class="block text-[11px] text-slate-500">If the dataset has a state feature, apply the same window to state for consistency.</span>
+                            </span>
+                        </label>
+                    </div>
+
+                    <div class="grid gap-3 md:grid-cols-2" x-show="preprocess.schema_op === 'standardize'">
+                        <div class="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-400 md:col-span-2">
+                            <div class="text-slate-300">Standardize to training-ready 16D action/state</div>
+                            <div class="mt-1">Runs cache if missing, normalizes DVT2 gripper dims 7/15, trims action/state to 16D, drops depth fields, writes stage/subtask, and repairs episode indices. Source dataset is not modified.</div>
+                        </div>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">output root</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.schema_out_root"
+                                   :placeholder="standardizePlaceholder()">
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">Processing policy</span>
+                            <select class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                    x-model="preprocess.standardize_data_version">
+                                <option value="DVT2">H10W DVT2 · stage v1 (default)</option>
+                                <option value="DVT1">H10W DVT1 · stage v1 (legacy option)</option>
+                            </select>
+                            <span class="mt-1 block text-[11px] text-slate-500">Output signal schema is Standard 16D; the robot and Stage profile remain DVT2. Default: DVT2.</span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">workers</span>
+                            <input type="number"
+                                   min="1"
+                                   max="32"
+                                   class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model.number="options.prepare_workers"
+                                   placeholder="1">
+                            <span class="mt-1 block text-[11px] text-slate-500">Used by source cache and standardize parquet rewrite.</span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">delete episodes</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.standardize_delete_episode_ids"
+                                   placeholder="optional: 1,3-10,12">
+                            <span class="mt-1 block text-[11px] text-slate-500">From output only. Supports ranges.</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded border border-red-900/70 bg-red-950/20 px-3 py-2 text-red-100">
+                            <input type="checkbox" class="accent-red-500" x-model="preprocess.standardize_overwrite">
+                            <span>
+                                <span>Overwrite output if it already exists</span>
+                                <span class="block text-[11px] text-red-300/70">Default output is stable: &lt;src&gt;_preprocessed.</span>
+                            </span>
+                        </label>
+                    </div>
+
+                    <div class="space-y-4" x-show="preprocess.schema_op === 'value_edit'">
+                        <div class="rounded border border-sky-900/60 bg-sky-950/20 px-3 py-2 text-xs text-sky-200">
+                            Set several Action/State joint dimensions in one pass. Every edit is applied to every
+                            selected frame, and episode/global statistics are recalculated for the edited fields.
+                        </div>
+
+                        <div class="space-y-2">
+                            <div class="flex items-center justify-between gap-3">
+                                <span class="text-xs font-medium text-slate-300">value edits</span>
+                                <button type="button" class="dp-btn dp-btn-secondary" @click="addValueEdit()">
+                                    Add joint
+                                </button>
+                            </div>
+                            <div class="rounded border border-amber-900/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200"
+                                 x-show="editableFeatureOptions().length === 0">
+                                The selected dataset has no editable Action/State vector metadata.
+                            </div>
+                            <template x-for="(edit, editIndex) in preprocess.value_edits" :key="edit.id">
+                                <div class="grid gap-2 rounded border border-slate-800 bg-slate-950 p-3 md:grid-cols-[1fr_2fr_1fr_auto]">
+                                    <label class="block">
+                                        <span class="mb-1 block text-xs text-slate-400">field</span>
+                                        <select class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                                x-model="edit.field"
+                                                @change="edit.dimension = 0">
+                                            <template x-for="feature in editableFeatureOptions()" :key="feature.key">
+                                                <option :value="feature.key" x-text="feature.label"></option>
+                                            </template>
+                                        </select>
+                                    </label>
+                                    <label class="block">
+                                        <span class="mb-1 block text-xs text-slate-400">joint / dimension</span>
+                                        <select class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                                x-model.number="edit.dimension">
+                                            <template x-for="dimension in editableDimensionOptions(edit.field)" :key="dimension.index">
+                                                <option :value="dimension.index" x-text="dimension.label"></option>
+                                            </template>
+                                        </select>
+                                    </label>
+                                    <label class="block">
+                                        <span class="mb-1 block text-xs text-slate-400">set value</span>
+                                        <input type="number" step="any"
+                                               class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                               x-model.number="edit.value">
+                                    </label>
+                                    <button type="button" class="dp-btn dp-btn-danger self-end"
+                                            @click="removeValueEdit(editIndex)"
+                                            :disabled="preprocess.value_edits.length <= 1">
+                                        Remove
+                                    </button>
+                                </div>
+                            </template>
+                        </div>
+
+                        <div class="grid gap-3 md:grid-cols-2">
+                            <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                                   :class="preprocess.value_episode_scope === 'selected' ? 'border-sky-700 text-sky-100' : 'text-slate-300'">
+                                <input type="radio" value="selected" x-model="preprocess.value_episode_scope">
+                                <span>Selected episodes</span>
+                            </label>
+                            <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                                   :class="preprocess.value_episode_scope === 'all' ? 'border-sky-700 text-sky-100' : 'text-slate-300'">
+                                <input type="radio" value="all" x-model="preprocess.value_episode_scope">
+                                <span>All episodes</span>
+                            </label>
+                        </div>
+                        <label class="block" x-show="preprocess.value_episode_scope === 'selected'">
+                            <span class="mb-1 block text-xs text-slate-400">episode ids</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.value_episode_ids"
+                                   placeholder="e.g. 1,3-10,12">
+                            <span class="mt-1 block text-[11px] text-slate-500">Comma/space separated ids or inclusive ranges.</span>
+                        </label>
+
+                        <div class="grid gap-3 md:grid-cols-2">
+                            <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2"
+                                   :class="preprocess.value_output_mode === 'new_dataset' ? 'border-emerald-700 text-emerald-100' : 'text-slate-300'">
+                                <input type="radio" value="new_dataset" x-model="preprocess.value_output_mode">
+                                <span>
+                                    <span>Generate new dataset</span>
+                                    <span class="block text-[11px] text-slate-500">Keeps the source unchanged. Recommended.</span>
+                                </span>
+                            </label>
+                            <label class="flex items-center gap-2 rounded border border-red-900/60 bg-slate-950 px-3 py-2"
+                                   :class="selectedDataset && selectedDataset.source_protected ? 'cursor-not-allowed opacity-50' : (preprocess.value_output_mode === 'in_place' ? 'border-red-700 text-red-100' : 'text-red-200')">
+                                <input type="radio" value="in_place" x-model="preprocess.value_output_mode"
+                                       :disabled="selectedDataset && selectedDataset.source_protected">
+                                <span>
+                                    <span>Modify source in-place</span>
+                                    <span class="block text-[11px] text-red-300/70"
+                                          x-text="selectedDataset?.remote ? 'Agent keeps a persistent recovery backup.' : 'Cannot be undone by Data Platform.'"></span>
+                                </span>
+                            </label>
+                        </div>
+                        <label class="block" x-show="preprocess.value_output_mode === 'new_dataset'">
+                            <span class="mb-1 block text-xs text-slate-400">output root</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.value_out_root"
+                                   placeholder="auto: &lt;src&gt;_value_edit_&lt;timestamp&gt;">
+                        </label>
+                    </div>
+
+                    <div class="grid gap-3 md:grid-cols-2" x-show="preprocess.schema_op === 'rewrite_prompts'">
+                        <div class="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-400 md:col-span-2">
+                            <div class="text-slate-300">Rewrite prompt text in-place</div>
+                            <div class="mt-1">Updates v2.1 JSONL metadata or v3 tasks/episodes Parquet metadata. Does not change task_index in parquet. Actual runs create a backup under meta/prompt_rewrite_backups/.</div>
+                        </div>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">regex pattern</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.prompt_pattern">
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">replacement</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.prompt_replacement">
+                        </label>
+                    </div>
+
+                    <div class="grid gap-3" x-show="preprocess.schema_op === 'fix_prompt_prepositions'">
+                        <div class="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-400">
+                            <div class="text-slate-300">Fix spatial prompt prepositions in-place</div>
+                            <div class="mt-1">Canonical rule: absolute position uses <span class="font-mono text-slate-200">on the left/right</span>; relative position uses <span class="font-mono text-slate-200">to the left/right of ...</span>.</div>
+                            <div class="mt-1">Examples: <span class="font-mono">pick up the duck to the left</span> -> <span class="font-mono">pick up the duck on the left</span>; <span class="font-mono">pick up the duck on the left of the dog</span> -> <span class="font-mono">pick up the duck to the left of the dog</span>.</div>
+                        </div>
+                    </div>
+
+                    <div class="grid gap-3 md:grid-cols-2" x-show="preprocess.schema_op === 'apply_prompt_assignments'">
+                        <div class="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-400 md:col-span-2">
+                            <div class="text-slate-300">Apply pending prompt repairs</div>
+                            <div class="mt-1">Reads <span class="font-mono text-slate-200">static/prompt_assignments_pending.json</span> and applies viewer prompt choices to v2.1/v3 episode metadata plus the selected episode rows in parquet <span class="font-mono text-slate-200">task_index</span>.</div>
+                            <div class="mt-1">Successful entries are removed from the pending file. Failed entries stay pending for retry.</div>
+                        </div>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">episodes</span>
+                            <input class="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
+                                   x-model="preprocess.apply_prompt_assignment_episode_ids"
+                                   placeholder="optional: 1,3-10,12">
+                            <span class="mt-1 block text-[11px] text-slate-500">Leave empty to apply all pending prompt repairs.</span>
+                        </label>
+                    </div>
+
+                    <p class="text-xs text-amber-200" x-show="preprocess.schema_op === 'delete_episodes' && canRequestEpisodeDeletion()">
+                        Submit episode indices and a reason for admin review. Approval is required before source data can be deleted. Track the request in Runs.
+                    </p>
+                    <div class="grid gap-3" x-show="preprocess.schema_op === 'delete_episodes'">
+                        <div class="rounded border border-red-900/70 bg-red-950/20 px-3 py-2 text-xs text-red-100">
+                            <div class="font-semibold">Delete episodes in-place</div>
+                            <div class="mt-1 text-red-300/80">Uses the same delete/reindex logic as viewer DEL. On failure it attempts to restore a pre-delete snapshot; rollback is not isolated from concurrent access. A successful deletion modifies the source dataset and cannot be undone.</div>
+                        </div>
+                        <div class="grid gap-3 md:grid-cols-4">
+                            <label class="block md:col-span-3">
+                                <span class="mb-1 block text-xs text-slate-400">delete by flag type</span>
+                                <select class="w-full rounded border border-red-900/70 bg-slate-950 px-3 py-2 text-red-100 outline-none focus:border-red-500 disabled:opacity-60"
+                                        x-model="preprocess.delete_flag_reason"
+                                        @focus="loadDeleteFlagReasonOptions()"
+                                        @click="loadDeleteFlagReasonOptions()"
+                                        @change="applyDeleteFlagReasonSelection()"
+                                        :disabled="deleteFlagReasonLoading">
+                                    <option value="">Manual episode ids</option>
+                                    <template x-for="item in deleteFlagReasonOptions" :key="item.reason">
+                                        <option :value="item.reason" x-text="`${item.label} (${item.count})`"></option>
+                                    </template>
+                                </select>
+                                <span class="mt-1 block text-[11px] text-slate-500">Choose a flag type to fill every matching episode id below.</span>
+                                <span class="mt-1 block text-[11px] text-slate-500"
+                                      x-show="!deleteFlagReasonLoading && deleteFlagReasonDatasetKey === selectedDatasetKey && deleteFlagReasonOptions.length === 0">No flagged episodes found for this dataset.</span>
+                                <span class="mt-1 block text-[11px] text-red-200"
+                                      x-show="preprocess.delete_flag_reason"
+                                      x-text="`Selected ${deleteFlagReasonCount(preprocess.delete_flag_reason)} episodes flagged as ${deleteFlagReasonLabel(preprocess.delete_flag_reason)}.`"></span>
+                            </label>
+                            <button type="button"
+                                    class="dp-btn dp-btn-secondary self-end"
+                                    @click="loadDeleteFlagReasonOptions(true)"
+                                    :disabled="!selectedDataset || deleteFlagReasonLoading || busy"
+                                    x-text="deleteFlagReasonLoading ? 'Loading flags...' : 'Refresh flags'"></button>
+                        </div>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">episode ids</span>
+                            <input class="w-full rounded border border-red-900/70 bg-slate-950 px-3 py-2 text-red-100 outline-none focus:border-red-500"
+                                   x-model="preprocess.delete_episode_ids"
+                                   @input="preprocess.delete_flag_reason = ''"
+                                   placeholder="e.g. 1,3-10,12">
+                            <span class="mt-1 block text-[11px] text-slate-500">Comma/space separated ids or ranges. Episodes are deleted from high to low index so the ids refer to the current dataset before deletion.</span>
+                        </label>
+                        <label class="block">
+                            <span class="mb-1 block text-xs text-slate-400">deletion reason</span>
+                            <input class="w-full rounded border border-red-900/70 bg-slate-950 px-3 py-2 text-red-100 outline-none focus:border-red-500"
+                                   x-model="preprocess.delete_reason"
+                                   maxlength="500"
+                                   placeholder="Required: why these episodes must be physically deleted">
+                            <span class="mt-1 block text-[11px] text-red-200/80"
+                                  x-text="deleteEpisodeImpactLabel()"></span>
+                        </label>
+                    </div>
+
+                    <label class="flex items-center gap-2 rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-300"
+                           x-show="!['delete_episodes', 'apply_prompt_assignments'].includes(preprocess.schema_op)">
+                        <input type="checkbox" class="accent-sky-500" x-model="preprocess.schema_dry_run">
+                        <span>Dry run only</span>
+                    </label>
+
+                    <p class="text-xs text-amber-200" role="status"
+                       x-show="preprocess.schema_op === 'delete_episodes' && deleteEpisodesDisabledReason()"
+                       x-text="preprocess.schema_op === 'delete_episodes' ? deleteEpisodesDisabledReason() : ''"></p>
+                    <div class="dp-action-row">
+                        <button class="dp-btn dp-btn-primary dp-full"
+                                @click="startSchemaFix()"
+                                :class="preprocess.schema_op === 'delete_episodes' || (preprocess.schema_op === 'value_edit' && preprocess.value_output_mode === 'in_place') ? 'dp-btn-danger' : ''"
+                                :disabled="!canStartSchemaFix() || busy"
+                                x-text="schemaActionLabel()">
+                        </button>
+                    </div>
+                </div>

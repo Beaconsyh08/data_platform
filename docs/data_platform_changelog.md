@@ -1,0 +1,225 @@
+# Data Platform 发行变更
+
+## V0.3.18 — AssistantAccess (CLI 0.3.18)
+
+- Add authenticated Streamable HTTP MCP discovery, bounded queries, pipeline previews and persistent
+  operation preparation. External clients use their own models; platform confirmation still gates execution.
+- Add account-bound, hashed, expiring/revocable credentials with read/prepare scopes and CLI management.
+  Recheck roles, data grants and password changes; credentials cannot call browser confirmation routes.
+- Server adds one credential table. Agent protocols and running-job recovery remain unchanged.
+  CLI 0.3.18 is published with immutable installer/wheel/CA verification. Source changes are not live
+  acceptance; installed identities and results belong in immutable release records.
+- See [MCP setup and acceptance](data_platform_mcp.md).
+
+## V0.3.17 — Strategy experiment provider compatibility (CLI 0.3.17)
+
+- Match the Assistant non-thinking provider mode during candidate generation, and respect per-call and
+  remaining experiment time budgets. Generator parameters and evidence contracts come from the exact
+  operator registry. Provider failures remain incomplete with no activation.
+- Allow a new experiment to reuse a suite only when the previous attempt ended before selecting a
+  hidden-evaluation candidate; exposed hidden cases remain single-use.
+- Keep experiment settings inside narrow viewports even with long dataset names.
+- Isolate evaluation requests from private conversation follow-ups. Revoking stale evidence cannot
+  clear a different strategy selected concurrently by an administrator.
+- Generate synthetic fixture video with a single encoder thread so byte-level authorization is reproducible.
+- Server-only strategy correction; no Agent protocol change. CLI 0.3.17 retains strategy attribution
+  and uses the verified platform address. Publication and online acceptance are recorded separately.
+
+## V0.3.16 — Shared data-processing strategies (CLI 0.3.16)
+
+- Add opt-in administrator-managed workflow strategies, structural cross-user evidence, immutable versions,
+  paired evaluation, restricted synthetic Pipeline experiments and manual activation/rollback.
+- Keep private memory and Hindsight isolated; preserve ordinary confirmation, review and Agent admission.
+- Add Strategies administration and optional Web/CLI version attribution. Server adds control tables and
+  a dev experiment worker; Agent protocol is unchanged. CLI 0.3.16 adds the strategy version indicator.
+- Source implementation is separate from deployment, real-model improvement and synchronized CLI publication.
+  See [strategy operation and acceptance](data_platform_strategies.md).
+
+
+本文件记录源码版本的功能与兼容性变化，不代表某个环境已经安装。
+部署时核对 dev/prod `current`、发行包 `release.json`、Agent 心跳和在线验收记录；
+步骤见 [运维手册](data_platform_operations.md)。不得覆盖已有发行包或重复使用数字版本。
+
+## V0.3.15 · HindsightResponsive · 2026-10-23（候选，未部署）
+
+- 环境横幅的长版本名、账号和比较说明在窄屏内换行，保留完整文本和按钮可用性；覆盖开发/生产、320/390/1280 像素宽度的真实浏览器回归。
+- 保留 V0.3.14 的参数/流程及失败后调整经验、来源核验、新规则原子失效和显式执行确认。完整开发验收通过后再提升相同不可变包。
+- **Server/Agent/CLI**：本次修复仅共享页面样式，Agent/数据库/API 协议不变；配套独立 CLI 0.3.15，完成两环境安装兼容验收及哈希核验后推进 latest。
+
+## V0.3.14 · HindsightReusableExperience · 2026-10-23（开发候选，未部署）
+
+- 后台经验增加经不可变计划、实际命令和最终 Attempt 交叉验证的提交参数、有序步骤、依赖、白名单指标和明确失败类型。比较相同输入/格式/运行及算子版本下的重复配置，或失败后改变配置再成功的案例；纳入失败反例，不声称最优、因果或质量认证。
+- 精确原文引用上限调整为 800 字符以容纳参数和结果片段，总注入仍限制为 6000 字节。保留双 Run 来源、独立语义核验及新规则原子失效；用户明确要求复用才准备草案，执行仍须确认。
+- **Server/Agent/CLI**：仅 Server 经验证据投影和提示契约变化，Agent 协议不变；兼容 CLI 0.3.14。此次只进行开发环境验证，生产保留原版本，安装和在线验收另存发行记录。
+
+## V0.3.13 · FloraThroughput · 2026-10-23（候选，未部署）
+
+- FLORA 支持最多 8 张独占 GPU，按空闲显存和跨进程锁分配；复用旧版锁名，保留正在执行的旧版本任务，记录每阶段实际 GPU。先验证 4 卡并行与完整结果，再扩至 8 卡。
+- Caption 前后校验复用未变化文件的哈希，检查完整文件清单、inode、纳秒 mtime/ctime 和链接目标；变化期间拒绝结果，保留原有内容指纹格式，避免每集重复全量语义扫描。
+- FLORA 视频直接流式编码，消除 PNG 中间文件，保持相机原始分辨率、帧序、时间和无损解码像素；其他 Caption 方法保留 JPEG 输入。
+- **Server/Agent/CLI**：Agent 槽位最大值从 4 提升到 8，默认和已有配置不变；新增可选 GPU 池配置及能力，Job 2 / Caption 1、算子输入和数据库无变化。Server 仍执行节点/用户/路径限额；配套独立 CLI 0.3.13，正常 TLS 与不可变分发验收后才推进 latest。实际部署以发行记录为准。
+
+## V0.3.12 · HindsightRetentionFix · 2026-10-23（候选，未部署）
+
+- 已核验的任务执行记录使用 Hindsight `chunks` 模式原文入库，避免默认“长期重要性”提取丢弃全部短期任务；合并前核对所有源文档与摘要哈希，缺失来源进入失败退避。
+- 归纳输入只包含算子、终态和完成步骤；不将 followup 的页面提示或算子审批标记解释为数据质量认证。保持双 Run 来源、精确引用、独立语义核验及新规则失效机制。
+- **Server/Agent/CLI**：仅 Server 后台经验适配器变化，不增加 Agent 协议；保留已部署 V0.3.11 的 FLORA 改动，配套独立 CLI 0.3.12。实际开发/生产安装和验收以发行记录为准。
+
+## V0.3.11 · FloraCaptionCompletion · 2026-10-23（候选，未部署）
+
+- 包含 V0.3.10 的 FLORA 全流程与 Review 改造；修复任务链 Caption 完成确认错误：校验模型输入时排除平台内部算子收据，保留收据与其余输入字段校验，已上传结果可继续完成确认，无需重新推理。
+- **Server / Agent**：Server 完成处理兼容修复，Agent 与 Job 2 / Caption 1 协议不变；仍采用同一不可变包同步部署。V0.3.10 在开发验收中暴露此问题，未推广生产。
+- **CLI**：配套 0.3.11；发行仍需安装器、wheel、CA 校验以及正常 TLS、登录和结果导航验收后推进 latest。
+
+## V0.3.10 · FloraTemporalReward · 2026-10-23（候选，未部署）
+
+- Temporal Caption 新增 FLORA：同一个 Job/Attempt 串行执行本地 TempSeg、Captioner、terminal 和 dense Rewarder；原生 BF16、独立 GPU 环境与共享 GPU 锁、超时/取消/父进程退出清理。无需 DashScope 凭据，明确拒绝 action/state 输入。
+- 支持按 episode 时间范围读取 v3 视频分片；双腕输入使用明确记录的左右拼图；长视频分块分段和描述，同时保留整集 Reward。
+- 保留原始分段时间和 Reward 窗口，显式展示分段空隙/重叠、窗口评分分歧及官方合并结果。Review 的视频评分叠加、轨道和分歧区间支持联动跳转；页面统一平台导航、配色和控件，取消独立 Theme。
+- 复用已有结果上传、校验、权限、幂等和最终确认。`caption.annotate` 1.1.0 新增 flora 方法；Server/Agent 需同步升级，新增 `caption_flora_protocol=1` 能力，Job 2 / Caption 1 传输协议及数据库结构不变。A100 原生四阶段与本地真实浏览器验收已完成，线上验收另行执行。
+- **CLI**：配套候选 0.3.10，参数及登录契约不变，不添加 GPU 依赖；发行时仍须不可变安装器/wheel/CA 发布、正常 TLS 登录、`--web` 与授权 `/open` 验收后推进 latest。
+
+## V0.3.9 · HindsightExperience · 2026-10-22（候选，未部署）
+
+- 修复开发环境真实 MySQL 验收发现的任务创建时间精度问题：通过原始发起请求的 BIGINT 时间和 Run 幂等键证明新旧关系，拒绝旧 Run 的后续复用请求续期。配套 CLI 0.3.9。
+- V0.3.8 的归纳验收未通过，不提升生产；复用该版已验证的来源、规则隔离和独立后台架构。
+
+## V0.3.8 · HindsightExperience · 2026-10-22（仅开发环境，未推广生产）
+
+- Hindsight 仅在独立后台进程中归纳本人已确认任务的有界终态摘要，前台读取 SQL 缓存；保留已有显式记忆和 mem0，不在交互链路调用 recall/reflect。
+- 校验所有来源、原文摘要哈希和任务权限，要求跨两个独立 Run 的引用与精确原文摘录，并增加语义核验。记忆/规则修改原子清空缓存、隔离旧 Run，模型调用和最终回答发布均复核版本。
+- 后台租约、删除银行、退避和停机回退独立于交互；Qwen 单次上限 30 秒，整轮 75 秒及未知结果不重发不变；修正仅跨秒导致持久恢复请求摘要不一致的问题。
+- **影响范围**：Server 新增 `dp_ai_experiences` 和 experience worker，新增独立 Hindsight/PostgreSQL 侧车安装；Agent 协议及计算行为不变。配套候选 CLI 0.3.8，不改变 API、确认或登录契约；需完成 dev 与生产的实际安装验收和 CLI 同步发布。
+- 来源、安全边界、隔离实测与上线门禁见 [后台经验契约](data_platform_hindsight.md)。
+
+## V0.3.7 · AssistantMemoryFollowup · 2026-10-22
+
+- 新增显式长期记忆：本人保存、编辑、删除、清空和停用，支持账号与当前数据集范围；最多 20 条、每条 500 字，模型每轮最多使用 8 条当前授权记忆，不从聊天自动学习。
+- 助手确认操作后持久登记任务跟进；独立 Runner 观察 Run/Job/Attempt 的最终确认，生成事实性完成、失败或取消总结。断开网页/CLI 后继续，重复确认与并发 Runner 不重复发布；新任务仍须明确确认。
+- 网页 Memory/Updates 与 CLI `/memory`、`/updates` 共用授权接口；停用、范围撤销、输入身份变化和手动重试均防止旧结果被当成当前成功。总结不调用模型、不修改会话 revision、不自动重试或提交任务。
+- **影响范围**：Server/Runner 与控制数据库新增 `dp_ai_memory`、`dp_ai_followups`；Agent 协议和计算行为不变。CLI 0.3.7 提供新入口；安装与两端验收以对应不可变发行记录为准。
+
+## V0.3.6 · AssistantAsyncRunner · 2026-10-22
+
+- 新增正式异步 Assistant Runner：Turn/执行记录原子入队，既有 POST 返回 202、GET 轮询；保留原权限、四工具、确认、配额和幂等契约。
+- 图检查点、调用预算与响应回执持久化；过期进程写入受租约保护，恢复不重复发送已保存响应或未知结果的模型请求；发布时重查授权、输入身份和 revision。
+- 默认 `DATA_PLATFORM_AI_BACKEND=legacy`，新请求可显式切换 `langgraph`；已有请求固定后端与图版本。正式运行表、systemd unit、依赖锁和发行测试已接入。
+- **影响范围**：Server 与控制数据库加表；Agent 计算协议、CLI JSON 契约不变。配套 CLI 0.3.5 增加异步 HTTPS 兼容验收，保留 `/resume`、会话恢复和显式 `/confirm`；不可变安装器与 wheel 验收后推进 latest。本条不表示已部署或发布。
+
+## 未发布实验 · AssistantLangGraphAcceptance · 2026-10-22
+
+- 新增隔离的 MySQL 检查点、租约 epoch 和模型回执验收；旧进程写入拦截、跨进程恢复、预算和重复调用保护已有测试。
+- S3 小型图复用现有上下文、偏好、业务预览和确认服务；仅测试注入，尚未接入正式 API 或 Runner。
+- **影响范围**：实验、测试和文档；没有 Server/Agent/CLI 运行或数据库迁移变更，不构成平台发行。详见 [实施记录](data_platform_assistant_langgraph.md)。
+
+## CLI 0.3.4 · DirectResultLinks · 2026-10-21
+
+- 操作卡片直接输出带当前服务器地址的完整 HTTPS 结果/任务链接，默认参数不再显示空 JSON；历史结果可打开与参数匹配未知分别说明。
+- 普通后续回答不重复旧卡片；历史会话保留卡片所属消息。常见的明确网址询问直接刷新授权链接，不调用模型、不重建任务、不使待确认卡片过期。
+- CLI 渲染 Markdown，链接采用服务端授权引用和完整地址，忽略未验证的模型 Markdown 链接；保留跨账号授权、TLS 和确认规则。
+- **影响范围**：独立 CLI；兼容 Server/Agent V0.3.5，无服务器、数据库或 Agent 协议变更。
+
+## CLI 0.3.3 · Platform035Compatibility · 2026-10-21
+
+- 按平台与 CLI 同步发行规则，提供面向 Server V0.3.5 的独立兼容客户端；保留登录、确认执行、消息内卡片、Episode 会话恢复及授权结果链接。
+- 修复 V0.3.5 Episode 会话的网页恢复：跳到授权 Viewer Episode，保留页面身份；缺少有效引用时仅提供首页，不生成无效或跨站链接。其他绑定页面的历史从网页 History 恢复。
+- 稳定安装/升级入口仍为 `cli/latest/install.py`；0.3.2 及以上可用 `data-platform update`。先验收版本化包的登录、`--web`、`/open` 和浏览器会话恢复，再推进 latest。
+- **影响范围**：CLI、下载分发和文档；Server/Agent 保持 V0.3.5，无协议或数据库变化。实际发布及验收身份记录在独立 CLI 发行记录中。
+
+## CLI 0.3.2 · UpdateCommand · 2026-10-21
+
+- 新增 `data-platform update`：免登录下载官方 latest 安装器，保留自定义安装及启动器目录；当前已是最新版则提示并退出，拒绝降级，安装失败保留旧启动器。
+- 直接输入 `exit`、`quit` 或 `/quit` 也可退出，待回复状态不会将其当成聊天消息；启动与中断提示明确标出退出方式，保留 `/exit` 和空行 Ctrl+D。
+- **影响范围**：独立 CLI 与安装器；无 Server/Agent、数据库或协议变更，无需重启平台。0.3.1 及更早版本需先运行一次 latest 安装命令，之后可使用短命令更新。
+
+## CLI 0.3.1 · WebLinks · 2026-10-21
+
+- CLI 启动时显示当前环境网页地址；新增 `/web`、免登录 `--web` 与 `--version`。已保存会话链接保留数据集和报告上下文，浏览器独立登录，不传递会话凭据。
+- `/open` 在没有操作卡片或结果链接时提供网页入口，已有操作仍查询最新授权结果。
+- 安装文档改用 `cli/latest/install.py` 稳定入口；版本化安装器和 wheel 保持不可变，重复执行 latest 命令升级。每次平台升级必须同步发布兼容的 CLI 新版本、推进 latest 并完成两端验收，CLI 版本独立递增。
+- **影响范围**：独立 CLI 与下载分发；兼容 Server V0.3.2，无 Server/Agent、数据库或协议变更，无需重启服务。本文不代表下载站已发布。
+
+## V0.3.5 · PageContextChartFocus · 2026-10-21
+
+- Viewer 点击或拖动 Charts 选帧后，两张图保留蓝色竖直定位线；悬停和播放不改变定位线，切换 Episode 清除。
+- 选帧后滚轮围绕该帧同步缩放两张图，限制在完整时间范围与最小两帧窗口内；保留 Reset zoom、Ctrl 拖动缩放、Shift 拖动平移及 Trim/Stage 编辑优先级。
+- 打开、收起或调整助手侧栏宽度时，Viewer 画布随容器自动调整，避免曲线重叠和点击坐标偏移。
+- 包含 V0.3.3–V0.3.4 的页面/Episode 跟随、Instruction 上下文和消息内操作卡片。修正 Quality 视频 worker 的整数范围描述与视频模式枚举，保持执行器原有校验及默认行为。
+- **影响范围**：Server 的 Viewer 网页、助手及参数描述；无数据库、Agent 执行/协议或 CLI API 变化。兼容 CLI 0.3.0，发布验收仍验证其下载、登录和确认流程。
+
+## V0.3.4 · PageContextAliases · 2026-10-21
+
+- 补齐本地 Viewer 页面别名到注册数据集的映射，保证默认跟随页面时正确读取选中 Episode 的 Instruction；重复映射拒绝解析，保留实际数据集的权限检查。
+- 增加别名、范围撤销、模糊匹配防护与真实浏览器回归；包含 V0.3.3 的页面跟随和消息内操作卡片。
+- **影响范围**：Server 上下文解析；无数据库迁移、Agent 协议、算子版本或 CLI 0.3.0 变更。
+
+## V0.3.3 · PageAwareAssistant · 2026-10-21
+
+- 修复助手与当前页面脱节：默认跟随页面、数据集和 Viewer Episode；可关闭 Follow current page 固定上下文，恢复历史会话时明确固定，迟到回答不覆盖新上下文。
+- Episode 问答经权限校验后读取已发布 Viewer 元数据中的 Instruction、帧数和帧率，并绑定选中 Episode 摘要身份；不读取视频或原始行，缺失上下文不能推断源数据没有指令。
+- 操作卡片归属到对应助手消息；已有结果、运行中任务与旧请求默认收起详情，过期确认控件隐藏，结果/进度入口仍可用，不占用输入区。
+- **影响范围**：Server 助手 API、网页与文档；无数据库迁移、Agent 执行/协议或算子版本变化。CLI 0.3.0 保持兼容，无需重新安装；Server/Agent 使用同一不可变发行包。
+
+## V0.3.2 · OperationParameterDefaults · 2026-10-21
+
+- Curation 显式描述既有的全部 episode 默认值，统一省略 `episodes` 与 `episodes: null` 的参数解析；结果匹配与并发去重使用同一份解析值。
+- **影响范围**：算子参数描述与 Server 预览；计算行为、数据选择范围、算子版本与 Agent 协议保持一致，CLI 仍为 0.3.0。
+
+## V0.3.1 · OperationResultNavigation · 2026-10-21
+
+- 修复 Curation 书签重定向和工作台初始化丢失报告 ID 的问题；助手结果卡片直接打开指定报告／标注子视图，不回落到最新结果或首页。
+- 数据集或页面切换后清除旧报告定位，保留后端报告范围校验。
+- **影响范围**：Server 路由与网页；无数据库、Agent 协议或算子版本变化，CLI 保持 0.3.0。
+
+## V0.3.0 · UnifiedOperationCards · 2026-10-21
+
+- 网页与 CLI 共用操作状态：已有匹配结果、正在执行、尚未执行、历史待核实和失败记录；提供结果、Review、派生数据集或 Jobs 入口。
+- 扩展显式确认卡片到阶段、标注、打标、时序标注和单输入派生处理；参数修改通过聊天生成新卡片，不自动执行，不绕过证据或人工复核。
+- 确认时重新检查状态；已有结果需明确重新运行，并发相同单操作复用一个活动流程。保持原角色、范围、源身份、revision、CSRF 和重试幂等规则。
+- 状态查询采用有界历史和字段投影，不加载完整报告。Quality 展示覆盖提示；旧 Viewer/Caption 的配置绑定无法确认时明确显示历史结果。
+- **影响范围**：Server 助手与提交服务、网页、CLI 0.3.0；无数据库、Agent 协议或算子版本变化。Server/Agent 使用同一不可变包，旧任务继续收尾。CLI 新增 `/open`、`/confirm again`，更新独立安装包使用完整交互；旧客户端仍可登录、对话和确认新操作。
+
+## V0.2.5 · ListPerformanceViewerActions · 2026-10-21
+
+- Usage log 改用索引顺序读取；页面只加载轻量列表，展开单条后获取完整内容。统计明确限定为最近 1,000 条匹配结果，列表和统计独立加载，失败保留已有数据。
+- 本地任务在数据库内筛选后再限量读取；远端任务摘要不携带算子快照和注册清单。版本列表使用 episode 数量摘要，旧完整接口保留。
+- AI 正确识别已发布且可读取的 Viewer 缓存，优先提供 Open prepared Viewer；重新准备仍须展开参数并确认，不自动提交任务。
+- 操作卡片移到回复与输入框之间，生成后自动定位；保留源身份、权限、过期会话和幂等确认检查。
+- **影响范围**：Server 查询、助手与网页；无数据库迁移、Agent 协议或算子版本变化。
+  Server/Agent 使用同一不可变包，旧任务继续收尾；CLI 保持 0.2.0，登录与 `/confirm` 兼容，无需重装。
+
+## V0.2.4 · AuditAssistantReadability · 2026-10-20
+
+- Operation history 默认读取轻量摘要；展开单条记录后按事件 ID 获取完整审计内容，失败可重试并保留上次列表。
+- 日志从最新记录向后读取，达到数量后停止；解析与解压不再占用写入锁，完整日志和原 API 响应保持兼容。
+- 助手回复支持段落、编号/项目列表、加粗、行内代码和代码块，网页/Viewer/Pipeline 共用。
+- 模型 HTML 和任意链接仍按文本处理；可跳转的证据和操作继续使用服务端授权卡片。
+- **影响范围**：审计文件读取与 Server 网页；无数据库迁移、Agent 任务协议或算子版本变化。
+  Server/Agent 继续使用同一不可变发行包；CLI 保持 0.2.0，无需重装。
+
+## V0.2.3 · AssistantEntryShortcuts · 2026-10-20
+
+- 统一入口：移除主页面重复的 Ask AI，使用醒目的浮动 AI assistant 按钮，显示图标和快捷键。
+- Ctrl/Cmd + Shift + Space 切换开合；助手内 Esc 收起并恢复焦点。保留未发送文字、历史和待确认操作。
+- 报告、任务、流程入口明确标注用途；独立 Pipeline 与 Viewer 使用同一键盘约定。
+- 保留输入法、原生下拉框、平台弹窗和 Viewer 播放的键盘行为；账号切换清理快捷键监听。
+- 同步用户指南、架构现状、README 和发行文档维护要求。
+- **影响范围**：Server 网页模板与浏览器行为；无数据库迁移、Agent 任务协议、算子版本或权限变化。
+  完整发行仍统一安装并核对 Server/Agent 身份。CLI 保持 0.2.0，已有客户端无需重装。
+
+## V0.2.0–V0.2.2 · AssistantWorkspace · 2026-10-20
+
+- 常驻非模态侧栏、历史列表和恢复；网页与 CLI 按账号、环境共用个人偏好。
+- 偏好支持语言、回答详略、最多五个常用算子，可停用或清空；不自动学习或改变执行参数。
+- 新增兼容的 `dp_ai_preferences` 表及本人偏好接口，会话列表逐条复核授权与输入身份。
+- V0.2.1 修复侧栏打开后顶部导航未随主区域宽度收缩的问题。
+- V0.2.2 允许 Viewer 管理本人偏好，数据写入、任务执行与跨账号会话访问仍受原权限控制。
+- **影响范围**：Server、网页与 CLI 0.2.0；Agent 计算协议无变化。原 API、CLI 登录和操作确认保持兼容。
+
+## V0.1.0 · AssistantActionsCLI · 2026-10-20
+
+- AI 准备 Viewer/Quality 操作卡片，用户确认后通过既有服务幂等提交；模型工具不直接执行。
+- 支持 Enter 发送、Shift+Enter 换行；默认取消每小时请求限额，保留并发与单次预算。
+- 提供 HTTPS 平台账号登录的会话 CLI，模型密钥只在服务端使用。
+
+更早版本的安装身份、验证日志和批准信息保留在对应不可变发行包中，不通过这份文档推断线上状态。

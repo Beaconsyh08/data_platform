@@ -88,14 +88,150 @@ available for existing review packages. Results remain review evidence and do no
 Deploy through the existing immutable dev/prod release workflow. A local preview is not a production
 release. Update Server A and the Agent together to expose supported annotation methods.
 
-## Three reusable annotation methods, one review UI
+## FLORA: offline segmentation, captions and rewards
+
+Select **FLORA** in the existing Annotation task form. Each episode creates one `caption.annotate`
+Job/Attempt: export → TempSeg → Captioner → terminal Rewarder → dense Rewarder → validated publication.
+Progress and cancellation stay in Jobs; Review opens only a complete, acknowledged run. It produces
+`episode.json`, `video.mp4`, and `caption.json`, so caption upload protocol 1 and Job protocol 2 remain
+unchanged. Operator version is 1.1.0; the Agent additionally advertises `caption_flora_protocol=1` and
+`caption_flora_configured`. Qwen credentials and FLORA runtime readiness are independent. An old Agent,
+missing runtime, unsupported view layout, or read-only account cannot submit this method.
+
+The adapter supports image/video-backed v2.1/v3.0 episodes with named left/right wrist cameras
+and an optional scene camera, a recorded task instruction, and regular FPS. Video-backed episodes
+are decoded from their metadata timestamp range with frame-level alignment checks. Two-wrist inputs
+use a lossless left/right montage through the official single-video YAM path; the montage instruction
+and layout are recorded in `input_adaptation`. Rewarder receives the original two camera streams.
+Episodes up to 600 seconds / 36000 frames are split into equal contiguous chunks within the official
+120-second / 7200-frame limit for segmentation/caption only; original frame timing and chunk offsets
+are retained. Chunk boundaries may split an action; terminal/dense rewards still cover the complete
+episode with original cameras. No frames are padded to make short clips appear valid. Camera videos
+retain source resolution and use lossless H.264 encoding rather than
+cropping the compressed Review montage. Source Parquet, videos and annotations remain unchanged.
+FLORA receives no action/state/pose/gripper evidence: the signal checkbox is disabled and submissions
+with `include_signals=true` are rejected. The recorded task is supplied to Rewarder; TempSeg/Captioner
+retain their official visual inference prompts, with the montage layout instruction for two-wrist inputs. The native Captioner currently returns English text.
+
+Native segment seconds and the TempSeg output remain in diagnostics. Review derives half-open frame
+boundaries using `ceil(time * fps)`, labels uncovered intervals, and preserves overlapping native caption
+indices; it does not silently close gaps or select one overlapping caption. FLORA allows up to 500 native segments and 1000 review intervals; other methods retain their
+40-interval limit. Excessive partitions fail validation rather than dropping content.
+
+Review shows episode outcome (1–5) separately from action quality (1 failure, 2 suboptimal, 3 normal).
+Each raw dense window is aligned using the official nearest sampled-frame-pair rule without tail trim,
+and masked outside its actual coverage. The official merged scores and selected source windows remain
+unchanged. A disagreement means two covered windows assign different numeric scores at that frame;
+it is not a human failure label, and absence of disagreement does not certify correctness. Click a
+highlighted interval or a score track to seek; arrow keys on a focused track move one frame. Raw model
+reasoning is expandable. Terminal progress is not a calibrated success probability. No reward automatically
+accepts, excludes, deletes, or relabels an episode.
+
+### Executor configuration
+
+Use a dedicated free 80 GB GPU for the native pipeline. The tested environments use Python 3.11,
+Torch 2.11.0+cu130, Transformers 5.8.1, Accelerate 1.12.0 and PEFT 0.18.1 for Captioner; the separate
+Rewarder environment uses vLLM 0.24.0, decord 0.6.0 and qwen-vl-utils 0.0.14. Keep these GPU environments
+separate from the platform interpreter. No GPU/model packages are added to the Server or CLI.
+
+Provision official code and verify offline checkpoint manifests before enabling an executor. Tested pins:
+
+| Component | Revision |
+| --- | --- |
+| Captioner code, `batch_utils` plus native loader helpers | `f736ca36925ae55d2f7915993ed1bc9f87288bb3` |
+| `nvidia/Flora-TempSeg` | `114a1076f70eb53f4a58ac045505db3087e79347` |
+| `Qwen/Qwen3.5-9B` TempSeg base | `c202236235762e1c871ad0ccb60c8ee5ba337b9a` |
+| `nvidia/Flora-Captioner` | `fef0bbfe11829ca7f3539d58da7a6a2c2f109dc6` |
+| `nvidia/Flora-Rewarder`, including its `batch_utils` | `7de68d22c4a9decec5ddb7f86ddcaee8f82d3367` |
+
+Set `DATA_PLATFORM_FLORA_RUNTIME=/etc/data-platform/flora-runtime.json` in the chosen Agent service
+environment (or local executor environment). This administrator-owned JSON contains absolute paths:
+
+```json
+{
+  "caption_python": "/srv/flora/caption-env/bin/python",
+  "reward_python": "/srv/flora/reward-env/bin/python",
+  "caption_code": "/srv/flora/caption-code",
+  "weights": "/srv/flora/weights",
+  "lock_dir": "/var/lib/flora/runtime",
+  "gpu": 0,
+  "gpus": [0, 1, 2, 3],
+  "stage_timeout_s": 3600
+}
+```
+
+`weights` contains `tempseg`, `tempseg_base`, `captioner` and `rewarder`. Keep original manifests,
+configuration and tokenizer files. The service account needs read/execute access to code, environments
+and weights, and write access to the lock/cache directory and normal job workspace. Never grant world
+write permissions. All services using this physical GPU must use the same lock directory/index; external
+training jobs do not participate in this lock, so reserve the GPU operationally. Execution requires at
+least 73000 MiB free and 75000 MiB total. Each stage runs in a separate process and releases the model
+before the next stage. Cancellation, timeout and supervisor death terminate model workers and descendants.
+Per-stage elapsed time and sampled device memory peaks are retained; peaks include vLLM's reserved cache
+and are not minimum hardware requirements. The timeout also bounds waiting for an available GPU. `gpus` is optional: omitted configurations retain
+single-GPU `gpu` behavior. A pool accepts one to eight unique physical indices. One episode exclusively
+locks one GPU across all four stages; another process skips locked GPUs or GPUs with insufficient free
+memory. `stage_metrics[].gpu` and job events record the actual physical index. Keep the same lock directory
+across old and new executor generations. The additive `caption_flora_gpu_pool=1` capability identifies
+Agents accepting pool configuration; Job 2 / Caption 1 and caption result identity remain compatible.
+
+FLORA preparation streams native-resolution lossless camera frames and the review mosaic directly into
+bounded H.264 encoders. It avoids full-episode PNG/JPEG intermediates; native camera frame counts,
+timestamps and decoded pixels match the previous lossless path. Other caption schemes retain their sampled
+JPEG inputs. Encoder threads obey `DATA_PLATFORM_VIDEO_THREADS`.
+
+Caption jobs reuse service-owned per-file hashes under `caption-source-hashes`, outside dataset roots.
+Every pre/post-inference check inventories all published meta/data/video assets. Device, inode, size,
+nanosecond modification/change times and symlink target changes invalidate cached hashes; additions and
+removals change the same lifecycle content digest. Changed files are rehashed, the inventory is rechecked,
+and concurrent jobs share a per-dataset lock. Invalid caches are rebuilt. This avoids unused full-dataset
+semantic episode scans without removing the source-change guard. The cache assumes a trusted service
+account and filesystem change timestamps; it is not a defense against privileged filesystem tampering.
+
+For a staged rollout, provision CPU/RAM for eight jobs, start the new Agent with eight maximum slots,
+and initially cap Server admission at four. Configure the pool with GPUs 0–3, validate four overlapping
+jobs and their published results, then expand the pool and Server admission to eight. The Agent need not
+restart for the second step: each new FLORA job reloads its runtime file. Server node/user quotas, path
+locks and ordinary admission still apply. Use an audited per-job extra quota when only an explicitly
+approved batch should exceed a user's ordinary limit. Other nodes retain their own Agent limits.
+
+Do not edit the runtime file still read by old executor processes: point the new generation at a separate
+pool configuration with the shared lock directory. Preserve old executors until all their attempts finish.
+Size the total CPU/RAM budget before startup: `ExecutionResources.for_slots()` divides it by configured
+Agent slots, even while Server admission is temporarily lower. Eight 80 GB GPUs alone do not establish
+sufficient host RAM, CPU or storage bandwidth; record actual overlap, memory and errors before expansion.
+
+The worker forces offline Hugging Face operation, redirects the pinned TempSeg base to local storage,
+and does not download models or establish SSH tunnels. The platform has no client-supplied model path
+or arbitrary execution command. Native inference keeps BF16 and the official sensitive FP32 parameters;
+Rewarder rejects quantization and non-BF16 engine configuration.
+
+For a standalone acceptance on the data/GPU host:
+
+```bash
+python -m lerobot.data_platform.temporal_caption prepare \
+  --root /path/to/dataset --episode 0 --output /path/to/flora-bundle --flora
+DATA_PLATFORM_FLORA_RUNTIME=/etc/data-platform/flora-runtime.json \
+python -m lerobot.data_platform.temporal_caption infer \
+  --scheme flora --bundle /path/to/flora-bundle --dataset-key namespace/registered-dataset \
+  --output /path/to/new-flora-run
+```
+
+After installing the same compatible Server/Agent release, verify the configured Agent heartbeat,
+submit an authorized three-camera episode through Annotation, observe all four phases in Jobs and
+final acknowledgement, then verify video seeking and disagreement evidence in Review. Exercise Viewer
+read-only restrictions and cancellation; keep running old Agent generations until their attempts finish.
+A standalone A100 run and local browser acceptance do not establish online deployment. Publish and
+accept the companion independently versioned CLI before declaring the platform upgrade complete.
+
+## Four reusable annotation methods, one review UI
 
 The shared page follows the caption demo layout: synchronized camera video, colored semantic timeline,
 gripper event markers, measured gripper/speed curves, bilingual captions, scene and task-quality panels.
-The task form offers Multi-view Semantics, Video + Events, and Fusion + Review,
-including when the dataset has no saved annotations. Each episode job retains its method ID and saves
-separate artifacts without overwriting earlier trials. Executor readiness is checked per method and option,
-including unsupported Agent versions and read-only roles.
+The task form offers FLORA, Multi-view Semantics, Video + Events, and Fusion + Review,
+including when the dataset has no saved annotations. Review lists saved methods and remembers the choice in this browser; an explicit `?scheme=` link takes precedence.
+Each episode job retains its method ID and saves separate artifacts without overwriting earlier trials.
+Executor readiness is checked per method and option, including unsupported Agent versions and read-only roles.
 
 Use the separate Review page to choose a method, episode and saved result. Switching methods keeps the
 same episode when available and prefers `refined`, `caption`, or `fusion_reviewed`; intermediate results
@@ -111,7 +247,7 @@ remain selectable. If no result exists, the old video and annotations are cleare
   that increasing values always mean closing or that a threshold crossing proves contact. Pose units
   remain source units. This makes the adaptation explicit rather than silently adopting rig conventions.
 
-Both run against an explicitly exported **single episode** using the same CLI:
+The Qwen methods run against an explicitly exported **single episode** using the same CLI:
 
 ```bash
 python -m lerobot.data_platform.temporal_caption infer \
@@ -135,7 +271,7 @@ reused as segment confidence. Model quality assessments do not approve labels or
 
 ## Remote annotation jobs and existing result import
 
-On a registered remote dataset, the task form offers the three schemes and an episode selection.
+On a registered remote dataset, the task form offers the four schemes and an episode selection.
 Accounts with execution permission can submit `caption.annotate`; viewers can only review authorized results.
 Track queued/running/error/cancelled states, execution messages, and authorized cancel/retry actions in Jobs.
 Submission recovery uses an owner- and input-scoped idempotency key. Retrying a failed/cancelled task
@@ -145,16 +281,18 @@ Deploy Server A first, then the Agent from the same immutable development releas
 `DASHSCOPE_API_KEY` (optionally `DASHSCOPE_BASE_URL`) in the Agent's protected service environment and
 restart that development Agent. Its heartbeat advertises `caption_protocol=1` and credential availability
 as a boolean. The key never travels through job options, result artifacts, or the browser. The Agent needs
-FFmpeg and the dataset dependencies; v2.1 and v3.0 datasets with 1–4 embedded image cameras are
+FFmpeg and the dataset dependencies; v2.1 and v3.0 datasets with 1–4 image/video cameras are
 supported. Agents advertise `caption_dataset_versions`; v2.1 submissions require upgraded executors. Raw source access is restricted to the Agent's registered allowed roots.
 
 Execution prepares exactly one episode outside the dataset, calls Qwen3.8-max, and retains upload files
 in the durable execution spool. Server A accepts only the current node/attempt/lease and allowlisted
 artifact names. It checks queued dataset, episode, scheme, full frame coverage, FPS and required variants
 before atomically publishing a complete run. Upload/acknowledgement retries do not rerun inference.
+Pipeline completion preserves the internal `operator_snapshot` receipt and validates only caption
+parameters as model input; unrelated input fields remain rejected.
 Existing runs remain immutable; source metadata and labels are never rewritten.
 
-Administrators can use **Import existing results** on the same page. A portable ZIP contains only
+Administrators can import existing results using the deployment CLI below. A portable ZIP contains only
 `<run-name>/episode.json`, `<run-name>/video.mp4`, and either `coarse.json` + `refined.json` or `caption.json`.
 Episode metadata must include `episode_index`, `frame_count`, and `fps`. The importer validates all runs,
 rebinds the preview dataset key to the selected registered location, and records the original key.
@@ -171,6 +309,43 @@ This command loads the selected environment configuration, switches to its servi
 the registered location, writes to the configured caption root (or console lifecycle directory), and
 records the import in the existing operation log. Do not copy the trial-key directory verbatim into a
 registered dataset's result directory: the internal dataset identity must be rebound as well.
+
+Imported `hybrid_windows` runs use `caption.json` with the same result envelope: dataset identity,
+episode index, frame count, FPS, duration, `variant: "caption"`, model, creation time, and nested
+`result` containing summary, segments, and limitations. Retain the original pipeline and source
+provenance. Segment intervals already use half-open `[start_frame, end_frame)` endpoints; do not
+apply the inclusive-end conversion from `import-demo`. The accompanying `episode.json` and video
+must describe the same episode. Flat `output/episode_*/caption.json` files need this envelope before
+ZIP import; source files stay unchanged. Review shows these results as **hybrid_windows**, while
+annotation tasks retain the three executable methods. On first load, Review selects an available
+method when its remembered method has no results, unless the URL specifies a method or the user
+changes the method while results are loading.
+
+### Results kept on the dataset Agent
+
+An upgraded Agent advertising `caption_read_protocol=1` also exposes existing experiment results
+directly from its registered dataset. Keep each completed episode under
+`output/<method>/episode_XXXXXX/`, with `caption.json` and a nonempty `video.mp4`. Add `episode.json`
+to display measured signals and camera metadata. The method directory name becomes the exact Review
+method ID and label; experimental methods are not added to the executable annotation task catalog.
+
+`caption.json` may use the flat experiment format (`summary`, `segments`, `limitations`) or the
+published result envelope. It must identify the matching dataset episode, frame count, FPS and model;
+segments cover the complete episode using half-open intervals. `meta/info.json` and v2.1/v3.0 episode
+metadata are checked. Incomplete or invalid episodes are omitted with a visible warning. Keep different
+experiments in separate method directories and finish writing the episode files before refreshing Review.
+The current directory contents are inspected whenever Review is opened or refreshed; no ZIP import,
+publication command, registry update or inference is needed. Old experiment registries are not used
+to discover results.
+
+The Agent reads JSON and video on demand through its authenticated outbound connection. Server A
+only relays bounded replies in memory and does not publish or save these experiment results. Video
+byte ranges are supported; any camera-order display derivative stays in the Agent's state directory.
+The original dataset and captions are unchanged. Normal web login, dataset read scopes, Agent root
+containment and Linux file permissions still apply. An offline Agent cannot serve dataset-local results.
+Existing published results remain supported; an imported copy identical to a dataset-local caption is
+hidden from the result list to avoid duplicate methods. Removing the local files can expose that older
+published copy again.
 
 ## Fusion + Review
 
@@ -203,9 +378,9 @@ inference because it starts a fresh isolated execution. No API keys are stored i
 ## Annotation and review pages
 
 `/<namespace>/<dataset>/temporal-caption` and `/remote/<location_id>/temporal-caption`
-are task pages: select one of the three methods, choose episodes and signal input, then start annotation.
+are task pages: select one of the four methods, choose episodes and signal input, then start annotation.
 They show executor readiness and submission feedback; ongoing progress, cancellation and retry use Jobs.
-Standalone previews show all three methods but cannot submit work without an executor.
+Standalone previews show all four methods but cannot submit work without an executor.
 
 Append `/review` for the separate video, timeline, caption, and model-review page.
 The task page links to review; completed jobs link directly to their result. The dataset
@@ -213,7 +388,7 @@ Explore tools include Temporal Caption Review alongside Viewer, Analysis, and La
 including for remote datasets before Viewer preparation. Review remains inspection of model
 outputs; it does not record human approval or alter the dataset.
 
-The embedded Temporal Caption tab contains the three-method task form, executor readiness,
+The embedded Temporal Caption tab contains the four-method task form, executor readiness,
 submission feedback, signal-input option, and a separate video review link. The standalone task
 page uses the same controller and form. Caption tasks do not require a curation snapshot.
 Generic review
@@ -239,6 +414,10 @@ page. Submission retains per-episode idempotency keys and a confirmed offset in 
 browser session so interrupted delivery can resume with the same selection. Changing
 the selection starts a new batch. Leaving the page stops further submissions; jobs
 already accepted continue. No new model requests are made merely by selecting all.
+The submit button previews the job count and shows confirmed submissions while sending.
+Method, episode selection and signal inputs are disabled during submission so the displayed
+settings continue to match the active batch. Submission feedback is announced to screen readers;
+execution progress remains in Jobs.
 
 `include_signals` is an optional boolean job option, defaulting to true for older
 clients. When false, inference receives no measured action/state, pose, gripper, or

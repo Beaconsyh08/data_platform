@@ -57,6 +57,39 @@ def test_publication_preserves_existing_cache(tmp_path):
     assert (target / "static/video.mp4").is_file()
 
 
+def test_publication_waits_for_result_write_and_preserves_latest_flags(tmp_path, monkeypatch):
+    import contextlib
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from lerobot.data_platform import dataset_results
+
+    source, cache, target = cache_fixture(tmp_path)
+    atomic_json(target / "static/viewer_manifest.json", {"root": str(source)})
+    atomic_json(target / "static/manual_flagged_episodes.json", {"flagged_episodes": [0]})
+    attempting = Event()
+    original_lock = dataset_results.result_lock
+
+    @contextlib.contextmanager
+    def observed_lock(directory, **kwargs):
+        attempting.set()
+        with original_lock(directory, **kwargs):
+            yield
+
+    monkeypatch.setattr(dataset_results, "result_lock", observed_lock)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with original_lock(target):
+            published = executor.submit(publish_viewer_cache, cache, target, source)
+            assert attempting.wait(1)
+            assert not published.done()
+            atomic_json(target / "static/manual_flagged_episodes.json", {"flagged_episodes": [1]})
+        published.result(timeout=5)
+    assert json.loads((target / "static/manual_flagged_episodes.json").read_text())["flagged_episodes"] == [1]
+    assert json.loads((cache.parent / "previous-cache/static/manual_flagged_episodes.json").read_text())[
+        "flagged_episodes"
+    ] == [1]
+
+
 def test_publication_restores_backup_after_rename_failure(tmp_path, monkeypatch):
     from lerobot.data_platform import execution
 

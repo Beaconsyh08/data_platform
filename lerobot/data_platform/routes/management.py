@@ -35,9 +35,26 @@ def register_management_routes(app, store):
             return jsonify({"error": "Configure DATA_PLATFORM_LOG_DATABASE_URL to enable log queries"}), 503
         try:
             limit, offset = page()
-            return jsonify(logs.query(request.args, limit=limit, offset=offset))
+            return jsonify(
+                logs.query(
+                    request.args, limit=limit, offset=offset, summary=request.args.get("summary") == "1"
+                )
+            )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        except Exception:
+            return jsonify({"error": "Log database temporarily unavailable"}), 503
+
+    @app.get("/api/admin/usage-events/<string:event_id>")
+    def usage_event(event_id):
+        if denied := admin():
+            return denied
+        logs = app.extensions["data_platform_logs"]
+        if logs is None:
+            return jsonify({"error": "Log database is not configured"}), 503
+        try:
+            event = logs.get(event_id)
+            return jsonify({"event": event}) if event else (jsonify({"error": "Event not found"}), 404)
         except Exception:
             return jsonify({"error": "Log database temporarily unavailable"}), 503
 
@@ -50,6 +67,8 @@ def register_management_routes(app, store):
             return jsonify({"configured": False, "counts": [], "error": "Log database is not configured"})
         try:
             counts = delivery.logs.summary(request.args)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         except Exception:
             counts = {"counts": [], "error": "Log database temporarily unavailable"}
         return jsonify({**counts, "configured": True, "delivery": delivery.status()})
@@ -128,6 +147,12 @@ def register_management_routes(app, store):
     @app.patch("/api/control/jobs/<string:job_id>/priority")
     def priority_job(job_id):
         return control(job_id, "priority")
+
+    @app.patch("/api/control/jobs/<string:job_id>/extra-quota")
+    def extra_quota_job(job_id):
+        if denied := admin():
+            return denied
+        return control(job_id, "extra-quota")
 
     @app.get("/api/control/jobs/<string:job_id>/attempts")
     def job_attempts(job_id):

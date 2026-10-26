@@ -1,0 +1,47 @@
+<style>
+#ai-panel{border:1px solid #334155;border-radius:12px;padding:16px;min-width:0}
+.assistant-action{border:1px solid #475569;padding:12px;border-radius:10px;margin-top:12px}.assistant-action .assistant-primary-link{display:inline-block;padding:8px 12px;background:#0369a1;color:white;border-radius:6px;margin:6px 0}.assistant-action pre{white-space:pre-wrap;overflow-wrap:anywhere}
+#ai-panel summary{font-weight:600;cursor:pointer}#ai-panel label{display:block;margin:12px 0 6px}
+#ai-message{width:100%;box-sizing:border-box;min-height:64px;max-height:200px;resize:vertical}
+#ai-memory-list,#ai-followups{max-height:36vh;overflow:auto;overflow-wrap:anywhere}
+.assistant-history{max-height:52vh;min-height:100px;overflow:auto;overflow-wrap:anywhere;padding:8px 0}
+.assistant-message{white-space:pre-wrap;margin:10px 0;padding:12px 14px;border-radius:10px;background:#0f172a;color:#e2e8f0;line-height:1.65}
+.assistant-message.user{margin-left:10%;background:#172554}.assistant-message.assistant{margin-right:4%}
+.assistant-message small{display:block;color:#94a3b8;font-size:11px;line-height:1.3;margin-bottom:4px}
+.assistant-formatted{white-space:normal}.assistant-formatted p{margin:0 0 10px}.assistant-formatted p:last-child{margin-bottom:0}
+.assistant-formatted ol,.assistant-formatted ul{margin:8px 0 12px;padding-left:1.6em;list-style-position:outside}.assistant-formatted ol{list-style-type:decimal}.assistant-formatted ul{list-style-type:disc}.assistant-formatted li{margin:6px 0;padding-left:2px}
+.assistant-formatted strong,.assistant-heading{font-weight:650;color:#f8fafc}.assistant-formatted code{font:0.85em ui-monospace,monospace;background:#1e293b;color:#bae6fd;border-radius:4px;padding:2px 5px;overflow-wrap:anywhere}.assistant-formatted pre{white-space:pre-wrap;padding:10px;background:#1e293b;border-radius:6px}.assistant-formatted pre code{padding:0}
+#ai-panel .row{align-items:center;gap:8px;display:flex;flex-wrap:wrap}#ai-panel small{color:#94a3b8}
+@media(max-width:600px){ #ai-panel{padding:10px}.assistant-history{max-height:45vh}}
+</style>
+    <details id="ai-panel" open><summary>AI assistant · Qwen</summary>
+      <p id="ai-status" class="muted" role="status">Loading assistant…</p>
+      <div class="row"><button id="ai-chats-toggle" aria-expanded="false">History</button><button id="ai-prefs-toggle" aria-expanded="false">Preferences</button><button id="ai-memory-toggle" aria-expanded="false">Memory</button><button id="ai-updates-toggle" aria-expanded="false">Updates</button></div>
+      <div id="ai-chats-panel" hidden><p id="ai-chats-status" role="status"></p><div id="ai-chats"></div><button id="ai-chats-more" hidden>More conversations</button></div>
+      <div id="ai-prefs-panel" hidden>
+        <p>Private to your account in this environment. Applied on your next message.</p>
+        <label><input id="ai-pref-enabled" type="checkbox">Use my preferences</label>
+        <label>Reply language<select id="ai-pref-language"><option value="auto">Match my message</option><option value="zh">Chinese</option><option value="en">English</option></select></label>
+        <label>Response detail<select id="ai-pref-detail"><option value="concise">Concise</option><option value="balanced">Balanced</option><option value="detailed">Detailed</option></select></label>
+        <label>Favorite operators (up to 5)<select id="ai-pref-favorites" multiple size="4"></select></label>
+        <small>Suggestions only. This does not change parameters, permissions or execution confirmation.</small>
+        <div class="row"><button id="ai-prefs-save">Save preferences</button><button id="ai-prefs-clear">Clear preferences</button></div><p id="ai-prefs-status" role="status"></p>
+      </div>
+      <div id="ai-memory-panel" hidden>
+        <small>Only notes you save are remembered. No automatic learning from chat.</small>
+        <label><input id="ai-memory-enabled" type="checkbox">Use saved memory</label>
+        <label><input id="ai-followups-enabled" type="checkbox">Task completion updates</label>
+        <button id="ai-memory-settings">Save settings</button>
+        <div id="ai-memory-list"></div>
+        <label>Remember<textarea id="ai-memory-text" maxlength="500" rows="2" placeholder="Terminology, background or communication style"></textarea></label>
+        <label>Scope<select id="ai-memory-scope"><option value="account">My account</option><option value="dataset">Current dataset</option></select></label>
+        <div class="row"><button id="ai-memory-save">Save note</button><button id="ai-memory-cancel" hidden>Cancel edit</button><button id="ai-memory-clear">Clear all notes</button></div>
+        <p id="ai-memory-status" role="status"></p>
+      </div>
+      <div id="ai-followups" aria-live="polite" hidden></div>
+      <div id="ai-history" aria-live="polite" class="assistant-history"></div>
+      <div id="ai-action" class="assistant-action" tabindex="-1" role="region" aria-label="Prepared operation" hidden></div>
+      <label>Message<textarea id="ai-message" maxlength="3000" placeholder="Check motion quality, then prepare the Viewer." rows="2" disabled></textarea></label>
+      <div class="row"><button id="ai-send" disabled>Ask Qwen</button><button id="ai-new">New chat</button><small>Enter to send · Shift+Enter for a new line</small></div>
+      <div id="ai-proposal" hidden><p id="ai-validation" role="status"></p><div id="ai-proposal-summary" class="proposal-flow"></div><div id="ai-diff"></div><button id="ai-load" disabled>Load draft into editor</button><button id="ai-undo" disabled>Undo AI changes</button></div>
+    <div id="ai-references" class="row"></div></details>

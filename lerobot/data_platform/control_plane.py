@@ -5,11 +5,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import os
 import re
 import secrets
 import uuid
 from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import PurePosixPath
 
 from sqlalchemy import (
     JSON,
@@ -37,6 +40,12 @@ SCOPED_SOURCE_OPERATIONS = {
 JOB_STATES = {"queued", "running", "done", "error", "cancelled", "cancel_requested", "interrupted"}
 _PASSWORD_ITERATIONS = 310_000
 _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
+
+
+@dataclass
+class LocationSyncChanges:
+    created: int = 0
+    updated: int = 0
 
 
 def _utcnow() -> datetime:
@@ -291,6 +300,9 @@ class ControlPlaneStore:
         if initialize_schema:
             migrate_management(self.engine)
         self.job_manager = JobManager(self)
+        from lerobot.data_platform.dataset_scans import DatasetScanManager
+
+        self.scan_manager = DatasetScanManager(self)
         from sqlalchemy import event, inspect
 
         from lerobot.data_platform.management_storage import enqueue_event
@@ -365,15 +377,26 @@ class ControlPlaneStore:
         grant = session.get(DataMutationGrant, (user.user_id, location.location_id))
         return bool(grant and grant.node_id == location.node_id and grant.root == location.root)
 
-    def accessible_locations(self, user_id: str) -> list[dict]:
-        with self.sessions() as session:
-            user = session.get(ControlPlaneUser, user_id)
-            allowed = {
-                location.location_id
-                for location in session.scalars(select(DatasetLocation))
-                if self.dataset_access_allowed(session, user, location)
-            }
-        return [location for location in self.list_locations() if location["location_id"] in allowed]
+    def _accessible_location_ids(self, session, user) -> set[str] | None:
+        """Resolve current read grants once per list; None means unrestricted."""
+        if user is None or not user.active:
+            return set()
+        if user.role not in {"viewer", "operator"} or self.all_mutation_locations(session, user.user_id):
+            return None
+        return set(
+            session.scalars(
+                select(DatasetLocation.location_id)
+                .join(DataMutationGrant, DataMutationGrant.location_id == DatasetLocation.location_id)
+                .where(
+                    DataMutationGrant.user_id == user.user_id,
+                    DataMutationGrant.node_id == DatasetLocation.node_id,
+                    DataMutationGrant.root == DatasetLocation.root,
+                )
+            )
+        )
+
+    def accessible_locations(self, user_id: str, *, summary: bool = False) -> list[dict]:
+        return self.list_locations(user_id=user_id, summary=summary)
 
     def restricted_dataset_keys(self, user_id: str) -> set[str] | None:
         """None means unrestricted; an empty set deliberately denies every dataset."""
@@ -736,11 +759,56 @@ class ControlPlaneStore:
             if node is None:
                 raise KeyError(node_id)
             now = _utcnow()
-            node.status = "online"
-            node.last_seen_at = now
-            node.updated_at = now
-            if capabilities is not None:
-                node.capabilities = dict(capabilities)
+            reported = dict(capabilities) if capabilities is not None else dict(node.capabilities or {})
+            previous = dict(node.capabilities or {})
+            expected_release = os.environ.get("DATA_PLATFORM_RELEASE")
+            if expected_release and reported.get("release") != expected_release:
+                # An old executor may finish its attempts but must not replace the active node's capabilities.
+                reported = previous
+            previous_roots = {key: list(getattr(node, key)) for key in ("allowed_roots", "writable_roots")}
+            for key in ("allowed_roots", "writable_roots"):
+                if key not in reported:
+                    continue  # Older Agents retain their enrollment-time roots.
+                roots = reported[key]
+                if not isinstance(roots, list) or any(
+                    not isinstance(root, str)
+                    or "\x00" in root
+                    or not PurePosixPath(root).is_absolute()
+                    or ".." in PurePosixPath(root).parts
+                    for root in roots
+                ):
+                    raise ValueError(f"{key} must be a list of absolute paths without '..'")
+                setattr(node, key, [str(PurePosixPath(root)) for root in roots])
+            current_roots = {key: list(getattr(node, key)) for key in previous_roots}
+            if current_roots != previous_roots:
+                from lerobot.data_platform.management_storage import enqueue_event
+                from lerobot.data_platform.operation_log import build_operation_event
+
+                enqueue_event(
+                    session,
+                    build_operation_event(
+                        "agent.roots.sync",
+                        status="success",
+                        source="agent",
+                        actor={"node_id": node.node_id, "node_name": node.name},
+                        details={"before": previous_roots, "after": current_roots},
+                    ),
+                )
+            # Free disk space is telemetry; protocol/release/authorization changes remain immediate.
+            stable_changed = {key: value for key, value in reported.items() if key != "disk"} != {
+                key: value for key, value in previous.items() if key != "disk"
+            }
+            if (
+                node.status != "online"
+                or node.last_seen_at is None
+                or node.last_seen_at <= now - timedelta(seconds=30)
+                or stable_changed
+            ):
+                node.status = "online"
+                node.last_seen_at = now
+                node.updated_at = now
+                if capabilities is not None:
+                    node.capabilities = reported
             return self._node_dict(node)
 
     def configure_local_execution_roots(
@@ -758,12 +826,17 @@ class ControlPlaneStore:
             node.allowed_roots = list(allowed_roots)
             node.writable_roots = list(writable_roots)
 
-    def sync_locations(self, node_id: str, locations: list[dict]) -> list[dict]:
+    def sync_locations(
+        self, node_id: str, locations: list[dict], *, changes: LocationSyncChanges | None = None
+    ) -> list[dict]:
         now = _utcnow()
         synced = []
         with self.sessions.begin() as session:
             if session.get(ControlPlaneNode, str(node_id)) is None:
                 raise KeyError(node_id)
+            from lerobot.data_platform.job_management import scheduler_lock
+
+            scheduler_lock(session)
             for payload in locations:
                 root = str(payload.get("root") or "").strip()
                 dataset_key = str(payload.get("dataset_key") or "").strip()
@@ -791,18 +864,36 @@ class ControlPlaneStore:
                         last_seen_at=now,
                     )
                     session.add(location)
+                    if changes is not None:
+                        changes.created += 1
                 else:
-                    location.dataset_key = dataset_key
-                    location.output_dir = str(payload.get("output_dir") or location.output_dir)
-                    location.state = "available"
+                    output_dir = str(payload.get("output_dir") or location.output_dir)
+                    if location.state == "deleting":
+                        synced.append(location)
+                        continue  # Only authoritative source-presence checks may abort pending cleanup.
                     details = dict(payload.get("metadata") or {})
                     previous_details = dict(location.details or {})
                     for key in ("viewer_ready", "viewer_url", "cache_root"):
                         if key in previous_details:
                             details[key] = previous_details[key]
-                    location.details = details
-                    location.updated_at = now
-                    location.last_seen_at = now
+                    changed = (
+                        location.dataset_key != dataset_key
+                        or location.output_dir != output_dir
+                        or location.state != "available"
+                        or location.details != details
+                    )
+                    if changed:
+                        if changes is not None:
+                            changes.updated += 1
+                        location.dataset_key = dataset_key
+                        location.output_dir = output_dir
+                        location.state = "available"
+                        location.details = details
+                        location.updated_at = now
+                        location.last_seen_at = now
+                    elif location.last_seen_at <= now - timedelta(minutes=5):
+                        # Presence refreshes do not rewrite unchanged dataset metadata.
+                        location.last_seen_at = now
                 synced.append(location)
         return [self._location_dict(location) for location in synced]
 
@@ -811,20 +902,38 @@ class ControlPlaneStore:
             nodes = session.scalars(select(ControlPlaneNode).order_by(ControlPlaneNode.name)).all()
             return [self._node_dict(node) for node in nodes]
 
-    def list_locations(self) -> list[dict]:
+    def list_locations(
+        self, *, user_id: str | None = None, include_deleted: bool = False, summary: bool = False
+    ) -> list[dict]:
+        from lerobot.data_platform.list_queries import location_projection
+
         with self.sessions() as session:
+            allowed = None
+            if user_id is not None:
+                allowed = self._accessible_location_ids(session, session.get(ControlPlaneUser, user_id))
+                if allowed == set():
+                    return []
             # MySQL filesort may copy selected JSON into its sort buffer. Sort
             # only small identifiers here, then load full metadata separately.
+            query = select(
+                DatasetLocation.location_id, ControlPlaneNode.name, ControlPlaneNode.hostname
+            ).join(ControlPlaneNode, ControlPlaneNode.node_id == DatasetLocation.node_id)
+            if not include_deleted:
+                query = query.where(DatasetLocation.state == "available")
+            if allowed is not None:
+                query = query.where(DatasetLocation.location_id.in_(allowed))
             rows = session.execute(
-                select(DatasetLocation.location_id, ControlPlaneNode.name, ControlPlaneNode.hostname)
-                .join(ControlPlaneNode, ControlPlaneNode.node_id == DatasetLocation.node_id)
-                .order_by(ControlPlaneNode.name, DatasetLocation.dataset_key, DatasetLocation.root)
+                query.order_by(ControlPlaneNode.name, DatasetLocation.dataset_key, DatasetLocation.root)
             ).all()
             if not rows:
                 return []
             locations = {
                 location.location_id: self._location_dict(location)
-                for location in session.scalars(select(DatasetLocation)).all()
+                for location in session.scalars(
+                    select(DatasetLocation)
+                    .where(DatasetLocation.location_id.in_([row[0] for row in rows]))
+                    .options(*([location_projection(DatasetLocation)] if summary else []))
+                ).all()
             }
             return [
                 {
@@ -841,6 +950,30 @@ class ControlPlaneStore:
             if location is None:
                 raise KeyError(location_id)
             return self._location_dict(location)
+
+    def inherit_import_access(self, source_id: str, output_id: str) -> None:
+        """Keep imported outputs visible to the source's explicitly scoped users."""
+        with self.sessions.begin() as session:
+            source = session.get(DatasetLocation, source_id)
+            output = session.get(DatasetLocation, output_id)
+            if output is None or source is None:
+                raise KeyError(output_id)
+            for grant in session.scalars(
+                select(DataMutationGrant).where(
+                    DataMutationGrant.location_id == source_id,
+                    DataMutationGrant.node_id == source.node_id,
+                    DataMutationGrant.root == source.root,
+                )
+            ):
+                if session.get(DataMutationGrant, (grant.user_id, output_id)) is None:
+                    session.add(
+                        DataMutationGrant(
+                            user_id=grant.user_id,
+                            location_id=output_id,
+                            node_id=output.node_id,
+                            root=output.root,
+                        )
+                    )
 
     def create_job(
         self,
@@ -866,6 +999,12 @@ class ControlPlaneStore:
             location = session.get(DatasetLocation, str(location_id))
             if location is None:
                 raise KeyError(location_id)
+            if location.state != "available":
+                raise JobConflictError("Source dataset was deleted or is being cleaned up")
+            for source_id in (options or {}).get("source_location_ids", []):
+                source = session.get(DatasetLocation, source_id)
+                if source is None or source.state != "available":
+                    raise JobConflictError("A source dataset is no longer available")
             submitter = session.get(ControlPlaneUser, requested_by)
             if submitter is not None and not self.dataset_access_allowed(session, submitter, location):
                 raise PermissionError("Dataset access is outside this account's data permissions")
@@ -945,8 +1084,10 @@ class ControlPlaneStore:
             self.job_manager.on_create(session, job)
         return self._job_dict(job)
 
-    def claim_job(self, node_id: str, *, lease_seconds: int = 60, worker_instance_id=None) -> dict | None:
-        return self.job_manager.claim(str(node_id), lease_seconds, worker_instance_id)
+    def claim_job(
+        self, node_id: str, *, lease_seconds: int = 60, worker_instance_id=None, release=None
+    ) -> dict | None:
+        return self.job_manager.claim(str(node_id), lease_seconds, worker_instance_id, release=release)
 
     def heartbeat_job(
         self, job_id: str, *, node_id: str, lease_seconds: int = 60, attempt_id=None, credential=None
@@ -988,16 +1129,28 @@ class ControlPlaneStore:
                 return self._event_dict(session.get(RemoteJobEvent, previous.event_id))
             if job is None or job.node_id != str(node_id):
                 raise KeyError(job_id)
+            from lerobot.data_platform.job_progress import progress_snapshot, visible_progress_log
+
+            previous_progress = (job.result or {}).get("progress", {})
+            event_payload = {**dict(payload or {}), "attempt_id": attempt_id}
+            event_payload["log_visible"] = visible_progress_log(
+                previous_progress, event_payload, message, level
+            )
             event = RemoteJobEvent(
                 job_id=job.job_id,
                 level=str(level or "info")[:32],
                 message=sanitize_for_log(str(message)),
-                payload=sanitize_for_log(dict(payload or {})),
+                payload=sanitize_for_log(event_payload),
                 created_at=_utcnow(),
             )
             session.add(event)
-            if payload and ("current" in payload or "total" in payload):
-                job.result = {**(job.result or {}), "progress": sanitize_for_log(payload)}
+            job.result = {
+                **(job.result or {}),
+                "progress": sanitize_for_log(
+                    progress_snapshot(previous_progress, payload or {}, message=message)
+                ),
+            }
+            job.updated_at = event.created_at
             session.flush()
             if receipt_id:
                 session.add(EventReceipt(receipt_id=receipt_id, event_id=event.event_id))
@@ -1035,41 +1188,115 @@ class ControlPlaneStore:
             credential=credential,
         )
 
-    def list_jobs(self, *, limit: int = 200, actor: dict | None = None) -> list[dict]:
+    def list_jobs(
+        self,
+        *,
+        limit: int = 200,
+        actor: dict | None = None,
+        summary: bool = False,
+        page=None,
+        filters=None,
+        local_only: bool = False,
+    ):
+        from sqlalchemy import exists, literal_column, or_
+
+        from lerobot.data_platform.list_queries import job_projection, parse_time
+
         self.job_manager.reap_expired()
+        filters = filters or {}
         with self.sessions() as session:
-            # Sort identifiers only: MySQL filesort can otherwise copy large JSON
-            # options/results into the sort buffer for owner-filtered queries.
-            query = select(RemoteJob.job_id)
-            if actor is not None and actor.get("role") != "admin":
-                query = query.where(RemoteJob.requested_by == actor.get("user_id", ""))
-            job_ids = session.scalars(
-                query.order_by(RemoteJob.created_at.desc(), RemoteJob.job_id.desc()).limit(
-                    max(1, min(1000, limit))
-                )
-            ).all()
-            if not job_ids:
-                return []
-            details = select(RemoteJob).where(RemoteJob.job_id.in_(job_ids))
-            if actor is not None and actor.get("role") != "admin":
-                details = details.where(RemoteJob.requested_by == actor.get("user_id", ""))
-            jobs = {job.job_id: job for job in session.scalars(details).all()}
-            user = session.get(ControlPlaneUser, actor["user_id"]) if actor else None
-            return [
-                self._job_dict(jobs[job_id])
-                for job_id in job_ids
-                if job_id in jobs
-                and (
-                    actor is None
-                    or all(
-                        self.dataset_access_allowed(session, user, session.get(DatasetLocation, key))
-                        for key in [
-                            jobs[job_id].location_id,
-                            *(jobs[job_id].options or {}).get("source_location_ids", []),
-                        ]
+            query = select(RemoteJob.job_id, RemoteJob.created_at)
+            if local_only:
+                query = query.where(
+                    or_(
+                        RemoteJob.operation.startswith("local.request."),
+                        RemoteJob.options["local_compute"].as_boolean().is_(True),
+                        RemoteJob.options["local_compute"]["operator_id"].as_string().is_not(None),
                     )
                 )
-            ]
+            if actor is not None and actor.get("role") != "admin":
+                query = query.where(RemoteJob.requested_by == actor.get("user_id", ""))
+            allowed = (
+                self._accessible_location_ids(session, session.get(ControlPlaneUser, actor["user_id"]))
+                if actor is not None
+                else None
+            )
+            if allowed is not None:
+                if not allowed:
+                    return ([], {"next_cursor": None, "has_more": False}) if page else []
+                query = query.where(RemoteJob.location_id.in_(allowed))
+                for field, item_path in (
+                    ("source_location_ids", "$"),
+                    ("_source_locations", "$.location_id"),
+                ):
+                    if self.engine.dialect.name == "sqlite":
+                        inputs = (
+                            func.json_each(RemoteJob.options, f"$.{field}")
+                            .table_valued("value")
+                            .alias("inputs")
+                        )
+                        value = (
+                            inputs.c.value
+                            if item_path == "$"
+                            else func.json_extract(inputs.c.value, item_path)
+                        )
+                    else:
+                        inputs = (
+                            func.json_table(
+                                RemoteJob.options,
+                                literal_column(
+                                    f"'$.{field}[*]' COLUMNS (value VARCHAR(36) PATH '{item_path}')"
+                                ),
+                            )
+                            .table_valued("value")
+                            .alias("inputs")
+                        )
+                        value = inputs.c.value
+                    query = query.where(
+                        ~exists(
+                            select(1).select_from(inputs).where(value.not_in(allowed)).correlate(RemoteJob)
+                        )
+                    )
+            if filters.get("location_id"):
+                query = query.where(RemoteJob.location_id == filters["location_id"])
+            status = filters.get("status")
+            if status:
+                from lerobot.data_platform.job_management import ACTIVE_STATES
+
+                if status == "active":
+                    query = query.where(RemoteJob.status.in_({"queued"} | ACTIVE_STATES))
+                elif status == "history":
+                    query = query.where(RemoteJob.status.not_in({"queued"} | ACTIVE_STATES))
+                elif status in JOB_STATES:
+                    query = query.where(RemoteJob.status == status)
+                else:
+                    raise ValueError("Invalid job status")
+            for key, condition in (
+                ("created_from", RemoteJob.created_at.__ge__),
+                ("created_to", RemoteJob.created_at.__lt__),
+            ):
+                if filters.get(key):
+                    query = query.where(condition(parse_time(filters[key])))
+            query = (
+                page.apply(query, RemoteJob.created_at, RemoteJob.job_id, date_time=True)
+                if page
+                else query.order_by(RemoteJob.created_at.desc(), RemoteJob.job_id.desc()).limit(
+                    max(1, min(1000, limit))
+                )
+            )
+            rows = session.execute(query).all()
+            paging = {}
+            if page:
+                rows, paging = page.response(
+                    rows, timestamp=lambda r: r.created_at, identity=lambda r: r.job_id
+                )
+            ids = [row.job_id for row in rows]
+            details = select(RemoteJob).where(RemoteJob.job_id.in_(ids))
+            if summary:
+                details = details.options(*job_projection(RemoteJob))
+            jobs = {job.job_id: self._job_dict(job) for job in session.scalars(details)} if ids else {}
+            result = [jobs[key] for key in ids if key in jobs]
+            return (result, paging) if page else result
 
     def get_job(self, job_id: str) -> dict:
         with self.sessions() as session:
@@ -1158,6 +1385,8 @@ class ControlPlaneStore:
 
     @staticmethod
     def _job_dict(job: RemoteJob) -> dict:
+        from lerobot.data_platform.report_archive import archived_fields
+
         if job.status not in JOB_STATES:
             raise ValueError(f"invalid persisted job state: {job.status}")
         return {
@@ -1172,6 +1401,7 @@ class ControlPlaneStore:
             "lease_until": _iso(job.lease_until),
             "idempotency_key": job.idempotency_key,
             "result": dict(job.result or {}),
+            "archived_reports": archived_fields(job.result or {}),
             "error": job.error,
             "created_at": _iso(job.created_at),
             "updated_at": _iso(job.updated_at),

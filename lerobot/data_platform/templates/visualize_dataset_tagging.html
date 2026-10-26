@@ -14,12 +14,12 @@
   #right { border-left:1px solid #1e293b; }
   .header,.panel { padding:12px; border-bottom:1px solid #1e293b; }
   .filters { padding:10px 12px; border-bottom:1px solid #1e293b; background:#111827; }
-  input,select,textarea { width:100%; border:1px solid #334155; border-radius:6px; background:#020617; color:#e2e8f0; padding:7px 8px; font:inherit; }
+  input,select,textarea { width:100%; border:1px solid #334155; border-radius:var(--dp-radius); background:#020617; color:#e2e8f0; padding:7px 8px; font:inherit; }
   ul { list-style:none; margin:0; padding:0; }
   li { padding:8px 12px; border-bottom:1px solid #1e293b; cursor:pointer; }
   li:hover { background:#172554; }
   li.active { background:#1e3a8a; }
-  .tag { display:inline-block; border-radius:4px; padding:1px 5px; font-size:10px; margin:0 4px 4px 0; background:#0c4a6e; color:#bae6fd; }
+  .tag { display:inline-block; border-radius:4px; padding:1px 5px; font-size:10px; margin:0 4px 4px 0; background:var(--dp-primary); color:#bae6fd; }
   button.tag { width:auto; border:0; cursor:pointer; font:inherit; }
   .tag.match { background:#075985; color:#e0f2fe; outline:1px solid #38bdf8; }
   .chip { display:inline-flex; align-items:center; gap:6px; border:1px solid #0369a1; border-radius:999px; background:#082f49; color:#e0f2fe; padding:4px 8px; font-size:11px; }
@@ -30,14 +30,15 @@
   #imgStage { position:relative; display:inline-block; width:min(100%, 1280px); line-height:0; }
   #img { display:block; width:100%; max-width:100%; image-rendering:pixelated; border:1px solid #1e293b; }
   #imageTrajectory { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
-  #trajectory { width:100%; height:220px; border:1px solid #334155; border-radius:6px; background:#020617; }
+  #trajectory { width:100%; height:220px; border:1px solid #334155; border-radius:var(--dp-radius); background:#020617; }
   .row { display:grid; grid-template-columns:110px 1fr; gap:8px; margin:7px 0; }
   .row span:first-child { color:#94a3b8; }
-  button { width:100%; padding:8px 10px; border-radius:6px; border:1px solid #0369a1; background:#0c4a6e; color:#e0f2fe; cursor:pointer; font:inherit; }
+  button { width:100%; padding:8px 10px; border-radius:var(--dp-radius); border:1px solid #0369a1; background:var(--dp-primary); color:#e0f2fe; cursor:pointer; font:inherit; }
   button.good { background:#064e3b; border-color:#047857; color:#d1fae5; }
   button.gray { background:#334155; border-color:#475569; color:#e2e8f0; }
   .btnrow { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
 </style>
+{% include "data_platform_workspace_styles.html" %}
 </head>
 <body>
   {% set page_kind = "Auto-tagging" %}

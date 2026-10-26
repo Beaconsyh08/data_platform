@@ -41,7 +41,7 @@
   select, input, textarea {
     width: 100%;
     border: 1px solid #334155;
-    border-radius: 6px;
+    border-radius: var(--dp-radius);
     background: #020617;
     color: #e2e8f0;
     padding: 7px 8px;
@@ -54,7 +54,7 @@
   #recordList li.accept { border-left: 3px solid #34d399; }
   #recordList li.reject { opacity: 0.55; border-left: 3px solid #64748b; }
   .tag { display: inline-block; border-radius: 4px; padding: 1px 5px; font-size: 10px; margin-right: 4px; }
-  .tag.scene { background: #0c4a6e; color: #bae6fd; }
+  .tag.scene { background: var(--dp-primary); color: #bae6fd; }
   .tag.miss { background: #7f1d1d; color: #fecaca; }
   .tag.ok { background: #052e16; color: #86efac; }
   .tag.no { background: #334155; color: #cbd5e1; }
@@ -72,10 +72,10 @@
   button {
     width: 100%;
     padding: 8px 10px;
-    background: #0c4a6e;
+    background: var(--dp-primary);
     color: #e0f2fe;
     border: 1px solid #0369a1;
-    border-radius: 6px;
+    border-radius: var(--dp-radius);
     cursor: pointer;
     font: inherit;
   }
@@ -90,7 +90,8 @@
 	    #info { display: none; }
 	  }
 </style>
-	</head>
+	{% include "data_platform_workspace_styles.html" %}
+</head>
 	<body>
 	  {% set page_kind = "Data Construction" %}
 	  {% set page_title = dataset_key %}

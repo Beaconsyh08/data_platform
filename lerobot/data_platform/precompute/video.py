@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from lerobot.data_platform.execution_resources import video_threads
 from lerobot.data_platform.precompute.image_io import iter_image_bytes
 
 
@@ -39,8 +40,21 @@ def encode_with_ffmpeg(
         return False
 
     temporary = temporary_output_path(out_path)
+    threads = video_threads()
     cmd = [
         ffmpeg_path,
+        *(
+            [
+                "-threads",
+                str(threads),
+                "-filter_threads",
+                str(threads),
+                "-filter_complex_threads",
+                str(threads),
+            ]
+            if threads
+            else []
+        ),
         "-loglevel",
         "error",
         "-y",
@@ -57,6 +71,7 @@ def encode_with_ffmpeg(
         "-an",
         "-c:v",
         "libx264",
+        *(["-threads", str(threads)] if threads else []),
         "-profile:v",
         "baseline",
         "-level",

@@ -1,0 +1,7 @@
+# Experiment only: deliberately excluded from server and Agent installation.
+langgraph==1.2.16
+langgraph-checkpoint==4.3.0
+langgraph-checkpoint-mysql[pymysql]==3.0.0
+pydantic==2.13.4
+sqlalchemy==2.0.52
+pytest>=8.1

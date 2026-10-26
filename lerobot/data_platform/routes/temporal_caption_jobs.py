@@ -24,20 +24,45 @@ from lerobot.data_platform.temporal_caption_jobs import (
 )
 
 
-def caption_scheme_status(capabilities, reason, user):
+def caption_scheme_status(capabilities, reason, user, metadata=None):
     # Caption protocol 1 originally supported these two schemes without advertising a list.
     supported = capabilities.get("caption_schemes", ["multiview_semantics", "video_events"])
     allowed = bool(user and user["role"] in {"operator", "data_manager", "admin"})
-    return [
-        {
-            **scheme,
-            "can_submit": allowed and reason is None and scheme_id in supported,
-            "unavailable_reason": reason
-            or (f"Upgrade the executor to support {scheme['name']}" if scheme_id not in supported else None)
-            or ("Read-only account." if not allowed else None),
-        }
-        for scheme_id, scheme in SCHEMES.items()
-    ]
+    result = []
+    for scheme_id, scheme in SCHEMES.items():
+        configured = (
+            capabilities.get("caption_flora_configured")
+            if scheme_id == "flora"
+            else capabilities.get("caption_configured")
+        )
+        unavailable = reason
+        if not unavailable and scheme_id not in supported:
+            unavailable = f"Upgrade the executor to support {scheme['name']}"
+        if not unavailable and scheme_id == "flora" and capabilities.get("caption_flora_protocol") != 1:
+            unavailable = "Upgrade the executor to FLORA protocol 1"
+        if not unavailable and not configured:
+            unavailable = (
+                "Configure the FLORA runtime on an 80 GB GPU executor"
+                if scheme_id == "flora"
+                else "Configure DASHSCOPE_API_KEY in the executor environment"
+            )
+        if not unavailable and scheme_id == "flora" and metadata is not None:
+            from lerobot.data_platform.temporal_caption_flora import camera_roles
+
+            try:
+                camera_roles(
+                    [
+                        key
+                        for key, feature in metadata.get("features", {}).items()
+                        if feature.get("dtype") in {"image", "video"}
+                    ]
+                )
+            except ValueError as exc:
+                unavailable = str(exc)
+        if not allowed:
+            unavailable = unavailable or "Read-only account."
+        result.append({**scheme, "can_submit": unavailable is None, "unavailable_reason": unavailable})
+    return result
 
 
 def register_caption_job_routes(app, ctx, resolve):
@@ -67,8 +92,8 @@ def register_caption_job_routes(app, ctx, resolve):
         version = (location.get("metadata") or {}).get("codebase_version")
         if version not in capabilities.get("caption_dataset_versions", ["v3.0"]):
             return f"Upgrade the remote Agent to support Temporal Caption for {version} datasets"
-        if not capabilities.get("caption_configured"):
-            return "Configure DASHSCOPE_API_KEY in the remote Agent service environment"
+        if not (capabilities.get("caption_configured") or capabilities.get("caption_flora_configured")):
+            return "Configure a Qwen API credential or the offline FLORA runtime in the executor environment"
         return None
 
     @app.get("/api/control/locations/<location_id>/temporal-caption/jobs")
@@ -79,7 +104,9 @@ def register_caption_job_routes(app, ctx, resolve):
         reason = readiness(location)
         node = next((n for n in store.list_nodes() if n["node_id"] == location["node_id"]), {})
         return jsonify(
-            schemes=caption_scheme_status(node.get("capabilities") or {}, reason, user),
+            schemes=caption_scheme_status(
+                node.get("capabilities") or {}, reason, user, location.get("metadata") or {}
+            ),
             total_episodes=(location.get("metadata") or {}).get("total_episodes"),
             signal_options=bool((node.get("capabilities") or {}).get("caption_signal_options")),
             can_import=bool(user and user["role"] == "admin"),
@@ -133,7 +160,9 @@ def register_caption_job_routes(app, ctx, resolve):
                 return jsonify(error="Upgrade the Agent to support action/state input selection"), 409
             selected = next(
                 item
-                for item in caption_scheme_status(node.get("capabilities") or {}, reason, _current_user())
+                for item in caption_scheme_status(
+                    node.get("capabilities") or {}, reason, _current_user(), location.get("metadata") or {}
+                )
                 if item["id"] == options["scheme"]
             )
             if not selected["can_submit"]:
@@ -188,13 +217,15 @@ def register_caption_job_routes(app, ctx, resolve):
 
     def complete_caption(job, result):
         location = store.get_location(job["location_id"])
+        # Pipeline receipts accompany the persisted parameters, but are not model inputs.
+        options = validate_options({k: v for k, v in job["options"].items() if k != "operator_snapshot"})
         try:
             publish_run(
                 staged(job),
                 job_root(job),
                 location["dataset_key"],
                 job["job_id"],
-                options=validate_options(job["options"]),
+                options=options,
             )
         except (KeyError, TypeError, OSError) as exc:
             raise ValueError("Missing or invalid caption artifacts") from exc
@@ -214,9 +245,12 @@ def register_caption_job_routes(app, ctx, resolve):
         key = f"{dataset_namespace}/{dataset_name}"
         try:
             dataset, _ = ctx.ensure_dataset_loaded(ctx.repo_key(key))
-            validate_source(json.loads((Path(dataset.root) / "meta" / "info.json").read_text()))
+            metadata = json.loads((Path(dataset.root) / "meta" / "info.json").read_text())
+            validate_source(metadata)
             capabilities = agent_capabilities_for_local()
-            ready = capabilities.get("caption_configured", False)
+            ready = capabilities.get("caption_configured", False) or capabilities.get(
+                "caption_flora_configured", False
+            )
             user = _current_user()
             if request.method == "GET":
                 locations = {
@@ -227,8 +261,11 @@ def register_caption_job_routes(app, ctx, resolve):
                 return jsonify(
                     schemes=caption_scheme_status(
                         capabilities,
-                        None if ready else "Configure the model credential in the local executor environment",
+                        None
+                        if ready
+                        else "Configure a Qwen API credential or the offline FLORA runtime in the local executor environment",
                         user,
+                        metadata,
                     ),
                     total_episodes=dataset.meta.total_episodes,
                     signal_options=True,
@@ -236,7 +273,7 @@ def register_caption_job_routes(app, ctx, resolve):
                     can_submit=bool(user and user["role"] in {"operator", "data_manager", "admin"} and ready),
                     unavailable_reason=None
                     if ready
-                    else "Configure the model credential in the local executor environment",
+                    else "Configure a Qwen API credential or the offline FLORA runtime in the local executor environment",
                     jobs=[
                         store.job_manager.decorate(job, user)
                         for job in store.list_jobs(limit=200, actor=user)
@@ -249,6 +286,13 @@ def register_caption_job_routes(app, ctx, resolve):
             if not ready:
                 return jsonify(error="Local annotation backend is unavailable"), 409
             options = validate_options(request.get_json(silent=True))
+            selected = next(
+                item
+                for item in caption_scheme_status(capabilities, None, user, metadata)
+                if item["id"] == options["scheme"]
+            )
+            if not selected["can_submit"]:
+                return jsonify(error=selected["unavailable_reason"]), 409
             if options["episode_index"] >= dataset.meta.total_episodes:
                 return jsonify(error="Episode index is outside this dataset"), 400
             delivery = request.headers.get("Idempotency-Key")
